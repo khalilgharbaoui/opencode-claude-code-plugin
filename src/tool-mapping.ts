@@ -99,7 +99,7 @@ export function mapTool(
   }
   // Plan mode tools
   if (name === "EnterPlanMode") return { name: "plan_enter", input: {}, executed: false }
-  if (name === "ExitPlanMode") return { name: "plan_exit", input: {}, executed: false }
+  if (name === "ExitPlanMode") return { name: "plan_exit", input, executed: false }
 
   // WebSearch
   if (name === "WebSearch" || name === "web_search") {

@@ -138,6 +138,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
                   continue
                 }
 
+                if (block.name === "ExitPlanMode") {
+                  const parsedInput = (block.input ?? {}) as Record<
+                    string,
+                    unknown
+                  >
+                  const plan = (parsedInput?.plan as string) || ""
+                  responseText += `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`
+                  continue
+                }
+
                 toolCalls.push({
                   id: block.id,
                   name: block.name,
@@ -442,7 +452,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
 
                 if (
                   block.name !== "AskUserQuestion" &&
-                  block.name !== "ask_user_question"
+                  block.name !== "ask_user_question" &&
+                  block.name !== "ExitPlanMode"
                 ) {
                   const { name: mappedName, skip } = mapTool(block.name)
                   if (!skip) {
@@ -566,6 +577,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
                     id: textId,
                     delta: `\n\n_Asking: ${question}_\n\n`,
                   })
+                } else if (tc.name === "ExitPlanMode") {
+                  // Emit plan as text and ask user to accept/refuse
+                  const plan = (parsedInput?.plan as string) || ""
+
+                  if (!textStarted) {
+                    controller.enqueue({
+                      type: "text-start",
+                      id: textId,
+                    } as any)
+                    textStarted = true
+                  }
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: textId,
+                    delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
+                  })
                 } else {
                   const {
                     name: mappedName,
@@ -675,6 +702,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
                       type: "text-delta",
                       id: textId,
                       delta: `\n\n_Asking: ${question}_\n\n`,
+                    })
+                  } else if (block.name === "ExitPlanMode") {
+                    // Emit plan as text and ask user to accept/refuse
+                    const plan = (parsedInput?.plan as string) || ""
+
+                    if (!textStarted) {
+                      controller.enqueue({
+                        type: "text-start",
+                        id: textId,
+                      } as any)
+                      textStarted = true
+                    }
+                    controller.enqueue({
+                      type: "text-delta",
+                      id: textId,
+                      delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
                     })
                   } else {
                     const {

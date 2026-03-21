@@ -149,6 +149,14 @@ bun run test.ts
 
 Requires the `claude` CLI to be installed and authenticated.
 
+## Plan mode
+
+When Claude finishes planning, the plugin does **not** automatically exit plan mode (since a plugin cannot switch opencode's mode). Instead, the plan is displayed as text with a confirmation prompt.
+
+To proceed after reviewing the plan:
+1. Switch to **build mode** using `Tab`
+2. Enter `yes` (or `no` to reject) into the prompt
+
 ## Known limitations
 
 - **One session per directory per model**: If you run two opencode instances in the same directory with the same model simultaneously, they will share a CLI process and interfere with each other. This is because opencode doesn't expose its session ID to external providers.
