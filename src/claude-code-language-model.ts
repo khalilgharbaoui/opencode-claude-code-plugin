@@ -38,12 +38,131 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
     return this.config.provider
   }
 
+  private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
+    return Array.isArray(options?.tools) ? "tools" : "no-tools"
+  }
+
+  private latestUserText(
+    prompt: Parameters<LanguageModelV2["doGenerate"]>[0]["prompt"],
+  ): string {
+    for (let i = prompt.length - 1; i >= 0; i--) {
+      const msg = prompt[i]
+      if (msg.role !== "user") continue
+
+      if (typeof msg.content === "string") {
+        return String(msg.content).trim()
+      }
+
+      if (Array.isArray(msg.content)) {
+        const text = (msg.content as any[])
+          .filter((part) => part.type === "text" && typeof part.text === "string")
+          .map((part: any) => String(part.text).trim())
+          .filter(Boolean)
+          .join(" ")
+        if (text) return text
+      }
+    }
+
+    return ""
+  }
+
+  private synthesizeTitle(
+    prompt: Parameters<LanguageModelV2["doGenerate"]>[0]["prompt"],
+  ): string {
+    const source = this.latestUserText(prompt)
+      .replace(/\s+/g, " ")
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .trim()
+
+    if (!source) return "New Session"
+
+    const stop = new Set([
+      "a",
+      "an",
+      "the",
+      "and",
+      "or",
+      "but",
+      "to",
+      "for",
+      "of",
+      "in",
+      "on",
+      "at",
+      "with",
+      "can",
+      "could",
+      "would",
+      "should",
+      "please",
+      "hi",
+      "hello",
+      "hey",
+      "there",
+      "you",
+      "your",
+      "this",
+      "that",
+      "is",
+      "are",
+      "was",
+      "were",
+      "be",
+      "do",
+      "does",
+      "did",
+      "summarize",
+      "summary",
+      "project",
+    ])
+
+    const words = source
+      .split(" ")
+      .map((word) => word.trim())
+      .filter(Boolean)
+      .filter((word) => !stop.has(word.toLowerCase()))
+
+    const picked = (words.length > 0 ? words : source.split(" ").filter(Boolean))
+      .slice(0, 6)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+
+    return picked || "New Session"
+  }
+
   async doGenerate(
     options: Parameters<LanguageModelV2["doGenerate"]>[0],
   ): Promise<Awaited<ReturnType<LanguageModelV2["doGenerate"]>>> {
     const warnings: LanguageModelV2CallWarning[] = []
     const cwd = this.config.cwd ?? process.cwd()
-    const sk = sessionKey(cwd, this.modelId)
+    const scope = this.requestScope(options as any)
+    const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
+
+    if (scope === "no-tools") {
+      const text = this.synthesizeTitle(options.prompt)
+      return {
+        content: [{ type: "text", text }] as any,
+        finishReason: "stop",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        request: { body: { text: "" } },
+        response: {
+          id: generateId(),
+          timestamp: new Date(),
+          modelId: this.modelId,
+        },
+        providerMetadata: {
+          "claude-code": {
+            synthetic: true,
+            path: "no-tools",
+          },
+        },
+        warnings,
+      }
+    }
 
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
@@ -316,7 +435,46 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
     const cwd = this.config.cwd ?? process.cwd()
     const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
-    const sk = sessionKey(cwd, this.modelId)
+    const scope = this.requestScope(options as any)
+    const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
+
+    if (scope === "no-tools") {
+      const text = this.synthesizeTitle(options.prompt)
+      const textId = generateId()
+      const stream = new ReadableStream<LanguageModelV2StreamPart>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          controller.enqueue({ type: "text-start", id: textId } as any)
+          controller.enqueue({
+            type: "text-delta",
+            id: textId,
+            delta: text,
+          })
+          controller.enqueue({ type: "text-end", id: textId })
+          controller.enqueue({
+            type: "finish",
+            finishReason: "stop",
+            usage: {
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            providerMetadata: {
+              "claude-code": {
+                synthetic: true,
+                path: "no-tools",
+              },
+            },
+          })
+          controller.close()
+        },
+      })
+
+      return {
+        stream,
+        request: { body: { text: "" } },
+      }
+    }
 
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
