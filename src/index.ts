@@ -1,10 +1,11 @@
-import type { LanguageModelV2, ProviderV2 } from "@ai-sdk/provider"
+import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 
-export interface ClaudeCodeProvider extends ProviderV2 {
-  (modelId: string): LanguageModelV2
-  languageModel(modelId: string): LanguageModelV2
+export interface ClaudeCodeProvider {
+  specificationVersion: "v3"
+  (modelId: string): LanguageModelV3
+  languageModel(modelId: string): LanguageModelV3
 }
 
 export function createClaudeCode(
@@ -15,7 +16,7 @@ export function createClaudeCode(
   const cwd = settings.cwd ?? process.cwd()
   const providerName = settings.name ?? "claude-code"
 
-  const createModel = (modelId: string): LanguageModelV2 => {
+  const createModel = (modelId: string): LanguageModelV3 => {
     return new ClaudeCodeLanguageModel(modelId, {
       provider: providerName,
       cliPath,
@@ -28,6 +29,7 @@ export function createClaudeCode(
     return createModel(modelId)
   } as ClaudeCodeProvider
 
+  provider.specificationVersion = "v3"
   provider.languageModel = createModel
 
   return provider

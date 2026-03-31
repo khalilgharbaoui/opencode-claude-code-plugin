@@ -1,10 +1,11 @@
 import type {
-  LanguageModelV2,
-  LanguageModelV2CallWarning,
-  LanguageModelV2Content,
-  LanguageModelV2FinishReason,
-  LanguageModelV2StreamPart,
-  LanguageModelV2Usage,
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3Content,
+  LanguageModelV3FinishReason,
+  LanguageModelV3StreamPart,
+  LanguageModelV3Usage,
+  SharedV3Warning,
 } from "@ai-sdk/provider"
 import { generateId } from "@ai-sdk/provider-utils"
 import type { ClaudeCodeConfig, ClaudeStreamMessage } from "./types.js"
@@ -22,8 +23,8 @@ import {
 } from "./session-manager.js"
 import { log } from "./logger.js"
 
-export class ClaudeCodeLanguageModel implements LanguageModelV2 {
-  readonly specificationVersion = "v2"
+export class ClaudeCodeLanguageModel implements LanguageModelV3 {
+  readonly specificationVersion = "v3"
   readonly modelId: string
   private readonly config: ClaudeCodeConfig
 
@@ -38,12 +39,38 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
     return this.config.provider
   }
 
+  private toUsage(rawUsage?: ClaudeStreamMessage["usage"]): LanguageModelV3Usage {
+    return {
+      inputTokens: {
+        total: rawUsage?.input_tokens,
+        noCache: undefined,
+        cacheRead: rawUsage?.cache_read_input_tokens,
+        cacheWrite: rawUsage?.cache_creation_input_tokens,
+      },
+      outputTokens: {
+        total: rawUsage?.output_tokens,
+        text: rawUsage?.output_tokens,
+        reasoning: undefined,
+      },
+      raw: rawUsage as any,
+    }
+  }
+
+  private toFinishReason(
+    reason: "stop" | "tool-calls" = "stop",
+  ): LanguageModelV3FinishReason {
+    return {
+      unified: reason,
+      raw: reason,
+    }
+  }
+
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
     return Array.isArray(options?.tools) ? "tools" : "no-tools"
   }
 
   private latestUserText(
-    prompt: Parameters<LanguageModelV2["doGenerate"]>[0]["prompt"],
+    prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
     for (let i = prompt.length - 1; i >= 0; i--) {
       const msg = prompt[i]
@@ -67,7 +94,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
   }
 
   private synthesizeTitle(
-    prompt: Parameters<LanguageModelV2["doGenerate"]>[0]["prompt"],
+    prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
     const source = this.latestUserText(prompt)
       .replace(/\s+/g, " ")
@@ -131,9 +158,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
   }
 
   async doGenerate(
-    options: Parameters<LanguageModelV2["doGenerate"]>[0],
-  ): Promise<Awaited<ReturnType<LanguageModelV2["doGenerate"]>>> {
-    const warnings: LanguageModelV2CallWarning[] = []
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+    const warnings: SharedV3Warning[] = []
     const cwd = this.config.cwd ?? process.cwd()
     const scope = this.requestScope(options as any)
     const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
@@ -142,12 +169,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
       const text = this.synthesizeTitle(options.prompt)
       return {
         content: [{ type: "text", text }] as any,
-        finishReason: "stop",
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-        },
+        finishReason: this.toFinishReason("stop"),
+        usage: this.toUsage({ input_tokens: 0, output_tokens: 0 }),
         request: { body: { text: "" } },
         response: {
           id: generateId(),
@@ -356,7 +379,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
       proc.stdin?.write(userMsg + "\n")
     })
 
-    const content: LanguageModelV2Content[] = []
+    const content: LanguageModelV3Content[] = []
 
     if (result.thinking) {
       content.push({
@@ -396,20 +419,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
       } as any)
     }
 
-    const usage: LanguageModelV2Usage = {
-      inputTokens: result.usage?.input_tokens,
-      outputTokens: result.usage?.output_tokens,
-      totalTokens:
-        result.usage?.input_tokens && result.usage?.output_tokens
-          ? result.usage.input_tokens + result.usage.output_tokens
-          : undefined,
-    }
+    const usage = this.toUsage(result.usage)
 
     return {
       content,
-      finishReason: (result.toolCalls.length > 0
-        ? "tool-calls"
-        : "stop") as LanguageModelV2FinishReason,
+      finishReason: this.toFinishReason(
+        result.toolCalls.length > 0 ? "tool-calls" : "stop",
+      ),
       usage,
       request: { body: { text: userMsg } },
       response: {
@@ -429,19 +445,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
   }
 
   async doStream(
-    options: Parameters<LanguageModelV2["doStream"]>[0],
-  ): Promise<Awaited<ReturnType<LanguageModelV2["doStream"]>>> {
-    const warnings: LanguageModelV2CallWarning[] = []
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    const warnings: SharedV3Warning[] = []
     const cwd = this.config.cwd ?? process.cwd()
     const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
     const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
+    const toUsage = this.toUsage.bind(this)
+    const toFinishReason = this.toFinishReason.bind(this)
 
     if (scope === "no-tools") {
       const text = this.synthesizeTitle(options.prompt)
       const textId = generateId()
-      const stream = new ReadableStream<LanguageModelV2StreamPart>({
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
         start(controller) {
           controller.enqueue({ type: "stream-start", warnings })
           controller.enqueue({ type: "text-start", id: textId } as any)
@@ -453,12 +471,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
           controller.enqueue({ type: "text-end", id: textId })
           controller.enqueue({
             type: "finish",
-            finishReason: "stop",
-            usage: {
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
+            finishReason: toFinishReason("stop"),
+            usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
             providerMetadata: {
               "claude-code": {
                 synthetic: true,
@@ -507,7 +521,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
       model: this.modelId,
     })
 
-    const stream = new ReadableStream<LanguageModelV2StreamPart>({
+    const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
         let activeProcess = getActiveProcess(sk)
         let proc: import("child_process").ChildProcess
@@ -995,18 +1009,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
 
               controller.enqueue({
                 type: "finish",
-                finishReason:
+                finishReason: toFinishReason(
                   toolCallMap.size > 0 ? "tool-calls" : "stop",
-                usage: {
-                  inputTokens: msg.usage?.input_tokens,
-                  outputTokens: msg.usage?.output_tokens,
-                  totalTokens:
-                    msg.usage?.input_tokens &&
-                    msg.usage?.output_tokens
-                      ? msg.usage.input_tokens +
-                        msg.usage.output_tokens
-                      : undefined,
-                },
+                ),
+                usage: toUsage(msg.usage),
                 providerMetadata: {
                   "claude-code": resultMeta,
                 },
@@ -1039,12 +1045,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV2 {
           }
           controller.enqueue({
             type: "finish",
-            finishReason: "stop",
-            usage: {
-              inputTokens: undefined,
-              outputTokens: undefined,
-              totalTokens: undefined,
-            },
+            finishReason: toFinishReason("stop"),
+            usage: toUsage(),
             providerMetadata: {
               "claude-code": resultMeta,
             },

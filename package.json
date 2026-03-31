@@ -21,8 +21,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^2.0.0",
-    "@ai-sdk/provider-utils": "^2.0.0"
+    "@ai-sdk/provider": "^3.0.8",
+    "@ai-sdk/provider-utils": "^3.0.8"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

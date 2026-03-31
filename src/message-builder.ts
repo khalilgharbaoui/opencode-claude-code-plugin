@@ -1,7 +1,41 @@
-import type { LanguageModelV2 } from "@ai-sdk/provider"
+import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { log } from "./logger.js"
 
-type Prompt = Parameters<LanguageModelV2["doGenerate"]>[0]["prompt"]
+type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
+
+function getToolResultText(part: any): string {
+  const value = part.output ?? part.result
+
+  if (typeof value === "string") {
+    return value
+  }
+
+  if (!value || typeof value !== "object") {
+    return JSON.stringify(value)
+  }
+
+  switch (value.type) {
+    case "text":
+    case "error-text":
+      return String(value.value)
+    case "json":
+    case "error-json":
+      return JSON.stringify(value.value)
+    case "execution-denied":
+      return value.reason ? `Execution denied: ${value.reason}` : "Execution denied"
+    case "content":
+      return Array.isArray(value.value)
+        ? value.value
+            .map((item: any) => {
+              if (item?.type === "text") return item.text
+              return JSON.stringify(item)
+            })
+            .join("\n")
+        : JSON.stringify(value.value)
+    default:
+      return JSON.stringify(value)
+  }
+}
 
 /**
  * Compact conversation history into a context summary for when we start
@@ -108,22 +142,10 @@ Now continuing with the current message:
             content.push({ type: "text", text: part.text })
           } else if (part.type === "tool-result") {
             const p = part as any
-            let resultText = ""
-            if (typeof p.result === "string") {
-              resultText = p.result
-            } else if (
-              typeof p.result === "object" &&
-              p.result &&
-              "output" in p.result
-            ) {
-              resultText = String(p.result.output)
-            } else {
-              resultText = JSON.stringify(p.result)
-            }
             content.push({
               type: "tool_result",
               tool_use_id: p.toolCallId,
-              content: resultText,
+              content: getToolResultText(p),
             })
           }
         }
