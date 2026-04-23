@@ -72,7 +72,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
-    return Array.isArray(options?.tools) ? "tools" : "no-tools"
+    const tools = options?.tools
+    if (Array.isArray(tools)) return "tools"
+    if (tools && typeof tools === "object") {
+      return Object.keys(tools as Record<string, unknown>).length > 0
+        ? "tools"
+        : "no-tools"
+    }
+    return "no-tools"
   }
 
   /**
