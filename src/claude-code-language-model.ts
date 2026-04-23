@@ -237,6 +237,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       skipPermissions: this.config.skipPermissions !== false,
       includeSessionId: false,
       model: this.modelId,
+      mcpConfig: this.config.mcpConfig,
+      strictMcpConfig: this.config.strictMcpConfig,
     })
 
     log.info("doGenerate starting", {
@@ -556,6 +558,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       sessionKey: sk,
       skipPermissions,
       model: this.modelId,
+      mcpConfig: this.config.mcpConfig,
+      strictMcpConfig: this.config.strictMcpConfig,
     })
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({

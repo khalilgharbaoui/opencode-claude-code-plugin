@@ -107,8 +107,17 @@ export function buildCliArgs(opts: {
   skipPermissions: boolean
   includeSessionId?: boolean
   model?: string
+  mcpConfig?: string | string[]
+  strictMcpConfig?: boolean
 }): string[] {
-  const { sessionKey, skipPermissions, includeSessionId = true, model } = opts
+  const {
+    sessionKey,
+    skipPermissions,
+    includeSessionId = true,
+    model,
+    mcpConfig,
+    strictMcpConfig,
+  } = opts
   const args = [
     "--output-format",
     "stream-json",
@@ -126,6 +135,18 @@ export function buildCliArgs(opts: {
     if (sessionId && !activeProcesses.has(sessionKey)) {
       args.push("--session-id", sessionId)
     }
+  }
+
+  if (mcpConfig) {
+    const configs = Array.isArray(mcpConfig) ? mcpConfig : [mcpConfig]
+    const filtered = configs.filter((c) => typeof c === "string" && c.length > 0)
+    if (filtered.length > 0) {
+      args.push("--mcp-config", ...filtered)
+    }
+  }
+
+  if (strictMcpConfig) {
+    args.push("--strict-mcp-config")
   }
 
   if (skipPermissions) {

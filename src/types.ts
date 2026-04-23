@@ -3,6 +3,8 @@ export interface ClaudeCodeConfig {
   cliPath: string
   cwd?: string
   skipPermissions?: boolean
+  mcpConfig?: string | string[]
+  strictMcpConfig?: boolean
 }
 
 export interface ClaudeCodeProviderSettings {
@@ -10,6 +12,8 @@ export interface ClaudeCodeProviderSettings {
   cwd?: string
   name?: string
   skipPermissions?: boolean
+  mcpConfig?: string | string[]
+  strictMcpConfig?: boolean
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

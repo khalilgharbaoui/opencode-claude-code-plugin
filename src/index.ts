@@ -22,6 +22,8 @@ export function createClaudeCode(
       cliPath,
       cwd,
       skipPermissions: settings.skipPermissions ?? true,
+      mcpConfig: settings.mcpConfig,
+      strictMcpConfig: settings.strictMcpConfig,
     })
   }
 

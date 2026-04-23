@@ -52,7 +52,9 @@ Add this to your project's `opencode.json`:
         }
       },
       "options": {
-        "cliPath": "claude"
+        "cliPath": "claude",
+        "mcpConfig": "/path/to/mcp.json",
+        "strictMcpConfig": false
       }
     }
   }
@@ -62,6 +64,14 @@ Add this to your project's `opencode.json`:
 Replace `"opencode-claude-code-plugin"` with a `file://` path if you're using a local build.
 
 The model IDs (`haiku`, `sonnet`, `opus`) are passed directly to `claude --model`, which accepts these aliases natively.
+
+### Options
+
+- `cliPath` (string, default `"claude"`): path to the Claude Code CLI binary.
+- `cwd` (string, default `process.cwd()`): working directory for the spawned CLI.
+- `skipPermissions` (boolean, default `true`): pass `--dangerously-skip-permissions` to the CLI.
+- `mcpConfig` (string | string[]): path(s) or JSON string(s) passed through as `--mcp-config`. Use this to point the CLI at the same MCP servers your opencode config references.
+- `strictMcpConfig` (boolean, default `false`): pass `--strict-mcp-config` so the CLI loads **only** the servers from `mcpConfig` and ignores `~/.claude/settings.json`.
 
 ## How it works
 
@@ -159,9 +169,9 @@ To proceed after reviewing the plan:
 
 ## Known limitations
 
-- **One session per directory per model**: If you run two opencode instances in the same directory with the same model simultaneously, they will share a CLI process and interfere with each other. This is because opencode doesn't expose its session ID to external providers.
-- **MCP servers are separate**: Claude CLI uses its own MCP servers (configured in `~/.claude/settings.json`), not the ones configured in opencode. If you need a specific MCP server (e.g., GitHub), add it to your Claude Code settings.
-- **No opencode permission UI integration**: Permission prompts go through Claude CLI's own system, not opencode's permission dialog.
+- **Per-(cwd, model) CLI state in one opencode instance**: Within a single opencode process, one active Claude CLI process is kept per `(cwd, model)` pair. Two opencode instances are separate processes with separate in-memory state, so they don't literally share a CLI process — but if they run in the same working directory against the same model, they can race on filesystem state the CLI itself keeps under `.claude/` (session files, caches). Opencode also doesn't expose its own session ID to external providers, so we can't namespace further than `(cwd, model)`.
+- **MCP servers live in Claude CLI's config, not opencode's**: By default the CLI loads MCP servers from `~/.claude/settings.json`. Point it at a different config via the `mcpConfig` / `strictMcpConfig` options above (for example, the same JSON file your opencode setup references) to unify the two.
+- **No opencode permission UI integration**: Permission prompts go through Claude CLI's own system, not opencode's permission dialog. The CLI runs with `--dangerously-skip-permissions` by default; control allow/deny lists via `~/.claude/settings.json`.
 
 ## Publishing
 
