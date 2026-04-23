@@ -74,7 +74,6 @@ const OPENCODE_HANDLED_TOOLS = new Set([
   "Write",
   "Bash",
   "NotebookEdit",
-  "TodoWrite",
   "Read",
   "Glob",
   "Grep",
@@ -100,6 +99,14 @@ export function mapTool(
   // Plan mode tools
   if (name === "EnterPlanMode") return { name: "plan_enter", input: {}, executed: false }
   if (name === "ExitPlanMode") return { name: "plan_exit", input, executed: false }
+
+  // TodoWrite needs opencode to run it locally so Todo.Service (and the UI
+  // widget backed by it) gets populated. Reporting as provider-executed would
+  // short-circuit opencode's own execute and leave the todo panel empty.
+  if (name === "TodoWrite") {
+    const mappedInput = mapToolInput(name, input)
+    return { name: "todowrite", input: mappedInput, executed: false }
+  }
 
   // WebSearch
   if (name === "WebSearch" || name === "web_search") {

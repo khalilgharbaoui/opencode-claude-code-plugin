@@ -452,9 +452,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
     return {
       content,
-      finishReason: this.toFinishReason(
-        result.toolCalls.length > 0 ? "tool-calls" : "stop",
-      ),
+      // Claude CLI's `result` message signals a fully-completed turn —
+      // tools have already been executed internally and final assistant
+      // text has been produced. Always report "stop" so opencode doesn't
+      // loop expecting to run tools itself.
+      finishReason: this.toFinishReason("stop"),
       usage,
       request: { body: { text: userMsg } },
       response: {
@@ -587,6 +589,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           number,
           { id: string; name: string; inputJson: string }
         >()
+        // Tool calls the plugin reported as providerExecuted:false — opencode
+        // will run these itself and emit its own tool-result, so we must NOT
+        // forward Claude CLI's tool_result for them (would short-circuit
+        // opencode's execute).
+        const skipResultForIds = new Set<string>()
         const toolCallsById = new Map<
           string,
           { id: string; name: string; input: unknown }
@@ -814,6 +821,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       name: tc.name,
                       input: parsedInput,
                     })
+                    if (!executed) skipResultForIds.add(tc.id)
 
                     controller.enqueue({
                       type: "tool-call",
@@ -935,6 +943,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     } = mapTool(block.name, parsedInput)
 
                     if (!skip) {
+                      if (!executed) skipResultForIds.add(block.id)
                       controller.enqueue({
                         type: "tool-input-start",
                         id: block.id,
@@ -969,6 +978,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             if (msg.type === "user" && msg.message?.content) {
               for (const block of msg.message.content) {
                 if (block.type === "tool_result" && block.tool_use_id) {
+                  if (skipResultForIds.has(block.tool_use_id)) {
+                    log.debug("skipping tool-result (opencode runs it)", {
+                      toolUseId: block.tool_use_id,
+                    })
+                    continue
+                  }
                   const toolCall = toolCallsById.get(block.tool_use_id)
                   if (toolCall) {
                     let resultText = ""
@@ -1044,9 +1059,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               controller.enqueue({
                 type: "finish",
-                finishReason: toFinishReason(
-                  toolCallMap.size > 0 ? "tool-calls" : "stop",
-                ),
+                // Claude CLI's `result` message signals a fully-completed
+                // turn — tools already ran internally and final assistant
+                // text was produced. Always "stop" so opencode doesn't
+                // loop expecting to run tools itself.
+                finishReason: toFinishReason("stop"),
                 usage: toUsage(msg.usage),
                 providerMetadata: {
                   "claude-code": resultMeta,
