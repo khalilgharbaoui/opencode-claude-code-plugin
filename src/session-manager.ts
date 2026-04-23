@@ -133,6 +133,7 @@ export function buildCliArgs(opts: {
   skipPermissions: boolean
   includeSessionId?: boolean
   model?: string
+  permissionMode?: string
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
 }): string[] {
@@ -141,6 +142,7 @@ export function buildCliArgs(opts: {
     skipPermissions,
     includeSessionId = true,
     model,
+    permissionMode,
     mcpConfig,
     strictMcpConfig,
   } = opts
@@ -154,6 +156,10 @@ export function buildCliArgs(opts: {
 
   if (model) {
     args.push("--model", model)
+  }
+
+  if (permissionMode) {
+    args.push("--permission-mode", permissionMode)
   }
 
   if (includeSessionId) {

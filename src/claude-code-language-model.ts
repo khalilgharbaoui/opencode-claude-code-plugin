@@ -10,6 +10,7 @@ import type {
 import { generateId } from "@ai-sdk/provider-utils"
 import type {
   ClaudeCodeConfig,
+  ControlRequestBehavior,
   ClaudeStreamMessage,
   ReasoningEffort,
 } from "./types.js"
@@ -112,6 +113,101 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       }
     }
     return "default"
+  }
+
+  private controlRequestBehaviorForTool(toolName: string): ControlRequestBehavior {
+    const configured = this.config.controlRequestToolBehaviors
+    if (configured && toolName) {
+      const direct = configured[toolName] ?? configured[toolName.toLowerCase()]
+      if (direct === "allow" || direct === "deny") return direct
+
+      const lower = toolName.toLowerCase()
+      for (const [key, behavior] of Object.entries(configured)) {
+        if (key.toLowerCase() === lower && (behavior === "allow" || behavior === "deny")) {
+          return behavior
+        }
+      }
+    }
+
+    return this.config.controlRequestBehavior ?? "allow"
+  }
+
+  private writeControlResponse(
+    proc: import("child_process").ChildProcess,
+    requestId: string,
+    response?: Record<string, unknown>,
+  ): void {
+    const payload = {
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: requestId,
+        response,
+      },
+    }
+
+    try {
+      proc.stdin?.write(JSON.stringify(payload) + "\n")
+    } catch (error) {
+      log.warn("failed to write control response", {
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /**
+   * Handle Claude stream-json control requests (`can_use_tool`, etc.) and
+   * respond via stdin with a matching `control_response`.
+   */
+  private handleControlRequest(
+    msg: ClaudeStreamMessage,
+    proc: import("child_process").ChildProcess,
+  ): boolean {
+    if (msg.type !== "control_request") return false
+    const requestId = msg.request_id
+    const request = msg.request
+    if (!requestId || !request?.subtype) return false
+
+    if (request.subtype === "can_use_tool") {
+      const toolName = request.tool_name ?? "unknown"
+      const behavior = this.controlRequestBehaviorForTool(toolName)
+
+      if (behavior === "allow") {
+        this.writeControlResponse(proc, requestId, {
+          behavior: "allow",
+          updatedInput: request.input ?? {},
+          toolUseID: request.tool_use_id,
+        })
+        log.info("control request auto-allowed", {
+          requestId,
+          toolName,
+        })
+      } else {
+        this.writeControlResponse(proc, requestId, {
+          behavior: "deny",
+          message:
+            this.config.controlRequestDenyMessage ??
+            `Denied by opencode-claude-code policy for tool ${toolName}`,
+          toolUseID: request.tool_use_id,
+        })
+        log.info("control request auto-denied", {
+          requestId,
+          toolName,
+        })
+      }
+
+      return true
+    }
+
+    // For control request subtypes we don't actively handle yet, acknowledge
+    // with an empty success so the CLI stream does not stall.
+    this.writeControlResponse(proc, requestId, {})
+    log.debug("control request acknowledged", {
+      requestId,
+      subtype: request.subtype,
+    })
+    return true
   }
 
   private getReasoningEffort(
@@ -279,6 +375,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       skipPermissions: this.config.skipPermissions !== false,
       includeSessionId: false,
       model: this.modelId,
+      permissionMode: this.config.permissionMode,
       mcpConfig: this.effectiveMcpConfig(cwd),
       strictMcpConfig: this.config.strictMcpConfig,
     })
@@ -322,6 +419,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         if (!line.trim()) return
         try {
           const msg: ClaudeStreamMessage = JSON.parse(line)
+
+          if (this.handleControlRequest(msg, proc)) {
+            return
+          }
 
           if (msg.type === "system" && msg.subtype === "init") {
             if (msg.session_id) {
@@ -531,6 +632,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
+    const handleControlRequest = this.handleControlRequest.bind(this)
 
     if (scope === "no-tools") {
       const text = this.synthesizeTitle(options.prompt)
@@ -601,6 +703,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       sessionKey: sk,
       skipPermissions,
       model: this.modelId,
+      permissionMode: this.config.permissionMode,
       mcpConfig: this.effectiveMcpConfig(cwd),
       strictMcpConfig: this.config.strictMcpConfig,
     })
@@ -659,6 +762,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           try {
             const msg: ClaudeStreamMessage = JSON.parse(line)
+
+            if (handleControlRequest(msg, proc)) {
+              return
+            }
 
             log.debug("stream message", {
               type: msg.type,

@@ -52,7 +52,14 @@ Add this to your project's `opencode.json`:
         }
       },
       "options": {
-        "cliPath": "claude"
+        "cliPath": "claude",
+        "skipPermissions": false,
+        "permissionMode": "default",
+        "controlRequestBehavior": "allow",
+        "controlRequestToolBehaviors": {
+          "Bash": "deny",
+          "Read": "allow"
+        }
       }
     }
   }
@@ -68,6 +75,10 @@ The model IDs (`haiku`, `sonnet`, `opus`) are passed directly to `claude --model
 - `cliPath` (string, default `"claude"`): path to the Claude Code CLI binary.
 - `cwd` (string, default `process.cwd()`): working directory for the spawned CLI.
 - `skipPermissions` (boolean, default `true`): pass `--dangerously-skip-permissions` to the CLI.
+- `permissionMode` (string, optional): pass Claude CLI `--permission-mode` (`acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`, `plan`).
+- `controlRequestBehavior` (`allow` | `deny`, default `allow`): default behavior for Claude stream-json `control_request` messages with subtype `can_use_tool` when `skipPermissions` is `false`.
+- `controlRequestToolBehaviors` (`Record<string, "allow" | "deny">`, optional): per-tool overrides for `can_use_tool` requests (eg. `{ "Bash": "deny", "Read": "allow" }`).
+- `controlRequestDenyMessage` (string, optional): custom deny message returned to Claude for denied `can_use_tool` requests.
 - `bridgeOpencodeMcp` (boolean, default `true`): auto-translate the `mcp` block from your opencode config (`opencode.jsonc` / `opencode.json`, discovered via `cwd`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`, and `$XDG_CONFIG_HOME/opencode`) into Claude CLI's `--mcp-config` format. Set to `false` to disable the bridge and manage MCP servers only via `~/.claude/settings.json`.
 - `mcpConfig` (string | string[]): extra `--mcp-config` file path(s) or JSON string(s) passed through alongside the bridged config.
 - `strictMcpConfig` (boolean, default `false`): pass `--strict-mcp-config` so the CLI loads **only** the servers from `--mcp-config` and ignores `~/.claude/settings.json` / user MCP registrations.
@@ -112,7 +123,37 @@ Tool name mapping:
 
 ### Permissions
 
-The plugin runs with `--dangerously-skip-permissions` by default. Claude CLI handles all tool execution internally. Users control permissions via Claude Code's own `.claude/settings.json` allow/deny lists.
+By default, the plugin runs with `--dangerously-skip-permissions` (`skipPermissions: true`) for maximum compatibility.
+
+If you set `skipPermissions: false`, the plugin now handles Claude stream-json control requests (`type: control_request`, `subtype: can_use_tool`) and replies with `control_response` messages automatically. This prevents stream deadlocks in print/stream-json mode and follows the same allow/deny fallback pattern used by opencode's `permission.ask` hook work (PR #19470).
+
+Behavior is configurable with:
+
+- `controlRequestBehavior` - global default allow/deny
+- `controlRequestToolBehaviors` - per-tool allow/deny overrides
+- `controlRequestDenyMessage` - message returned on denied requests
+
+Example (deny shell, allow file reads):
+
+```json
+{
+  "provider": {
+    "claude-code": {
+      "npm": "opencode-claude-code-plugin",
+      "options": {
+        "skipPermissions": false,
+        "permissionMode": "default",
+        "controlRequestBehavior": "allow",
+        "controlRequestToolBehaviors": {
+          "Bash": "deny",
+          "Read": "allow"
+        },
+        "controlRequestDenyMessage": "Shell access is disabled by project policy"
+      }
+    }
+  }
+}
+```
 
 ### Stream sequencing
 
@@ -169,7 +210,7 @@ To proceed after reviewing the plan:
 
 ## Known limitations
 
-- **Permission prompts bypass opencode's UI**: the CLI runs with `--dangerously-skip-permissions` by default, so permission gating happens entirely inside Claude CLI (via `~/.claude/settings.json` allow/deny lists) — it doesn't surface through opencode's own permission dialog. A full integration would require registering an opencode plugin with a `permission.ask` hook plus bridging Claude CLI's `--permission-prompt-tool` through a local MCP server; opencode's `permission.ask` hook is reactive (it only intercepts opencode-initiated asks, not provider-initiated ones), so a non-trivial bridge is required. Contributions welcome.
+- **No native opencode permission dialog for CLI-initiated asks**: when `skipPermissions: false`, this provider now handles Claude `can_use_tool` control requests itself (auto allow/deny). That prevents deadlocks and enables policy control, but it still does not open opencode's built-in permission modal. Full parity requires opencode core exposing a provider-facing permission bridge plus a CLI control-request adapter.
 
 ## Publishing
 

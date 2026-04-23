@@ -22,9 +22,13 @@ export function createClaudeCode(
       cliPath,
       cwd,
       skipPermissions: settings.skipPermissions ?? true,
+      permissionMode: settings.permissionMode,
       mcpConfig: settings.mcpConfig,
       strictMcpConfig: settings.strictMcpConfig,
       bridgeOpencodeMcp: settings.bridgeOpencodeMcp ?? true,
+      controlRequestBehavior: settings.controlRequestBehavior ?? "allow",
+      controlRequestToolBehaviors: settings.controlRequestToolBehaviors,
+      controlRequestDenyMessage: settings.controlRequestDenyMessage,
     })
   }
 
