@@ -5,6 +5,7 @@ export interface ClaudeCodeConfig {
   skipPermissions?: boolean
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
+  bridgeOpencodeMcp?: boolean
 }
 
 export interface ClaudeCodeProviderSettings {
@@ -14,6 +15,13 @@ export interface ClaudeCodeProviderSettings {
   skipPermissions?: boolean
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
+  /**
+   * Auto-translate opencode's `mcp` config block (from opencode.json/jsonc
+   * discovered via cwd/OPENCODE_CONFIG/XDG) into a Claude CLI `--mcp-config`
+   * file and pass it through on spawn. Defaults to `true` so the CLI sees
+   * the same MCP servers opencode is configured with.
+   */
+  bridgeOpencodeMcp?: boolean
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

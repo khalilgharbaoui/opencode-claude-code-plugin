@@ -15,6 +15,7 @@ import type {
 } from "./types.js"
 import { mapTool } from "./tool-mapping.js"
 import { getClaudeUserMessage } from "./message-builder.js"
+import { bridgeOpencodeMcp } from "./mcp-bridge.js"
 import {
   getActiveProcess,
   spawnClaudeProcess,
@@ -71,6 +72,46 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
     return Array.isArray(options?.tools) ? "tools" : "no-tools"
+  }
+
+  /**
+   * Build the combined `--mcp-config` list: user-configured paths plus the
+   * auto-bridged opencode MCP config (when enabled and present).
+   */
+  private effectiveMcpConfig(cwd: string): string[] {
+    const user = Array.isArray(this.config.mcpConfig)
+      ? this.config.mcpConfig.slice()
+      : this.config.mcpConfig
+        ? [this.config.mcpConfig]
+        : []
+    if (this.config.bridgeOpencodeMcp !== false) {
+      const bridged = bridgeOpencodeMcp(cwd)
+      if (bridged) user.push(bridged)
+    }
+    return user
+  }
+
+  /**
+   * Opencode sets `x-session-affinity: <sessionID>` on LLM calls for
+   * third-party providers (packages/opencode/src/session/llm.ts). Use it so
+   * two chats in the same cwd+model get separate CLI processes instead of
+   * stomping on each other. Falls back to "default" when absent (older
+   * opencode, direct AI-SDK use, title synthesis paths, etc).
+   */
+  private sessionAffinity(
+    options: LanguageModelV3CallOptions,
+  ): string {
+    const headers = (options as any)?.headers as
+      | Record<string, string | undefined>
+      | undefined
+    if (!headers) return "default"
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "x-session-affinity") {
+        const v = headers[key]
+        if (typeof v === "string" && v.length > 0) return v
+      }
+    }
+    return "default"
   }
 
   private getReasoningEffort(
@@ -187,7 +228,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const warnings: SharedV3Warning[] = []
     const cwd = this.config.cwd ?? process.cwd()
     const scope = this.requestScope(options as any)
-    const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
+    const affinity = this.sessionAffinity(options)
+    const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
 
     if (scope === "no-tools") {
       const text = this.synthesizeTitle(options.prompt)
@@ -237,7 +279,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       skipPermissions: this.config.skipPermissions !== false,
       includeSessionId: false,
       model: this.modelId,
-      mcpConfig: this.config.mcpConfig,
+      mcpConfig: this.effectiveMcpConfig(cwd),
       strictMcpConfig: this.config.strictMcpConfig,
     })
 
@@ -485,7 +527,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
-    const sk = sessionKey(cwd, `${this.modelId}::${scope}`)
+    const affinity = this.sessionAffinity(options)
+    const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
 
@@ -558,7 +601,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       sessionKey: sk,
       skipPermissions,
       model: this.modelId,
-      mcpConfig: this.config.mcpConfig,
+      mcpConfig: this.effectiveMcpConfig(cwd),
       strictMcpConfig: this.config.strictMcpConfig,
     })
 

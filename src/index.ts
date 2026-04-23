@@ -24,6 +24,7 @@ export function createClaudeCode(
       skipPermissions: settings.skipPermissions ?? true,
       mcpConfig: settings.mcpConfig,
       strictMcpConfig: settings.strictMcpConfig,
+      bridgeOpencodeMcp: settings.bridgeOpencodeMcp ?? true,
     })
   }
 
@@ -38,6 +39,7 @@ export function createClaudeCode(
 }
 
 export { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
+export { bridgeOpencodeMcp } from "./mcp-bridge.js"
 export type {
   ClaudeCodeConfig,
   ClaudeCodeProviderSettings,

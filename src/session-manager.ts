@@ -8,14 +8,39 @@ export interface ActiveProcess {
   lineEmitter: EventEmitter
 }
 
-// Keyed by cwd - one active process per working directory
+// One active CLI process per session key. Keyed by a composite
+// (cwd + model + opencode session-affinity) so two chats don't race.
+// Iteration order is insertion order, which we refresh on access to
+// make this a poor-man's LRU; see `touch()` below.
 const activeProcesses = new Map<string, ActiveProcess>()
-
-// Map cwd -> Claude CLI session ID for session reuse
 const claudeSessions = new Map<string, string>()
 
+// Cap on live CLI subprocesses. Session-affinity-keyed entries accumulate
+// one-per-chat, so an unbounded map would leak processes as users open new
+// chats. This caps at a reasonable working-set and evicts the oldest.
+const MAX_ACTIVE_PROCESSES = 16
+
+function touch(key: string): void {
+  const existing = activeProcesses.get(key)
+  if (existing) {
+    activeProcesses.delete(key)
+    activeProcesses.set(key, existing)
+  }
+}
+
+function evictIfNeeded(): void {
+  while (activeProcesses.size >= MAX_ACTIVE_PROCESSES) {
+    const oldestKey = activeProcesses.keys().next().value
+    if (!oldestKey) break
+    log.info("evicting LRU claude process", { sessionKey: oldestKey })
+    deleteActiveProcess(oldestKey)
+  }
+}
+
 export function getActiveProcess(key: string): ActiveProcess | undefined {
-  return activeProcesses.get(key)
+  const ap = activeProcesses.get(key)
+  if (ap) touch(key)
+  return ap
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {
@@ -48,6 +73,7 @@ export function spawnClaudeProcess(
   cwd: string,
   sessionKey: string,
 ): ActiveProcess {
+  evictIfNeeded()
   log.info("spawning new claude process", { cliPath, cliArgs, cwd, sessionKey })
 
   const proc = spawn(cliPath, cliArgs, {
