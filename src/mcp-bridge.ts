@@ -179,6 +179,7 @@ function translateServer(
       return null
     }
     const out: Record<string, unknown> = {
+      type: "stdio",
       command: String(cmd[0]),
     }
     if (cmd.length > 1) out.args = cmd.slice(1).map((s) => String(s))
@@ -193,7 +194,10 @@ function translateServer(
       log.warn("skipping remote MCP server with no url", { name })
       return null
     }
-    const out: Record<string, unknown> = { url: spec.url }
+    const out: Record<string, unknown> = {
+      type: "http",
+      url: spec.url,
+    }
     if (spec.headers && typeof spec.headers === "object") {
       out.headers = spec.headers
     }
