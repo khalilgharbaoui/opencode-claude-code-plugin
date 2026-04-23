@@ -514,6 +514,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             if (msg.session_id) {
               setClaudeSessionId(sk, msg.session_id)
             }
+
+            // Some CLI failures only surface user-readable text on the final
+            // `result` message (without prior assistant text blocks). Preserve
+            // that so callers don't receive an empty response.
+            if (
+              !responseText &&
+              msg.is_error &&
+              typeof msg.result === "string" &&
+              msg.result.trim().length > 0
+            ) {
+              responseText = msg.result
+            }
+
             resultMeta = {
               sessionId: msg.session_id,
               costUsd: msg.total_cost_usd,
@@ -1182,6 +1195,25 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               if (msg.session_id) {
                 setClaudeSessionId(sk, msg.session_id)
               }
+
+              // Some CLI failures only include user-readable text in
+              // `result.result` (no prior assistant text blocks). Emit it so
+              // opencode users don't see a blank turn.
+              if (
+                !textStarted &&
+                msg.is_error &&
+                typeof msg.result === "string" &&
+                msg.result.trim().length > 0
+              ) {
+                textStarted = true
+                controller.enqueue({ type: "text-start", id: textId } as any)
+                controller.enqueue({
+                  type: "text-delta",
+                  id: textId,
+                  delta: msg.result,
+                })
+              }
+
               resultMeta = {
                 sessionId: msg.session_id,
                 costUsd: msg.total_cost_usd,
