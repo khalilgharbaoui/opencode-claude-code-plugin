@@ -193,11 +193,16 @@ Now continuing with the current message:
   for (const msg of messages) {
     if (msg.role === "user") {
       if (typeof msg.content === "string") {
-        content.push({ type: "text", text: msg.content })
+        const str = msg.content as string
+        if (str.trim()) {
+          content.push({ type: "text", text: str })
+        }
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content as any[]) {
           if (part.type === "text") {
-            content.push({ type: "text", text: part.text })
+            if (part.text && part.text.trim()) {
+              content.push({ type: "text", text: part.text })
+            }
           } else if (part.type === "file" || part.type === "image") {
             const block = toImageBlock(part)
             if (block) {
@@ -221,11 +226,15 @@ Now continuing with the current message:
   }
 
   if (content.length === 0) {
+    // CLI rejects a zero-block message with 400, and Anthropic rejects
+    // whitespace-only text blocks — so we need a non-whitespace sentinel
+    // that the model is unlikely to read as an instruction (e.g. "continue").
+    log.warn("empty user content; sending sentinel to satisfy CLI")
     return JSON.stringify({
       type: "user",
       message: {
         role: "user",
-        content: [{ type: "text", text: " " }],
+        content: [{ type: "text", text: "." }],
       },
     })
   }
