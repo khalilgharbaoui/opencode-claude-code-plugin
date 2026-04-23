@@ -12,6 +12,12 @@ export interface ClaudeCodeProviderSettings {
   skipPermissions?: boolean
 }
 
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+
+export interface ClaudeCodeCallOptions {
+  reasoningEffort?: ReasoningEffort
+}
+
 /**
  * Claude CLI stream-json message types.
  */

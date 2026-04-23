@@ -1,7 +1,64 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { log } from "./logger.js"
+import type { ReasoningEffort } from "./types.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
+
+const THINKING_KEYWORDS: Record<ReasoningEffort, string | null> = {
+  minimal: null,
+  low: "think",
+  medium: "think hard",
+  high: "think harder",
+  xhigh: "megathink",
+  max: "ultrathink",
+}
+
+export function reasoningKeyword(effort?: ReasoningEffort): string | null {
+  if (!effort) return null
+  return THINKING_KEYWORDS[effort] ?? null
+}
+
+function toImageBlock(part: any): any | null {
+  const mediaType: string = part.mediaType || part.mimeType || ""
+  if (!mediaType.startsWith("image/")) return null
+
+  const data = part.data
+
+  if (data instanceof URL) {
+    return { type: "image", source: { type: "url", url: data.toString() } }
+  }
+
+  if (typeof data === "string") {
+    if (data.startsWith("http://") || data.startsWith("https://")) {
+      return { type: "image", source: { type: "url", url: data } }
+    }
+    // data URL: "data:image/png;base64,XXXX"
+    if (data.startsWith("data:")) {
+      const match = data.match(/^data:([^;]+);base64,(.+)$/)
+      if (match) {
+        return {
+          type: "image",
+          source: { type: "base64", media_type: match[1], data: match[2] },
+        }
+      }
+    }
+    // Otherwise assume already base64
+    return {
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data },
+    }
+  }
+
+  if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
+    const base64 = Buffer.from(data as Uint8Array).toString("base64")
+    return {
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: base64 },
+    }
+  }
+
+  return null
+}
 
 function getToolResultText(part: any): string {
   const value = part.output ?? part.result
@@ -100,6 +157,7 @@ export function compactConversationHistory(prompt: Prompt): string | null {
 export function getClaudeUserMessage(
   prompt: Prompt,
   includeHistoryContext: boolean = false,
+  reasoningEffort?: ReasoningEffort,
 ): string {
   const content: any[] = []
 
@@ -140,6 +198,15 @@ Now continuing with the current message:
         for (const part of msg.content as any[]) {
           if (part.type === "text") {
             content.push({ type: "text", text: part.text })
+          } else if (part.type === "file" || part.type === "image") {
+            const block = toImageBlock(part)
+            if (block) {
+              content.push(block)
+            } else {
+              log.debug("skipped non-image file part", {
+                mediaType: part.mediaType,
+              })
+            }
           } else if (part.type === "tool-result") {
             const p = part as any
             content.push({
@@ -158,9 +225,22 @@ Now continuing with the current message:
       type: "user",
       message: {
         role: "user",
-        content: [{ type: "text", text: "" }],
+        content: [{ type: "text", text: " " }],
       },
     })
+  }
+
+  const keyword = reasoningKeyword(reasoningEffort)
+  if (keyword) {
+    const lastTextPart = [...content].reverse().find((p) => p.type === "text")
+    if (lastTextPart) {
+      lastTextPart.text = lastTextPart.text
+        ? `${lastTextPart.text}\n\n(${keyword})`
+        : `(${keyword})`
+    } else {
+      content.push({ type: "text", text: `(${keyword})` })
+    }
+    log.debug("injected reasoning keyword", { effort: reasoningEffort, keyword })
   }
 
   return JSON.stringify({

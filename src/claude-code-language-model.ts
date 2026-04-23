@@ -8,7 +8,11 @@ import type {
   SharedV3Warning,
 } from "@ai-sdk/provider"
 import { generateId } from "@ai-sdk/provider-utils"
-import type { ClaudeCodeConfig, ClaudeStreamMessage } from "./types.js"
+import type {
+  ClaudeCodeConfig,
+  ClaudeStreamMessage,
+  ReasoningEffort,
+} from "./types.js"
 import { mapTool } from "./tool-mapping.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import {
@@ -67,6 +71,26 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
     return Array.isArray(options?.tools) ? "tools" : "no-tools"
+  }
+
+  private getReasoningEffort(
+    providerOptions?: LanguageModelV3CallOptions["providerOptions"],
+  ): ReasoningEffort | undefined {
+    if (!providerOptions) return undefined
+    const ownKey = this.config.provider
+    const bag =
+      (providerOptions as any)[ownKey] ??
+      (providerOptions as any)["claude-code"]
+    const effort = bag?.reasoningEffort
+    const valid: ReasoningEffort[] = [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]
+    return valid.includes(effort) ? effort : undefined
   }
 
   private latestUserText(
@@ -200,7 +224,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const hasExistingSession = !!getClaudeSessionId(sk)
     const includeHistoryContext = !hasExistingSession && hasPriorConversation
 
-    const userMsg = getClaudeUserMessage(options.prompt, includeHistoryContext)
+    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
+    const userMsg = getClaudeUserMessage(
+      options.prompt,
+      includeHistoryContext,
+      reasoningEffort,
+    )
 
     // doGenerate always spawns a fresh process, never reuse session ID
     const cliArgs = buildCliArgs({
@@ -505,7 +534,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const includeHistoryContext =
       !hasExistingSession && !hasActiveProcess && hasPriorConversation
 
-    const userMsg = getClaudeUserMessage(options.prompt, includeHistoryContext)
+    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
+    const userMsg = getClaudeUserMessage(
+      options.prompt,
+      includeHistoryContext,
+      reasoningEffort,
+    )
 
     log.info("doStream starting", {
       cwd,
@@ -513,6 +547,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       textLength: userMsg.length,
       includeHistoryContext,
       hasActiveProcess,
+      reasoningEffort,
     })
 
     const cliArgs = buildCliArgs({
