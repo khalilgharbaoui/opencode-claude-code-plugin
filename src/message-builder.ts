@@ -227,14 +227,17 @@ Now continuing with the current message:
 
   if (content.length === 0) {
     // CLI rejects a zero-block message with 400, and Anthropic rejects
-    // whitespace-only text blocks — so we need a non-whitespace sentinel
-    // that the model is unlikely to read as an instruction (e.g. "continue").
+    // whitespace-only text blocks — so we need a non-whitespace sentinel.
+    // "(empty)" matches the parenthetical meta-note convention this file
+    // already uses for reasoning keywords ("(think)", "(megathink)", etc.),
+    // which the model reads as out-of-band metadata rather than a prompt to
+    // continue its previous turn.
     log.warn("empty user content; sending sentinel to satisfy CLI")
     return JSON.stringify({
       type: "user",
       message: {
         role: "user",
-        content: [{ type: "text", text: "." }],
+        content: [{ type: "text", text: "(empty)" }],
       },
     })
   }
