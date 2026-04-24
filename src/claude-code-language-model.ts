@@ -439,6 +439,71 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return picked || "New Session"
   }
 
+  private async doGenerateViaStream(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+    const result = await this.doStream(options)
+    const reader = result.stream.getReader()
+
+    let text = ""
+    let reasoning = ""
+    const toolCalls: LanguageModelV3Content[] = []
+    let finishReason = this.toFinishReason("stop")
+    let usage: LanguageModelV3Usage = this.toUsage()
+    let providerMetadata: any
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      switch ((value as any).type) {
+        case "text-delta":
+          text += (value as any).delta ?? ""
+          break
+        case "reasoning-delta":
+          reasoning += (value as any).delta ?? ""
+          break
+        case "tool-call":
+          toolCalls.push({
+            type: "tool-call",
+            toolCallId: (value as any).toolCallId,
+            toolName: (value as any).toolName,
+            input: (value as any).input,
+            providerExecuted: (value as any).providerExecuted,
+          } as any)
+          break
+        case "finish":
+          finishReason = (value as any).finishReason ?? finishReason
+          usage = (value as any).usage ?? usage
+          providerMetadata = (value as any).providerMetadata ?? providerMetadata
+          break
+      }
+    }
+
+    const content: LanguageModelV3Content[] = []
+    if (reasoning) {
+      content.push({ type: "reasoning", text: reasoning } as any)
+    }
+    if (text) {
+      content.push({ type: "text", text, providerMetadata } as any)
+    }
+    content.push(...toolCalls)
+
+    return {
+      content,
+      finishReason,
+      usage,
+      request: result.request,
+      response: {
+        id: generateId(),
+        timestamp: new Date(),
+        modelId: this.modelId,
+      },
+      providerMetadata,
+      warnings: [],
+    }
+  }
+
   async doGenerate(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
@@ -447,6 +512,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
     const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
+
+    // When selective proxying is enabled, doGenerate must not bypass the
+    // proxy path. Reuse doStream and aggregate its events so proxied tools
+    // still route through opencode permissions/execution.
+    if (scope === "tools" && this.resolvedProxyTools()) {
+      return this.doGenerateViaStream(options)
+    }
 
     if (scope === "no-tools") {
       const text = this.synthesizeTitle(options.prompt)
@@ -1039,12 +1111,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }
 
               if (block.type === "text") {
+                clearFallbackTimer()
                 startTextBlock()
                 textBlockIndices.add(idx)
                 hasReceivedContent = true
               }
 
               if (block.type === "tool_use" && block.id && block.name) {
+                clearFallbackTimer()
                 toolCallMap.set(idx, {
                   id: block.id,
                   name: block.name,
@@ -1137,6 +1211,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               if (textBlockIndices.has(idx)) {
                 endTextBlock()
                 textBlockIndices.delete(idx)
+                startResultFallback()
               }
 
               const tc = toolCallMap.get(idx)
@@ -1551,6 +1626,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         if (options.abortSignal) {
           options.abortSignal.addEventListener("abort", () => {
             if (turnCompleted || controllerClosed) return
+
+            if (!hasReceivedContent) {
+              log.info(
+                "abort signal received before content, closing stream immediately",
+                { cwd },
+              )
+              controllerClosed = true
+              lineEmitter.off("line", lineHandler)
+              lineEmitter.off("close", closeHandler)
+              pendingProxyUnsubscribe?.()
+              pendingProxyUnsubscribe = null
+              try {
+                controller.close()
+              } catch {}
+              return
+            }
+
             log.info(
               "abort signal received mid-turn, starting grace period",
               { cwd },
