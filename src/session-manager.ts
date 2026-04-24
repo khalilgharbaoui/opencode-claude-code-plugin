@@ -84,6 +84,7 @@ export function spawnClaudeProcess(
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, TERM: "xterm-256color" },
+    shell: process.platform === "win32",
   })
 
   const lineEmitter = new EventEmitter()

@@ -64,16 +64,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private toUsage(rawUsage?: ClaudeStreamMessage["usage"]): LanguageModelV3Usage {
+    // Prefer the last iteration's counters over cumulative totals.
+    // CLI usage is the sum across all internal tool-use iterations;
+    // using it directly inflates context size and triggers premature compaction.
+    const iter = rawUsage?.iterations
+    const effective = iter?.length ? iter[iter.length - 1] : rawUsage
     return {
       inputTokens: {
-        total: rawUsage?.input_tokens,
+        total: effective?.input_tokens,
         noCache: undefined,
-        cacheRead: rawUsage?.cache_read_input_tokens,
-        cacheWrite: rawUsage?.cache_creation_input_tokens,
+        cacheRead: effective?.cache_read_input_tokens,
+        cacheWrite: effective?.cache_creation_input_tokens,
       },
       outputTokens: {
-        total: rawUsage?.output_tokens,
-        text: rawUsage?.output_tokens,
+        total: effective?.output_tokens,
+        text: effective?.output_tokens,
         reasoning: undefined,
       },
       raw: rawUsage as any,
@@ -505,6 +510,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TERM: "xterm-256color" },
+      shell: process.platform === "win32",
     })
 
     const rl = createInterface({ input: proc.stdout! })
@@ -866,8 +872,25 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           controller.enqueue({ type: "stream-start", warnings })
 
-          const textId = generateId()
-          let textStarted = false
+          let currentTextId: string | null = null
+          const textBlockIndices = new Set<number>()
+
+          const startTextBlock = (): string => {
+            if (currentTextId) {
+              controller.enqueue({ type: "text-end", id: currentTextId })
+            }
+            const id = generateId()
+            currentTextId = id
+            controller.enqueue({ type: "text-start", id } as any)
+            return id
+          }
+
+          const endTextBlock = (): void => {
+            if (currentTextId) {
+              controller.enqueue({ type: "text-end", id: currentTextId })
+              currentTextId = null
+            }
+          }
 
           const reasoningIds = new Map<number, string>()
           const reasoningStarted = new Map<number, boolean>()
@@ -875,6 +898,25 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           let turnCompleted = false
           let controllerClosed = false
           let pendingProxyUnsubscribe: (() => void) | null = null
+          let resultFallbackTimer: ReturnType<typeof setTimeout> | null = null
+          let hasReceivedContent = false
+
+          const clearFallbackTimer = () => {
+            if (resultFallbackTimer) {
+              clearTimeout(resultFallbackTimer)
+              resultFallbackTimer = null
+            }
+          }
+
+          const resetFallbackTimer = () => {
+            clearFallbackTimer()
+            if (!hasReceivedContent || controllerClosed) return
+            resultFallbackTimer = setTimeout(() => {
+              if (controllerClosed) return
+              log.warn("result fallback timer fired — closing stream without result event")
+              closeHandler()
+            }, 5000)
+          }
 
           const toolCallMap = new Map<
             number,
@@ -976,13 +1018,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }
 
               if (block.type === "text") {
-                if (!textStarted) {
-                  controller.enqueue({
-                    type: "text-start",
-                    id: textId,
-                  } as any)
-                  textStarted = true
-                }
+                startTextBlock()
+                textBlockIndices.add(idx)
+                hasReceivedContent = true
               }
 
               if (block.type === "tool_use" && block.id && block.name) {
@@ -1036,18 +1074,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }
 
               if (delta.type === "text_delta" && delta.text) {
-                if (!textStarted) {
-                  controller.enqueue({
-                    type: "text-start",
-                    id: textId,
-                  } as any)
-                  textStarted = true
-                }
+                if (!currentTextId) startTextBlock()
                 controller.enqueue({
                   type: "text-delta",
-                  id: textId,
+                  id: currentTextId!,
                   delta: delta.text,
                 })
+                hasReceivedContent = true
               }
 
               if (delta.type === "input_json_delta" && delta.partial_json) {
@@ -1079,6 +1112,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 reasoningStarted.delete(idx)
               }
 
+              if (textBlockIndices.has(idx)) {
+                endTextBlock()
+                textBlockIndices.delete(idx)
+                resetFallbackTimer()
+              }
+
               const tc = toolCallMap.get(idx)
               if (tc) {
                 let parsedInput: any = {}
@@ -1090,7 +1129,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   tc.name === "AskUserQuestion" ||
                   tc.name === "ask_user_question"
                 ) {
-                  // Emit question as text
                   let question = "Question?"
                   if (
                     parsedInput?.questions &&
@@ -1108,34 +1146,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       "Question?"
                   }
 
-                  if (!textStarted) {
-                    controller.enqueue({
-                      type: "text-start",
-                      id: textId,
-                    } as any)
-                    textStarted = true
-                  }
+                  const askId = startTextBlock()
                   controller.enqueue({
                     type: "text-delta",
-                    id: textId,
+                    id: askId,
                     delta: `\n\n_Asking: ${question}_\n\n`,
                   })
+                  endTextBlock()
                 } else if (tc.name === "ExitPlanMode") {
-                  // Emit plan as text and ask user to accept/refuse
                   const plan = (parsedInput?.plan as string) || ""
 
-                  if (!textStarted) {
-                    controller.enqueue({
-                      type: "text-start",
-                      id: textId,
-                    } as any)
-                    textStarted = true
-                  }
+                  const planId = startTextBlock()
                   controller.enqueue({
                     type: "text-delta",
-                    id: textId,
+                    id: planId,
                     delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
                   })
+                  endTextBlock()
                 } else if (tc.name.startsWith(PROXY_TOOL_PREFIX)) {
                   log.debug("ignoring proxy tool_use block; broker handles it", {
                     name: tc.name,
@@ -1179,18 +1206,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             if (msg.type === "assistant" && msg.message?.content) {
               for (const block of msg.message.content) {
                 if (block.type === "text" && block.text) {
-                  if (!textStarted) {
-                    controller.enqueue({
-                      type: "text-start",
-                      id: textId,
-                    } as any)
-                    textStarted = true
-                  }
+                  const blockId = startTextBlock()
                   controller.enqueue({
                     type: "text-delta",
-                    id: textId,
+                    id: blockId,
                     delta: block.text,
                   })
+                  endTextBlock()
+                  hasReceivedContent = true
                 }
 
                 if (block.type === "thinking" && block.thinking) {
@@ -1240,34 +1263,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                         "Question?"
                     }
 
-                    if (!textStarted) {
-                      controller.enqueue({
-                        type: "text-start",
-                        id: textId,
-                      } as any)
-                      textStarted = true
-                    }
+                    const askId = startTextBlock()
                     controller.enqueue({
                       type: "text-delta",
-                      id: textId,
+                      id: askId,
                       delta: `\n\n_Asking: ${question}_\n\n`,
                     })
+                    endTextBlock()
                   } else if (block.name === "ExitPlanMode") {
-                    // Emit plan as text and ask user to accept/refuse
                     const plan = (parsedInput?.plan as string) || ""
 
-                    if (!textStarted) {
-                      controller.enqueue({
-                        type: "text-start",
-                        id: textId,
-                      } as any)
-                      textStarted = true
-                    }
+                    const planId = startTextBlock()
                     controller.enqueue({
                       type: "text-delta",
-                      id: textId,
+                      id: planId,
                       delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
                     })
+                    endTextBlock()
                   } else if (block.name.startsWith(PROXY_TOOL_PREFIX)) {
                     log.debug("ignoring proxy tool_use from assistant message", {
                       name: block.name,
@@ -1364,6 +1376,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
             // result - end of conversation turn
             if (msg.type === "result") {
+              clearFallbackTimer()
+
               if (msg.session_id) {
                 setClaudeSessionId(sk, msg.session_id)
               }
@@ -1372,16 +1386,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // `result.result` (no prior assistant text blocks). Emit it so
               // opencode users don't see a blank turn.
               if (
-                !textStarted &&
+                !currentTextId &&
                 msg.is_error &&
                 typeof msg.result === "string" &&
                 msg.result.trim().length > 0
               ) {
-                textStarted = true
-                controller.enqueue({ type: "text-start", id: textId } as any)
+                const errId = startTextBlock()
                 controller.enqueue({
                   type: "text-delta",
-                  id: textId,
+                  id: errId,
                   delta: msg.result,
                 })
               }
@@ -1402,9 +1415,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               turnCompleted = true
 
-              if (textStarted) {
-                controller.enqueue({ type: "text-end", id: textId })
-              }
+              endTextBlock()
 
               for (const [idx, reasoningId] of reasoningIds) {
                 if (reasoningStarted.get(idx)) {
@@ -1417,10 +1428,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               controller.enqueue({
                 type: "finish",
-                // Claude CLI's `result` message signals a fully-completed
-                // turn — tools already ran internally and final assistant
-                // text was produced. Always "stop" so opencode doesn't
-                // loop expecting to run tools itself.
                 finishReason: toFinishReason("stop"),
                 usage: toUsage(msg.usage),
                 providerMetadata: {
@@ -1447,14 +1454,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const closeHandler = () => {
           log.debug("readline closed")
           if (controllerClosed) return
+          clearFallbackTimer()
           controllerClosed = true
           lineEmitter.off("line", lineHandler)
           lineEmitter.off("close", closeHandler)
           pendingProxyUnsubscribe?.()
           pendingProxyUnsubscribe = null
-          if (textStarted) {
-            controller.enqueue({ type: "text-end", id: textId })
-          }
+          endTextBlock()
           controller.enqueue({
             type: "finish",
             finishReason: toFinishReason("stop"),
@@ -1482,6 +1488,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         proc.on("error", (err: Error) => {
           log.error("process error", { error: err.message })
+          clearFallbackTimer()
           if (controllerClosed) return
           controllerClosed = true
           pendingProxyUnsubscribe?.()
@@ -1495,6 +1502,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // On abort, keep process alive for next message
         if (options.abortSignal) {
           options.abortSignal.addEventListener("abort", () => {
+            clearFallbackTimer()
             if (!turnCompleted) {
               log.info(
                 "abort signal received mid-turn, keeping process alive",
