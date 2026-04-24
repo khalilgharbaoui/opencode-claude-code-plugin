@@ -124,6 +124,33 @@ export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
       required: ["filePath", "oldString", "newString"],
     },
   },
+  {
+    name: "webfetch",
+    description:
+      "Fetch content from a URL. Routed through opencode's webfetch tool so" +
+      " permission prompts flow through opencode's UI. Returns the page" +
+      " content in the requested format.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "The URL to fetch content from. Must start with http:// or https://.",
+        },
+        format: {
+          type: "string",
+          enum: ["text", "markdown", "html"],
+          description:
+            "The format to return the content in. Defaults to markdown.",
+        },
+        timeout: {
+          type: "number",
+          description: "Optional timeout in seconds (max 120).",
+        },
+      },
+      required: ["url"],
+    },
+  },
 ]
 
 export async function createProxyMcpServer(

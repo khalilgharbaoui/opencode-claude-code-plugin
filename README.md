@@ -53,13 +53,7 @@ Add this to your project's `opencode.json`:
       },
       "options": {
         "cliPath": "claude",
-        "skipPermissions": false,
-        "permissionMode": "default",
-        "controlRequestBehavior": "allow",
-        "controlRequestToolBehaviors": {
-          "Bash": "deny",
-          "Read": "allow"
-        }
+        "proxyTools": ["Bash", "Edit", "Write", "WebFetch"]
       }
     }
   }
@@ -74,8 +68,9 @@ The model IDs (`haiku`, `sonnet`, `opus`) are passed directly to `claude --model
 
 - `cliPath` (string, default `"claude"`): path to the Claude Code CLI binary.
 - `cwd` (string, default `process.cwd()`): working directory for the spawned CLI.
-- `skipPermissions` (boolean, default `true`): pass `--dangerously-skip-permissions` to the CLI.
+- `skipPermissions` (boolean, default `true`): pass `--dangerously-skip-permissions` to the CLI. Ignored when `proxyTools` is set (the proxy handles permissions instead).
 - `permissionMode` (string, optional): pass Claude CLI `--permission-mode` (`acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`, `plan`).
+- `proxyTools` (string[], optional): list of Claude built-in tools to route through opencode instead of letting the CLI execute them directly. See [Selective Tool Proxy](#selective-tool-proxy) below.
 - `controlRequestBehavior` (`allow` | `deny`, default `allow`): default behavior for Claude stream-json `control_request` messages with subtype `can_use_tool` when `skipPermissions` is `false`.
 - `controlRequestToolBehaviors` (`Record<string, "allow" | "deny">`, optional): per-tool overrides for `can_use_tool` requests (eg. `{ "Bash": "deny", "Read": "allow" }`).
 - `controlRequestDenyMessage` (string, optional): custom deny message returned to Claude for denied `can_use_tool` requests.
@@ -94,11 +89,17 @@ opencode  -->  streamText()  -->  ClaudeCodeLanguageModel.doStream()
                                   claude CLI subprocess
                                   (stream-json mode)
                                         |
-                                        v
-                                  ReadableStream<LanguageModelV2StreamPart>
-                                        |
-                                        v
-                                  opencode processor (UI)
+                          +-------------+-------------+
+                          |                           |
+                    native tools              proxy MCP server
+                   (Read, Glob, Grep,         (127.0.0.1:random)
+                    TodoWrite, etc.)                  |
+                          |                           v
+                    executed by CLI           opencode tool executor
+                                            (bash, edit, write)
+                                                     |
+                                                     v
+                                            opencode permission UI
 ```
 
 ### Session management
@@ -111,29 +112,35 @@ Sessions are keyed by `(cwd, model, opencode-session-id)`. One active Claude CLI
 - **Abort (Ctrl+C)**: the stream closes but the CLI process stays alive for the next message in that chat.
 - **Eviction**: live CLI processes are capped at 16 with LRU eviction to avoid accumulating one subprocess per chat indefinitely.
 
-### Tool handling
+### Selective Tool Proxy
 
-Claude CLI executes all tools internally (Read, Write, Edit, Bash, Glob, Grep, etc.). Tool calls and results are streamed to opencode for UI display with `providerExecuted: true`.
+The key feature of this plugin is the ability to selectively route Claude's built-in tools through opencode's own tool execution and permission system.
 
-Tool name mapping:
-- **Built-in tools**: `Edit` -> `edit`, `Write` -> `write`, `Bash` -> `bash`, etc. (lowercased)
-- **MCP tools**: `mcp__server__tool` -> `server_tool` (Claude CLI format to opencode format)
-- **Claude CLI internal tools**: `ToolSearch`, `Agent`, `AskFollowupQuestion` are silently skipped
-- **Questions**: `AskUserQuestion` is rendered as text in the stream
+**Why this exists**: Claude CLI normally executes tools (Bash, Edit, Write, etc.) internally, bypassing opencode's permission UI entirely. By proxying selected tools, you get opencode's native permission prompts, audit trail, and policy rules for dangerous operations while keeping Claude CLI for authentication and model access.
 
-### Permissions
+**How it works**:
 
-By default, the plugin runs with `--dangerously-skip-permissions` (`skipPermissions: true`) for maximum compatibility.
+1. The plugin starts an in-process HTTP MCP server on `127.0.0.1` (random port).
+2. For each tool listed in `proxyTools`, the plugin:
+   - Passes `--disallowedTools <ToolName>` to the CLI, disabling Claude's built-in version.
+   - Exposes an equivalent tool via the MCP server (e.g. `mcp__opencode_proxy__bash`).
+3. When Claude decides to use a proxied tool, the MCP call blocks.
+4. The plugin emits a client-executed `tool-call` to opencode.
+5. Opencode runs the tool through its own executor (with permission checks, UI prompts, etc.).
+6. The tool result flows back into the blocked MCP call, and Claude continues.
 
-If you set `skipPermissions: false`, the plugin now handles Claude stream-json control requests (`type: control_request`, `subtype: can_use_tool`) and replies with `control_response` messages automatically. This prevents stream deadlocks in print/stream-json mode and follows the same allow/deny fallback pattern used by opencode's `permission.ask` hook work (PR #19470).
+**Supported proxy tools**:
 
-Behavior is configurable with:
+| `proxyTools` value | Claude built-in disabled | Proxy MCP tool exposed |
+|---|---|---|
+| `"Bash"` | `Bash` | `mcp__opencode_proxy__bash` |
+| `"Edit"` | `Edit` | `mcp__opencode_proxy__edit` |
+| `"Write"` | `Write` | `mcp__opencode_proxy__write` |
+| `"WebFetch"` | `WebFetch` | `mcp__opencode_proxy__webfetch` |
 
-- `controlRequestBehavior` - global default allow/deny
-- `controlRequestToolBehaviors` - per-tool allow/deny overrides
-- `controlRequestDenyMessage` - message returned on denied requests
+Tools not listed in `proxyTools` remain fully native to Claude CLI (fast, no permission overhead).
 
-Example (deny shell, allow file reads):
+**Example configuration**:
 
 ```json
 {
@@ -141,19 +148,49 @@ Example (deny shell, allow file reads):
     "claude-code": {
       "npm": "opencode-claude-code-plugin",
       "options": {
-        "skipPermissions": false,
-        "permissionMode": "default",
-        "controlRequestBehavior": "allow",
-        "controlRequestToolBehaviors": {
-          "Bash": "deny",
-          "Read": "allow"
-        },
-        "controlRequestDenyMessage": "Shell access is disabled by project policy"
+        "cliPath": "claude",
+        "proxyTools": ["Bash", "Edit", "Write", "WebFetch"]
       }
     }
   }
 }
 ```
+
+**What Claude keeps doing**:
+- All LLM reasoning, planning, and tool selection
+- System prompts, conversation state, multi-turn continuation
+- Native execution of non-proxied tools (Read, Glob, Grep, TodoWrite, etc.)
+- Authentication via your Claude CLI subscription
+
+**What opencode now handles**:
+- Executing the proxied tools (bash commands, file writes, file edits)
+- Permission prompts for those tools through opencode's native UI
+- Policy enforcement via opencode's permission rules
+
+### Tool handling
+
+Claude CLI executes non-proxied tools internally (Read, Glob, Grep, etc.). Tool calls and results are streamed to opencode for UI display with `providerExecuted: true`.
+
+Proxied tools follow a different path: Claude calls the MCP proxy, the plugin pauses the stream, opencode executes the tool, and the result is fed back to Claude on the next turn.
+
+Tool name mapping:
+- **Built-in tools**: `Edit` -> `edit`, `Write` -> `write`, `Bash` -> `bash`, etc. (lowercased)
+- **MCP tools**: `mcp__server__tool` -> `server_tool` (Claude CLI format to opencode format)
+- **Proxy tools**: `mcp__opencode_proxy__bash` -> `bash` (proxy prefix stripped)
+- **Claude CLI internal tools**: `ToolSearch`, `Agent`, `AskFollowupQuestion` are silently skipped
+- **Questions**: `AskUserQuestion` is rendered as text in the stream
+
+### Permissions
+
+When `proxyTools` is configured (recommended), permission handling is straightforward: proxied tools go through opencode's native permission system, and non-proxied tools are handled by Claude CLI directly.
+
+When `proxyTools` is not set and `skipPermissions` is `false`, the plugin handles Claude stream-json control requests (`type: control_request`, `subtype: can_use_tool`) with auto allow/deny based on config. This prevents stream deadlocks but does not open opencode's permission UI.
+
+Control request behavior is configurable with:
+
+- `controlRequestBehavior` - global default allow/deny
+- `controlRequestToolBehaviors` - per-tool allow/deny overrides
+- `controlRequestDenyMessage` - message returned on denied requests
 
 ### Stream sequencing
 
@@ -172,6 +209,9 @@ src/
   tool-mapping.ts                 # Tool name/input conversion
   message-builder.ts              # AI SDK prompt -> Claude CLI JSON messages
   session-manager.ts              # CLI process lifecycle (spawn, reuse, cleanup)
+  proxy-mcp.ts                    # In-process HTTP MCP server for tool proxying
+  proxy-broker.ts                 # Pause/resume broker for proxied tool calls
+  mcp-bridge.ts                   # Opencode MCP config -> Claude CLI translation
   logger.ts                       # Debug logging
 ```
 
@@ -210,7 +250,9 @@ To proceed after reviewing the plan:
 
 ## Known limitations
 
-- **No native opencode permission dialog for CLI-initiated asks**: when `skipPermissions: false`, this provider now handles Claude `can_use_tool` control requests itself (auto allow/deny). That prevents deadlocks and enables policy control, but it still does not open opencode's built-in permission modal. Full parity requires opencode core exposing a provider-facing permission bridge plus a CLI control-request adapter.
+- **Proxy tool set is currently limited**: only `Bash`, `Edit`, `Write`, and `WebFetch` are supported as proxy targets. More tools can be added when opencode gains matching built-in executors (e.g. `NotebookEdit`).
+- **Non-proxied tools bypass opencode permissions**: tools that remain native to Claude CLI (Read, Glob, Grep, etc.) are executed by the CLI directly without opencode permission checks. This is by design for performance, but means those tools are not subject to opencode's permission rules.
+- **Claude upstream bug [#34046](https://github.com/anthropics/claude-code/issues/34046)**: Claude CLI does not reliably emit `can_use_tool` control requests for built-in tools even when `--permission-prompt-tool` is set. The selective proxy approach works around this entirely by disabling the built-in tools and replacing them with MCP equivalents.
 
 ## Publishing
 
