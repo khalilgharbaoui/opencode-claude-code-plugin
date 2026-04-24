@@ -28,6 +28,24 @@ import {
   sessionKey,
 } from "./session-manager.js"
 import { log } from "./logger.js"
+import {
+  createProxyMcpServer,
+  disallowedToolFlags,
+  DEFAULT_PROXY_TOOLS,
+  PROXY_TOOL_PREFIX,
+  type ProxyMcpServer,
+  type ProxyToolCall,
+  type ProxyToolDef,
+  type ProxyToolResult,
+} from "./proxy-mcp.js"
+import {
+  getPendingProxyCall,
+  onPendingProxyCall,
+  queuePendingProxyCall,
+  resolvePendingProxyCall,
+  rejectPendingProxyCall,
+  type PendingProxyCall,
+} from "./proxy-broker.js"
 
 export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -84,9 +102,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   /**
    * Build the combined `--mcp-config` list: user-configured paths plus the
-   * auto-bridged opencode MCP config (when enabled and present).
+   * auto-bridged opencode MCP config (when enabled and present) and the
+   * proxy MCP scratch file (when proxyTools are enabled).
    */
-  private effectiveMcpConfig(cwd: string): string[] {
+  private effectiveMcpConfig(cwd: string, proxyConfigPath?: string): string[] {
     const user = Array.isArray(this.config.mcpConfig)
       ? this.config.mcpConfig.slice()
       : this.config.mcpConfig
@@ -96,7 +115,100 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       const bridged = bridgeOpencodeMcp(cwd)
       if (bridged) user.push(bridged)
     }
+    if (proxyConfigPath) user.push(proxyConfigPath)
     return user
+  }
+
+  /** Resolve ProxyToolDef[] for the configured proxyTools names. */
+  private resolvedProxyTools(): ProxyToolDef[] | null {
+    const names = this.config.proxyTools
+    if (!names || names.length === 0) return null
+    const defsByName = new Map(
+      DEFAULT_PROXY_TOOLS.map((t) => [t.name.toLowerCase(), t]),
+    )
+    const picked: ProxyToolDef[] = []
+    for (const n of names) {
+      const def = defsByName.get(String(n).toLowerCase())
+      if (def) picked.push(def)
+    }
+    return picked.length > 0 ? picked : null
+  }
+
+  private proxyServerPromise: Promise<ProxyMcpServer> | null = null
+
+  /**
+   * Ensure a single proxy MCP server is running for this language-model
+   * instance. Phase 1 handler: immediately resolve with a stub so we can
+   * verify Claude routes through the proxy. Phase 2 will hook this up to
+   * opencode's tool executor via the broker.
+   */
+  private async ensureProxyServer(
+    tools: ProxyToolDef[],
+    sessionKeyForCalls: string,
+  ): Promise<ProxyMcpServer> {
+    if (!this.proxyServerPromise) {
+      this.proxyServerPromise = createProxyMcpServer(tools).then((srv) => {
+        srv.calls.on("call", (call: ProxyToolCall) => {
+          queuePendingProxyCall(sessionKeyForCalls, call)
+        })
+        return srv
+      })
+    }
+    return this.proxyServerPromise
+  }
+
+  private extractPendingProxyResult(
+    prompt: LanguageModelV3CallOptions["prompt"],
+    toolCallId: string,
+  ): ProxyToolResult | null {
+    for (let i = prompt.length - 1; i >= 0; i--) {
+      const msg = prompt[i]
+      if (msg.role !== "tool" || !Array.isArray(msg.content)) continue
+
+      for (const part of msg.content) {
+        if (part.type !== "tool-result" || part.toolCallId !== toolCallId) continue
+
+        const output = part.output as any
+        if (!output || typeof output !== "object") {
+          return {
+            kind: "text",
+            text: String(output ?? ""),
+          }
+        }
+
+        if (output.type === "text") {
+          return {
+            kind: "text",
+            text: String(output.value ?? ""),
+          }
+        }
+
+        if (output.type === "json") {
+          return {
+            kind: "text",
+            text: JSON.stringify(output.value),
+          }
+        }
+
+        if (output.type === "content" && Array.isArray(output.value)) {
+          const text = output.value
+            .filter((v: any) => v?.type === "text" && typeof v.text === "string")
+            .map((v: any) => v.text)
+            .join("\n")
+          return {
+            kind: "text",
+            text,
+          }
+        }
+
+        return {
+          kind: "text",
+          text: JSON.stringify(output),
+        }
+      }
+    }
+
+    return null
   }
 
   /**
@@ -709,6 +821,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       includeHistoryContext,
       reasoningEffort,
     )
+    const resolvedProxy = this.resolvedProxyTools()
+    const self = this
+
+    const pendingProxyCall = getPendingProxyCall(sk)
+    const pendingProxyResult = pendingProxyCall
+      ? this.extractPendingProxyResult(options.prompt, pendingProxyCall.toolCallId)
+      : null
 
     log.info("doStream starting", {
       cwd,
@@ -717,15 +836,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       includeHistoryContext,
       hasActiveProcess,
       reasoningEffort,
-    })
-
-    const cliArgs = buildCliArgs({
-      sessionKey: sk,
-      skipPermissions,
-      model: this.modelId,
-      permissionMode: this.config.permissionMode,
-      mcpConfig: this.effectiveMcpConfig(cwd),
-      strictMcpConfig: this.config.strictMcpConfig,
+      proxyTools: resolvedProxy?.map((t) => t.name) ?? null,
     })
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
@@ -733,48 +844,99 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         let activeProcess = getActiveProcess(sk)
         let proc: import("child_process").ChildProcess
         let lineEmitter: import("events").EventEmitter
+        let proxyServer: ProxyMcpServer | null = activeProcess?.proxyServer ?? null
 
-        if (activeProcess) {
-          proc = activeProcess.proc
-          lineEmitter = activeProcess.lineEmitter
-          log.debug("reusing active process", { sk })
-        } else {
-          const ap = spawnClaudeProcess(cliPath, cliArgs, cwd, sk)
-          proc = ap.proc
-          lineEmitter = ap.lineEmitter
+        const setup = async () => {
+          if (!proxyServer && resolvedProxy) {
+            proxyServer = await self.ensureProxyServer(resolvedProxy, sk)
+          }
+
+          const cliArgs = buildCliArgs({
+            sessionKey: sk,
+            skipPermissions,
+            model: self.modelId,
+            permissionMode: self.config.permissionMode,
+            mcpConfig: self.effectiveMcpConfig(cwd, proxyServer?.configPath()),
+            strictMcpConfig: self.config.strictMcpConfig,
+            disallowedTools: resolvedProxy ? disallowedToolFlags(resolvedProxy) : undefined,
+          })
+
+          if (activeProcess) {
+            proc = activeProcess.proc
+            lineEmitter = activeProcess.lineEmitter
+            log.debug("reusing active process", { sk })
+          } else {
+            const ap = spawnClaudeProcess(cliPath, cliArgs, cwd, sk, proxyServer)
+            proc = ap.proc
+            lineEmitter = ap.lineEmitter
+            activeProcess = ap
+          }
+
+          controller.enqueue({ type: "stream-start", warnings })
+
+          const textId = generateId()
+          let textStarted = false
+
+          const reasoningIds = new Map<number, string>()
+          const reasoningStarted = new Map<number, boolean>()
+
+          let turnCompleted = false
+          let controllerClosed = false
+          let pendingProxyUnsubscribe: (() => void) | null = null
+
+          const toolCallMap = new Map<
+            number,
+            { id: string; name: string; inputJson: string }
+          >()
+          // Tool calls the plugin reported as providerExecuted:false — opencode
+          // will run these itself and emit its own tool-result, so we must NOT
+          // forward Claude CLI's tool_result for them (would short-circuit
+          // opencode's execute).
+          const skipResultForIds = new Set<string>()
+          const toolCallsById = new Map<
+            string,
+            { id: string; name: string; input: unknown }
+          >()
+
+          let resultMeta: {
+            sessionId?: string
+            costUsd?: number
+            durationMs?: number
+            usage?: ClaudeStreamMessage["usage"]
+          } = {}
+
+        const finishWithToolCall = (call: PendingProxyCall) => {
+          if (controllerClosed) return
+          controller.enqueue({
+            type: "tool-input-start",
+            id: call.toolCallId,
+            toolName: call.toolName,
+          } as any)
+          controller.enqueue({
+            type: "tool-call",
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            input: JSON.stringify(call.input),
+            providerExecuted: false,
+          } as any)
+          skipResultForIds.add(call.toolCallId)
+          controller.enqueue({
+            type: "finish",
+            finishReason: toFinishReason("tool-calls"),
+            usage: toUsage(resultMeta.usage),
+            providerMetadata: {
+              "claude-code": resultMeta,
+            },
+          })
+          controllerClosed = true
+          lineEmitter.off("line", lineHandler)
+          lineEmitter.off("close", closeHandler)
+          pendingProxyUnsubscribe?.()
+          pendingProxyUnsubscribe = null
+          try {
+            controller.close()
+          } catch {}
         }
-
-        controller.enqueue({ type: "stream-start", warnings })
-
-        const textId = generateId()
-        let textStarted = false
-
-        const reasoningIds = new Map<number, string>()
-        const reasoningStarted = new Map<number, boolean>()
-
-        let turnCompleted = false
-        let controllerClosed = false
-
-        const toolCallMap = new Map<
-          number,
-          { id: string; name: string; inputJson: string }
-        >()
-        // Tool calls the plugin reported as providerExecuted:false — opencode
-        // will run these itself and emit its own tool-result, so we must NOT
-        // forward Claude CLI's tool_result for them (would short-circuit
-        // opencode's execute).
-        const skipResultForIds = new Set<string>()
-        const toolCallsById = new Map<
-          string,
-          { id: string; name: string; input: unknown }
-        >()
-
-        let resultMeta: {
-          sessionId?: string
-          costUsd?: number
-          durationMs?: number
-          usage?: ClaudeStreamMessage["usage"]
-        } = {}
 
         const lineHandler = (line: string) => {
           if (!line.trim()) return
@@ -841,7 +1003,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 if (
                   block.name !== "AskUserQuestion" &&
                   block.name !== "ask_user_question" &&
-                  block.name !== "ExitPlanMode"
+                  block.name !== "ExitPlanMode" &&
+                  !block.name.startsWith(PROXY_TOOL_PREFIX)
                 ) {
                   const { name: mappedName, skip } = mapTool(block.name)
                   if (!skip) {
@@ -981,6 +1144,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     id: textId,
                     delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
                   })
+                } else if (tc.name.startsWith(PROXY_TOOL_PREFIX)) {
+                  log.debug("ignoring proxy tool_use block; broker handles it", {
+                    name: tc.name,
+                    id: tc.id,
+                  })
                 } else {
                   const {
                     name: mappedName,
@@ -1107,6 +1275,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       type: "text-delta",
                       id: textId,
                       delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
+                    })
+                  } else if (block.name.startsWith(PROXY_TOOL_PREFIX)) {
+                    log.debug("ignoring proxy tool_use from assistant message", {
+                      name: block.name,
+                      id: block.id,
                     })
                   } else {
                     const {
@@ -1285,6 +1458,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           controllerClosed = true
           lineEmitter.off("line", lineHandler)
           lineEmitter.off("close", closeHandler)
+          pendingProxyUnsubscribe?.()
+          pendingProxyUnsubscribe = null
           if (textStarted) {
             controller.enqueue({ type: "text-end", id: textId })
           }
@@ -1304,10 +1479,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         lineEmitter.on("line", lineHandler)
         lineEmitter.on("close", closeHandler)
 
+        pendingProxyUnsubscribe = onPendingProxyCall(sk, (call) => {
+          log.info("received pending proxy call for session", {
+            sessionKey: sk,
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+          })
+          finishWithToolCall(call)
+        })
+
         proc.on("error", (err: Error) => {
           log.error("process error", { error: err.message })
           if (controllerClosed) return
           controllerClosed = true
+          pendingProxyUnsubscribe?.()
+          pendingProxyUnsubscribe = null
           controller.enqueue({ type: "error", error: err })
           try {
             controller.close()
@@ -1327,6 +1513,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               controllerClosed = true
               lineEmitter.off("line", lineHandler)
               lineEmitter.off("close", closeHandler)
+              pendingProxyUnsubscribe?.()
+              pendingProxyUnsubscribe = null
               try {
                 controller.close()
               } catch {}
@@ -1334,9 +1522,39 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           })
         }
 
-        // Send the user message
+        if (pendingProxyCall && pendingProxyResult) {
+          log.info("resolving pending proxy call from tool result prompt", {
+            sessionKey: sk,
+            toolCallId: pendingProxyCall.toolCallId,
+            toolName: pendingProxyCall.toolName,
+          })
+          const resolved = resolvePendingProxyCall(sk, pendingProxyResult)
+          if (!resolved) {
+            log.warn("failed to resolve pending proxy call; no pending state", {
+              sessionKey: sk,
+              toolCallId: pendingProxyCall.toolCallId,
+            })
+          }
+          return
+        }
+
+        // Send the user message for a fresh turn.
         proc.stdin?.write(userMsg + "\n")
         log.debug("sent user message", { textLength: userMsg.length })
+        }
+
+        void setup().catch((err) => {
+          log.error("failed to set up doStream", {
+            error: err instanceof Error ? err.message : String(err),
+          })
+          controller.enqueue({
+            type: "error",
+            error: err instanceof Error ? err : new Error(String(err)),
+          })
+          try {
+            controller.close()
+          } catch {}
+        })
       },
       cancel() {
         // Consumer cancelled the stream

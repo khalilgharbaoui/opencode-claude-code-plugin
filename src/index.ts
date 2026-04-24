@@ -29,6 +29,7 @@ export function createClaudeCode(
       controlRequestBehavior: settings.controlRequestBehavior ?? "allow",
       controlRequestToolBehaviors: settings.controlRequestToolBehaviors,
       controlRequestDenyMessage: settings.controlRequestDenyMessage,
+      proxyTools: settings.proxyTools,
     })
   }
 

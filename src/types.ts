@@ -10,6 +10,7 @@ export interface ClaudeCodeConfig {
   controlRequestBehavior?: ControlRequestBehavior
   controlRequestToolBehaviors?: Record<string, ControlRequestBehavior>
   controlRequestDenyMessage?: string
+  proxyTools?: string[]
 }
 
 export interface ClaudeCodeProviderSettings {
@@ -49,6 +50,19 @@ export interface ClaudeCodeProviderSettings {
    * Custom deny message sent back to Claude CLI when behavior resolves to deny.
    */
   controlRequestDenyMessage?: string
+
+  /**
+   * Proxy these Claude built-in tools through opencode instead of letting the
+   * CLI execute them directly. When a tool is listed here, the plugin:
+   *   - passes `--disallowedTools <ClaudeName>` to the CLI, and
+   *   - exposes an equivalent tool via an in-process HTTP MCP server named
+   *     `opencode_proxy`. Claude calls the MCP tool, which blocks on
+   *     opencode's tool executor (with its native permission UI) and returns
+   *     the result.
+   *
+   * Supported: `bash` (more coming). Leave empty or unset to disable proxying.
+   */
+  proxyTools?: string[]
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

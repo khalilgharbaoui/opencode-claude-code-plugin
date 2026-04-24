@@ -2,10 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { createInterface } from "node:readline"
 import { EventEmitter } from "node:events"
 import { log } from "./logger.js"
+import type { ProxyMcpServer } from "./proxy-mcp.js"
 
 export interface ActiveProcess {
   proc: ChildProcess
   lineEmitter: EventEmitter
+  proxyServer?: ProxyMcpServer | null
 }
 
 // One active CLI process per session key. Keyed by a composite
@@ -50,6 +52,7 @@ export function setActiveProcess(key: string, ap: ActiveProcess): void {
 export function deleteActiveProcess(key: string): void {
   const ap = activeProcesses.get(key)
   if (ap) {
+    void ap.proxyServer?.close()
     ap.proc.kill()
     activeProcesses.delete(key)
   }
@@ -72,6 +75,7 @@ export function spawnClaudeProcess(
   cliArgs: string[],
   cwd: string,
   sessionKey: string,
+  proxyServer?: ProxyMcpServer | null,
 ): ActiveProcess {
   evictIfNeeded()
   log.info("spawning new claude process", { cliPath, cliArgs, cwd, sessionKey })
@@ -92,11 +96,12 @@ export function spawnClaudeProcess(
     lineEmitter.emit("close")
   })
 
-  const ap: ActiveProcess = { proc, lineEmitter }
+  const ap: ActiveProcess = { proc, lineEmitter, proxyServer: proxyServer ?? null }
   activeProcesses.set(sessionKey, ap)
 
   proc.on("exit", (code, signal) => {
     log.info("claude process exited", { code, signal, sessionKey })
+    void proxyServer?.close()
     activeProcesses.delete(sessionKey)
     if (code !== 0 && code !== null) {
       log.info("process exited with error, clearing session", {
@@ -136,6 +141,7 @@ export function buildCliArgs(opts: {
   permissionMode?: string
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
+  disallowedTools?: string[]
 }): string[] {
   const {
     sessionKey,
@@ -145,6 +151,7 @@ export function buildCliArgs(opts: {
     permissionMode,
     mcpConfig,
     strictMcpConfig,
+    disallowedTools,
   } = opts
   const args = [
     "--output-format",
@@ -179,6 +186,10 @@ export function buildCliArgs(opts: {
 
   if (strictMcpConfig) {
     args.push("--strict-mcp-config")
+  }
+
+  if (disallowedTools && disallowedTools.length > 0) {
+    args.push("--disallowedTools", ...disallowedTools)
   }
 
   if (skipPermissions) {
