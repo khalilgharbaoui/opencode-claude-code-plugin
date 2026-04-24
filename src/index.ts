@@ -13,14 +13,16 @@ export function createClaudeCode(
 ): ClaudeCodeProvider {
   const cliPath =
     settings.cliPath ?? process.env.CLAUDE_CLI_PATH ?? "claude"
-  const cwd = settings.cwd ?? process.cwd()
   const providerName = settings.name ?? "claude-code"
 
   const createModel = (modelId: string): LanguageModelV3 => {
     return new ClaudeCodeLanguageModel(modelId, {
       provider: providerName,
       cliPath,
-      cwd,
+      // Keep undefined unless explicitly configured so the model resolves cwd
+      // lazily at request time instead of freezing process.cwd() at provider
+      // initialization time.
+      cwd: settings.cwd,
       skipPermissions: settings.skipPermissions ?? true,
       permissionMode: settings.permissionMode,
       mcpConfig: settings.mcpConfig,
