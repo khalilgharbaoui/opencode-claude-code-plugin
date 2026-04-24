@@ -78,6 +78,52 @@ export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
       required: ["command"],
     },
   },
+  {
+    name: "write",
+    description:
+      "Write a file. Routed through opencode's write tool so permission prompts flow through opencode's UI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filePath: {
+          type: "string",
+          description: "The file to write. Absolute paths are preferred.",
+        },
+        content: {
+          type: "string",
+          description: "The full content to write to the file.",
+        },
+      },
+      required: ["filePath", "content"],
+    },
+  },
+  {
+    name: "edit",
+    description:
+      "Replace text in an existing file. Routed through opencode's edit tool so permission prompts flow through opencode's UI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filePath: {
+          type: "string",
+          description: "The file to edit. Absolute paths are preferred.",
+        },
+        oldString: {
+          type: "string",
+          description: "The exact text to replace.",
+        },
+        newString: {
+          type: "string",
+          description: "The replacement text.",
+        },
+        replaceAll: {
+          type: "boolean",
+          description: "Replace all occurrences instead of just the first one.",
+        },
+      },
+      required: ["filePath", "oldString", "newString"],
+    },
+  },
 ]
 
 export async function createProxyMcpServer(

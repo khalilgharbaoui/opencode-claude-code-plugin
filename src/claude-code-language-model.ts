@@ -134,27 +134,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return picked.length > 0 ? picked : null
   }
 
-  private proxyServerPromise: Promise<ProxyMcpServer> | null = null
-
   /**
-   * Ensure a single proxy MCP server is running for this language-model
-   * instance. Phase 1 handler: immediately resolve with a stub so we can
-   * verify Claude routes through the proxy. Phase 2 will hook this up to
-   * opencode's tool executor via the broker.
+   * Create a proxy MCP server for a single active Claude process/session.
+   * The process lifecycle owns the server lifecycle via session-manager.
    */
   private async ensureProxyServer(
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
   ): Promise<ProxyMcpServer> {
-    if (!this.proxyServerPromise) {
-      this.proxyServerPromise = createProxyMcpServer(tools).then((srv) => {
-        srv.calls.on("call", (call: ProxyToolCall) => {
-          queuePendingProxyCall(sessionKeyForCalls, call)
-        })
-        return srv
-      })
-    }
-    return this.proxyServerPromise
+    const srv = await createProxyMcpServer(tools)
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      queuePendingProxyCall(sessionKeyForCalls, call)
+    })
+    return srv
   }
 
   private extractPendingProxyResult(

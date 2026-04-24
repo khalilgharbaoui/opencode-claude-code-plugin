@@ -60,7 +60,7 @@ export interface ClaudeCodeProviderSettings {
    *     opencode's tool executor (with its native permission UI) and returns
    *     the result.
    *
-   * Supported: `bash` (more coming). Leave empty or unset to disable proxying.
+   * Supported: `bash`, `write`, `edit`. Leave empty or unset to disable proxying.
    */
   proxyTools?: string[]
 }
