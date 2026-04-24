@@ -18,46 +18,59 @@ export function reasoningKeyword(effort?: ReasoningEffort): string | null {
   return THINKING_KEYWORDS[effort] ?? null
 }
 
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+])
+
 function toImageBlock(part: any): any | null {
-  const mediaType: string = part.mediaType || part.mimeType || ""
-  if (!mediaType.startsWith("image/")) return null
-
-  const data = part.data
-
-  if (data instanceof URL) {
-    return { type: "image", source: { type: "url", url: data.toString() } }
+  const raw: unknown = part.data ?? part.url ?? part.source?.data
+  if (!raw) {
+    log.warn("file part without data, skipping")
+    return null
   }
 
-  if (typeof data === "string") {
-    if (data.startsWith("http://") || data.startsWith("https://")) {
-      return { type: "image", source: { type: "url", url: data } }
-    }
-    // data URL: "data:image/png;base64,XXXX"
-    if (data.startsWith("data:")) {
-      const match = data.match(/^data:([^;]+);base64,(.+)$/)
-      if (match) {
-        return {
-          type: "image",
-          source: { type: "base64", media_type: match[1], data: match[2] },
-        }
+  let resolvedMediaType: string = part.mediaType || part.mimeType || part.mime || ""
+  let base64: string | null = null
+
+  if (typeof raw === "string") {
+    if (raw.startsWith("data:")) {
+      const match = /^data:([^;,]+)(?:;[^,]*)*(?:;base64)?,(.*)$/s.exec(raw)
+      if (!match) {
+        log.warn("malformed data URI, skipping file part")
+        return null
       }
+      resolvedMediaType = resolvedMediaType || match[1]
+      base64 = match[2]
+    } else if (/^https?:\/\//i.test(raw)) {
+      log.warn("remote URL images are not supported by Claude CLI, skipping")
+      return null
+    } else {
+      base64 = raw
     }
-    // Otherwise assume already base64
-    return {
-      type: "image",
-      source: { type: "base64", media_type: mediaType, data },
-    }
+  } else if (raw instanceof URL) {
+    log.warn("remote URL images are not supported by Claude CLI, skipping")
+    return null
+  } else if (raw instanceof Uint8Array || Buffer.isBuffer(raw)) {
+    base64 = Buffer.from(raw as Uint8Array).toString("base64")
+  } else {
+    log.warn("unsupported file part data type", { dataType: typeof raw })
+    return null
   }
 
-  if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
-    const base64 = Buffer.from(data as Uint8Array).toString("base64")
-    return {
-      type: "image",
-      source: { type: "base64", media_type: mediaType, data: base64 },
-    }
+  if (!resolvedMediaType || !SUPPORTED_IMAGE_TYPES.has(resolvedMediaType)) {
+    log.warn("unsupported media type for Claude image block, skipping", {
+      mediaType: resolvedMediaType,
+    })
+    return null
   }
 
-  return null
+  return {
+    type: "image",
+    source: { type: "base64", media_type: resolvedMediaType, data: base64 },
+  }
 }
 
 function getToolResultText(part: any): string {

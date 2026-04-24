@@ -69,12 +69,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // using it directly inflates context size and triggers premature compaction.
     const iter = rawUsage?.iterations
     const effective = iter?.length ? iter[iter.length - 1] : rawUsage
+    // Claude CLI reports input_tokens as non-cached input only.
+    // OpenCode expects total = noCache + cacheRead + cacheWrite.
+    const noCache = effective?.input_tokens ?? 0
+    const cacheRead = effective?.cache_read_input_tokens ?? 0
+    const cacheWrite = effective?.cache_creation_input_tokens ?? 0
     return {
       inputTokens: {
-        total: effective?.input_tokens,
-        noCache: undefined,
-        cacheRead: effective?.cache_read_input_tokens,
-        cacheWrite: effective?.cache_creation_input_tokens,
+        total: noCache + cacheRead + cacheWrite,
+        noCache,
+        cacheRead: cacheRead || undefined,
+        cacheWrite: cacheWrite || undefined,
       },
       outputTokens: {
         total: effective?.output_tokens,
@@ -702,6 +707,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             costUsd: result.costUsd ?? null,
             durationMs: result.durationMs ?? null,
           },
+          ...(typeof result.usage?.cache_creation_input_tokens === "number"
+            ? {
+                anthropic: {
+                  cacheCreationInputTokens:
+                    result.usage.cache_creation_input_tokens,
+                },
+              }
+            : {}),
         },
       })
     }
@@ -745,6 +758,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           costUsd: result.costUsd ?? null,
           durationMs: result.durationMs ?? null,
         },
+        ...(typeof result.usage?.cache_creation_input_tokens === "number"
+          ? {
+              anthropic: {
+                cacheCreationInputTokens:
+                  result.usage.cache_creation_input_tokens,
+              },
+            }
+          : {}),
       },
       warnings,
     }
@@ -908,7 +929,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          const resetFallbackTimer = () => {
+          const startResultFallback = () => {
             clearFallbackTimer()
             if (!hasReceivedContent || controllerClosed) return
             resultFallbackTimer = setTimeout(() => {
@@ -1036,12 +1057,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   block.name !== "ExitPlanMode" &&
                   !block.name.startsWith(PROXY_TOOL_PREFIX)
                 ) {
-                  const { name: mappedName, skip } = mapTool(block.name)
+                  const { name: mappedName, skip, executed } = mapTool(block.name)
                   if (!skip) {
                     controller.enqueue({
                       type: "tool-input-start",
                       id: block.id,
                       toolName: mappedName,
+                      providerExecuted: executed,
                     } as any)
                     log.info("tool started", {
                       name: block.name,
@@ -1115,7 +1137,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               if (textBlockIndices.has(idx)) {
                 endTextBlock()
                 textBlockIndices.delete(idx)
-                resetFallbackTimer()
               }
 
               const tc = toolCallMap.get(idx)
@@ -1204,6 +1225,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
             // assistant message (complete, not streaming)
             if (msg.type === "assistant" && msg.message?.content) {
+              const hasText = msg.message.content.some(
+                (b: any) => b.type === "text" && b.text,
+              )
+              const hasToolUse = msg.message.content.some(
+                (b: any) => b.type === "tool_use",
+              )
+
+              if (hasText) {
+                hasReceivedContent = true
+              }
+
+              if (hasText && !hasToolUse) {
+                startResultFallback()
+              }
+              if (hasToolUse) {
+                clearFallbackTimer()
+              }
+
               for (const block of msg.message.content) {
                 if (block.type === "text" && block.text) {
                   const blockId = startTextBlock()
@@ -1299,6 +1338,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                         type: "tool-input-start",
                         id: block.id,
                         toolName: mappedName,
+                        providerExecuted: executed,
                       } as any)
                       controller.enqueue({
                         type: "tool-call",
@@ -1432,6 +1472,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 usage: toUsage(msg.usage),
                 providerMetadata: {
                   "claude-code": resultMeta,
+                  ...(typeof msg.usage?.cache_creation_input_tokens === "number"
+                    ? {
+                        anthropic: {
+                          cacheCreationInputTokens:
+                            msg.usage.cache_creation_input_tokens,
+                        },
+                      }
+                    : {}),
                 },
               })
 
@@ -1502,23 +1550,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // On abort, keep process alive for next message
         if (options.abortSignal) {
           options.abortSignal.addEventListener("abort", () => {
-            clearFallbackTimer()
-            if (!turnCompleted) {
-              log.info(
-                "abort signal received mid-turn, keeping process alive",
-                { cwd },
-              )
-            }
-            if (!controllerClosed) {
-              controllerClosed = true
-              lineEmitter.off("line", lineHandler)
-              lineEmitter.off("close", closeHandler)
-              pendingProxyUnsubscribe?.()
-              pendingProxyUnsubscribe = null
-              try {
-                controller.close()
-              } catch {}
-            }
+            if (turnCompleted || controllerClosed) return
+            log.info(
+              "abort signal received mid-turn, starting grace period",
+              { cwd },
+            )
+            startResultFallback()
           })
         }
 
