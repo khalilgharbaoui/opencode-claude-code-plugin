@@ -2,6 +2,9 @@ export interface ClaudeCodeConfig {
   provider: string
   cliPath: string
   cwd?: string
+  account?: string
+  configDir?: string
+  providerID?: string
   skipPermissions?: boolean
   permissionMode?: PermissionMode
   mcpConfig?: string | string[]
@@ -17,6 +20,10 @@ export interface ClaudeCodeProviderSettings {
   cliPath?: string
   cwd?: string
   name?: string
+  providerID?: string
+  account?: string
+  configDir?: string
+  accounts?: string[]
   skipPermissions?: boolean
   permissionMode?: PermissionMode
   mcpConfig?: string | string[]
