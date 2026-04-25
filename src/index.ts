@@ -3,6 +3,14 @@ import { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
 import { defaultModels } from "./models.js"
 import type { OpenCodePlugin, OpenCodeProvider } from "./opencode-types.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
+import {
+  BASE_PROVIDER_ID,
+  accountDisplayName,
+  accountModelSuffix,
+  accountProviderId,
+  ensureAccountRuntime,
+  resolveAccounts,
+} from "./accounts.js"
 
 export interface ClaudeCodeProvider {
   specificationVersion: "v3"
@@ -15,7 +23,7 @@ export function createClaudeCode(
 ): ClaudeCodeProvider {
   const cliPath =
     settings.cliPath ?? process.env.CLAUDE_CLI_PATH ?? "claude"
-  const providerName = settings.name ?? "claude-code"
+  const providerName = settings.providerID ?? settings.name ?? "claude-code"
   const proxyTools = settings.proxyTools ?? ["Bash", "Edit", "Write", "WebFetch"]
 
   const createModel = (modelId: string): LanguageModelV3 => {
@@ -23,6 +31,9 @@ export function createClaudeCode(
       provider: providerName,
       cliPath,
       cwd: settings.cwd,
+      account: settings.account,
+      configDir: settings.configDir,
+      providerID: settings.providerID,
       skipPermissions: settings.skipPermissions ?? true,
       permissionMode: settings.permissionMode,
       mcpConfig: settings.mcpConfig,
@@ -49,11 +60,19 @@ export function createClaudeCode(
 // OpenCode plugin interface
 // ---------------------------------------------------------------------------
 
-const PROVIDER_ID = "claude-code"
+const PROVIDER_ID = BASE_PROVIDER_ID
 const PACKAGE_NPM = "@khalilgharbaoui/opencode-claude-code-plugin"
 
 function pluginEntrypoint(): string {
   return import.meta.url.startsWith("file:") ? import.meta.url : PACKAGE_NPM
+}
+
+function cleanProviderOptions(
+  options: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const result = { ...options }
+  delete result.accounts
+  return result
 }
 
 function mergeDefaultVariants(models: Record<string, unknown> = {}) {
@@ -81,16 +100,24 @@ function mergeDefaultVariants(models: Record<string, unknown> = {}) {
   return result
 }
 
-function defaultModelsForProvider(providerModels: OpenCodeProvider["models"]) {
+function defaultModelsForProvider(
+  providerModels: OpenCodeProvider["models"],
+  providerID = PROVIDER_ID,
+  modelSuffix?: string,
+) {
   const models = Object.fromEntries(
     Object.entries(defaultModels).map(([id, model]) => {
-      const existing = providerModels[id]
+      const modelId = modelSuffix ? `${id}@${modelSuffix}` : id
+      const existing = providerModels[id] ?? providerModels[modelId]
       return [
-        id,
+        modelId,
         {
           ...model,
+          id: modelId,
+          providerID,
           api: {
             ...model.api,
+            id: modelId,
             npm: existing?.api?.npm ?? model.api.npm,
             url: existing?.api?.url ?? model.api.url,
           },
@@ -100,37 +127,113 @@ function defaultModelsForProvider(providerModels: OpenCodeProvider["models"]) {
   )
 
   for (const [id, model] of Object.entries(providerModels)) {
-    if (!(id in models)) models[id] = model
+    if (!(id in models)) {
+      models[id] = {
+        ...model,
+        providerID,
+      }
+    }
   }
 
   return models
 }
 
-function providerConfig(existing?: {
-  name?: string
-  npm?: string
-  options?: Record<string, unknown>
-  models?: Record<string, unknown>
-}) {
+async function providerConfig(
+  existing: {
+    name?: string
+    npm?: string
+    options?: Record<string, unknown>
+    models?: Record<string, unknown>
+  } | undefined,
+  providerID = PROVIDER_ID,
+  optionDefaults: Record<string, unknown> = {},
+  displayName?: string,
+) {
+  const mergedOptions = {
+    cliPath: "claude",
+    proxyTools: ["Bash", "Edit", "Write", "WebFetch"],
+    ...optionDefaults,
+    ...cleanProviderOptions(existing?.options),
+    providerID,
+  }
+
+  const cliPath = String(mergedOptions.cliPath ?? "claude")
+  const account =
+    typeof mergedOptions.account === "string" ? mergedOptions.account : undefined
+  const runtime = account
+    ? await ensureAccountRuntime(account, cliPath)
+    : { cliPath }
+
   return {
-    name: existing?.name,
+    name: displayName ?? existing?.name,
     npm: existing?.npm ?? pluginEntrypoint(),
     options: {
-      cliPath: "claude",
-      proxyTools: ["Bash", "Edit", "Write", "WebFetch"],
-      ...(existing?.options ?? {}),
+      ...mergedOptions,
+      ...runtime,
     },
     models: mergeDefaultVariants(existing?.models),
   }
 }
 
+async function expandAccountProviders(config: {
+  provider?: Record<
+    string,
+    {
+      name?: string
+      npm?: string
+      options?: Record<string, unknown>
+      models?: Record<string, unknown>
+    }
+  >
+}): Promise<boolean> {
+  const seed = config.provider?.[PROVIDER_ID]
+  const accounts = resolveAccounts(seed?.options?.accounts)
+
+  if (!accounts) return false
+
+  config.provider ??= {}
+
+  const seedOptions = cleanProviderOptions(seed?.options)
+
+  for (const account of accounts) {
+    const providerID = accountProviderId(account)
+    const existing = config.provider[providerID]
+    const modelSuffix = accountModelSuffix(account)
+
+    config.provider[providerID] = {
+      ...existing,
+      ...(await providerConfig(
+        existing,
+        providerID,
+        {
+          ...seedOptions,
+          account,
+        },
+        accountDisplayName(account),
+      )),
+      models: defaultModelsForProvider(
+        (existing?.models ?? seed?.models ?? {}) as OpenCodeProvider["models"],
+        providerID,
+        modelSuffix,
+      ),
+    }
+  }
+
+  delete config.provider[PROVIDER_ID]
+  return true
+}
+
 const server: OpenCodePlugin = async () => ({
   config: async (config) => {
     config.provider ??= {}
+
+    const expanded = await expandAccountProviders(config)
+    if (expanded) return
+
     const existing = config.provider[PROVIDER_ID]
     config.provider[PROVIDER_ID] = {
       ...existing,
-      ...providerConfig(existing),
+      ...(await providerConfig(existing)),
     }
   },
   provider: {
