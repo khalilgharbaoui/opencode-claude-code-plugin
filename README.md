@@ -1,6 +1,6 @@
 # @khalilgharbaoui/opencode-claude-code-plugin
 
-An [opencode](https://opencode.ai) provider plugin that wraps the **Claude Code CLI** (`claude`) and routes model traffic through it instead of the Anthropic HTTP API. You get to use opencode's UI, agents, MCP, and permission system while authenticating and billing through whichever method `claude` is logged into (Pro/Max plan, Bedrock, Vertex, or API key).
+An [opencode](https://opencode.ai) plugin that wraps the **Claude Code CLI** (`claude`) and routes model traffic through it instead of the Anthropic HTTP API. You get to use opencode's UI, agents, MCP, and permission system while authenticating and billing through whichever method `claude` is logged into (Pro/Max plan, Bedrock, Vertex, or API key).
 
 > Maintained fork of [`unixfox/opencode-claude-code-plugin`](https://github.com/unixfox/opencode-claude-code-plugin). Published as `@khalilgharbaoui/opencode-claude-code-plugin` on npm.
 
@@ -12,22 +12,18 @@ An [opencode](https://opencode.ai) provider plugin that wraps the **Claude Code 
 # 1. Make sure `claude` is installed and logged in
 claude --version
 
-# 2. Add the plugin to your opencode.json
+# 2. Add this to your opencode.json
 ```
 
 ```json
 {
-  "provider": {
-    "claude-code": {
-      "npm": "@khalilgharbaoui/opencode-claude-code-plugin"
-    }
-  }
+  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"]
 }
 ```
 
 That's it. Restart opencode, pick a `claude-code` model, done.
 
-The plugin auto-registers all current Claude Code models (Haiku 4.5, Sonnet 4.5/4.6, Opus 4.5/4.6/4.7) with reasoning variants (`low` / `medium` / `high` / `xhigh` / `max`) and sensible defaults for tool proxying.
+The plugin self-registers the `claude-code` provider, all current Claude Code models (Haiku 4.5, Sonnet 4.5/4.6, Opus 4.5/4.6/4.7) with reasoning variants (`low` / `medium` / `high` / `xhigh` / `max`), and sensible defaults for tool proxying. You don't need to write a `provider` block at all unless you want to override something.
 
 ---
 
@@ -45,7 +41,7 @@ The plugin auto-registers all current Claude Code models (Haiku 4.5, Sonnet 4.5/
 npm install @khalilgharbaoui/opencode-claude-code-plugin
 ```
 
-Then reference it in `opencode.json` as shown in the TL;DR.
+Then add it to `opencode.json` as shown in the TL;DR.
 
 ### Local development
 
@@ -56,15 +52,11 @@ bun install
 bun run build
 ```
 
-In your `opencode.json`, point `npm` at the local build:
+In your `opencode.json`, point at the local build with a `file://` URL:
 
 ```json
 {
-  "provider": {
-    "claude-code": {
-      "npm": "file:///absolute/path/to/opencode-claude-code-plugin"
-    }
-  }
+  "plugin": ["file:///absolute/path/to/opencode-claude-code-plugin"]
 }
 ```
 
@@ -72,7 +64,7 @@ In your `opencode.json`, point `npm` at the local build:
 
 ## Models
 
-The plugin auto-registers the following. You don't need to declare any of these — they appear in the model picker automatically.
+The plugin auto-registers the following. They appear in the model picker without any extra config.
 
 | ID | Display name | Context | Output | Reasoning variants |
 |---|---|---|---|---|
@@ -95,15 +87,15 @@ Variants set the underlying reasoning effort. They're regular opencode model var
 
 ## Configuration
 
-The minimum config is just the `npm` reference (see TL;DR). Anything below is optional override.
+The minimum config is just the `plugin` entry above. Everything below is optional override that goes in a `provider.claude-code` block.
 
 ### Options reference
 
 ```json
 {
+  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"],
   "provider": {
     "claude-code": {
-      "npm": "@khalilgharbaoui/opencode-claude-code-plugin",
       "options": {
         "cliPath": "claude",
         "proxyTools": ["Bash", "Edit", "Write", "WebFetch"],
@@ -131,6 +123,28 @@ The minimum config is just the `npm` reference (see TL;DR). Anything below is op
 | `mcpConfig` | string \| string[] | – | Extra `--mcp-config` paths/JSON passed alongside the bridged config. |
 | `strictMcpConfig` | boolean | `false` | Pass `--strict-mcp-config` so Claude loads **only** the configured servers and ignores `~/.claude/settings.json`. |
 
+### Overriding model metadata
+
+To rename a model, change a limit, or add a custom one:
+
+```json
+{
+  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"],
+  "provider": {
+    "claude-code": {
+      "models": {
+        "claude-sonnet-4-6": {
+          "name": "Sonnet (custom)",
+          "limit": { "context": 1000000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+Anything you supply is merged on top of the defaults; you don't need to redeclare every model.
+
 ---
 
 ## Selective tool proxy
@@ -144,9 +158,11 @@ By default, when Claude Code's CLI uses `Bash`, `Edit`, `Write`, etc., it execut
 | `proxyTools` value | Claude built-in disabled | Proxy MCP tool exposed |
 |---|---|---|
 | `"Bash"` | `Bash` | `mcp__opencode_proxy__bash` |
-| `"Edit"` | `Edit`, `MultiEdit` | `mcp__opencode_proxy__edit` |
+| `"Edit"` | `Edit` | `mcp__opencode_proxy__edit` |
 | `"Write"` | `Write` | `mcp__opencode_proxy__write` |
 | `"WebFetch"` | `WebFetch` | `mcp__opencode_proxy__webfetch` |
+
+Only those four values are actually proxied; anything else you put in `proxyTools` is ignored. Note that `MultiEdit` is **not** disabled when you proxy `Edit` — Claude can still use its built-in `MultiEdit` directly, which won't go through opencode's permission UI. If that matters, manage `MultiEdit` separately through your Claude settings.
 
 To turn off proxying entirely:
 
@@ -163,7 +179,7 @@ To turn off proxying entirely:
 ### What you give up
 
 - A small per-call latency hop through `127.0.0.1:<random>/mcp`.
-- Some Claude-specific tool features only exist in the built-in (e.g. `MultiEdit` is collapsed into a sequence of edits via the proxy).
+- Some Claude-specific tool features stay on the built-in side (notably `MultiEdit` — see the note above).
 
 ---
 
@@ -251,7 +267,6 @@ Goes to stderr.
 bun install
 bun run typecheck   # tsc --noEmit
 bun run build       # tsup -> dist/
-bun test            # if tests are added
 ```
 
 Source layout:
@@ -272,11 +287,11 @@ src/
 ## Publishing (maintainers)
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+npm version patch   # or minor/major — bumps package.json + creates the tag
+git push origin master --follow-tags
 ```
 
-The GitHub Actions workflow at `.github/workflows/publish.yml` runs `npm publish --access public` on tag push (requires `NPM_TOKEN` secret).
+The GitHub Actions workflow at `.github/workflows/publish.yml` runs `npm publish --access public` on tag push (requires `NPM_TOKEN` secret in the repo settings — use a classic automation token so 2FA isn't required at workflow time).
 
 ## License
 
