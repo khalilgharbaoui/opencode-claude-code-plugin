@@ -1,6 +1,8 @@
-# opencode-claude-code
+# @khalilgharbaoui/opencode-claude-plugin
 
 A standalone [opencode](https://github.com/opencodeco/opencode) provider plugin that uses [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as a backend. It spawns `claude` as a subprocess with `--output-format stream-json --input-format stream-json`, implements the AI SDK `LanguageModelV2` interface, and streams responses back to opencode.
+
+> Maintained fork of [`unixfox/opencode-claude-code-plugin`](https://github.com/unixfox/opencode-claude-code-plugin), published as `@khalilgharbaoui/opencode-claude-plugin` on npm.
 
 This is a **standalone npm package** that opencode loads dynamically via its external provider system -- no modifications to opencode's source code required.
 
@@ -11,11 +13,17 @@ This is a **standalone npm package** that opencode loads dynamically via its ext
 
 ## Installation
 
+### From npm
+
+```bash
+npm install @khalilgharbaoui/opencode-claude-plugin
+```
+
 ### Local development
 
 ```bash
-git clone <this-repo>
-cd opencode-claude-code
+git clone https://github.com/khalilgharbaoui/opencode-claude-code-plugin
+cd opencode-claude-code-plugin
 bun install
 bun run build
 ```
@@ -30,7 +38,7 @@ Add this to your project's `opencode.json`:
 {
   "provider": {
     "claude-code": {
-      "npm": "opencode-claude-code-plugin",
+      "npm": "@khalilgharbaoui/opencode-claude-plugin",
       "models": {
         "haiku": {
           "name": "Claude Code Haiku",
@@ -60,7 +68,7 @@ Add this to your project's `opencode.json`:
 }
 ```
 
-Replace `"opencode-claude-code-plugin"` with a `file://` path if you're using a local build.
+Replace `"@khalilgharbaoui/opencode-claude-plugin"` with a `file://` path if you're using a local build.
 
 The model IDs (`haiku`, `sonnet`, `opus`) are passed directly to `claude --model`, which accepts these aliases natively.
 
@@ -146,7 +154,7 @@ Tools not listed in `proxyTools` remain fully native to Claude CLI (fast, no per
 {
   "provider": {
     "claude-code": {
-      "npm": "opencode-claude-code-plugin",
+      "npm": "@khalilgharbaoui/opencode-claude-plugin",
       "options": {
         "cliPath": "claude",
         "proxyTools": ["Bash", "Edit", "Write", "WebFetch"]
