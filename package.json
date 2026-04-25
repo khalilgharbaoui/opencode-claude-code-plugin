@@ -1,6 +1,6 @@
 {
   "name": "@khalilgharbaoui/opencode-claude-code-plugin",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Claude Code CLI provider plugin for opencode",
   "author": "Khalil Gharbaoui",
   "type": "module",
