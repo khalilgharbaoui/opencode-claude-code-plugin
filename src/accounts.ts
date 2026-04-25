@@ -162,7 +162,7 @@ while [[ $# -gt 0 ]]; do
   if [[ "$1" == "--model" && $# -ge 2 ]]; then
     model="$2"
     if [[ "$model" == *${shellDoubleQuote(suffix)} ]]; then
-      model="${model%${shellDoubleQuote(suffix)}}"
+      model="\${model%${shellDoubleQuote(suffix)}}"
     fi
     args+=("$1" "$model")
     shift 2
@@ -173,7 +173,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export CLAUDE_CONFIG_DIR=${shellSingleQuote(configDir)}
-exec ${shellSingleQuote(baseCliPath)} "${args[@]}"
+exec ${shellSingleQuote(baseCliPath)} "\${args[@]}"
 `
 
   await writeFile(wrapperPath, script, "utf8")
