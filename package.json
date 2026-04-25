@@ -1,5 +1,5 @@
 {
-  "name": "@khalilgharbaoui/opencode-claude-plugin",
+  "name": "@khalilgharbaoui/opencode-claude-code-plugin",
   "version": "0.1.0",
   "description": "Claude Code CLI provider plugin for opencode",
   "author": "Khalil Gharbaoui",
@@ -40,7 +40,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/khalilgharbaoui/opencode-claude-code-plugin"
+    "url": "git+https://github.com/khalilgharbaoui/opencode-claude-code-plugin.git"
   },
   "publishConfig": {
     "access": "public"

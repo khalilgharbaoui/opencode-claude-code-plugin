@@ -50,7 +50,7 @@ export function createClaudeCode(
 // ---------------------------------------------------------------------------
 
 const PROVIDER_ID = "claude-code"
-const PACKAGE_NPM = "@khalilgharbaoui/opencode-claude-plugin"
+const PACKAGE_NPM = "@khalilgharbaoui/opencode-claude-code-plugin"
 
 function pluginEntrypoint(): string {
   return import.meta.url.startsWith("file:") ? import.meta.url : PACKAGE_NPM
@@ -140,7 +140,7 @@ const server: OpenCodePlugin = async () => ({
 })
 
 export default {
-  id: "@khalilgharbaoui/opencode-claude-plugin",
+  id: "@khalilgharbaoui/opencode-claude-code-plugin",
   server,
 }
 

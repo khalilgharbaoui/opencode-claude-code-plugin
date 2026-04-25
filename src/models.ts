@@ -1,7 +1,7 @@
 import type { OpenCodeModel } from "./opencode-types.js"
 
 const PROVIDER_ID = "claude-code"
-const NPM = "@khalilgharbaoui/opencode-claude-plugin"
+const NPM = "@khalilgharbaoui/opencode-claude-code-plugin"
 
 const reasoningVariants: Record<string, Record<string, unknown>> = {
   low: { reasoningEffort: "low" },
