@@ -89,6 +89,53 @@ Variants set the underlying reasoning effort. They're regular opencode model var
 
 The minimum config is just the `plugin` entry above. Everything below is optional override that goes in a `provider.claude-code` block.
 
+### Multiple Claude Code accounts
+
+Declare account names once and the plugin expands them into separate opencode providers:
+
+```json
+{
+  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"],
+  "provider": {
+    "claude-code": {
+      "options": {
+        "accounts": ["personal", "work"]
+      }
+    }
+  }
+}
+```
+
+`default` is always implicit, so the config above creates:
+
+| Provider ID | Display name | Claude config dir |
+|---|---|---|
+| `claude-code-default` | `Claude Code (Default)` | normal `~/.claude` |
+| `claude-code-personal` | `Claude Code (Personal)` | `~/.claude-personal` |
+| `claude-code-work` | `Claude Code (Work)` | `~/.claude-work` |
+
+Non-default accounts use `CLAUDE_CONFIG_DIR` through a generated wrapper script, so auth/session state stays isolated per account. Shared capability files and folders are symlinked from `~/.claude` into each account dir when present:
+
+```text
+CLAUDE.md
+settings.json
+skills/
+agents/
+commands/
+plugins/
+```
+
+Identity/session state is not shared.
+
+Login each account once:
+
+```bash
+CLAUDE_CONFIG_DIR="$HOME/.claude-personal" claude auth login
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login
+```
+
+The account model IDs are internally suffixed, for example `claude-sonnet-4-6@work`, so long-lived Claude subprocess sessions do not collide across accounts. The generated wrapper strips the suffix before calling `claude --model`.
+
 ### Options reference
 
 ```json
@@ -112,6 +159,7 @@ The minimum config is just the `plugin` entry above. Everything below is optiona
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `cliPath` | string | `process.env.CLAUDE_CLI_PATH ?? "claude"` | Path to the `claude` binary. |
+| `accounts` | string[] | – | Optional account list. `default` is implicit. Expands into `Claude Code (Default)`, `Claude Code (Personal)`, etc. |
 | `cwd` | string | `process.cwd()` | Working directory for the spawned CLI. Resolved **lazily per request**, so opencode's project switching works. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. Ignored when `proxyTools` is set — the proxy handles permissions through opencode instead. |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to `claude --permission-mode`. |
@@ -221,7 +269,7 @@ To replace (rather than augment) bridged MCP with your own:
 
 Each chat keeps a long-lived `claude` subprocess so the model retains its native context across turns.
 
-- **Session key**: `(cwd, model, tool-scope, opencode-session-id)`. The opencode session id comes from the `x-session-affinity` header opencode sets on third-party provider calls. Two chats in the same project on the same model run in **separate** CLI processes — they don't race.
+- **Session key**: `(cwd, model, tool-scope, opencode-session-id)`. The opencode session id comes from the `x-session-affinity` header opencode sets on third-party provider calls. Two chats in the same project on the same model run in **separate** CLI processes — they don't race. In account mode, model IDs are suffixed per account, so account sessions do not collide.
 - **Same chat, multiple turns** → process reused, full Claude context retained.
 - **New chat** → fresh process under the new session key.
 - **Resumed chat after restart** → in-memory state is gone; a new process spawns and the conversation history is summarized and prepended.
