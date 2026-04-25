@@ -149,7 +149,7 @@ async function providerConfig(
   optionDefaults: Record<string, unknown> = {},
   displayName?: string,
 ) {
-  const mergedOptions = {
+  const mergedOptions: Record<string, unknown> = {
     cliPath: "claude",
     proxyTools: ["Bash", "Edit", "Write", "WebFetch"],
     ...optionDefaults,
