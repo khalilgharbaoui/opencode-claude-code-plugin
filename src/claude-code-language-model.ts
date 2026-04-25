@@ -1112,9 +1112,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               if (block.type === "text") {
                 clearFallbackTimer()
-                startTextBlock()
                 textBlockIndices.add(idx)
-                hasReceivedContent = true
+                if (block.text) {
+                  if (!currentTextId) startTextBlock()
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: currentTextId!,
+                    delta: block.text,
+                  })
+                  hasReceivedContent = true
+                }
               }
 
               if (block.type === "tool_use" && block.id && block.name) {
