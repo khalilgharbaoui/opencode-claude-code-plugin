@@ -57,10 +57,53 @@ const haikuCost = { input: 1e-6, output: 5e-6, cacheRead: 1e-7, cacheWrite: 1.25
 const sonnetCost = { input: 3e-6, output: 15e-6, cacheRead: 3e-7, cacheWrite: 3.75e-6 }
 const opusCost = { input: 15e-6, output: 75e-6, cacheRead: 1.5e-6, cacheWrite: 18.75e-6 }
 
+/**
+ * Convert an OpenCodeModel to the flat config schema that OpenCode's
+ * provider.ts config parser expects (model.temperature, model.reasoning,
+ * model.cost.cache_read, model.modalities, etc.).
+ */
+export function toConfigModel(model: OpenCodeModel): Record<string, unknown> {
+  const inputMods: string[] = []
+  const outputMods: string[] = []
+  for (const [k, v] of Object.entries(model.capabilities.input)) {
+    if (v) inputMods.push(k)
+  }
+  for (const [k, v] of Object.entries(model.capabilities.output)) {
+    if (v) outputMods.push(k)
+  }
+
+  return {
+    id: model.api.id,
+    name: model.name,
+    status: model.status,
+    family: model.family ?? "",
+    release_date: model.release_date,
+
+    temperature: model.capabilities.temperature,
+    reasoning: model.capabilities.reasoning,
+    attachment: model.capabilities.attachment,
+    tool_call: model.capabilities.toolcall,
+    modalities: { input: inputMods, output: outputMods },
+    interleaved: model.capabilities.interleaved,
+
+    cost: {
+      input: model.cost.input,
+      output: model.cost.output,
+      cache_read: model.cost.cache.read,
+      cache_write: model.cost.cache.write,
+    },
+
+    limit: model.limit,
+    options: model.options,
+    headers: model.headers,
+    variants: model.variants,
+  }
+}
+
 export const defaultModels: Record<string, OpenCodeModel> = {
   "claude-haiku-4-5": defineModel({
     id: "claude-haiku-4-5",
-    name: "Claude Code Haiku 4.5",
+    name: "Claude Haiku 4.5",
     family: "haiku",
     reasoning: false,
     context: 200_000,
@@ -70,7 +113,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   }),
   "claude-sonnet-4-5": defineModel({
     id: "claude-sonnet-4-5",
-    name: "Claude Code Sonnet 4.5",
+    name: "Claude Sonnet 4.5",
     family: "sonnet",
     reasoning: true,
     context: 1_000_000,
@@ -80,7 +123,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   }),
   "claude-sonnet-4-6": defineModel({
     id: "claude-sonnet-4-6",
-    name: "Claude Code Sonnet 4.6",
+    name: "Claude Sonnet 4.6",
     family: "sonnet",
     reasoning: true,
     context: 1_000_000,
@@ -90,7 +133,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   }),
   "claude-opus-4-5": defineModel({
     id: "claude-opus-4-5",
-    name: "Claude Code Opus 4.5",
+    name: "Claude Opus 4.5",
     family: "opus",
     reasoning: true,
     context: 1_000_000,
@@ -100,7 +143,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   }),
   "claude-opus-4-6": defineModel({
     id: "claude-opus-4-6",
-    name: "Claude Code Opus 4.6",
+    name: "Claude Opus 4.6",
     family: "opus",
     reasoning: true,
     context: 1_000_000,
@@ -110,7 +153,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   }),
   "claude-opus-4-7": defineModel({
     id: "claude-opus-4-7",
-    name: "Claude Code Opus 4.7",
+    name: "Claude Opus 4.7",
     family: "opus",
     reasoning: true,
     context: 1_000_000,

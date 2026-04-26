@@ -1,7 +1,7 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
-import { defaultModels } from "./models.js"
-import type { OpenCodePlugin, OpenCodeProvider } from "./opencode-types.js"
+import { defaultModels, toConfigModel } from "./models.js"
+import type { OpenCodeModel, OpenCodePlugin, OpenCodeProvider } from "./opencode-types.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 import {
   BASE_PROVIDER_ID,
@@ -11,6 +11,7 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
+import { log } from "./logger.js"
 
 export interface ClaudeCodeProvider {
   specificationVersion: "v3"
@@ -138,6 +139,44 @@ function defaultModelsForProvider(
   return models
 }
 
+/**
+ * Build models in OpenCode's config schema format (flat properties like
+ * `temperature`, `reasoning`, `cost.cache_read`, `modalities`, etc.)
+ * so the config-path provider loader parses them correctly.
+ */
+function configModelsForProvider(
+  providerModels: OpenCodeProvider["models"],
+  providerID: string,
+  modelSuffix?: string,
+): Record<string, Record<string, unknown>> {
+  const models: Record<string, Record<string, unknown>> = {}
+
+  for (const [id, model] of Object.entries(defaultModels)) {
+    const modelId = modelSuffix ? `${id}@${modelSuffix}` : id
+    const existing = providerModels[id] ?? providerModels[modelId]
+    const full: OpenCodeModel = {
+      ...model,
+      id: modelId,
+      providerID,
+      api: {
+        ...model.api,
+        id: modelId,
+        npm: existing?.api?.npm ?? model.api.npm,
+        url: existing?.api?.url ?? model.api.url,
+      },
+    }
+    models[modelId] = toConfigModel(full)
+  }
+
+  for (const [id, model] of Object.entries(providerModels)) {
+    if (!(id in models)) {
+      models[id] = toConfigModel({ ...model, providerID } as OpenCodeModel)
+    }
+  }
+
+  return models
+}
+
 async function providerConfig(
   existing: {
     name?: string
@@ -194,33 +233,46 @@ async function expandAccountProviders(config: {
   config.provider ??= {}
 
   const seedOptions = cleanProviderOptions(seed?.options)
+  let expandedCount = 0
 
   for (const account of accounts) {
     const providerID = accountProviderId(account)
-    const existing = config.provider[providerID]
-    const modelSuffix = accountModelSuffix(account)
+    try {
+      const existing = config.provider[providerID]
+      const modelSuffix = accountModelSuffix(account)
 
-    config.provider[providerID] = {
-      ...existing,
-      ...(await providerConfig(
-        existing,
+      config.provider[providerID] = {
+        ...existing,
+        ...(await providerConfig(
+          existing,
+          providerID,
+          {
+            ...seedOptions,
+            account,
+          },
+          accountDisplayName(account),
+        )),
+        models: configModelsForProvider(
+          (existing?.models ?? seed?.models ?? {}) as OpenCodeProvider["models"],
+          providerID,
+          modelSuffix,
+        ),
+      }
+      expandedCount++
+    } catch (err) {
+      log.error("failed to expand account provider", {
+        account,
         providerID,
-        {
-          ...seedOptions,
-          account,
-        },
-        accountDisplayName(account),
-      )),
-      models: defaultModelsForProvider(
-        (existing?.models ?? seed?.models ?? {}) as OpenCodeProvider["models"],
-        providerID,
-        modelSuffix,
-      ),
+        error: String(err),
+      })
     }
   }
 
-  delete config.provider[PROVIDER_ID]
-  return true
+  if (expandedCount > 0) {
+    delete config.provider[PROVIDER_ID]
+  }
+
+  return expandedCount > 0
 }
 
 const server: OpenCodePlugin = async () => ({

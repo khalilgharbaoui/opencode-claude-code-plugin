@@ -75,7 +75,16 @@ export async function ensureAccountRuntime(
 
   const expandedConfigDir = expandHome(configDir)
   await mkdir(expandedConfigDir, { recursive: true })
-  await ensureSharedCapabilities(expandedConfigDir)
+
+  try {
+    await ensureSharedCapabilities(expandedConfigDir)
+  } catch (err) {
+    log.warn("failed to symlink shared capabilities; continuing anyway", {
+      account,
+      configDir: expandedConfigDir,
+      error: String(err),
+    })
+  }
 
   const cliPath = await writeAccountWrapper(
     normalizeAccountName(account),
