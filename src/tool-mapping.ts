@@ -1,4 +1,9 @@
 import { log } from "./logger.js"
+import type { WebSearchRouting } from "./types.js"
+
+export interface MapToolOptions {
+  webSearch?: WebSearchRouting
+}
 
 /**
  * Map Claude CLI tool input (snake_case) to OpenCode tool input (camelCase)
@@ -90,6 +95,7 @@ const CLAUDE_INTERNAL_TOOLS = new Set([
 export function mapTool(
   name: string,
   input?: any,
+  opts?: MapToolOptions,
 ): { name: string; input?: any; executed: boolean; skip?: boolean } {
   // Claude CLI internal tools — skip entirely
   if (CLAUDE_INTERNAL_TOOLS.has(name)) {
@@ -108,11 +114,16 @@ export function mapTool(
     return { name: "todowrite", input: mappedInput, executed: false }
   }
 
-  // WebSearch
+  // WebSearch — routing controlled by config.webSearch
   if (name === "WebSearch" || name === "web_search") {
     const mappedInput = input?.query ? { query: input.query } : input
-    log.debug("mapping WebSearch", { originalInput: input, mappedInput })
-    return { name: "websearch_web_search_exa", input: mappedInput, executed: false }
+    const route = opts?.webSearch
+    if (route && route !== "claude" && route !== "disabled") {
+      log.debug("routing WebSearch to opencode tool", { target: route, mappedInput })
+      return { name: route, input: mappedInput, executed: false }
+    }
+    log.debug("WebSearch executed by Claude CLI", { mappedInput })
+    return { name: "WebSearch", input: mappedInput, executed: true }
   }
 
   // TaskOutput -> bash echo

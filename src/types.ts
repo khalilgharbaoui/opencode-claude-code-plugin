@@ -14,7 +14,10 @@ export interface ClaudeCodeConfig {
   controlRequestToolBehaviors?: Record<string, ControlRequestBehavior>
   controlRequestDenyMessage?: string
   proxyTools?: string[]
+  webSearch?: WebSearchRouting
 }
+
+export type WebSearchRouting = "claude" | "disabled" | (string & {})
 
 export interface ClaudeCodeProviderSettings {
   cliPath?: string
@@ -70,6 +73,19 @@ export interface ClaudeCodeProviderSettings {
    * Supported: `bash`, `write`, `edit`, `webfetch`. Leave empty or unset to disable proxying.
    */
   proxyTools?: string[]
+
+  /**
+   * Routing for Claude's built-in `WebSearch` tool.
+   *
+   * - `"claude"` (default): Claude CLI runs WebSearch internally via
+   *   Anthropic's web search. No MCP setup required, no extra cost.
+   * - `"<opencode-tool-name>"` (e.g. `"websearch_web_search_exa"`): forward
+   *   the call to that opencode-side tool with `executed:false`. Requires
+   *   the corresponding MCP server to be configured in opencode.
+   * - `"disabled"`: prevent the model from calling WebSearch entirely
+   *   (passes `WebSearch` via `--disallowedTools`).
+   */
+  webSearch?: WebSearchRouting
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

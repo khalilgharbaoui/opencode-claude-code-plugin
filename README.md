@@ -170,6 +170,7 @@ The account model IDs are internally suffixed, for example `claude-sonnet-4-6@wo
 | `bridgeOpencodeMcp` | boolean | `true` | Auto-translate your opencode `mcp` block into Claude's `--mcp-config`. See [MCP bridge](#mcp-bridge). |
 | `mcpConfig` | string \| string[] | – | Extra `--mcp-config` paths/JSON passed alongside the bridged config. |
 | `strictMcpConfig` | boolean | `false` | Pass `--strict-mcp-config` so Claude loads **only** the configured servers and ignores `~/.claude/settings.json`. |
+| `webSearch` | `"claude"` \| `"disabled"` \| `<tool>` | `"claude"` | Routing for Claude's built-in `WebSearch`. See [WebSearch routing](#websearch-routing). |
 
 ### Overriding model metadata
 
@@ -227,6 +228,27 @@ To turn off proxying entirely:
 ### What you give up
 
 - A small per-call latency hop through `127.0.0.1:<random>/mcp`.
+
+---
+
+## WebSearch routing
+
+Claude Code ships a built-in `WebSearch` tool. The `webSearch` option controls who actually executes those calls:
+
+| `webSearch` value | Behavior | When to use |
+|---|---|---|
+| `"claude"` (default) | Claude CLI runs WebSearch internally via Anthropic. Zero setup, no extra cost, no API key. | Most users. |
+| `"<opencode-tool-name>"` (e.g. `"websearch_web_search_exa"`) | Forward to that opencode-side tool with `executed:false`. Requires the corresponding MCP server to be configured in opencode (e.g. [exa-mcp-server](https://github.com/exa-labs/exa-mcp-server)). | You want a specific search backend (Exa, Tavily, Brave) and have the MCP wired up in opencode. |
+| `"disabled"` | `WebSearch` is added to `--disallowedTools` so the model can't call it. | Compliance/security scenarios where outbound search isn't allowed. |
+
+```json
+"options": { "webSearch": "websearch_web_search_exa" }
+```
+
+**Trade-offs**
+
+- Claude-side execution: free with your Claude usage, no API key, but no opencode visibility into queries/results, no caching/rate-limit hooks.
+- opencode-side execution: choose any backend, queries flow through opencode's audit/policy/cache, but costs money (search APIs are paid) and adds a network hop.
 - Some Claude-specific tool features stay on the built-in side (notably `MultiEdit` — see the note above).
 
 ---

@@ -571,6 +571,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       permissionMode: this.config.permissionMode,
       mcpConfig: this.effectiveMcpConfig(cwd),
       strictMcpConfig: this.config.strictMcpConfig,
+      disallowedTools:
+        this.config.webSearch === "disabled" ? ["WebSearch"] : undefined,
     })
 
     log.info("doGenerate starting", {
@@ -797,7 +799,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         input: mappedInput,
         executed,
         skip,
-      } = mapTool(tc.name, tc.args)
+      } = mapTool(tc.name, tc.args, { webSearch: this.config.webSearch })
       if (skip) continue
       content.push({
         type: "tool-call",
@@ -942,6 +944,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             proxyServer = await self.ensureProxyServer(resolvedProxy, sk)
           }
 
+          const proxyDisallowed = resolvedProxy ? disallowedToolFlags(resolvedProxy) : []
+          const extraDisallowed: string[] = []
+          if (self.config.webSearch === "disabled") extraDisallowed.push("WebSearch")
+          const allDisallowed = [...proxyDisallowed, ...extraDisallowed]
           const cliArgs = buildCliArgs({
             sessionKey: sk,
             skipPermissions,
@@ -949,7 +955,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             permissionMode: self.config.permissionMode,
             mcpConfig: self.effectiveMcpConfig(cwd, proxyServer?.configPath()),
             strictMcpConfig: self.config.strictMcpConfig,
-            disallowedTools: resolvedProxy ? disallowedToolFlags(resolvedProxy) : undefined,
+            disallowedTools: allDisallowed.length > 0 ? allDisallowed : undefined,
           })
 
           if (activeProcess) {
@@ -1135,7 +1141,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   block.name !== "ExitPlanMode" &&
                   !block.name.startsWith(PROXY_TOOL_PREFIX)
                 ) {
-                  const { name: mappedName, skip, executed } = mapTool(block.name)
+                  const { name: mappedName, skip, executed } = mapTool(
+                    block.name,
+                    undefined,
+                    { webSearch: self.config.webSearch },
+                  )
                   if (!skip) {
                     controller.enqueue({
                       type: "tool-input-start",
@@ -1274,7 +1284,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     input: mappedInput,
                     executed,
                     skip,
-                  } = mapTool(tc.name, parsedInput)
+                  } = mapTool(tc.name, parsedInput, { webSearch: self.config.webSearch })
 
                   if (!skip) {
                     toolCallsById.set(tc.id, {
@@ -1409,7 +1419,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       input: mappedInput,
                       executed,
                       skip,
-                    } = mapTool(block.name, parsedInput)
+                    } = mapTool(block.name, parsedInput, { webSearch: self.config.webSearch })
 
                     if (!skip) {
                       if (!executed) skipResultForIds.add(block.id)
