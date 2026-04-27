@@ -100,6 +100,12 @@ export function spawnClaudeProcess(
   const ap: ActiveProcess = { proc, lineEmitter, proxyServer: proxyServer ?? null }
   activeProcesses.set(sessionKey, ap)
 
+  // Baseline 'error' listener so Node doesn't throw when the process emits
+  // an error between stream turns (no per-stream listener attached then).
+  proc.on("error", (err) => {
+    log.error("claude process error", { sessionKey, error: err.message })
+  })
+
   proc.on("exit", (code, signal) => {
     log.info("claude process exited", { code, signal, sessionKey })
     void proxyServer?.close()

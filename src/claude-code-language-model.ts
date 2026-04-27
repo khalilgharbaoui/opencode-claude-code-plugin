@@ -1056,10 +1056,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             },
           })
           controllerClosed = true
-          lineEmitter.off("line", lineHandler)
-          lineEmitter.off("close", closeHandler)
-          pendingProxyUnsubscribe?.()
-          pendingProxyUnsubscribe = null
+          cleanupTurn()
           try {
             controller.close()
           } catch {}
@@ -1566,8 +1563,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               })
 
               controllerClosed = true
-              lineEmitter.off("line", lineHandler)
-              lineEmitter.off("close", closeHandler)
+              cleanupTurn()
 
               try {
                 controller.close()
@@ -1584,12 +1580,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const closeHandler = () => {
           log.debug("readline closed")
           if (controllerClosed) return
-          clearFallbackTimer()
           controllerClosed = true
-          lineEmitter.off("line", lineHandler)
-          lineEmitter.off("close", closeHandler)
-          pendingProxyUnsubscribe?.()
-          pendingProxyUnsubscribe = null
+          cleanupTurn()
           endTextBlock()
           controller.enqueue({
             type: "finish",
@@ -1599,6 +1591,31 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               "claude-code": resultMeta,
             },
           })
+          try {
+            controller.close()
+          } catch {}
+        }
+
+        // Centralised per-turn teardown. Every exit path funnels through here
+        // so we don't accumulate listeners across turns on a reused process.
+        let cleanedUp = false
+        const cleanupTurn = () => {
+          if (cleanedUp) return
+          cleanedUp = true
+          clearFallbackTimer()
+          lineEmitter.off("line", lineHandler)
+          lineEmitter.off("close", closeHandler)
+          pendingProxyUnsubscribe?.()
+          pendingProxyUnsubscribe = null
+          proc.off("error", procErrorHandler)
+        }
+
+        const procErrorHandler = (err: Error) => {
+          log.error("process error", { error: err.message })
+          if (controllerClosed) return
+          controllerClosed = true
+          cleanupTurn()
+          controller.enqueue({ type: "error", error: err })
           try {
             controller.close()
           } catch {}
@@ -1616,18 +1633,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           finishWithToolCall(call)
         })
 
-        proc.on("error", (err: Error) => {
-          log.error("process error", { error: err.message })
-          clearFallbackTimer()
-          if (controllerClosed) return
-          controllerClosed = true
-          pendingProxyUnsubscribe?.()
-          pendingProxyUnsubscribe = null
-          controller.enqueue({ type: "error", error: err })
-          try {
-            controller.close()
-          } catch {}
-        })
+        proc.on("error", procErrorHandler)
 
         // On abort, keep process alive for next message
         if (options.abortSignal) {
@@ -1640,10 +1646,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 { cwd },
               )
               controllerClosed = true
-              lineEmitter.off("line", lineHandler)
-              lineEmitter.off("close", closeHandler)
-              pendingProxyUnsubscribe?.()
-              pendingProxyUnsubscribe = null
+              cleanupTurn()
               try {
                 controller.close()
               } catch {}
