@@ -16,7 +16,8 @@ import type {
 } from "./types.js"
 import { mapTool } from "./tool-mapping.js"
 import { getClaudeUserMessage } from "./message-builder.js"
-import { bridgeOpencodeMcp } from "./mcp-bridge.js"
+import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
+import { getRuntimeMcpStatus } from "./runtime-status.js"
 import {
   getActiveProcess,
   spawnClaudeProcess,
@@ -111,22 +112,35 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   /**
-   * Build the combined `--mcp-config` list: user-configured paths plus the
-   * auto-bridged opencode MCP config (when enabled and present) and the
-   * proxy MCP scratch file (when proxyTools are enabled).
+   * Build the combined `--mcp-config` list and return both the list and the
+   * hash of the bridged opencode MCP block (or null when bridging is off /
+   * yields nothing). The hash is used to detect mid-session config changes
+   * and respawn the underlying claude process.
+   *
+   * `runtimeStatus` is a snapshot of opencode's `client.mcp.status()`. When
+   * provided it overlays opencode's UI-toggled state on top of disk config
+   * so `/mcps` toggles propagate without a config file write.
    */
-  private effectiveMcpConfig(cwd: string, proxyConfigPath?: string): string[] {
-    const user = Array.isArray(this.config.mcpConfig)
+  private effectiveMcpConfig(
+    cwd: string,
+    proxyConfigPath?: string,
+    runtimeStatus?: RuntimeMcpStatus,
+  ): { paths: string[]; bridgedHash: string | null } {
+    const paths = Array.isArray(this.config.mcpConfig)
       ? this.config.mcpConfig.slice()
       : this.config.mcpConfig
         ? [this.config.mcpConfig]
         : []
+    let bridgedHash: string | null = null
     if (this.config.bridgeOpencodeMcp !== false) {
-      const bridged = bridgeOpencodeMcp(cwd)
-      if (bridged) user.push(bridged)
+      const bridged = bridgeOpencodeMcp(cwd, runtimeStatus)
+      if (bridged) {
+        paths.push(bridged.path)
+        bridgedHash = bridged.hash
+      }
     }
-    if (proxyConfigPath) user.push(proxyConfigPath)
-    return user
+    if (proxyConfigPath) paths.push(proxyConfigPath)
+    return { paths, bridgedHash }
   }
 
   /** Resolve ProxyToolDef[] for the configured proxyTools names. */
@@ -562,14 +576,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       reasoningEffort,
     )
 
-    // doGenerate always spawns a fresh process, never reuse session ID
+    // doGenerate always spawns a fresh process, never reuse session ID.
+    // Pre-fetch opencode's MCP runtime status so the bridge overlays
+    // UI-toggled state on top of disk config.
+    const runtimeStatus = await getRuntimeMcpStatus()
     const cliArgs = buildCliArgs({
       sessionKey: sk,
       skipPermissions: this.config.skipPermissions !== false,
       includeSessionId: false,
       model: this.modelId,
       permissionMode: this.config.permissionMode,
-      mcpConfig: this.effectiveMcpConfig(cwd),
+      mcpConfig: this.effectiveMcpConfig(cwd, undefined, runtimeStatus).paths,
       strictMcpConfig: this.config.strictMcpConfig,
       disallowedTools:
         this.config.webSearch === "disabled" ? ["WebSearch"] : undefined,
@@ -922,6 +939,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       ? this.extractPendingProxyResult(options.prompt, pendingProxyCall.toolCallId)
       : null
 
+    // Pre-fetch opencode's MCP runtime status before constructing the
+    // ReadableStream so the sync hot-reload check and async setup() see
+    // the same overlay snapshot. One in-process call per turn — cheap;
+    // the SDK client routes through `Server.app.fetch` (no socket).
+    const runtimeStatus = await getRuntimeMcpStatus()
+
     log.info("doStream starting", {
       cwd,
       model: this.modelId,
@@ -939,6 +962,30 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         let lineEmitter: import("events").EventEmitter
         let proxyServer: ProxyMcpServer | null = activeProcess?.proxyServer ?? null
 
+        // Hot reload: evict cached subprocess if the bridged opencode MCP
+        // config has drifted since spawn. Only checked between turns (here,
+        // before setup() runs), never mid tool-call. The stored claude
+        // session id is preserved so the respawn resumes the conversation
+        // via `--session-id` (handled by buildCliArgs).
+        if (
+          activeProcess &&
+          self.config.hotReloadMcp !== false &&
+          self.config.bridgeOpencodeMcp !== false
+        ) {
+          const probe = self.effectiveMcpConfig(cwd, undefined, runtimeStatus)
+          const previousHash = activeProcess.mcpHash ?? null
+          if (previousHash !== probe.bridgedHash) {
+            log.info("opencode MCP config changed, respawning claude", {
+              sk,
+              previousHash,
+              currentHash: probe.bridgedHash,
+            })
+            deleteActiveProcess(sk)
+            activeProcess = undefined
+            proxyServer = null
+          }
+        }
+
         const setup = async () => {
           if (!proxyServer && resolvedProxy) {
             proxyServer = await self.ensureProxyServer(resolvedProxy, sk)
@@ -948,12 +995,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           const extraDisallowed: string[] = []
           if (self.config.webSearch === "disabled") extraDisallowed.push("WebSearch")
           const allDisallowed = [...proxyDisallowed, ...extraDisallowed]
+          const mcp = self.effectiveMcpConfig(
+            cwd,
+            proxyServer?.configPath(),
+            runtimeStatus,
+          )
           const cliArgs = buildCliArgs({
             sessionKey: sk,
             skipPermissions,
             model: self.modelId,
             permissionMode: self.config.permissionMode,
-            mcpConfig: self.effectiveMcpConfig(cwd, proxyServer?.configPath()),
+            mcpConfig: mcp.paths,
             strictMcpConfig: self.config.strictMcpConfig,
             disallowedTools: allDisallowed.length > 0 ? allDisallowed : undefined,
           })
@@ -963,7 +1015,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             lineEmitter = activeProcess.lineEmitter
             log.debug("reusing active process", { sk })
           } else {
-            const ap = spawnClaudeProcess(cliPath, cliArgs, cwd, sk, proxyServer)
+            const ap = spawnClaudeProcess(
+              cliPath,
+              cliArgs,
+              cwd,
+              sk,
+              proxyServer,
+              mcp.bridgedHash,
+            )
             proc = ap.proc
             lineEmitter = ap.lineEmitter
             activeProcess = ap

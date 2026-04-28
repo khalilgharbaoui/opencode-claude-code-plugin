@@ -15,6 +15,7 @@ export interface ClaudeCodeConfig {
   controlRequestDenyMessage?: string
   proxyTools?: string[]
   webSearch?: WebSearchRouting
+  hotReloadMcp?: boolean
 }
 
 export type WebSearchRouting = "claude" | "disabled" | (string & {})
@@ -86,6 +87,19 @@ export interface ClaudeCodeProviderSettings {
    *   (passes `WebSearch` via `--disallowedTools`).
    */
   webSearch?: WebSearchRouting
+
+  /**
+   * Detect mid-session opencode MCP config changes and respawn the
+   * underlying claude process so newly enabled / disabled MCPs become
+   * visible to the model without restarting opencode or starting a new
+   * chat. Eviction happens at the start of the next user turn (never mid
+   * tool-call) and `--session-id` is preserved so the conversation
+   * continues seamlessly. Defaults to `true`.
+   *
+   * Set to `false` to keep the previous behavior (cached subprocess
+   * survives MCP changes until the chat is reset).
+   */
+  hotReloadMcp?: boolean
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
