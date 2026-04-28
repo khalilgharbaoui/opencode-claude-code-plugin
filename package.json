@@ -1,6 +1,6 @@
 {
   "name": "@khalilgharbaoui/opencode-claude-code-plugin",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Claude Code CLI provider plugin for opencode",
   "author": "Khalil Gharbaoui",
   "type": "module",
@@ -19,7 +19,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test-bridge.ts"
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.8",
