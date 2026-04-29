@@ -65,22 +65,6 @@ export function deleteActiveProcess(key: string): void {
   }
 }
 
-/**
- * Evict every cached claude subprocess. Used to react to opencode's
- * `global.disposed` bus event so the next user turn picks up a fresh
- * MCP / config snapshot. Stored claude session IDs are preserved so
- * the next spawn can resume the conversation via `--session-id`.
- */
-export function evictAllSessions(reason: string): number {
-  const count = activeProcesses.size
-  if (count === 0) return 0
-  log.info("evicting all claude processes", { reason, count })
-  for (const key of Array.from(activeProcesses.keys())) {
-    deleteActiveProcess(key)
-  }
-  return count
-}
-
 export function getClaudeSessionId(key: string): string | undefined {
   return claudeSessions.get(key)
 }

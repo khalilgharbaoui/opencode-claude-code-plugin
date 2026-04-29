@@ -11,7 +11,7 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
-import { evictAllSessions } from "./session-manager.js"
+import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { log } from "./logger.js"
 import { setOpencodeClient } from "./runtime-status.js"
 
@@ -279,25 +279,9 @@ async function expandAccountProviders(config: {
   return expandedCount > 0
 }
 
-/**
- * Pull the bus event `type` regardless of which envelope opencode used
- * (top-level `{type}` vs the nested `{payload:{type}}` shape from
- * `GlobalBus.emit`). Loose by design — opencode adds events over time and
- * we only care about the few we explicitly handle.
- */
-function readEventType(ev: unknown): string | undefined {
-  if (!ev || typeof ev !== "object") return undefined
-  const e = ev as Record<string, unknown>
-  if (typeof e.type === "string") return e.type
-  const payload = e.payload
-  if (payload && typeof payload === "object") {
-    const t = (payload as Record<string, unknown>).type
-    if (typeof t === "string") return t
-  }
-  return undefined
-}
-
 const server: OpenCodePlugin = async (input) => {
+  cleanupStaleUnscopedInstall()
+
   // Capture the SDK client so the language model can query opencode's
   // in-memory MCP state per-turn for the runtime overlay. `input` is
   // `unknown` here (kept loose since opencode adds fields over time);
@@ -307,33 +291,26 @@ const server: OpenCodePlugin = async (input) => {
   }
 
   return {
-  config: async (config) => {
-    config.provider ??= {}
+    config: async (config) => {
+      config.provider ??= {}
 
-    const expanded = await expandAccountProviders(config)
-    if (expanded) return
+      const expanded = await expandAccountProviders(config)
+      if (expanded) return
 
-    const existing = config.provider[PROVIDER_ID]
-    config.provider[PROVIDER_ID] = {
-      ...existing,
-      ...(await providerConfig(existing)),
-    }
-  },
-  event: async ({ event }) => {
-    if (readEventType(event) === "global.disposed") {
-      // opencode invalidated its config — most commonly a UI MCP toggle or
-      // `updateGlobal()` writing the global config file. Drop cached claude
-      // subprocesses so the next user turn re-spawns with the fresh
-      // bridged MCP config. Stored claude session ids are preserved by
-      // evictAllSessions so the conversation continues seamlessly via
-      // `--session-id`.
-      evictAllSessions("global.disposed")
-    }
-  },
-  provider: {
-    id: PROVIDER_ID,
-    models: async (provider) => defaultModelsForProvider(provider.models),
-  },
+      const existing = config.provider[PROVIDER_ID]
+      config.provider[PROVIDER_ID] = {
+        ...existing,
+        ...(await providerConfig(existing)),
+      }
+    },
+    // No `event` hook: MCP config drift is detected at turn start by the
+    // hot-reload check in `claude-code-language-model.ts`, which respawns
+    // claude safely between turns. Eviction on `global.disposed` would kill
+    // an in-flight stream and abort the user's current turn.
+    provider: {
+      id: PROVIDER_ID,
+      models: async (provider) => defaultModelsForProvider(provider.models),
+    },
   }
 }
 

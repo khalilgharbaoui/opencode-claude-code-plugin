@@ -91,12 +91,8 @@ export type OpenCodeHooks = {
     id: string
     models?: (provider: OpenCodeProvider) => Promise<Record<string, OpenCodeModel>>
   }
-  /**
-   * Called for every bus event opencode publishes. We use this to react to
-   * `global.disposed` (fired when opencode invalidates its config — e.g.
-   * after a UI MCP toggle or `updateGlobal`) and evict cached claude
-   * subprocesses so the next turn picks up the fresh config.
-   */
+  // Called for every bus event opencode publishes. Optional; this plugin
+  // doesn't currently subscribe — MCP config drift is handled at turn start.
   event?: (input: { event: OpenCodeEvent }) => Promise<void>
 }
 
