@@ -295,13 +295,23 @@ const server: OpenCodePlugin = async (input) => {
       config.provider ??= {}
 
       const expanded = await expandAccountProviders(config)
-      if (expanded) return
+      if (expanded) {
+        const registered = Object.entries(config.provider)
+          .filter(([id]) => id === PROVIDER_ID || id.startsWith(`${PROVIDER_ID}-`))
+          .map(([id, p]) => ({ id, name: p?.name ?? id }))
+        log.notice("registered claude-code providers", { providers: registered })
+        return
+      }
 
       const existing = config.provider[PROVIDER_ID]
       config.provider[PROVIDER_ID] = {
         ...existing,
         ...(await providerConfig(existing)),
       }
+      log.notice("registered claude-code provider", {
+        id: PROVIDER_ID,
+        name: config.provider[PROVIDER_ID]?.name ?? PROVIDER_ID,
+      })
     },
     // No `event` hook: MCP config drift is detected at turn start by the
     // hot-reload check in `claude-code-language-model.ts`, which respawns

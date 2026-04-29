@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { createInterface } from "node:readline"
 import { EventEmitter } from "node:events"
+import { unlink } from "node:fs/promises"
 import { log } from "./logger.js"
 import type { ProxyMcpServer } from "./proxy-mcp.js"
 
@@ -15,6 +16,8 @@ export interface ActiveProcess {
    * and force a respawn.
    */
   mcpHash?: string | null
+  /** Temp file holding `--append-system-prompt-file` content; unlinked on exit. */
+  systemPromptFile?: string
 }
 
 // One active CLI process per session key. Keyed by a composite
@@ -84,6 +87,7 @@ export function spawnClaudeProcess(
   sessionKey: string,
   proxyServer?: ProxyMcpServer | null,
   mcpHash?: string | null,
+  systemPromptFile?: string,
 ): ActiveProcess {
   evictIfNeeded()
   log.info("spawning new claude process", { cliPath, cliArgs, cwd, sessionKey })
@@ -110,6 +114,7 @@ export function spawnClaudeProcess(
     lineEmitter,
     proxyServer: proxyServer ?? null,
     mcpHash,
+    systemPromptFile,
   }
   activeProcesses.set(sessionKey, ap)
 
@@ -122,6 +127,9 @@ export function spawnClaudeProcess(
   proc.on("exit", (code, signal) => {
     log.info("claude process exited", { code, signal, sessionKey })
     void proxyServer?.close()
+    if (systemPromptFile) {
+      void unlink(systemPromptFile).catch(() => {})
+    }
     activeProcesses.delete(sessionKey)
     if (code !== 0 && code !== null) {
       log.info("process exited with error, clearing session", {
@@ -162,6 +170,7 @@ export function buildCliArgs(opts: {
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
   disallowedTools?: string[]
+  appendSystemPromptFile?: string
 }): string[] {
   const {
     sessionKey,
@@ -172,6 +181,7 @@ export function buildCliArgs(opts: {
     mcpConfig,
     strictMcpConfig,
     disallowedTools,
+    appendSystemPromptFile,
   } = opts
   const args = [
     "--output-format",
@@ -210,6 +220,10 @@ export function buildCliArgs(opts: {
 
   if (disallowedTools && disallowedTools.length > 0) {
     args.push("--disallowedTools", ...disallowedTools)
+  }
+
+  if (appendSystemPromptFile) {
+    args.push("--append-system-prompt-file", appendSystemPromptFile)
   }
 
   if (skipPermissions) {

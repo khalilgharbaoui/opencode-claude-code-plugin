@@ -47,6 +47,54 @@ import {
   rejectPendingProxyCall,
   type PendingProxyCall,
 } from "./proxy-broker.js"
+import { readFileSync, writeFileSync } from "node:fs"
+import { unlink } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
+import { randomUUID } from "node:crypto"
+import { dirname, join } from "node:path"
+
+function readPromptFileIfPresent(path: string): string | undefined {
+  try {
+    const content = readFileSync(path, "utf8").trim()
+    return content || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function nearestWorkspaceAgentsPrompt(cwd: string): string | undefined {
+  let dir = cwd
+  while (true) {
+    const content = readPromptFileIfPresent(join(dir, "AGENTS.md"))
+    if (content) return content
+    const parent = dirname(dir)
+    if (parent === dir) return undefined
+    dir = parent
+  }
+}
+
+function buildAppendedSystemPrompt(cwd: string): string | undefined {
+  const parts: string[] = []
+  const configRoot =
+    process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config")
+  const globalAgents = readPromptFileIfPresent(join(configRoot, "opencode", "AGENTS.md"))
+  const workspaceAgents = nearestWorkspaceAgentsPrompt(cwd)
+
+  if (globalAgents) parts.push(globalAgents)
+  if (workspaceAgents && workspaceAgents !== globalAgents) parts.push(workspaceAgents)
+
+  const content = parts.join("\n\n")
+  if (!content) return undefined
+
+  const path = join(tmpdir(), `opencode-cc-sys-${randomUUID()}.md`)
+  try {
+    writeFileSync(path, content, "utf8")
+    return path
+  } catch (err) {
+    log.warn("failed to write system prompt file", { error: String(err) })
+    return undefined
+  }
+}
 
 export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -580,6 +628,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Pre-fetch opencode's MCP runtime status so the bridge overlays
     // UI-toggled state on top of disk config.
     const runtimeStatus = await getRuntimeMcpStatus()
+    const systemPromptFile = buildAppendedSystemPrompt(cwd)
     const cliArgs = buildCliArgs({
       sessionKey: sk,
       skipPermissions: this.config.skipPermissions !== false,
@@ -590,6 +639,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       strictMcpConfig: this.config.strictMcpConfig,
       disallowedTools:
         this.config.webSearch === "disabled" ? ["WebSearch"] : undefined,
+      appendSystemPromptFile: systemPromptFile,
     })
 
     log.info("doGenerate starting", {
@@ -608,6 +658,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       env: { ...process.env, TERM: "xterm-256color" },
       shell: process.platform === "win32",
     })
+
+    if (systemPromptFile) {
+      proc.on("exit", () => {
+        void unlink(systemPromptFile).catch(() => {})
+      })
+    }
 
     const rl = createInterface({ input: proc.stdout! })
 
@@ -1000,6 +1056,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             proxyServer?.configPath(),
             runtimeStatus,
           )
+          const systemPromptFile = activeProcess
+            ? undefined
+            : buildAppendedSystemPrompt(cwd)
           const cliArgs = buildCliArgs({
             sessionKey: sk,
             skipPermissions,
@@ -1008,6 +1067,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             mcpConfig: mcp.paths,
             strictMcpConfig: self.config.strictMcpConfig,
             disallowedTools: allDisallowed.length > 0 ? allDisallowed : undefined,
+            appendSystemPromptFile: systemPromptFile,
           })
 
           if (activeProcess) {
@@ -1022,6 +1082,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               sk,
               proxyServer,
               mcp.bridgedHash,
+              systemPromptFile,
             )
             proc = ap.proc
             lineEmitter = ap.lineEmitter
