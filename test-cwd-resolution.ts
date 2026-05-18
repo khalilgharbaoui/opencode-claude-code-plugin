@@ -59,6 +59,33 @@ test("captured directory rescues macOS GUI launches at /", () => {
   )
 })
 
+test("session directory overrides live cwd (opencode serve / web-UI fix)", () => {
+  // The bug: `opencode serve` is one long-lived process whose
+  // process.cwd() is the server's launch dir (e.g. systemd
+  // WorkingDirectory=/home/jan), not the web session's project. The
+  // session's own directory must win over that usable-but-wrong live cwd.
+  assert.equal(
+    resolveSpawnCwdFrom(undefined, "/home/jan", undefined, "/home/jan/proj"),
+    "/home/jan/proj",
+  )
+  // Explicit pin still beats the session directory.
+  assert.equal(
+    resolveSpawnCwdFrom("/explicit", "/home/jan", undefined, "/home/jan/proj"),
+    "/explicit",
+  )
+  // Unusable session dir is ignored — fall back to the existing chain.
+  assert.equal(
+    resolveSpawnCwdFrom(undefined, "/home/jan/proj", undefined, "/"),
+    "/home/jan/proj",
+  )
+  // Absent session dir (TUI / direct AI-SDK / no SDK client) is a no-op:
+  // behavior is identical to the pre-fix 3-arg resolution.
+  assert.equal(
+    resolveSpawnCwdFrom(undefined, "/home/jan/proj", "/cap", undefined),
+    "/home/jan/proj",
+  )
+})
+
 test("falls through to live when neither configured nor captured is usable", () => {
   // Both unavailable: degrade gracefully to live, even if that's "/".
   // Caller sees the same value process.cwd() would have returned, so nothing

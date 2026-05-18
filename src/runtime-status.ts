@@ -17,6 +17,13 @@ type OpencodeClient = {
       query: { provider: string; model: string; directory?: string }
     }) => Promise<{ data?: unknown; error?: unknown }>
   }
+  session?: {
+    /** `GET /session/{id}` — the returned Session carries `directory`. */
+    get?: (options: {
+      path: { id: string }
+      query?: { directory?: string }
+    }) => Promise<{ data?: unknown; error?: unknown }>
+  }
 }
 
 let opencodeClient: OpencodeClient | null = null
@@ -65,13 +72,18 @@ export function isUsableDirectory(d: unknown): d is string {
  *
  * 1. Explicit `configured` value (`options.cwd` from `opencode.json`).
  *    Users who pinned a directory keep their override unconditionally.
- * 2. Live `process.cwd()` when it's a real directory. Restores the lazy
- *    resolution that lets opencode's project-aware behavior (chdir on
- *    workspace switch, project-per-shell on terminal launch) flow
- *    through without restarting the plugin.
- * 3. Captured project directory from plugin init. Rescues macOS GUI
+ * 2. The opencode session's own `directory` (resolved per-call from the
+ *    `x-session-affinity` id via the SDK). Authoritative for
+ *    `opencode serve` / web-UI mode, where one long-lived server process
+ *    handles many projects and `process.cwd()` is the server's launch
+ *    dir — not the session's project. Equals `process.cwd()` in the TUI,
+ *    so it does not regress that path.
+ * 3. Live `process.cwd()` when it's a real directory. Lazy resolution
+ *    that lets opencode's project-aware behavior (chdir on workspace
+ *    switch, project-per-shell on terminal launch) flow through.
+ * 4. Captured project directory from plugin init. Rescues macOS GUI
  *    launches where `process.cwd()` is `/`.
- * 4. Final fallback to `process.cwd()` (returns `/` in the pathological
+ * 5. Final fallback to `process.cwd()` (returns `/` in the pathological
  *    case where neither override nor capture is available).
  */
 export function resolveSpawnCwd(configured: string | undefined): string {
@@ -86,10 +98,66 @@ export function resolveSpawnCwdFrom(
   configured: string | undefined,
   live: string,
   captured: string | undefined,
+  sessionDir?: string,
 ): string {
   if (configured) return configured
+  if (isUsableDirectory(sessionDir)) return sessionDir
   if (isUsableDirectory(live)) return live
   return captured ?? live
+}
+
+/**
+ * Resolve the spawn cwd for a specific opencode session. Looks up the
+ * session's `directory` via the SDK (keyed by the `x-session-affinity`
+ * id opencode sets on LLM calls) and feeds it into `resolveSpawnCwdFrom`
+ * as tier 2. Falls back cleanly to the non-session resolution when the
+ * id is absent ("default"), no SDK client is captured, or the lookup
+ * fails — so the TUI / direct-AI-SDK / test paths are unaffected.
+ */
+export async function resolveSpawnCwdForSession(
+  configured: string | undefined,
+  sessionID: string | undefined,
+): Promise<string> {
+  // An explicit pin wins unconditionally — skip the lookup entirely.
+  if (configured) return configured
+  const sessionDir = sessionID
+    ? await fetchSessionDirectory(sessionID)
+    : undefined
+  return resolveSpawnCwdFrom(
+    configured,
+    process.cwd(),
+    opencodeProjectDirectory,
+    sessionDir,
+  )
+}
+
+/**
+ * Fetch an opencode session's project directory via `GET /session/{id}`.
+ * Returns `undefined` on any failure (no client, "default"/empty id,
+ * rejected call, malformed response, unusable directory) so callers fall
+ * back to `process.cwd()`-based resolution. No caching: a session's
+ * directory can change (workspace switch) and the call is a cheap
+ * localhost round-trip relative to spawning Claude.
+ */
+export async function fetchSessionDirectory(
+  sessionID: string,
+): Promise<string | undefined> {
+  if (!sessionID || sessionID === "default") return undefined
+  const client = opencodeClient
+  if (!client?.session?.get) return undefined
+  try {
+    const res = await client.session.get({ path: { id: sessionID } })
+    const data = (res as { data?: unknown }).data
+    if (!data || typeof data !== "object") return undefined
+    const dir = (data as { directory?: unknown }).directory
+    return isUsableDirectory(dir) ? dir : undefined
+  } catch (err) {
+    log.warn("failed to fetch opencode session directory", {
+      sessionID,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return undefined
+  }
 }
 
 /**

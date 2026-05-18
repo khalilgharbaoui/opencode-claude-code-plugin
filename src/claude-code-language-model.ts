@@ -31,7 +31,7 @@ import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
   fetchOpencodeToolList,
-  resolveSpawnCwd,
+  resolveSpawnCwdForSession,
 } from "./runtime-status.js"
 import {
   getActiveProcess,
@@ -1534,9 +1534,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return this.doGenerateViaStream(options)
     }
     const warnings: SharedV3Warning[] = []
-    const cwd = resolveSpawnCwd(this.config.cwd)
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
+    const cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
     // An agent may run on a different model than the one opencode routed here
     // (see agent-models.ts). The session key must carry the effective model or
     // an overridden agent shares a claude process with its caller.
@@ -2076,11 +2076,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
-    const cwd = resolveSpawnCwd(this.config.cwd)
     const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
+    const cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
     const compactionMode = this.isCompactionCall(options)
     // Use a separate session key for compaction so its short-lived spawn
     // never collides with the main conversation's claude process.
