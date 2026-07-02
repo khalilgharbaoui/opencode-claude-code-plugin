@@ -728,9 +728,18 @@ export function buildAppendedSystemPrompt(
   const globalAgents = readPromptFileIfPresent(join(configRoot, "opencode", "AGENTS.md"))
   const workspaceAgents = nearestWorkspaceAgentsPrompt(cwd)
 
-  if (globalAgents) parts.push(globalAgents)
-  if (workspaceAgents && workspaceAgents !== globalAgents) parts.push(workspaceAgents)
-  if (globalAgents || workspaceAgents) parts.push(AGENTS_MAINTENANCE_HINT)
+  // Claude CLI erhält AGENTS.md bereits über opencodes forwarded System-Prompt
+  // (extraSystemContent). Nur pushen, wenn dort noch nicht enthalten, um die
+  // Verdopplung zu vermeiden. Kein Match (Formatting-Drift oder interaktiver
+  // Pfad mit leerem extraSystemContent) → altes Verhalten, nie AGENTS.md-Verlust.
+  const forwarded = extraSystemContent.join("\n\n")
+  const pushGlobal = !!globalAgents && !forwarded.includes(globalAgents)
+  const pushWorkspace =
+    !!workspaceAgents && workspaceAgents !== globalAgents &&
+    !forwarded.includes(workspaceAgents)
+  if (pushGlobal) parts.push(globalAgents)
+  if (pushWorkspace) parts.push(workspaceAgents)
+  if (pushGlobal || pushWorkspace) parts.push(AGENTS_MAINTENANCE_HINT)
   if (includeMultiStepHint) parts.push(MULTI_STEP_TASK_HINT)
 
   const content = parts.join("\n\n")
