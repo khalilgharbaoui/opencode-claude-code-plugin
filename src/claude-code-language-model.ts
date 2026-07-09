@@ -431,18 +431,13 @@ export function shouldAutoContinueIncompleteTurn(
   // continue — it is waiting for a reply, not stalled. Latched so it holds
   // even when the trailing text after the question doesn't read as a question.
   if (state.sawAskUserQuestion) return { continue: false, reason: "question" }
-  // v0.4.17: trust ANY protocol-level stop_reason as authoritative. If
-  // Claude CLI emitted a stop_reason value at all, the model has signaled
-  // a stop — honor it without consulting the keyword heuristic. The
-  // heuristic only runs as a fallback when stop_reason is missing (older
-  // CLI versions / edge cases). Maps snake_case → kebab-case for reason
-  // label consistency with other reasons.
-  if (snapshot.stopReason) {
-    return {
-      continue: false,
-      reason: snapshot.stopReason.replace(/_/g, "-"),
-    }
-  }
+  // NOTE: v0.4.17 removed the `stopReason` guard here. The protocol-level
+  // stop_reason (e.g. "end_turn") fires even when the model generated tool
+  // calls in the same turn — blocking auto-continue prematurely. The
+  // `hadActivity` check below already covers the "model did nothing" case:
+  // if there was no reasoning, no tool activity, and no proxy activity we
+  // return false. Keeping stopReason would make the heuristic unreachable
+  // for the common "text + tool_calls" pattern.
   if (state.attempts >= AUTO_CONTINUE_MAX_ATTEMPTS) {
     return { continue: false, reason: "max-attempts" }
   }
@@ -2892,8 +2887,32 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     count: drainBuffer.length,
                   },
                 )
-                drainNow()
-                return
+                // Enqueue tool-call events into the stream so opencode
+                // executes them, but do NOT close the controller yet.
+                // finishWithToolCalls() would close it, preventing
+                // auto-continue from firing on this turn.  Instead,
+                // enqueue the tool-call events manually, then fall
+                // through to the auto-continue check below.
+                if (!controllerClosed) {
+                  const batch = drainBuffer.splice(0, drainBuffer.length)
+                  for (const call of batch) {
+                    controller.enqueue({
+                      type: "tool-input-start",
+                      id: call.toolCallId,
+                      toolName: call.toolName,
+                    } as any)
+                    controller.enqueue({
+                      type: "tool-call",
+                      toolCallId: call.toolCallId,
+                      toolName: call.toolName,
+                      input: JSON.stringify(call.input),
+                      providerExecuted: false,
+                    } as any)
+                    skipResultForIds.add(call.toolCallId)
+                  }
+                  // Do NOT send finish or close controller here —
+                  // let the auto-continue check below decide.
+                }
               }
               const orphanPending = getPendingProxyCalls(sk)
               if (orphanPending.length > 0) {

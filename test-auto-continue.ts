@@ -467,9 +467,9 @@ test("v0.4.15 'tests pass' (present tense) stops as final-answer", () => {
 
 test("v0.4.16 end_turn stop_reason short-circuits heuristic", () => {
   // Even a long ambiguous mid-task narration with no completion keywords
-  // and visible tool activity gets stopped immediately when Claude CLI
-  // signals end_turn. This is the architectural alternative to chasing
-  // soft-proceed idioms via regex (v0.4.10-15).
+  // v0.5.0: stopReason check removed. end_turn with tool activity now
+  // continues — the model was actively working when the turn ended.
+  // The hadActivity check below already covers the "model did nothing" case.
   const ambiguous =
     "Running the next probe to inspect the build output and confirm bundle sizes are roughly equal."
   const result = shouldAutoContinueIncompleteTurn(
@@ -481,17 +481,16 @@ test("v0.4.16 end_turn stop_reason short-circuits heuristic", () => {
       stopReason: "end_turn",
     }),
   )
-  assert.deepEqual(result, { continue: false, reason: "end-turn" })
+  assert.deepEqual(result, { continue: true, reason: "non-final-progress" })
 })
 
 test("v0.4.16 end_turn beats max-attempts (decided last)", () => {
-  // End-turn wins over budget guards too — once the model says it's done,
-  // there's no value in burning more attempts.
+  // v0.5.0: stopReason removed. Without activity, max-attempts wins.
   const result = shouldAutoContinueIncompleteTurn(
     state({ attempts: 999 }),
     snap({ stopReason: "end_turn", hadReasoning: true }),
   )
-  assert.deepEqual(result, { continue: false, reason: "end-turn" })
+  assert.deepEqual(result, { continue: false, reason: "max-attempts" })
 })
 
 test("v0.4.16 end_turn does NOT beat genuine error", () => {
@@ -513,8 +512,7 @@ test("v0.4.16 end_turn does NOT beat abort", () => {
 })
 
 test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
-  // v0.4.17: ANY stop_reason value is authoritative. max_tokens is the
-  // model signaling a stop (it was cut off but the protocol said stop).
+  // v0.5.0: stopReason removed. max_tokens with tool activity now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({
@@ -524,53 +522,55 @@ test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
       stopReason: "max_tokens",
     }),
   )
-  assert.deepEqual(result, { continue: false, reason: "max-tokens" })
+  assert.deepEqual(result, { continue: true, reason: "non-final-progress" })
 })
 
 test("v0.4.17 stop_sequence stops via protocol signal", () => {
+  // v0.5.0: stopReason removed. stop_sequence with reasoning now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({ stopReason: "stop_sequence", hadReasoning: true }),
   )
-  assert.deepEqual(result, { continue: false, reason: "stop-sequence" })
+  assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
 test("v0.4.17 refusal stops via protocol signal", () => {
+  // v0.5.0: stopReason removed. refusal with no activity stops at no-activity.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({ stopReason: "refusal" }),
   )
-  assert.deepEqual(result, { continue: false, reason: "refusal" })
+  assert.deepEqual(result, { continue: false, reason: "no-activity" })
 })
 
 test("v0.4.17 pause_turn stops via protocol signal", () => {
+  // v0.5.0: stopReason removed. pause_turn with reasoning now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({ stopReason: "pause_turn", hadReasoning: true }),
   )
-  assert.deepEqual(result, { continue: false, reason: "pause-turn" })
+  assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
 test("v0.4.17 tool_use stops via protocol signal", () => {
-  // Defensive: tool_use shouldn't normally reach the result boundary
-  // (drain timer closes the stream first), but if it does we honor it.
+  // v0.5.0: stopReason removed. tool_use with tool activity now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({ stopReason: "tool_use", hadToolActivity: true }),
   )
-  assert.deepEqual(result, { continue: false, reason: "tool-use" })
+  assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
 test("v0.4.17 unknown stop_reason still stops (forward-compat)", () => {
-  // If Anthropic adds a new stop_reason value, we trust it as authoritative
-  // and stop. Safer than running the keyword heuristic on unknown shape.
+  // v0.5.0: stopReason removed. Unknown stop_reason with no activity stops
+  // at no-activity check (safer than trusting an unknown protocol value).
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({ stopReason: "future_value_we_dont_know" }),
   )
   assert.deepEqual(result, {
     continue: false,
-    reason: "future-value-we-dont-know",
+    reason: "no-activity",
   })
 })
 
