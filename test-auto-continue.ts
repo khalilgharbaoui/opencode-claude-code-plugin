@@ -465,8 +465,7 @@ test("v0.4.15 'tests pass' (present tense) stops as final-answer", () => {
   assert.deepEqual(result, { continue: false, reason: "final-answer" })
 })
 
-test("v0.4.16 end_turn stop_reason short-circuits heuristic", () => {
-  // Even a long ambiguous mid-task narration with no completion keywords
+test("end_turn with tool activity continues (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason check removed. end_turn with tool activity now
   // continues — the model was actively working when the turn ended.
   // The hadActivity check below already covers the "model did nothing" case.
@@ -511,7 +510,7 @@ test("v0.4.16 end_turn does NOT beat abort", () => {
   assert.deepEqual(result, { continue: false, reason: "aborted" })
 })
 
-test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
+test("max_tokens with tool activity continues (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason removed. max_tokens with tool activity now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -525,7 +524,7 @@ test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
   assert.deepEqual(result, { continue: true, reason: "non-final-progress" })
 })
 
-test("v0.4.17 stop_sequence stops via protocol signal", () => {
+test("stop_sequence with reasoning continues (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason removed. stop_sequence with reasoning now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -534,7 +533,7 @@ test("v0.4.17 stop_sequence stops via protocol signal", () => {
   assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
-test("v0.4.17 refusal stops via protocol signal", () => {
+test("refusal with no activity stops at no-activity (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason removed. refusal with no activity stops at no-activity.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -543,7 +542,7 @@ test("v0.4.17 refusal stops via protocol signal", () => {
   assert.deepEqual(result, { continue: false, reason: "no-activity" })
 })
 
-test("v0.4.17 pause_turn stops via protocol signal", () => {
+test("pause_turn with reasoning continues (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason removed. pause_turn with reasoning now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -552,7 +551,7 @@ test("v0.4.17 pause_turn stops via protocol signal", () => {
   assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
-test("v0.4.17 tool_use stops via protocol signal", () => {
+test("tool_use with tool activity continues (v0.5.0: stopReason removed)", () => {
   // v0.5.0: stopReason removed. tool_use with tool activity now continues.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -561,7 +560,7 @@ test("v0.4.17 tool_use stops via protocol signal", () => {
   assert.deepEqual(result, { continue: true, reason: "activity-without-visible-answer" })
 })
 
-test("v0.4.17 unknown stop_reason still stops (forward-compat)", () => {
+test("unknown stop_reason stops via no-activity (forward-compat)", () => {
   // v0.5.0: stopReason removed. Unknown stop_reason with no activity stops
   // at no-activity check (safer than trusting an unknown protocol value).
   const result = shouldAutoContinueIncompleteTurn(
@@ -574,7 +573,7 @@ test("v0.4.17 unknown stop_reason still stops (forward-compat)", () => {
   })
 })
 
-test("v0.4.17 empty-string stop_reason falls through (falsy)", () => {
+test("empty-string stop_reason falls through (falsy)", () => {
   // Empty string is falsy — fall back to heuristic, same as null/undefined.
   const result = shouldAutoContinueIncompleteTurn(
     state(),
@@ -587,7 +586,7 @@ test("v0.4.17 empty-string stop_reason falls through (falsy)", () => {
   assert.deepEqual(result, { continue: false, reason: "final-answer" })
 })
 
-test("v0.4.16 missing stop_reason falls through (back-compat)", () => {
+test("missing stop_reason falls through (back-compat)", () => {
   // When stop_reason is undefined or null, the heuristic must still run
   // unchanged. Protects against CLI versions / paths that don't surface it.
   const result = shouldAutoContinueIncompleteTurn(
