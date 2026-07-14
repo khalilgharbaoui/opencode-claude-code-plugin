@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { configModelsForProvider } from "./src/index.js"
+import { configModelsForProvider, createClaudeCode } from "./src/index.js"
 import { defaultModels } from "./src/models.js"
 import type { OpenCodeProvider } from "./src/opencode-types.js"
 
@@ -100,4 +100,12 @@ test("configModelsForProvider passes through user models not in defaults", () =>
 
   const models = configModelsForProvider(userConfig, "claude-code")
   assert.ok(models["my-custom-model"], "user-only model must be emitted")
+})
+
+test("createClaudeCode passes idle process timeout to language models", () => {
+  const model = createClaudeCode({ idleProcessTimeoutMs: 900_000 })(
+    "claude-sonnet-5",
+  )
+
+  assert.equal((model as any).config.idleProcessTimeoutMs, 900_000)
 })

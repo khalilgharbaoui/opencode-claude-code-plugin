@@ -99,6 +99,7 @@ export function createClaudeCode(
         settings.autoContinueIncompleteTurns ?? "smart",
       compactionModel: settings.compactionModel,
       ignoreAnthropicApiKey: settings.ignoreAnthropicApiKey,
+      idleProcessTimeoutMs: settings.idleProcessTimeoutMs,
       interactive: settings.interactive,
       interactiveBypass: settings.interactiveBypass,
       interactiveAllowTools: settings.interactiveAllowTools,

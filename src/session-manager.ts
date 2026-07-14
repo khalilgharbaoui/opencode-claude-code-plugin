@@ -32,6 +32,8 @@ export interface ActiveProcess {
 // make this a poor-man's LRU; see `touch()` below.
 const activeProcesses = new Map<string, ActiveProcess>()
 const claudeSessions = new Map<string, string>()
+const idleEvictionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const MAX_IDLE_TIMEOUT_MS = 2_147_483_647
 
 // Cap on live CLI subprocesses. Session-affinity-keyed entries accumulate
 // one-per-chat, so an unbounded map would leak processes as users open new
@@ -89,6 +91,13 @@ function touch(key: string): void {
   }
 }
 
+function cancelIdleProcessEviction(key: string): void {
+  const timer = idleEvictionTimers.get(key)
+  if (!timer) return
+  clearTimeout(timer)
+  idleEvictionTimers.delete(key)
+}
+
 function evictIfNeeded(): void {
   while (activeProcesses.size >= MAX_ACTIVE_PROCESSES) {
     const oldestKey = activeProcesses.keys().next().value
@@ -100,15 +109,53 @@ function evictIfNeeded(): void {
 
 export function getActiveProcess(key: string): ActiveProcess | undefined {
   const ap = activeProcesses.get(key)
-  if (ap) touch(key)
+  if (ap) {
+    cancelIdleProcessEviction(key)
+    touch(key)
+  }
   return ap
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {
+  cancelIdleProcessEviction(key)
   activeProcesses.set(key, ap)
 }
 
+/**
+ * Evict a headless Claude worker after a completed turn has stayed idle.
+ * Reusing the worker through `getActiveProcess` cancels the timer. The
+ * Claude session id is intentionally retained so the next turn can continue
+ * the same conversation via `--resume`.
+ */
+export function scheduleIdleProcessEviction(
+  key: string,
+  timeoutMs: number | undefined,
+): void {
+  cancelIdleProcessEviction(key)
+  if (
+    typeof timeoutMs !== "number" ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_IDLE_TIMEOUT_MS
+  ) {
+    return
+  }
+
+  const scheduledProcess = activeProcesses.get(key)
+  if (!scheduledProcess) return
+
+  const timer = setTimeout(() => {
+    idleEvictionTimers.delete(key)
+    if (activeProcesses.get(key) !== scheduledProcess) return
+    log.info("evicting idle claude process", { sessionKey: key, timeoutMs })
+    deleteActiveProcess(key)
+  }, timeoutMs)
+  timer.unref()
+  idleEvictionTimers.set(key, timer)
+}
+
 export function deleteActiveProcess(key: string): void {
+  cancelIdleProcessEviction(key)
   const ap = activeProcesses.get(key)
   if (ap) {
     void ap.proxyServer?.close()
@@ -168,6 +215,7 @@ export function spawnClaudeProcess(
     mcpHash,
     systemPromptFile,
   }
+  cancelIdleProcessEviction(sessionKey)
   activeProcesses.set(sessionKey, ap)
 
   // Baseline 'error' listener so Node doesn't throw when the process emits
@@ -182,8 +230,12 @@ export function spawnClaudeProcess(
     if (systemPromptFile) {
       void unlink(systemPromptFile).catch(() => {})
     }
-    activeProcesses.delete(sessionKey)
-    if (code !== 0 && code !== null) {
+    const ownsSession = activeProcesses.get(sessionKey) === ap
+    if (ownsSession) {
+      cancelIdleProcessEviction(sessionKey)
+      activeProcesses.delete(sessionKey)
+    }
+    if (ownsSession && code !== 0 && code !== null) {
       log.info("process exited with error, clearing session", {
         code,
         sessionKey,
@@ -197,6 +249,7 @@ export function spawnClaudeProcess(
     log.debug("stderr", { data: stderr.slice(0, 200) })
 
     if (
+      activeProcesses.get(sessionKey) === ap &&
       stderr.includes("Session ID") &&
       (stderr.includes("already in use") ||
         stderr.includes("not found") ||
@@ -216,7 +269,7 @@ export function spawnClaudeProcess(
 export function buildCliArgs(opts: {
   sessionKey: string
   skipPermissions: boolean
-  includeSessionId?: boolean
+  includeSessionResume?: boolean
   model?: string
   permissionMode?: string
   mcpConfig?: string | string[]
@@ -230,7 +283,7 @@ export function buildCliArgs(opts: {
   const {
     sessionKey,
     skipPermissions,
-    includeSessionId = true,
+    includeSessionResume = true,
     model,
     permissionMode,
     mcpConfig,
@@ -259,10 +312,10 @@ export function buildCliArgs(opts: {
     args.push("--permission-mode", permissionMode)
   }
 
-  if (includeSessionId) {
+  if (includeSessionResume) {
     const sessionId = claudeSessions.get(sessionKey)
     if (sessionId && !activeProcesses.has(sessionKey)) {
-      args.push("--session-id", sessionId)
+      args.push("--resume", sessionId)
     }
   }
 

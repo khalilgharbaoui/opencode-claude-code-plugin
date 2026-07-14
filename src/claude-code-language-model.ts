@@ -32,6 +32,7 @@ import {
   getClaudeSessionId,
   deleteClaudeSessionId,
   deleteActiveProcess,
+  scheduleIdleProcessEviction,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
   sessionKey,
@@ -1308,7 +1309,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const cliArgs = buildCliArgs({
       sessionKey: sk,
       skipPermissions: this.config.skipPermissions !== false,
-      includeSessionId: false,
+      includeSessionResume: false,
       model: this.modelId,
       permissionMode: this.config.permissionMode,
       mcpConfig: this.effectiveMcpConfig(cwd, undefined, runtimeStatus).paths,
@@ -1841,7 +1842,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // config has drifted since spawn. Only checked between turns (here,
         // before setup() runs), never mid tool-call. The stored claude
         // session id is preserved so the respawn resumes the conversation
-        // via `--session-id` (handled by buildCliArgs).
+        // via `--resume` (handled by buildCliArgs).
         if (
           !compactionMode &&
           activeProcess &&
@@ -1942,12 +1943,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // appended system prompt, no disallowed-tools list. The model
             // is asked for text output only on a single turn — all the
             // normal tool wiring is pure overhead and adds latency.
-            // Explicitly opt out of `--session-id` so a stale id can never
+            // Explicitly opt out of `--resume` so a stale id can never
             // resume into the lean spawn.
             cliArgs = buildCliArgs({
               sessionKey: sk,
               skipPermissions,
-              includeSessionId: false,
+              includeSessionResume: false,
               model: effectiveModelId,
               permissionMode: self.config.permissionMode,
               cliVersion,
@@ -2999,6 +3000,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               controllerClosed = true
               cleanupTurn()
+              if (!useInteractive && !compactionMode) {
+                scheduleIdleProcessEviction(
+                  sk,
+                  self.config.idleProcessTimeoutMs,
+                )
+              }
 
               try {
                 controller.close()
