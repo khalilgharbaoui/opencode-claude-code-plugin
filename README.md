@@ -249,7 +249,8 @@ model: claude-code-appical/claude-opus-5@appical
         "skipPermissions": true,
         "permissionMode": "default",
         "bridgeOpencodeMcp": true,
-        "strictMcpConfig": false
+        "strictMcpConfig": false,
+        "idleProcessTimeoutMs": 900000
       }
     }
   }
@@ -278,6 +279,7 @@ model: claude-code-appical/claude-opus-5@appical
 | `autoContinueIncompleteTurns` | boolean \| `"smart"` | `"smart"` | Smartly continue incomplete Claude CLI results inside the same opencode turn. Reduces manual "continue" presses when Claude ends after reasoning/tool activity without a useful final answer. Set `false` to disable. |
 | `compactionModel` | string | `"claude-haiku-4-5"` | Model used when opencode invokes `/compact`. Override per-process via the `CLAUDE_CODE_COMPACTION_MODEL` env var (env wins over config). See [Compaction](#compaction). |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from every spawned `claude` process so it authenticates with your logged-in subscription instead of pay-as-you-go API billing. The plugin warns once at startup whenever an API key is detected, regardless of this setting. See [Billing](#billing-change-june-15-2026-agent-sdk-credit). |
+| `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The session id is preserved for `--resume`; a new turn cancels the timer. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set to `0` to retain workers until LRU eviction. Interactive transport is excluded. |
 | `interactive` | boolean | `false` | **Experimental.** Drive the interactive `claude` TUI (subscription billing) instead of headless `--print`. Requires opencode running under Bun with PTY support; silently falls back to headless otherwise. Env: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`. See [Interactive transport](#interactive-transport-experimental). |
 | `interactiveBypass` | boolean | `false` | Deprecated/no-op with `interactive`: Claude Code's TUI shows a manual safety confirmation for `bypassPermissions`, so the plugin intentionally does not pass it. |
 | `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With `interactive`: built-in tools pre-allowed without prompting (replaces the default list). MCP server wildcards (`mcp__<server>__*`) are always added from the bridged config. |
@@ -614,6 +616,7 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 - **New chat** → fresh process under the new session key.
 - **Resumed chat after restart** → in-memory state is gone; a new process spawns and the conversation history is summarized and prepended.
 - **Abort (Ctrl+C)** → stream closes, process stays alive for the next message in that chat.
+- **Idle timeout** → when `idleProcessTimeoutMs` is configured, a completed headless turn arms an eviction timer; reuse cancels it, and eviction preserves the session id for `--resume`.
 - **Cap**: 16 active processes, LRU eviction.
 
 ---

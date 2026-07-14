@@ -44,6 +44,7 @@ import {
   deleteActiveProcess,
   deleteActiveProcessAndWait,
   respawnActiveProcess,
+  scheduleIdleProcessEviction,
   takeUnattendedLines,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
@@ -3184,6 +3185,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           controllerClosed = true
           cleanupTurn()
+          if (!useInteractive && !compactionMode) {
+            scheduleIdleProcessEviction(sk, self.config.idleProcessTimeoutMs)
+          }
 
           try {
             controller.close()

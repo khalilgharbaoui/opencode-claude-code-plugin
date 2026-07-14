@@ -45,6 +45,8 @@ export interface ClaudeCodeConfig {
   autoContinueIncompleteTurns?: boolean | "smart"
   compactionModel?: string
   ignoreAnthropicApiKey?: boolean
+  /** Kill an idle headless Claude worker after this many milliseconds. */
+  idleProcessTimeoutMs?: number
   logging?: LoggingConfig
 }
 
@@ -228,6 +230,15 @@ export interface ClaudeCodeProviderSettings {
   ignoreAnthropicApiKey?: boolean
 
   /**
+   * Kill a retained headless Claude worker after this many milliseconds of
+   * inactivity following a completed turn. Starting another turn cancels the
+   * timer, and the Claude session id is retained for a transparent resume.
+   * Omit or set to 0 to keep workers until LRU eviction. Interactive transport
+   * is excluded because it does not currently guarantee session-id resume.
+   */
+  idleProcessTimeoutMs?: number
+
+  /**
    * Routing for Claude's built-in `WebSearch` tool.
    *
    * - `"claude"` (default): Claude CLI runs WebSearch internally via
@@ -245,7 +256,7 @@ export interface ClaudeCodeProviderSettings {
    * underlying claude process so newly enabled / disabled MCPs become
    * visible to the model without restarting opencode or starting a new
    * chat. Eviction happens at the start of the next user turn (never mid
-   * tool-call) and `--session-id` is preserved so the conversation
+   * tool-call) and the session id is preserved for `--resume` so the conversation
    * continues seamlessly. Defaults to `true`.
    *
    * Set to `false` to keep the previous behavior (cached subprocess

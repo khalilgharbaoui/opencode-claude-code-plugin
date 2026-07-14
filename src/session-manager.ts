@@ -107,6 +107,10 @@ export function takeUnattendedLines(ap: ActiveProcess): {
 // make this a poor-man's LRU; see `touch()` below.
 const activeProcesses = new Map<string, ActiveProcess>()
 const claudeSessions = new Map<string, string>()
+// Idle-eviction timers keyed like `activeProcesses` (idle timeout by
+// @bernardofortes, absorbed from a5f723a).
+const idleEvictionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const MAX_IDLE_TIMEOUT_MS = 2_147_483_647
 
 // Cap on live CLI subprocesses. Session-affinity-keyed entries accumulate
 // one-per-chat, so an unbounded map would leak processes as users open new
@@ -196,17 +200,62 @@ function evictIfNeeded(): void {
   }
 }
 
+function cancelIdleProcessEviction(key: string): void {
+  const timer = idleEvictionTimers.get(key)
+  if (!timer) return
+  clearTimeout(timer)
+  idleEvictionTimers.delete(key)
+}
+
 export function getActiveProcess(key: string): ActiveProcess | undefined {
   const ap = activeProcesses.get(key)
-  if (ap) touch(key)
+  if (ap) {
+    cancelIdleProcessEviction(key)
+    touch(key)
+  }
   return ap
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {
+  cancelIdleProcessEviction(key)
   activeProcesses.set(key, ap)
 }
 
+/**
+ * Evict a headless Claude worker after a completed turn has stayed idle.
+ * Reusing the worker through `getActiveProcess` cancels the timer. The
+ * Claude session id is intentionally retained so the next turn can continue
+ * the same conversation via `--resume`.
+ */
+export function scheduleIdleProcessEviction(
+  key: string,
+  timeoutMs: number | undefined,
+): void {
+  cancelIdleProcessEviction(key)
+  if (
+    typeof timeoutMs !== "number" ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_IDLE_TIMEOUT_MS
+  ) {
+    return
+  }
+
+  const scheduledProcess = activeProcesses.get(key)
+  if (!scheduledProcess) return
+
+  const timer = setTimeout(() => {
+    idleEvictionTimers.delete(key)
+    if (activeProcesses.get(key) !== scheduledProcess) return
+    log.info("evicting idle claude process", { sessionKey: key, timeoutMs })
+    deleteActiveProcess(key)
+  }, timeoutMs)
+  timer.unref()
+  idleEvictionTimers.set(key, timer)
+}
+
 function detachActiveProcess(key: string): ActiveProcess | undefined {
+  cancelIdleProcessEviction(key)
   const ap = activeProcesses.get(key)
   if (!ap) return undefined
   activeProcesses.delete(key)
@@ -379,6 +428,7 @@ export function spawnClaudeProcess(
   rl.on("close", () => {
     lineEmitter.emit("close")
   })
+  cancelIdleProcessEviction(sessionKey)
   activeProcesses.set(sessionKey, ap)
 
   // Baseline 'error' listener so Node doesn't throw when the process emits
@@ -394,7 +444,10 @@ export function spawnClaudeProcess(
       void unlink(systemPromptFile).catch(() => {})
     }
     const ownsSessionKey = activeProcesses.get(sessionKey) === ap
-    if (ownsSessionKey) activeProcesses.delete(sessionKey)
+    if (ownsSessionKey) {
+      cancelIdleProcessEviction(sessionKey)
+      activeProcesses.delete(sessionKey)
+    }
     if (ownsSessionKey && code !== 0 && code !== null) {
       log.info("process exited with error, clearing session", {
         code,
