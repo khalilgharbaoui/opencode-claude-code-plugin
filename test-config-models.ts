@@ -87,11 +87,12 @@ test("configModelsForProvider registers Sonnet 5 and Opus 5 metadata", () => {
   assert.equal(sonnet.release_date, "2026-06-30")
   assert.equal(sonnet.reasoning, true)
   assert.deepEqual(sonnet.limit, { context: 1_000_000, output: 128_000 })
+  // Dollars per million tokens, the unit opencode/models.dev expect.
   assert.deepEqual(sonnet.cost, {
-    input: 2e-6,
-    output: 10e-6,
-    cache_read: 2e-7,
-    cache_write: 2.5e-6,
+    input: 2,
+    output: 10,
+    cache_read: 0.2,
+    cache_write: 2.5,
   })
 
   const opus = models["claude-opus-5"] as Record<string, unknown>
@@ -101,10 +102,10 @@ test("configModelsForProvider registers Sonnet 5 and Opus 5 metadata", () => {
   assert.equal(opus.reasoning, true)
   assert.deepEqual(opus.limit, { context: 1_000_000, output: 128_000 })
   assert.deepEqual(opus.cost, {
-    input: 5e-6,
-    output: 25e-6,
-    cache_read: 0.5e-6,
-    cache_write: 6.25e-6,
+    input: 5,
+    output: 25,
+    cache_read: 0.5,
+    cache_write: 6.25,
   })
 
   assert.ok("max" in (sonnet.variants as Record<string, unknown>))

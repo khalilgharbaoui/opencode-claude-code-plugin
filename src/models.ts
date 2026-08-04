@@ -60,7 +60,13 @@ function defineModel(opts: {
   }
 }
 
-// Per-token costs derived from Anthropic per-million-token pricing.
+// Costs in US dollars per MILLION tokens, matching Anthropic's published
+// pricing verbatim. This is the unit opencode and models.dev use: opencode
+// divides by 1e6 itself when it multiplies a cost by a token count, so writing
+// per-token values here under-reports session cost by exactly 1,000,000x.
+// Compare models.dev's own entry for the same model:
+// `anthropic/claude-haiku-4-5 -> {"input": 1, "output": 5, "cache_read": 0.1,
+// "cache_write": 1.25}`.
 //
 // There is no long-context premium to model. Anthropic's pricing page states
 // that Claude 4.6 and later ship the full 1M-token context window at standard
@@ -70,18 +76,18 @@ function defineModel(opts: {
 // fields for above-200K pricing; they stay unset here deliberately, because a
 // tier would misreport the real price. Re-check only if Anthropic introduces
 // one. Verified against the pricing docs 2026-07-26.
-const haikuCost = { input: 1e-6, output: 5e-6, cacheRead: 1e-7, cacheWrite: 1.25e-6 }
-const sonnetCost = { input: 3e-6, output: 15e-6, cacheRead: 3e-7, cacheWrite: 3.75e-6 }
+const haikuCost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }
+const sonnetCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
 // Introductory pricing through August 31, 2026. Standard pricing from September
 // 1 is the same $3/M input and $15/M output as the other Sonnet models.
-const sonnet5Cost = { input: 2e-6, output: 10e-6, cacheRead: 2e-7, cacheWrite: 2.5e-6 }
+const sonnet5Cost = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
 // Opus 4.5+ standard pricing is $5/M in, $25/M out (the price cut at 4.5; held
 // through 4.6/4.7/4.8/5). Cache read 0.1x input, cache write 1.25x input.
-const opusCost = { input: 5e-6, output: 25e-6, cacheRead: 0.5e-6, cacheWrite: 6.25e-6 }
+const opusCost = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }
 // Fable 5 and Mythos 5 are the Mythos-class tier above Opus and share pricing
 // ($10/M in, $50/M out). Cache read/write follow Anthropic's standard 0.1x / 1.25x
 // input ratios (not separately published).
-const fableCost = { input: 10e-6, output: 50e-6, cacheRead: 1e-6, cacheWrite: 12.5e-6 }
+const fableCost = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
 
 /**
  * Convert an OpenCodeModel to the flat config schema that OpenCode's
