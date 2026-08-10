@@ -22,6 +22,11 @@ export interface ProxyMcpServer {
   url: string
   serverName: string
   tools: ProxyToolDef[]
+  /** Per-server bearer secret. Minted on start, handed to Claude via the
+   * `headers` block of the generated MCP config, and required on every
+   * request. Exposed so callers (and tests) can authenticate; MUST NOT be
+   * logged or placed in the URL. */
+  authToken: string
   /** Fires when Claude invokes one of our proxy tools. The handler resolves
    * the returned pending call once a result is available. */
   calls: EventEmitter
@@ -541,9 +546,65 @@ export async function createProxyMcpServer(
   const calls = new EventEmitter()
   const pending = new Map<string, ProxyToolCall>()
 
+  // Per-server bearer secret (256 bits). This endpoint executes Bash/Edit/
+  // Write through opencode's executor, so an unauthenticated caller on
+  // loopback would have arbitrary command execution. The token lives only
+  // in this process and in the 0600 MCP config file Claude reads; it is
+  // deliberately kept out of the URL, because query strings leak into logs
+  // and process listings.
+  const authToken = crypto.randomBytes(32).toString("hex")
+  const expectedAuth = Buffer.from(`Bearer ${authToken}`)
+  // The exact authority we hand to Claude. Set once the ephemeral port is
+  // known; compared against the Host header to defeat DNS rebinding.
+  let boundAuthority = ""
+
+  function authOk(req: IncomingMessage): boolean {
+    const got = req.headers.authorization
+    if (typeof got !== "string") return false
+    const candidate = Buffer.from(got)
+    // timingSafeEqual throws on length mismatch, so length-check first.
+    // Length is not secret (the token is fixed-width).
+    if (candidate.length !== expectedAuth.length) return false
+    return crypto.timingSafeEqual(candidate, expectedAuth)
+  }
+
   const server = createServer(async (req, res) => {
     if (req.method !== "POST" || !req.url?.startsWith("/mcp")) {
       res.statusCode = 404
+      res.end()
+      return
+    }
+    // Everything below runs BEFORE readBody: an unauthenticated peer must
+    // not be able to stream an unbounded body into memory.
+    //
+    // DNS rebinding: a browser rebound onto this port sends the attacker's
+    // hostname in Host, never the loopback authority we generated.
+    if (req.headers.host !== boundAuthority) {
+      res.statusCode = 403
+      res.end()
+      return
+    }
+    // A conforming MCP client sends no Origin. Any Origin at all means the
+    // request came from a browser context, which has no business here.
+    if (req.headers.origin !== undefined) {
+      res.statusCode = 403
+      res.end()
+      return
+    }
+    // Requiring application/json forces a CORS preflight for cross-origin
+    // callers (which then fails), closing the text/plain "simple request"
+    // bypass that would otherwise allow blind cross-site POSTs.
+    const contentType = String(req.headers["content-type"] ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase()
+    if (contentType !== "application/json") {
+      res.statusCode = 415
+      res.end()
+      return
+    }
+    if (!authOk(req)) {
+      res.statusCode = 401
       res.end()
       return
     }
@@ -770,8 +831,12 @@ export async function createProxyMcpServer(
     throw new Error("Failed to bind proxy MCP server")
   }
 
-  const url = `http://127.0.0.1:${addr.port}/mcp`
+  boundAuthority = `127.0.0.1:${addr.port}`
+  const url = `http://${boundAuthority}/mcp`
 
+  // NOTE: authToken is deliberately absent from this line and every other
+  // log call. The plugin log is written to disk and echoed to the TUI in
+  // debug mode; a leaked token there would defeat the whole mechanism.
   log.info("proxy-mcp server started", {
     url,
     tools: tools.map((t) => t.name),
@@ -783,6 +848,7 @@ export async function createProxyMcpServer(
     url,
     serverName: SERVER_NAME,
     tools,
+    authToken,
     calls,
     configPath() {
       if (configFilePath) return configFilePath
@@ -792,6 +858,10 @@ export async function createProxyMcpServer(
             [SERVER_NAME]: {
               type: "http",
               url,
+              // Claude CLI replays these headers on every request to this
+              // server, which is what lets the handler above reject anyone
+              // who did not read this 0600 file.
+              headers: { Authorization: `Bearer ${authToken}` },
               timeout: resolveProxyClientCeilingMs(timeoutOverrides),
             },
           },

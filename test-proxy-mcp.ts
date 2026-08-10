@@ -11,6 +11,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as http from "node:http"
+import * as fs from "node:fs"
 import {
   createProxyMcpServer,
   buildProxyTimeoutError,
@@ -26,17 +27,27 @@ import {
   type ProxyToolResult,
 } from "./src/proxy-mcp.js"
 
-function post(url: string, body: unknown): Promise<{
+/**
+ * Low-level POST. `headers` REPLACES the default header set, so the
+ * security tests below can omit Authorization, send a foreign Host, add an
+ * Origin, or use a non-JSON Content-Type. `rawBody` bypasses JSON encoding
+ * for the malformed-payload case.
+ */
+function post(
+  url: string,
+  body: unknown,
+  opts: { headers?: Record<string, string>; rawBody?: string } = {},
+): Promise<{
   status: number
   json: any
 }> {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body)
+    const payload = opts.rawBody ?? JSON.stringify(body)
     const req = http.request(
       url,
       {
         method: "POST",
-        headers: {
+        headers: opts.headers ?? {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload).toString(),
         },
@@ -57,6 +68,18 @@ function post(url: string, body: unknown): Promise<{
     req.on("error", reject)
     req.write(payload)
     req.end()
+  })
+}
+
+/** The happy path: a correctly authenticated JSON-RPC POST. */
+function authedPost(srv: ProxyMcpServer, body: unknown) {
+  const payload = JSON.stringify(body)
+  return post(srv.url, body, {
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload).toString(),
+      Authorization: `Bearer ${srv.authToken}`,
+    },
   })
 }
 
@@ -84,7 +107,7 @@ test("tools/call broker rejection returns an MCP result with isError, echoing th
       call.reject(new Error("simulated broker rejection"))
     })
 
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: 42,
       method: "tools/call",
@@ -114,7 +137,7 @@ test("tools/call with kind:error result returns an MCP result with isError", asy
       call.resolve(result)
     })
 
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: "req-7",
       method: "tools/call",
@@ -133,7 +156,7 @@ test("tools/call with kind:error result returns an MCP result with isError", asy
 
 test("tools/call for an unknown tool returns an MCP result with isError", async () => {
   await withServer(async (srv) => {
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: 99,
       method: "tools/call",
@@ -151,7 +174,7 @@ test("tools/call success preserves isError:false and the result text", async () 
     srv.calls.on("call", (call: ProxyToolCall) => {
       call.resolve({ kind: "text", text: "done" })
     })
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
@@ -164,36 +187,16 @@ test("tools/call success preserves isError:false and the result text", async () 
 
 test("malformed JSON still responds (with null id when unparseable)", async () => {
   await withServer(async (srv) => {
-    // Send invalid JSON so parsing throws before requestId is set.
-    const res = await new Promise<{
-      status: number
-      json: any
-    }>((resolve, reject) => {
-      const req = http.request(
-        srv.url,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength("{not json").toString(),
-          },
-        },
-        (r) => {
-          const chunks: Buffer[] = []
-          r.on("data", (c: Buffer) => chunks.push(c))
-          r.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8")
-            try {
-              resolve({ status: r.statusCode ?? 0, json: JSON.parse(text) })
-            } catch {
-              resolve({ status: r.statusCode ?? 0, json: text })
-            }
-          })
-        },
-      )
-      req.on("error", reject)
-      req.write("{not json")
-      req.end()
+    // Send invalid JSON so parsing throws before requestId is set. The
+    // request is otherwise well-formed and authenticated, so it reaches
+    // the parser rather than being rejected by the entry guards.
+    const res = await post(srv.url, null, {
+      rawBody: "{not json",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength("{not json").toString(),
+        Authorization: `Bearer ${srv.authToken}`,
+      },
     })
 
     // When the body never parsed, null id is the only honest answer and
@@ -205,7 +208,7 @@ test("malformed JSON still responds (with null id when unparseable)", async () =
 
 test("tools/list exposes the default proxy defs", async () => {
   await withServer(async (srv) => {
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/list",
@@ -350,7 +353,7 @@ test("tools/call timeout uses the per-tool override and surfaces the task-specif
   const srv = await createProxyMcpServer(DEFAULT_PROXY_TOOLS, { task: 50 })
   try {
     // Intentionally do NOT attach a calls listener — let the deadline fire.
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: "timeout-1",
       method: "tools/call",
@@ -384,7 +387,7 @@ test("tools/call bash timeout honours input.timeout over a shorter override", as
         call.resolve({ kind: "text", text: "built" })
       }, 120)
     })
-    const res = await post(srv.url, {
+    const res = await authedPost(srv, {
       jsonrpc: "2.0",
       id: "bash-1",
       method: "tools/call",
@@ -449,4 +452,208 @@ test("overlayQuestionProxyDescription is a no-op without a live description", ()
     undefined,
   ).find((t) => t.name === "question")
   assert.equal(after?.description, before?.description)
+})
+
+// ---------------------------------------------------------------------------
+// Entry-guard security tests.
+//
+// This endpoint executes bash/edit/write through opencode's executor, so an
+// unauthenticated caller on loopback would have arbitrary command execution
+// as the user. These pin every guard in front of the JSON-RPC body parser.
+// ---------------------------------------------------------------------------
+
+const LIST_REQ = { jsonrpc: "2.0", id: 1, method: "tools/list" }
+
+function jsonHeaders(
+  payload: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(payload).toString(),
+    ...extra,
+  }
+}
+
+test("security: a correctly authenticated request is accepted", async () => {
+  await withServer(async (srv) => {
+    const res = await authedPost(srv, LIST_REQ)
+    assert.equal(res.status, 200)
+    assert.ok(res.json.result.tools.length > 0)
+  })
+})
+
+test("security: a wrong bearer token of equal length is rejected with 401", async () => {
+  await withServer(async (srv) => {
+    // Same length as the real token, so this exercises timingSafeEqual
+    // rather than the cheap length short-circuit in front of it.
+    const forged = "0".repeat(srv.authToken.length)
+    assert.equal(forged.length, srv.authToken.length)
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, { Authorization: `Bearer ${forged}` }),
+    })
+    assert.equal(res.status, 401)
+  })
+})
+
+test("security: a short/garbage bearer token is rejected with 401", async () => {
+  await withServer(async (srv) => {
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, { Authorization: "Bearer nope" }),
+    })
+    assert.equal(res.status, 401)
+  })
+})
+
+test("security: an absent Authorization header is rejected with 401", async () => {
+  await withServer(async (srv) => {
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, { headers: jsonHeaders(payload) })
+    assert.equal(res.status, 401)
+  })
+})
+
+test("security: a foreign Host header is rejected with 403 (DNS rebinding)", async () => {
+  await withServer(async (srv) => {
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, {
+        Host: "attacker.example",
+        Authorization: `Bearer ${srv.authToken}`,
+      }),
+    })
+    assert.equal(res.status, 403)
+  })
+})
+
+test("security: any Origin header is rejected with 403 (browser context)", async () => {
+  await withServer(async (srv) => {
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, {
+        Origin: "https://attacker.example",
+        Authorization: `Bearer ${srv.authToken}`,
+      }),
+    })
+    assert.equal(res.status, 403)
+  })
+})
+
+test("security: text/plain is rejected with 415 (CORS simple-request bypass)", async () => {
+  await withServer(async (srv) => {
+    // text/plain is a CORS "simple request" content type, so a cross-origin
+    // page can send it with no preflight. Requiring application/json forces
+    // a preflight that then fails.
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: {
+        "Content-Type": "text/plain",
+        "Content-Length": Buffer.byteLength(payload).toString(),
+        Authorization: `Bearer ${srv.authToken}`,
+      },
+    })
+    assert.equal(res.status, 415)
+  })
+})
+
+test("security: a Content-Type with charset parameters is still accepted", async () => {
+  await withServer(async (srv) => {
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${srv.authToken}`,
+      }),
+    })
+    assert.equal(res.status, 200)
+  })
+})
+
+test("security: the 401 path answers without reading the request body", async () => {
+  await withServer(async (srv) => {
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        srv.url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Declare a large body that we never finish sending, and send
+            // no Authorization. If the handler read the body before
+            // authenticating it would block here and no response would
+            // ever arrive.
+            "Content-Length": "10000000",
+          },
+        },
+        (res) => {
+          clearTimeout(timer)
+          res.resume()
+          resolve(res.statusCode ?? 0)
+          req.destroy()
+        },
+      )
+      const timer = setTimeout(() => {
+        req.destroy()
+        reject(
+          new Error(
+            "no response while the body was still incomplete — the handler appears to read the body before authenticating",
+          ),
+        )
+      }, 5000)
+      req.on("error", () => {})
+      req.write("{") // one byte; req.end() is deliberately never called
+    })
+    assert.equal(status, 401)
+  })
+})
+
+test("security: the generated MCP config carries the token, 0600, and never in the URL", async () => {
+  await withServer(async (srv) => {
+    const cfgPath = srv.configPath()
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"))
+    const entry = cfg.mcpServers[srv.serverName]
+
+    assert.equal(entry.type, "http")
+    assert.equal(entry.headers.Authorization, `Bearer ${srv.authToken}`)
+
+    // The file now holds a secret, so its mode is load-bearing.
+    assert.equal(fs.statSync(cfgPath).mode & 0o777, 0o600)
+
+    // A token in the URL would leak into logs and process listings.
+    assert.ok(!srv.url.includes(srv.authToken))
+    assert.ok(!entry.url.includes(srv.authToken))
+  })
+})
+
+test("security: a client using only the generated config's header is accepted (round-trip)", async () => {
+  await withServer(async (srv) => {
+    // Proves config generation and request validation agree: read the
+    // header out of the file Claude is handed, and use nothing else.
+    const cfg = JSON.parse(fs.readFileSync(srv.configPath(), "utf8"))
+    const auth = cfg.mcpServers[srv.serverName].headers.Authorization
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(srv.url, LIST_REQ, {
+      headers: jsonHeaders(payload, { Authorization: auth }),
+    })
+    assert.equal(res.status, 200)
+    assert.ok(res.json.result.tools.length > 0)
+  })
+})
+
+test("security: two servers get distinct tokens, and one's token is rejected by the other", async () => {
+  const a = await createProxyMcpServer(DEFAULT_PROXY_TOOLS)
+  const b = await createProxyMcpServer(DEFAULT_PROXY_TOOLS)
+  try {
+    assert.notEqual(a.authToken, b.authToken)
+    const payload = JSON.stringify(LIST_REQ)
+    const res = await post(b.url, LIST_REQ, {
+      headers: jsonHeaders(payload, { Authorization: `Bearer ${a.authToken}` }),
+    })
+    assert.equal(res.status, 401)
+  } finally {
+    await a.close()
+    await b.close()
+  }
 })
