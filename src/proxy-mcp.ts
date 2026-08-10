@@ -568,27 +568,53 @@ export async function createProxyMcpServer(
     return crypto.timingSafeEqual(candidate, expectedAuth)
   }
 
+  /**
+   * Reject a request without leaving the connection usable.
+   *
+   * Ending the response alone is not enough. A peer can declare a large
+   * Content-Length, send a single byte, take the rejection, and leave the
+   * request still arriving — and `server.close()` does not reap connections
+   * that are still sending, so a shutdown would hang behind it. Node's
+   * default whole-request timeout is five minutes, which is five minutes of
+   * a socket held by an unauthenticated caller.
+   *
+   * `Connection: close` tells Node to close once the response is flushed;
+   * destroying the socket on `finish` covers the case where the peer never
+   * finishes its body.
+   */
+  function reject(req: IncomingMessage, res: ServerResponse, statusCode: number): void {
+    res.statusCode = statusCode
+    res.setHeader("Connection", "close")
+    res.on("finish", () => {
+      req.socket?.destroy()
+    })
+    res.end()
+  }
+
   const server = createServer(async (req, res) => {
     if (req.method !== "POST" || !req.url?.startsWith("/mcp")) {
-      res.statusCode = 404
-      res.end()
+      reject(req, res, 404)
       return
     }
     // Everything below runs BEFORE readBody: an unauthenticated peer must
     // not be able to stream an unbounded body into memory.
     //
-    // DNS rebinding: a browser rebound onto this port sends the attacker's
-    // hostname in Host, never the loopback authority we generated.
+    // DNS rebinding: a browser rebound onto this port via an attacker
+    // hostname sends that hostname in Host, never the loopback authority we
+    // generated. This does NOT block a page posting directly to
+    // 127.0.0.1:<port> — such a request carries exactly the expected Host —
+    // so it is a rebinding defense specifically, not a browser defense. The
+    // Origin and Content-Type guards below, and the token, cover that case.
     if (req.headers.host !== boundAuthority) {
-      res.statusCode = 403
-      res.end()
+      reject(req, res, 403)
       return
     }
-    // A conforming MCP client sends no Origin. Any Origin at all means the
-    // request came from a browser context, which has no business here.
+    // Claude Code 2.1.226 sends no Origin on MCP requests (verified). The MCP
+    // transport spec obliges SERVERS to validate Origin; it does not oblige
+    // clients to omit it, so this is a measured property of the client we
+    // spawn rather than a guarantee about all conforming clients.
     if (req.headers.origin !== undefined) {
-      res.statusCode = 403
-      res.end()
+      reject(req, res, 403)
       return
     }
     // Requiring application/json forces a CORS preflight for cross-origin
@@ -599,13 +625,11 @@ export async function createProxyMcpServer(
       .trim()
       .toLowerCase()
     if (contentType !== "application/json") {
-      res.statusCode = 415
-      res.end()
+      reject(req, res, 415)
       return
     }
     if (!authOk(req)) {
-      res.statusCode = 401
-      res.end()
+      reject(req, res, 401)
       return
     }
     // Hoist the request id and method so the catch block can echo them

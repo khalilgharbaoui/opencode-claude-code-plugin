@@ -618,13 +618,62 @@ test("security: the generated MCP config carries the token, 0600, and never in t
     assert.equal(entry.type, "http")
     assert.equal(entry.headers.Authorization, `Bearer ${srv.authToken}`)
 
-    // The file now holds a secret, so its mode is load-bearing.
-    assert.equal(fs.statSync(cfgPath).mode & 0o777, 0o600)
+    // The file now holds a secret, so its mode is load-bearing -- ON POSIX.
+    // Node does not implement owner/group/other mode bits on Windows, where
+    // this commonly reads back 0o666 and confidentiality instead depends on
+    // the inherited ACL of os.tmpdir(). Asserting 0o600 there would be a
+    // test that cannot pass, and claiming it in the README would be a
+    // guarantee we do not provide.
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(cfgPath).mode & 0o777, 0o600)
+    }
 
     // A token in the URL would leak into logs and process listings.
     assert.ok(!srv.url.includes(srv.authToken))
     assert.ok(!entry.url.includes(srv.authToken))
   })
+})
+
+// A rejected request must not leave the connection usable. Without an
+// explicit close, a peer can declare a large Content-Length, send one byte,
+// take the 401, and hold the socket -- and `server.close()` does NOT reap
+// connections that are still sending, so shutdown would block behind an
+// unauthenticated caller for Node's five-minute request timeout.
+//
+// This test deliberately never finishes the body. An earlier version of the
+// suite masked the defect by destroying the socket client-side as soon as the
+// response arrived, which is exactly the cleanup the server must not depend on.
+test("security: rejecting an unauthenticated request does not leave shutdown hostage to an unfinished body", async () => {
+  const net = await import("node:net")
+  const srv = await createProxyMcpServer(DEFAULT_PROXY_TOOLS)
+  const { port } = new URL(srv.url)
+
+  const sock = net.connect({ host: "127.0.0.1", port: Number(port) })
+  await new Promise<void>((resolve) => sock.once("connect", () => resolve()))
+
+  // Announce a large body, then send a single byte and stop.
+  sock.write(
+    "POST /mcp HTTP/1.1\r\n" +
+      `Host: 127.0.0.1:${port}\r\n` +
+      "Content-Type: application/json\r\n" +
+      "Content-Length: 1048576\r\n" +
+      "\r\n" +
+      "{",
+  )
+
+  const status = await new Promise<string>((resolve) => {
+    sock.once("data", (chunk) => resolve(chunk.toString("utf8").split("\r\n")[0]))
+  })
+  assert.match(status, /401/, "the unauthenticated request should be rejected")
+
+  // The body is still unfinished here, on purpose. close() must not hang.
+  const closed = srv.close().then(() => "closed" as const)
+  const timedOut = new Promise<"hung">((resolve) =>
+    setTimeout(() => resolve("hung"), 4000).unref(),
+  )
+  assert.equal(await Promise.race([closed, timedOut]), "closed")
+
+  sock.destroy()
 })
 
 test("security: a client using only the generated config's header is accepted (round-trip)", async () => {
