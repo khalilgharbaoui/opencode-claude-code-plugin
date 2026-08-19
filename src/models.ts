@@ -31,8 +31,7 @@ function defineModel(opts: {
   releaseDate: string
   // List-price multiplier relative to Haiku (the cheapest model). Derived
   // exactly from published per-token pricing: input AND output ratios both come
-  // out to haiku 1, sonnet 3, opus 5, fable/mythos 10. Sonnet 5 is temporarily
-  // 2x during its launch-price period through August 31, 2026. Rendered as an
+  // out to haiku 1, sonnet 3, opus 5, fable/mythos 10. Rendered as an
   // `(N×)` suffix so it surfaces in opencode's model picker, which has no
   // dedicated multiplier field.
   // Display-only: model resolution keys off `id`.
@@ -78,9 +77,6 @@ function defineModel(opts: {
 // one. Verified against the pricing docs 2026-07-26.
 const haikuCost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }
 const sonnetCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
-// Introductory pricing through August 31, 2026. Standard pricing from September
-// 1 is the same $3/M input and $15/M output as the other Sonnet models.
-const sonnet5Cost = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
 // Opus 4.5+ standard pricing is $5/M in, $25/M out (the price cut at 4.5; held
 // through 4.6/4.7/4.8/5). Cache read 0.1x input, cache write 1.25x input.
 const opusCost = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }
@@ -172,8 +168,8 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     reasoning: true,
     context: 1_000_000,
     output: 128_000,
-    cost: sonnet5Cost,
-    multiplier: 2,
+    cost: sonnetCost,
+    multiplier: 3,
     releaseDate: "2026-06-30",
   }),
   "claude-opus-4-5": defineModel({

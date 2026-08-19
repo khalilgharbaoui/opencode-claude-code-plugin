@@ -73,7 +73,7 @@ The plugin auto-registers the following. They appear in the model picker without
 | `claude-haiku-4-5` | Claude Haiku 4.5 | 200k | 64,000 | – | 1× |
 | `claude-sonnet-4-5` | Claude Sonnet 4.5 | 200k | 64,000 | low/medium/high/xhigh/max | 3× |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1M | 128,000 | low/medium/high/xhigh/max | 3× |
-| `claude-sonnet-5` | Claude Sonnet 5 | 1M | 128,000 | low/medium/high/xhigh/max | 2×* |
+| `claude-sonnet-5` | Claude Sonnet 5 | 1M | 128,000 | low/medium/high/xhigh/max | 3× |
 | `claude-opus-4-5` | Claude Opus 4.5 | 200k | 64,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
@@ -86,7 +86,7 @@ The plugin auto-registers the following. They appear in the model picker without
 
 Capabilities for every model: text + image input, text output, tool use, attachments. No temperature control, no PDF/audio/video, no interleaved streaming.
 
-**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing — input and output ratios both come out the same (Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus $5/$25 = 5×, Fable 5 / Mythos 5 $10/$50 = 10×), so **Fable 5 and Mythos 5 cost 2× Opus 5**. Sonnet 5's `2×` uses its introductory $2/$10 pricing through August 31, 2026; standard $3/$15 pricing begins September 1. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
+**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing — input and output ratios both come out the same (Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus $5/$25 = 5×, Fable 5 / Mythos 5 $10/$50 = 10×), so **Fable 5 and Mythos 5 cost 2× Opus 5**. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
 
 The model ID is passed straight through to `claude --model`, so anything Claude Code accepts works.
 
