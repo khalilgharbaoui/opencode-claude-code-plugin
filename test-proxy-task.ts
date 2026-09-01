@@ -19,6 +19,7 @@ import {
   isExpectedCleanupError,
   resolveProxyClientCeilingMs,
   SERVER_CLOSED_MESSAGE,
+  type ProxyMcpServer,
 } from "./src/proxy-mcp.js"
 import {
   getPendingProxyCalls,
@@ -78,13 +79,18 @@ if (process.argv.includes("--version")) {
 const args = process.argv.slice(2)
 const configIndex = args.indexOf("--mcp-config")
 let proxyUrl
+let proxyHeaders = {}
 if (configIndex >= 0) {
   for (let index = configIndex + 1; index < args.length; index++) {
     const value = args[index]
     if (value.startsWith("--")) break
     try {
       const config = JSON.parse(fs.readFileSync(value, "utf8"))
-      proxyUrl = config.mcpServers?.opencode_proxy?.url ?? proxyUrl
+      const entry = config.mcpServers?.opencode_proxy
+      proxyUrl = entry?.url ?? proxyUrl
+      // A real MCP client replays the configured headers on every request;
+      // the proxy server requires its bearer token, so do the same here.
+      proxyHeaders = entry?.headers ?? proxyHeaders
     } catch {}
   }
 }
@@ -222,7 +228,7 @@ function emitAssistant() {
 async function callTask(input = taskInput, id = 1) {
   const response = await fetch(proxyUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...proxyHeaders },
     body: JSON.stringify({
       jsonrpc: "2.0",
       id,
@@ -375,10 +381,17 @@ function assertNativeTaskBoundary(
   )
 }
 
-async function postRpc(url: string, request: Record<string, unknown>) {
-  const response = await fetch(url, {
+async function postRpc(
+  srv: ProxyMcpServer,
+  request: Record<string, unknown>,
+) {
+  const response = await fetch(srv.url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // The proxy endpoint requires the per-server bearer token.
+      authorization: `Bearer ${srv.authToken}`,
+    },
     body: JSON.stringify(request),
   })
   if (response.status === 204) return { status: 204, body: null }
@@ -511,7 +524,7 @@ test("proxy MCP initializes, lists Task, and resolves it through the broker", as
     )
     assert.equal(resolveProxyClientCeilingMs(undefined), 60 * 60 * 1000)
 
-    const initialized = await postRpc(server.url, {
+    const initialized = await postRpc(server, {
       jsonrpc: "2.0",
       id: "initialize-1",
       method: "initialize",
@@ -524,13 +537,13 @@ test("proxy MCP initializes, lists Task, and resolves it through the broker", as
     assert.equal(initialized.body.id, "initialize-1")
     assert.equal(initialized.body.result.serverInfo.name, "opencode_proxy")
 
-    const notification = await postRpc(server.url, {
+    const notification = await postRpc(server, {
       jsonrpc: "2.0",
       method: "notifications/initialized",
     })
     assert.equal(notification.status, 204)
 
-    const listed = await postRpc(server.url, {
+    const listed = await postRpc(server, {
       jsonrpc: "2.0",
       id: "list-1",
       method: "tools/list",
@@ -542,7 +555,7 @@ test("proxy MCP initializes, lists Task, and resolves it through the broker", as
     )
 
     const brokerCalls = waitForBrokerCalls(brokerSession, 1)
-    const callResponse = postRpc(server.url, {
+    const callResponse = postRpc(server, {
       jsonrpc: "2.0",
       id: "task-1",
       method: "tools/call",
@@ -604,7 +617,7 @@ test("closing the server rejects a pending call with the cleanup message", async
   const callReceived = new Promise<void>((resolve) => {
     server.calls.once("call", () => resolve())
   })
-  const callResponse = postRpc(server.url, {
+  const callResponse = postRpc(server, {
     jsonrpc: "2.0",
     id: "close-1",
     method: "tools/call",
@@ -638,7 +651,7 @@ test("parallel proxy calls preserve success and error correlation", async () => 
     ]
     const brokerCalls = waitForBrokerCalls(brokerSession, inputs.length)
     const responses = inputs.map((input, index) =>
-      postRpc(server.url, {
+      postRpc(server, {
         jsonrpc: "2.0",
         id: `batch-${index}`,
         method: "tools/call",

@@ -7,6 +7,7 @@ import type { ProxyMcpServer } from "./proxy-mcp.js"
 import { clearLedger } from "./todo-ledger.js"
 import { clearExitPlanModeQuestions } from "./plan-mode-question.js"
 import {
+  cliSupportsFastMode,
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
   type CliVersion,
@@ -374,6 +375,7 @@ export function buildCliArgs(opts: {
   appendSystemPromptFile?: string
   thinking?: "enabled" | "disabled"
   thinkingDisplay?: "summarized" | "omitted"
+  fastMode?: boolean
   cliVersion?: CliVersion | null
 }): string[] {
   const {
@@ -388,6 +390,7 @@ export function buildCliArgs(opts: {
     appendSystemPromptFile,
     thinking,
     thinkingDisplay,
+    fastMode,
     cliVersion,
   } = opts
   const args = [
@@ -452,6 +455,15 @@ export function buildCliArgs(opts: {
 
   if (appendSystemPromptFile) {
     args.push("--append-system-prompt-file", appendSystemPromptFile)
+  }
+
+  // Fast mode's only headless opt-in. `--settings` feeds the CLI's
+  // `flagSettings` layer, which is the one its SDK gate checks; a `fastMode`
+  // in the user's own settings.json is NOT enough for a `--print` run.
+  // Built as one object so later flag-settings keys merge here instead of
+  // adding a second `--settings` (the CLI takes the flag once).
+  if (fastMode && cliSupportsFastMode(cliVersion ?? null)) {
+    args.push("--settings", JSON.stringify({ fastMode: true }))
   }
 
   if (skipPermissions) {

@@ -332,6 +332,14 @@ export interface ClaudeStreamMessage {
   subtype?: string
   request_id?: string
 
+  // Fast mode, reported on both `system`/`init` and `result`. `off` with a
+  // reason is how a request that asked for fast mode but did not get it shows
+  // up: the CLI degrades to standard speed rather than failing, so without
+  // reading these the downgrade is invisible. `cooldown` is the post-rate-limit
+  // state and is temporary.
+  fast_mode_state?: "on" | "off" | "cooldown"
+  fast_mode_disabled_reason?: string
+
   // Present on `stream_event` envelopes when --include-partial-messages is on.
   // The inner event mirrors the same shape (content_block_*, message_*, etc).
   event?: ClaudeStreamMessage

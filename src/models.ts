@@ -84,6 +84,14 @@ const opusCost = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }
 // ($10/M in, $50/M out). Cache read/write follow Anthropic's standard 0.1x / 1.25x
 // input ratios (not separately published).
 const fableCost = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
+// Fast mode bills the same per-token rates as the Mythos-class tier: $10/M in,
+// $50/M out, cache read 1, cache write 12.5. Not an inference; this is the
+// exact table the CLI itself applies for `speed: "fast"` on Opus 4.8 / Opus 5
+// (`{inputTokens: 10, outputTokens: 50, promptCacheWriteTokens: 12.5,
+// promptCacheReadTokens: 1}`). Kept as its own binding rather than reusing
+// `fableCost` so a future divergence in either tier stays a one-line change.
+// Verified against Claude Code 2.1.245, 2026-08-30.
+const opusFastCost = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
 
 /**
  * Convert an OpenCodeModel to the flat config schema that OpenCode's
@@ -216,6 +224,26 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 5,
     releaseDate: "2026-05-28",
   }),
+  // Fast mode. The `-fast` suffix is OUR marker, not a model name Anthropic
+  // serves: `parseModelId` strips it before `--model` and turns it into
+  // `--settings {"fastMode":true}` on the spawn. Retired `-fast` model strings
+  // (`claude-opus-4-6-fast`) are a different thing and are not registered here.
+  //
+  // Only Opus 4.8 and Opus 5 qualify: the CLI gates fast mode on the resolved
+  // model name containing `opus-4-8` or `opus-5`, so registering a fast entry
+  // for any other model would produce a picker option that silently runs at
+  // standard speed while displaying the 10x price.
+  "claude-opus-4-8-fast": defineModel({
+    id: "claude-opus-4-8-fast",
+    name: "Claude Opus 4.8 Fast",
+    family: "opus",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: opusFastCost,
+    multiplier: 10,
+    releaseDate: "2026-05-28",
+  }),
   "claude-opus-5": defineModel({
     id: "claude-opus-5",
     name: "Claude Opus 5",
@@ -225,6 +253,17 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     output: 128_000,
     cost: opusCost,
     multiplier: 5,
+    releaseDate: "2026-07-24",
+  }),
+  "claude-opus-5-fast": defineModel({
+    id: "claude-opus-5-fast",
+    name: "Claude Opus 5 Fast",
+    family: "opus",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: opusFastCost,
+    multiplier: 10,
     releaseDate: "2026-07-24",
   }),
   "claude-fable-5": defineModel({
@@ -253,4 +292,38 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 10,
     releaseDate: "2026-06-09",
   }),
+}
+
+/** Marker this plugin appends to build a fast-mode model id. See below. */
+const FAST_SUFFIX = "-fast"
+
+/**
+ * Split an opencode model id into the name the Claude CLI actually accepts
+ * and whether fast mode was requested.
+ *
+ * Two suffixes can ride on one id and they are NOT interchangeable:
+ *
+ *   claude-opus-5-fast@work
+ *   \_____________/\___/\__/
+ *     CLI model    ours  accounts.ts's
+ *
+ * `@work` must survive: the per-account wrapper script strips it at spawn
+ * time to pick a CLAUDE_CONFIG_DIR. `-fast` must not: the CLI has no such
+ * model (`claude-opus-4-6-fast` is retired and `claude-opus-4-7-fast` errors
+ * outright), so it becomes `--settings {"fastMode":true}` instead.
+ *
+ * The `defaultModels` lookup is the guard against a false positive. Only ids
+ * we registered are treated as fast markers, so a user-defined model that
+ * happens to end in `-fast` is passed through untouched rather than being
+ * silently rewritten into a model name that does not exist.
+ */
+export function parseModelId(modelId: string): { model: string; fast: boolean } {
+  const at = modelId.indexOf("@")
+  const base = at === -1 ? modelId : modelId.slice(0, at)
+  const account = at === -1 ? "" : modelId.slice(at)
+
+  if (!base.endsWith(FAST_SUFFIX)) return { model: modelId, fast: false }
+  if (!Object.hasOwn(defaultModels, base)) return { model: modelId, fast: false }
+
+  return { model: base.slice(0, -FAST_SUFFIX.length) + account, fast: true }
 }

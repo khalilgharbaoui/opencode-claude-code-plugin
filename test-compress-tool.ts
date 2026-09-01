@@ -28,16 +28,21 @@ import { buildAppendedSystemPrompt } from "./src/claude-code-language-model.js"
 import { DEFAULT_PROXY_TOOL_NAMES } from "./src/index.js"
 import { deleteClaudeSessionId, setClaudeSessionId } from "./src/session-manager.js"
 
-function post(url: string, body: unknown): Promise<{ status: number; json: any }> {
+/** The proxy endpoint requires a bearer token; see test-proxy-mcp.ts. */
+function post(
+  srv: ProxyMcpServer,
+  body: unknown,
+): Promise<{ status: number; json: any }> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body)
     const req = http.request(
-      url,
+      srv.url,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload).toString(),
+          Authorization: `Bearer ${srv.authToken}`,
         },
       },
       (res) => {
@@ -83,7 +88,7 @@ test("intercepted tools/call is answered in-process, never queued for opencode",
       call.resolve({ kind: "text", text: "should never happen" })
     })
 
-    const res = await post(srv.url, {
+    const res = await post(srv, {
       jsonrpc: "2.0",
       id: 11,
       method: "tools/call",
@@ -113,7 +118,7 @@ test("throwing interceptor returns an MCP result with isError, not a JSON-RPC er
   ])
 
   await withServer(interceptors, async (srv) => {
-    const res = await post(srv.url, {
+    const res = await post(srv, {
       jsonrpc: "2.0",
       id: "req-c",
       method: "tools/call",
@@ -138,7 +143,7 @@ test("interceptors leave non-intercepted tools on the broker path", async () => 
       call.resolve({ kind: "text", text: `broker ran ${call.toolName}` })
     })
 
-    const res = await post(srv.url, {
+    const res = await post(srv, {
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",

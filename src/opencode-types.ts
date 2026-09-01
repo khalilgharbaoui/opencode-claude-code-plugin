@@ -30,7 +30,14 @@ export type OpenCodeModel = {
       video: boolean
       pdf: boolean
     }
-    interleaved: boolean | { field: "reasoning_content" | "reasoning_details" }
+    // opencode widened this between 1.18.5 and 1.18.18: `reasoning_details`
+    // became `reasoning_text`, and bare strings are now accepted. This is a
+    // hand-written mirror of opencode's schema, so it drifts silently —
+    // re-check it when auditing a new opencode version.
+    interleaved:
+      | boolean
+      | string
+      | { field: "reasoning" | "reasoning_content" | "reasoning_text" | string }
   }
   cost: {
     input: number

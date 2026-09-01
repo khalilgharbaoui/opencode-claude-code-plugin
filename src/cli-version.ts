@@ -75,6 +75,22 @@ export function cliSupportsThinkingDisplay(v: CliVersion | null): boolean {
 }
 
 /**
+ * Fast mode's headless opt-in. In print mode the CLI reports
+ * `fast_mode_disabled_reason: "sdk_opt_in_required"` unless the *flag* settings
+ * layer carries `fastMode: true`, which only `--settings` populates (there is
+ * no `--fast` flag, and no fast-mode model name the CLI still accepts).
+ *
+ * 2.1.220 is the floor because it is the oldest binary the opt-in path was
+ * confirmed present in, not because 2.1.219 is known to lack it. An unknown
+ * settings key is ignored rather than fatal, so the downside of gating too
+ * high is only that fast mode stays off.
+ */
+export function cliSupportsFastMode(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 220 })
+}
+
+/**
  * `--thinking` has been part of Claude Code's CLI since the 2.x line.
  * We require a detected 2.0.0+ before passing it; unknown version → skip
  * to avoid crashing a pre-flag binary. Anyone on the 1.x line should

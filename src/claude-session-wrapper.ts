@@ -11,6 +11,9 @@ export interface InteractiveSpawnOptions {
   /** Claude config root used for JSONL transcripts. */
   configDir?: string
   model?: string
+  /** Request Claude Code's fast mode (Opus 4.8 / Opus 5 only). Folded into
+   *  the single `--settings` payload alongside `permissions`. */
+  fastMode?: boolean
   /** Bridged Claude `--mcp-config` file paths (from effectiveMcpConfig). */
   mcpConfigPaths?: string[]
   /** permissions.allow rules (e.g. mcp__server__*, Bash, Edit). */
@@ -103,11 +106,18 @@ export function spawnInteractiveProcess(
       "--strict-mcp-config",
     )
   }
+  // One `--settings` for the whole flag-settings layer. The CLI accepts the
+  // flag once, so pushing a second occurrence would silently drop the first
+  // rather than merge it.
+  const flagSettings: Record<string, unknown> = {}
   if (opts.permissionsAllow && opts.permissionsAllow.length > 0) {
-    extraArgs.push(
-      "--settings",
-      JSON.stringify({ permissions: { allow: opts.permissionsAllow } }),
-    )
+    flagSettings.permissions = { allow: opts.permissionsAllow }
+  }
+  if (opts.fastMode) {
+    flagSettings.fastMode = true
+  }
+  if (Object.keys(flagSettings).length > 0) {
+    extraArgs.push("--settings", JSON.stringify(flagSettings))
   }
   if (opts.permissionMode === "bypassPermissions") {
     log.warn(

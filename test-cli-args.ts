@@ -6,9 +6,16 @@ import {
   isClaudeThinkingDisabled,
 } from "./src/session-manager.js"
 import {
+  cliSupportsFastMode,
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
 } from "./src/cli-version.js"
+import { parseModelId } from "./src/models.js"
+import {
+  reportFastModeState,
+  _resetFastModeWarnings,
+} from "./src/claude-code-language-model.js"
+import { configureLogger, _resetLoggerForTests } from "./src/logger.js"
 import {
   disallowedToolFlags,
   resolveDisallowedTools,
@@ -152,6 +159,222 @@ test("buildCliArgs emits thinking-display for supported CLI", () => {
   assert.equal(args.includes("enabled"), true)
   assert.equal(args.includes("--thinking-display"), true)
   assert.equal(args.includes("summarized"), true)
+})
+
+// Fast mode. There is no `--fast` flag and no fast model name the CLI still
+// accepts: `--settings {"fastMode":true}` is the only headless opt-in, because
+// the CLI's SDK gate reads the *flag* settings layer specifically. Verified
+// live against Claude Code 2.1.245 on 2026-08-30: without it the init message
+// reports `fast_mode_disabled_reason: "sdk_opt_in_required"`.
+test("buildCliArgs opts into fast mode via --settings", () => {
+  const args = buildCliArgs({
+    sessionKey: "test",
+    skipPermissions: true,
+    model: "claude-opus-5",
+    fastMode: true,
+    cliVersion: { major: 2, minor: 1, patch: 245, raw: "2.1.245" },
+  })
+
+  const at = args.indexOf("--settings")
+  assert.notEqual(at, -1)
+  assert.deepEqual(JSON.parse(args[at + 1]!), { fastMode: true })
+})
+
+test("buildCliArgs omits --settings when fast mode is not requested", () => {
+  const args = buildCliArgs({
+    sessionKey: "test",
+    skipPermissions: true,
+    model: "claude-opus-5",
+    cliVersion: { major: 2, minor: 1, patch: 245, raw: "2.1.245" },
+  })
+
+  assert.equal(args.includes("--settings"), false)
+})
+
+test("buildCliArgs skips the fast-mode opt-in on an unverified CLI", () => {
+  for (const cliVersion of [
+    null,
+    { major: 2, minor: 1, patch: 219, raw: "2.1.219" },
+  ]) {
+    const args = buildCliArgs({
+      sessionKey: "test",
+      skipPermissions: true,
+      model: "claude-opus-5",
+      fastMode: true,
+      cliVersion,
+    })
+    assert.equal(args.includes("--settings"), false)
+  }
+})
+
+test("cliSupportsFastMode floors at 2.1.220", () => {
+  assert.equal(cliSupportsFastMode(null), false)
+  assert.equal(
+    cliSupportsFastMode({ major: 2, minor: 1, patch: 219, raw: "2.1.219" }),
+    false,
+  )
+  assert.equal(
+    cliSupportsFastMode({ major: 2, minor: 1, patch: 220, raw: "2.1.220" }),
+    true,
+  )
+  assert.equal(
+    cliSupportsFastMode({ major: 2, minor: 2, patch: 0, raw: "2.2.0" }),
+    true,
+  )
+})
+
+// The `-fast` marker is ours and must never reach `--model`; the `@account`
+// suffix is accounts.ts's and must survive, since the wrapper script strips it
+// to pick a CLAUDE_CONFIG_DIR.
+test("parseModelId strips the fast marker and keeps the account suffix", () => {
+  assert.deepEqual(parseModelId("claude-opus-5-fast"), {
+    model: "claude-opus-5",
+    fast: true,
+  })
+  assert.deepEqual(parseModelId("claude-opus-4-8-fast"), {
+    model: "claude-opus-4-8",
+    fast: true,
+  })
+  assert.deepEqual(parseModelId("claude-opus-5-fast@work"), {
+    model: "claude-opus-5@work",
+    fast: true,
+  })
+})
+
+test("parseModelId leaves standard model ids untouched", () => {
+  assert.deepEqual(parseModelId("claude-opus-5"), {
+    model: "claude-opus-5",
+    fast: false,
+  })
+  assert.deepEqual(parseModelId("claude-opus-5@work"), {
+    model: "claude-opus-5@work",
+    fast: false,
+  })
+  assert.deepEqual(parseModelId("claude-haiku-4-5"), {
+    model: "claude-haiku-4-5",
+    fast: false,
+  })
+})
+
+test("parseModelId does not claim a -fast id it never registered", () => {
+  // A user-defined model that happens to end in `-fast` must pass through
+  // whole. Rewriting it would hand `--model` a name the CLI cannot resolve.
+  assert.deepEqual(parseModelId("some-vendor-model-fast"), {
+    model: "some-vendor-model-fast",
+    fast: false,
+  })
+  // Retired Anthropic fast ids are not registered either, so they are not
+  // silently rewritten into something that looks like it worked.
+  assert.deepEqual(parseModelId("claude-opus-4-6-fast"), {
+    model: "claude-opus-4-6-fast",
+    fast: false,
+  })
+})
+
+// A downgrade must reach the TUI. `notice` is debug-mode-only in this codebase,
+// so a blocked account has to warn or the 10x price tag in the picker silently
+// stops matching what is actually billed.
+function captureLogs(fn: () => void): string[] {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (line: unknown) => {
+    lines.push(String(line))
+  }
+  try {
+    _resetLoggerForTests()
+    // `debug` mode so info/notice/debug also reach stderr and the test can
+    // assert on the level actually chosen. warn/error reach it either way.
+    configureLogger({ mode: "debug", level: "debug" })
+    fn()
+  } finally {
+    console.error = original
+    _resetLoggerForTests()
+  }
+  return lines
+}
+
+test("reportFastModeState warns when a requested fast turn was downgraded", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      {
+        type: "system",
+        subtype: "init",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: "extra_usage_disabled",
+      },
+      true,
+    )
+  })
+
+  assert.equal(lines.length, 1)
+  assert.match(lines[0]!, /WARN/)
+  assert.match(lines[0]!, /\/usage-credits/)
+  assert.match(lines[0]!, /standard Opus rates/)
+})
+
+test("reportFastModeState warns once per reason, then drops to debug", () => {
+  _resetFastModeWarnings()
+  const msg = {
+    type: "system",
+    subtype: "init",
+    fast_mode_state: "off" as const,
+    fast_mode_disabled_reason: "extra_usage_disabled",
+  }
+
+  const lines = captureLogs(() => {
+    reportFastModeState(msg, true)
+    reportFastModeState(msg, true)
+    reportFastModeState(msg, true)
+  })
+
+  // Account-level blocks persist across respawns; warning every time would
+  // bury the TUI.
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 1)
+  assert.equal(lines.filter((l) => l.includes("DEBUG")).length, 2)
+})
+
+test("reportFastModeState stays quiet when fast mode was never requested", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      {
+        type: "system",
+        subtype: "init",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: "sdk_opt_in_required",
+      },
+      false,
+    )
+  })
+
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 0)
+})
+
+test("reportFastModeState does not warn when fast mode is actually on", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      { type: "system", subtype: "init", fast_mode_state: "on" },
+      true,
+    )
+  })
+
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 0)
+  assert.equal(lines.filter((l) => l.includes("INFO")).length, 1)
+})
+
+test("reportFastModeState treats cooldown as transient, not a misconfiguration", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      { type: "system", subtype: "init", fast_mode_state: "cooldown" },
+      true,
+    )
+  })
+
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 0)
+  assert.equal(lines.filter((l) => l.includes("NOTICE")).length, 1)
 })
 
 test("Claude thinking env defaults preserve explicit user choices", () => {

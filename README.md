@@ -78,7 +78,9 @@ The plugin auto-registers the following. They appear in the model picker without
 | `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
+| `claude-opus-4-8-fast` | Claude Opus 4.8 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-opus-5` | Claude Opus 5 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
+| `claude-opus-5-fast` | Claude Opus 5 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-fable-5` | Claude Fable 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-mythos-5` | Claude Mythos 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 
@@ -86,9 +88,25 @@ The plugin auto-registers the following. They appear in the model picker without
 
 Capabilities for every model: text + image input, text output, tool use, attachments. No temperature control, no PDF/audio/video, no interleaved streaming.
 
-**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing — input and output ratios both come out the same (Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus $5/$25 = 5×, Fable 5 / Mythos 5 $10/$50 = 10×), so **Fable 5 and Mythos 5 cost 2× Opus 5**. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
+**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus $5/$25 = 5×, Fable 5 / Mythos 5 / Opus fast mode $10/$50 = 10×). So **Fable 5, Mythos 5, and fast-mode Opus all cost 2× standard Opus 5**. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
 
-The model ID is passed straight through to `claude --model`, so anything Claude Code accepts works.
+The model ID is passed straight through to `claude --model`, so anything Claude Code accepts works. The two `-fast` IDs are the one exception, described below.
+
+### Fast mode
+
+`claude-opus-5-fast` and `claude-opus-4-8-fast` run the same models at up to 2.5× the output tokens per second, at 2× the price ($10/M input, $50/M output, the 10× column). Pick them in the model selector like any other model.
+
+The `-fast` suffix is this plugin's own marker, not a model name Anthropic serves. The plugin strips it and spawns `claude --model claude-opus-5 --settings '{"fastMode":true}'`, because that settings layer is the only way to opt a headless (`--print`) session into fast mode: there is no `--fast` flag, and the old `claude-opus-4-6-fast` style model names are retired. Requires Claude Code 2.1.220+; below that the plugin skips the opt-in and you get standard speed.
+
+Fast mode is not available everywhere, and it **fails soft**: an ineligible account drops back to standard speed with no error. Known blockers:
+
+- **Usage credits are off.** The most common one. Run `/usage-credits` in an interactive `claude` session to enable them.
+- **Not first-party.** Fast mode is Anthropic-API-only; Bedrock, Vertex, and Foundry are excluded.
+- **Free tier**, or an organization that has turned fast mode off.
+- **Cooldown.** Fast mode has its own rate limit; after a hit, Claude Code falls back to standard until it clears.
+- `CLAUDE_CODE_DISABLE_FAST_MODE=1` in the environment turns it off outright.
+
+Because a downgrade is otherwise invisible, and because the picker shows these IDs at 10× regardless, the plugin logs a **warning** (once per reason) when a fast turn actually ran at standard speed, naming the reason. If you see it, switch to the non-fast ID so the picker's price matches your bill.
 
 ### Picking a variant
 
@@ -298,6 +316,24 @@ appends a system-prompt note naming
 recovery step for harnesses that defer MCP tool schemas. Both apply per Claude
 process at spawn, and provider options are read once at opencode startup, so
 `proxyTools` changes need a full opencode restart.
+
+### Proxy endpoint security
+
+The proxy is a small HTTP MCP server on an ephemeral loopback port, and calling it runs Bash, Edit and Write through opencode's executor. Since 0.13.2 it requires a 256-bit bearer token, generated per server and handed to Claude in the `headers` block of the `0600` MCP config file the plugin writes. Requests are also rejected unless the `Host` header matches the bound `127.0.0.1:<port>` authority, no `Origin` header is present, and the content type is `application/json`.
+
+**Upgrade if you are on 0.13.1 or earlier.** Before this, any local process could post to that port and execute commands as you, and a web page you visited could do the same blind, without reading the response. Reported by @willmcginnis in [#28](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/28); tracked as [GHSA-3mxm-w7gf-3c5x](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/security/advisories/GHSA-3mxm-w7gf-3c5x) (High, CVSS 7.5). No exploitation is known: it was found by code audit, not an incident.
+
+**Restart every opencode you have running.** A plugin is read once, when the process starts, so an opencode you left open keeps the old code and keeps serving an unauthenticated proxy port for as long as it lives, however new the installed version is. Long-lived sessions are the ones to check:
+
+```sh
+lsof -nP -iTCP -sTCP:LISTEN | grep opencode
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:PORT/mcp \
+  -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+```
+
+A patched process answers `401`. A `200` is a pre-0.13.2 process still running, and restarting it is the fix.
+
+Nothing to configure. If proxied tools ever stop working after a Claude Code upgrade, check the plugin log for `proxy-mcp rejected a request`, which names which guard failed.
 
 ### Closing a tool with no proxy
 
@@ -783,9 +819,9 @@ The GitHub Actions workflow at `.github/workflows/publish.yml` runs `npm publish
 
 <a href="https://www.star-history.com/?repos=khalilgharbaoui%2Fopencode-claude-code-plugin&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&theme=dark&legend=top-left&sealed_token=XBPNnYotm7Eti4lpRGsbKl_dsq6XGUtRkvCxE4UpQH2HM4LifiiTNV1hqjCOsivRZ-e2hFDohid8iERSP5XO5JdkNhHcuS2bLZFIdQIWZO1NldJLD2TjaaSYK6GJcnXYZHivkbiiynG7b8-V8z9LLn8Uo2ED15OWnUd3devehrMyKJJO_dtOW1ivZ3yJ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&legend=top-left&sealed_token=XBPNnYotm7Eti4lpRGsbKl_dsq6XGUtRkvCxE4UpQH2HM4LifiiTNV1hqjCOsivRZ-e2hFDohid8iERSP5XO5JdkNhHcuS2bLZFIdQIWZO1NldJLD2TjaaSYK6GJcnXYZHivkbiiynG7b8-V8z9LLn8Uo2ED15OWnUd3devehrMyKJJO_dtOW1ivZ3yJ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&legend=top-left&sealed_token=XBPNnYotm7Eti4lpRGsbKl_dsq6XGUtRkvCxE4UpQH2HM4LifiiTNV1hqjCOsivRZ-e2hFDohid8iERSP5XO5JdkNhHcuS2bLZFIdQIWZO1NldJLD2TjaaSYK6GJcnXYZHivkbiiynG7b8-V8z9LLn8Uo2ED15OWnUd3devehrMyKJJO_dtOW1ivZ3yJ" />
  </picture>
 </a>
 
