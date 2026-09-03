@@ -10,6 +10,7 @@ import {
   getDefaultSubagentModel,
   parseAgentFrontmatter,
   readAgentMarkdownRecords,
+  resolveAgentEffort,
   resolveAgentModel,
   setAgentRegistry,
   setDefaultSubagentModel,
@@ -188,6 +189,56 @@ test("readAgentMarkdownRecords skips directories that do not exist", async () =>
   assert.deepEqual(
     await readAgentMarkdownRecords([join(tmpdir(), "no-such-agent-dir")]),
     {},
+  )
+})
+
+// --- effort ----------------------------------------------------------------
+
+const effortRecords: Record<string, AgentRecord> = {
+  thrifty: { mode: "subagent", reasoningEffort: "high" },
+  quiet: { mode: "subagent" },
+  wrong: { mode: "subagent", reasoningEffort: "enormous" },
+}
+const withEffort = { records: effortRecords }
+
+test("an agent's declared effort beats the caller's inherited one", () => {
+  // The cost property: a caller who picked max for their own turn must not
+  // hand max to every worker it dispatches.
+  assert.equal(resolveAgentEffort("thrifty", "max", withEffort), "high")
+})
+
+test("an agent that declares no effort keeps whatever it inherited", () => {
+  assert.equal(resolveAgentEffort("quiet", "max", withEffort), "max")
+  assert.equal(resolveAgentEffort("quiet", undefined, withEffort), undefined)
+})
+
+test("an unknown agent keeps the inherited effort", () => {
+  assert.equal(resolveAgentEffort("explore", "medium", withEffort), "medium")
+  assert.equal(resolveAgentEffort(undefined, "medium", withEffort), "medium")
+})
+
+test("an unknown effort level is refused, not forwarded to the CLI", () => {
+  assert.equal(resolveAgentEffort("wrong", "medium", withEffort), "medium")
+})
+
+test("effort is read from the registry when no overrides are passed", () => {
+  _resetAgentRegistryForTests()
+  setAgentRegistry(effortRecords)
+  try {
+    assert.equal(resolveAgentEffort("thrifty", "max"), "high")
+  } finally {
+    _resetAgentRegistryForTests()
+  }
+})
+
+test("parseAgentFrontmatter reads reasoningEffort", () => {
+  assert.deepEqual(
+    parseAgentFrontmatter(
+      ["---", "mode: subagent", "reasoningEffort: xhigh", "---", "body"].join(
+        "\n",
+      ),
+    ),
+    { mode: "subagent", reasoningEffort: "xhigh" },
   )
 })
 

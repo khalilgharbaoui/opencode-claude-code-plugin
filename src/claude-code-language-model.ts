@@ -17,7 +17,7 @@ import type {
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
-import { resolveAgentModel } from "./agent-models.js"
+import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -1517,7 +1517,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.getOpencodeAgent(options.providerOptions),
       this.modelId,
     )
-    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
+    const reasoningEffort = resolveAgentEffort(
+      this.getOpencodeAgent(options.providerOptions),
+      this.getReasoningEffort(options.providerOptions),
+    ) as ReasoningEffort | undefined
     const sk = sessionKey(
       cwd,
       `${effectiveModelId}::${scope}::${affinity}${this.effortKeySuffix(reasoningEffort)}`,
@@ -2060,7 +2063,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // every other call keys on it, see `effortKeySuffix`.
     const reasoningEffort = compactionMode
       ? undefined
-      : this.getReasoningEffort(options.providerOptions)
+      : (resolveAgentEffort(
+          this.getOpencodeAgent(options.providerOptions),
+          this.getReasoningEffort(options.providerOptions),
+        ) as ReasoningEffort | undefined)
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
       : sessionKey(

@@ -373,8 +373,9 @@ async function expandAccountProviders(config: {
 }
 
 /**
- * Record what every known agent asked for, so `resolveAgentModel` can answer
- * at spawn time without the language model needing to see opencode's config.
+ * Record what every known agent asked for, so `resolveAgentModel` and
+ * `resolveAgentEffort` can answer at spawn time without the language model
+ * needing to see opencode's config.
  *
  * Runs BEFORE `expandAccountProviders`, which deletes the seed provider entry
  * once it has expanded it: `defaultSubagentModel` has to be read while it is
@@ -402,13 +403,18 @@ async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
   )
 
   for (const [name, agent] of Object.entries(config.agent ?? {})) {
-    const pick = (key: string): string | undefined =>
-      typeof agent[key] === "string" ? (agent[key] as string) : undefined
+    const bag = (agent.options ?? {}) as Record<string, unknown>
+    const pick = (key: string): string | undefined => {
+      const value = agent[key] ?? bag[key]
+      return typeof value === "string" ? value : undefined
+    }
 
     records[name] = {
       mode: pick("mode") ?? records[name]?.mode,
       model: pick("model") ?? records[name]?.model,
       forceModel: pick("forceModel") ?? records[name]?.forceModel,
+      reasoningEffort:
+        pick("reasoningEffort") ?? records[name]?.reasoningEffort,
     }
   }
 

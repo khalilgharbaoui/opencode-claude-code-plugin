@@ -218,6 +218,18 @@ The rules, in order:
 
 Two things worth knowing. The overridden model is part of the Claude session key, so a subagent forced to Opus never shares a `claude` process with a Fable parent in the same directory. And opencode still prices the turn against the model *it* routed, so a cost readout attributes the work to the caller's model, not the one that actually ran.
 
+### The effort an agent runs at
+
+The same file can state its own thinking budget:
+
+```yaml
+reasoningEffort: high
+```
+
+That beats whatever effort the call arrived with. It has to, because opencode resolves one effort for a session and a subagent inherits it, which is wrong in the expensive direction: a caller who picked `max` for their own turn otherwise hands `max` to every worker it dispatches, and a mechanical lane burns a weekly cap at the costliest setting available. Model and effort together are what a turn costs, so both belong with the agent rather than with whoever happened to dispatch it.
+
+An agent that declares nothing keeps the inherited effort, so this changes nothing until a file asks for it. An unrecognised level is refused and the inherited one kept, since the CLI rejects a level it does not know. Compaction is exempt: its summary always gets the full budget.
+
 To force an **account** rather than a model, pin the full string. Both halves are needed, because the provider selects the account's config dir and the `@account` marker is what the model was registered under for that provider:
 
 ```yaml

@@ -19,6 +19,10 @@
  * `defaultSubagentModel` provider option covers every subagent at once.
  * Nothing needs a per-agent entry in opencode.json.
  *
+ * The same file can state `reasoningEffort:`, which beats the effort opencode
+ * inherited from the caller's picker (see `resolveAgentEffort`). Model and
+ * effort together are what a turn costs, so both belong with the agent.
+ *
  * Two deliberate silences, because this rewrites what a user's model picker
  * said it would run:
  *
@@ -37,12 +41,24 @@ import { defaultModels } from "./models.js"
 /** Directory names opencode reads agent markdown from, current form first. */
 export const AGENT_DIR_NAMES = ["agents", "agent"]
 
+/** Levels the Claude CLI accepts; anything else is refused, not forwarded. */
+const REASONING_EFFORTS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+
 export type AgentRecord = {
   mode?: string
   /** A fully-qualified `provider/model` the agent pinned for itself. */
   model?: string
   /** Model NAME this agent wants, on whatever account the caller is using. */
   forceModel?: string
+  /** Thinking budget this agent wants, whatever the caller's picker says. */
+  reasoningEffort?: string
 }
 
 let registry: Record<string, AgentRecord> = {}
@@ -139,8 +155,55 @@ export function resolveAgentModel(
 }
 
 /**
- * Read the three fields that matter out of an agent markdown file's YAML
- * frontmatter. Hand-parsed rather than pulling a YAML dependency in for three
+ * The thinking budget a request should actually spawn with.
+ *
+ * opencode resolves one effort for the whole session (the model picker's
+ * selector, or a variant), and a subagent inherits it. That inheritance is
+ * wrong in the expensive direction: a caller who picked `max` for their own
+ * turn silently hands `max` to every worker it dispatches, so a mechanical
+ * lane runs at the most costly setting available and burns a weekly cap that
+ * the caller never spent on the work in front of them.
+ *
+ * An agent that states its own budget wins. Same reasoning as `forceModel`:
+ * the declaration lives with the agent, so a file on disk is the whole
+ * configuration and the caller's picker stays a choice about the caller.
+ *
+ * Unknown values are ignored rather than passed on, since the CLI refuses a
+ * level it does not recognise and the turn would die at spawn.
+ */
+export function resolveAgentEffort(
+  agent: string | undefined,
+  inherited: string | undefined,
+  overrides?: { records?: Record<string, AgentRecord> },
+): string | undefined {
+  if (!agent) return inherited
+
+  const record = (overrides?.records ?? registry)[agent]
+  const declared = record?.reasoningEffort?.trim()
+  if (!declared) return inherited
+
+  if (!REASONING_EFFORTS.includes(declared)) {
+    log.warn("agent effort override refused: unknown level", {
+      agent,
+      wanted: declared,
+      keeping: inherited,
+    })
+    return inherited
+  }
+
+  if (declared !== inherited) {
+    log.debug("agent effort override", {
+      agent,
+      from: inherited,
+      to: declared,
+    })
+  }
+  return declared
+}
+
+/**
+ * Read the four fields that matter out of an agent markdown file's YAML
+ * frontmatter. Hand-parsed rather than pulling a YAML dependency in for four
  * scalars, and deliberately top-level only: `permission:` has nested keys
  * (`bash:`, `edit:`) that must not be mistaken for agent fields.
  */
@@ -157,7 +220,13 @@ export function parseAgentFrontmatter(text: string): AgentRecord {
     if (!match) continue
 
     const key = match[1]
-    if (key !== "mode" && key !== "model" && key !== "forceModel") continue
+    if (
+      key !== "mode" &&
+      key !== "model" &&
+      key !== "forceModel" &&
+      key !== "reasoningEffort"
+    )
+      continue
 
     const value = match[2].trim().replace(/^["']|["']$/g, "")
     if (value) record[key] = value
