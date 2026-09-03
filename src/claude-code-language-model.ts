@@ -1277,6 +1277,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return true
   }
 
+  /**
+   * Session-key fragment for effort. Effort is a spawn-time env var, so a
+   * different effort must be a different claude process; otherwise the
+   * variant picker would silently keep whatever level the first turn spawned
+   * with. Empty when nothing was requested so plain keys stay as they were.
+   */
+  private effortKeySuffix(effort: ReasoningEffort | undefined): string {
+    return effort ? `::effort=${effort}` : ""
+  }
+
   private getReasoningEffort(
     providerOptions?: LanguageModelV3CallOptions["providerOptions"],
   ): ReasoningEffort | undefined {
@@ -1507,7 +1517,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.getOpencodeAgent(options.providerOptions),
       this.modelId,
     )
-    const sk = sessionKey(cwd, `${effectiveModelId}::${scope}::${affinity}`)
+    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
+    const sk = sessionKey(
+      cwd,
+      `${effectiveModelId}::${scope}::${affinity}${this.effortKeySuffix(reasoningEffort)}`,
+    )
 
     // When selective proxying is enabled, doGenerate must not bypass the
     // proxy path. Reuse doStream and aggregate its events so proxied tools
@@ -1603,10 +1617,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const hasExistingSession = !!getClaudeSessionId(sk)
     const includeHistoryContext = !hasExistingSession && hasPriorConversation
 
-    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
     const userMsg =
       consumeExitPlanModeQuestionResult(sk, options.prompt as any) ??
-      getClaudeUserMessage(options.prompt, includeHistoryContext, reasoningEffort)
+      getClaudeUserMessage(options.prompt, includeHistoryContext)
 
     // doGenerate always spawns a fresh process, never reuse session ID.
     // Pre-fetch opencode's MCP runtime status so the bridge overlays
@@ -1657,6 +1670,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       stdio: ["pipe", "pipe", "pipe"],
       env: claudeSpawnEnv({
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey,
+        effort: reasoningEffort,
       }),
       shell: process.platform === "win32",
     })
@@ -2042,9 +2056,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // a claude process, both because the spawn flags differ and because
     // switching speed invalidates the prompt cache anyway.
     const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
+    // Compaction never carries effort (the summary gets the whole budget);
+    // every other call keys on it, see `effortKeySuffix`.
+    const reasoningEffort = compactionMode
+      ? undefined
+      : this.getReasoningEffort(options.providerOptions)
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
-      : sessionKey(cwd, `${effectiveModelId}::${scope}::${affinity}`)
+      : sessionKey(
+          cwd,
+          `${effectiveModelId}::${scope}::${affinity}${this.effortKeySuffix(reasoningEffort)}`,
+        )
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
     const handleControlRequest = this.handleControlRequest.bind(this)
@@ -2149,7 +2171,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const includeHistoryContext =
       !hasExistingSession && !hasActiveProcess && hasPriorConversation
 
-    const reasoningEffort = this.getReasoningEffort(options.providerOptions)
     const exitPlanModeQuestionResult = compactionMode
       ? null
       : consumeExitPlanModeQuestionResult(sk, options.prompt as any)
@@ -2161,7 +2182,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
     const userMsg =
       exitPlanModeQuestionResult ??
-      getClaudeUserMessage(options.prompt, includeHistoryContext, reasoningEffort, {
+      getClaudeUserMessage(options.prompt, includeHistoryContext, {
         compactionMode,
       })
     const resolvedProxy = compactionMode ? null : this.resolvedProxyTools()
@@ -2339,6 +2360,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 permissionsAllow: allow,
                 systemPromptFile,
                 ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+                effort: reasoningEffort,
               })
               ap.mcpHash = mcp.bridgedHash
               setActiveProcess(sk, ap)
@@ -2551,6 +2573,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               spawnMcpHash,
               spawnSystemPromptFile,
               self.config.ignoreAnthropicApiKey,
+              reasoningEffort,
             )
             proc = ap.proc
             lineEmitter = ap.lineEmitter

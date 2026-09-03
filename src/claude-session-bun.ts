@@ -78,6 +78,9 @@ export interface ClaudeSessionOptions {
   /** Strip ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN from the spawn env so the
    *  CLI uses subscription auth instead of pay-as-you-go API billing. */
   ignoreAnthropicApiKey?: boolean
+  /** CLI effort level (low | medium | high | xhigh | max), exported as
+   *  CLAUDE_CODE_EFFORT_LEVEL so it overrides the account's settings.json. */
+  effort?: string
   cols?: number
   rows?: number
   bootMinMs?: number
@@ -141,6 +144,7 @@ export class ClaudeSession {
       | "extraArgs"
       | "signal"
       | "ignoreAnthropicApiKey"
+      | "effort"
     >
   > &
     Pick<
@@ -151,6 +155,7 @@ export class ClaudeSession {
       | "settingSources"
       | "extraArgs"
       | "ignoreAnthropicApiKey"
+      | "effort"
     >
 
   constructor(opts: ClaudeSessionOptions = {}) {
@@ -172,6 +177,7 @@ export class ClaudeSession {
       settingSources: opts.settingSources,
       extraArgs: opts.extraArgs ?? [],
       ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
+      effort: opts.effort,
       cols: opts.cols ?? 200,
       rows: opts.rows ?? 50,
       bootMinMs: opts.bootMinMs ?? 3000,
@@ -221,6 +227,7 @@ export class ClaudeSession {
         ...(this.o.ignoreAnthropicApiKey
           ? { ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined }
           : {}),
+        ...(this.o.effort ? { CLAUDE_CODE_EFFORT_LEVEL: this.o.effort } : {}),
       },
       terminal: {
         cols: this.o.cols,

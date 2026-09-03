@@ -1,22 +1,7 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { log } from "./logger.js"
-import type { ReasoningEffort } from "./types.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
-
-const THINKING_KEYWORDS: Record<ReasoningEffort, string | null> = {
-  minimal: null,
-  low: "think",
-  medium: "think hard",
-  high: "think harder",
-  xhigh: "megathink",
-  max: "ultrathink",
-}
-
-export function reasoningKeyword(effort?: ReasoningEffort): string | null {
-  if (!effort) return null
-  return THINKING_KEYWORDS[effort] ?? null
-}
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -317,15 +302,17 @@ function buildCompactionHistory(prompt: Prompt): string | null {
  * Convert AI SDK prompt into a Claude CLI stream-json user message.
  *
  * `compactionMode` switches behavior for opencode /compact: the prior
- * transcript is rendered with rich tool content (not placeholders), the
- * wrapper framing tells the model this is the authoritative thread, and
- * the reasoning keyword is suppressed so the full output budget goes
- * toward the summary.
+ * transcript is rendered with rich tool content (not placeholders) and the
+ * wrapper framing tells the model this is the authoritative thread.
+ *
+ * Reasoning effort is not part of the message. It used to ride here as a
+ * thinking keyword ("(ultrathink)"), but Claude Code dropped every keyword
+ * except that one, so effort now reaches the CLI as CLAUDE_CODE_EFFORT_LEVEL
+ * at spawn time (see `claudeSpawnEnv`).
  */
 export function getClaudeUserMessage(
   prompt: Prompt,
   includeHistoryContext: boolean = false,
-  reasoningEffort?: ReasoningEffort,
   opts: { compactionMode?: boolean } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
@@ -446,24 +433,6 @@ Now continuing with the current message:
         content: [{ type: "text", text: "(empty)" }],
       },
     })
-  }
-
-  // Reasoning keyword is a Claude CLI hint that triggers extended thinking.
-  // For compaction we want the full output budget to go to the summary
-  // itself, not internal reasoning — so skip injection.
-  if (!compactionMode) {
-    const keyword = reasoningKeyword(reasoningEffort)
-    if (keyword) {
-      const lastTextPart = [...content].reverse().find((p) => p.type === "text")
-      if (lastTextPart) {
-        lastTextPart.text = lastTextPart.text
-          ? `${lastTextPart.text}\n\n(${keyword})`
-          : `(${keyword})`
-      } else {
-        content.push({ type: "text", text: `(${keyword})` })
-      }
-      log.debug("injected reasoning keyword", { effort: reasoningEffort, keyword })
-    }
   }
 
   return JSON.stringify({

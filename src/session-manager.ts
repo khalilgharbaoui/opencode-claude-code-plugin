@@ -12,6 +12,7 @@ import {
   cliSupportsThinkingDisplay,
   type CliVersion,
 } from "./cli-version.js"
+import type { ReasoningEffort } from "./types.js"
 
 export interface ActiveProcess {
   proc: ChildProcess
@@ -26,6 +27,8 @@ export interface ActiveProcess {
   mcpHash?: string | null
   /** Temp file holding `--append-system-prompt-file` content; unlinked on exit. */
   systemPromptFile?: string
+  /** Effort the process was spawned with, so a respawn keeps it. */
+  effort?: ReasoningEffort
 }
 
 // One active CLI process per session key. Keyed by a composite
@@ -56,12 +59,33 @@ export function isClaudeThinkingDisabled(): boolean {
   )
 }
 
+/**
+ * The CLI's effort vocabulary is low | medium | high | xhigh | max. `minimal`
+ * is this provider's own lowest step with no CLI counterpart, so it lands on
+ * `low`.
+ */
+export function cliEffortLevel(effort: ReasoningEffort): string {
+  return effort === "minimal" ? "low" : effort
+}
+
 export function claudeSpawnEnv(opts?: {
   ignoreAnthropicApiKey?: boolean
+  /** Reasoning effort for this spawn; wins over a shell-level override. */
+  effort?: ReasoningEffort
 }): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
     TERM: "xterm-256color",
+  }
+
+  // Effort travels as CLAUDE_CODE_EFFORT_LEVEL, which the CLI treats as the
+  // session-wide override (it beats settings.json and `/effort`). An env var
+  // rather than `--effort` because a CLI too old to know it ignores it
+  // instead of refusing to start. Unlike the thinking vars below, an explicit
+  // effort from the request wins over the shell: the variant picker and an
+  // agent's `reasoningEffort` are per-request choices, a shell export is not.
+  if (opts?.effort) {
+    env.CLAUDE_CODE_EFFORT_LEVEL = cliEffortLevel(opts.effort)
   }
 
   // Force subscription auth: with an API key in the env, Claude Code bills
@@ -203,14 +227,21 @@ export function spawnClaudeProcess(
   mcpHash?: string | null,
   systemPromptFile?: string,
   ignoreAnthropicApiKey?: boolean,
+  effort?: ReasoningEffort,
 ): ActiveProcess {
   evictIfNeeded()
-  log.info("spawning new claude process", { cliPath, cliArgs, cwd, sessionKey })
+  log.info("spawning new claude process", {
+    cliPath,
+    cliArgs,
+    cwd,
+    sessionKey,
+    effort,
+  })
 
   const proc = spawn(cliPath, cliArgs, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: claudeSpawnEnv({ ignoreAnthropicApiKey }),
+    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort }),
     shell: process.platform === "win32",
   })
 
@@ -230,6 +261,7 @@ export function spawnClaudeProcess(
     proxyServer: proxyServer ?? null,
     mcpHash,
     systemPromptFile,
+    effort,
   }
   activeProcesses.set(sessionKey, ap)
 
@@ -360,6 +392,7 @@ export function respawnActiveProcess(
     old.mcpHash,
     old.systemPromptFile,
     ignoreAnthropicApiKey,
+    old.effort,
   )
 }
 

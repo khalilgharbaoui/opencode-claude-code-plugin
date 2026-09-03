@@ -136,7 +136,7 @@ test("mixed user-text + tool-role both flow into the same content array", () => 
 
 function parsedCompaction(prompt: any) {
   return JSON.parse(
-    getClaudeUserMessage(prompt as any, false, undefined, {
+    getClaudeUserMessage(prompt as any, false, {
       compactionMode: true,
     }),
   )
@@ -299,44 +299,20 @@ test("compaction final user instruction follows the transcript", () => {
   assert.ok(!texts[0].includes("Your task is to summarize"))
 })
 
-test("compaction suppresses reasoning keyword injection", () => {
+test("no thinking keyword is appended to the user message", () => {
+  // Effort reaches the CLI as CLAUDE_CODE_EFFORT_LEVEL at spawn; the message
+  // itself must carry none of the retired "(ultrathink)"-style hints.
   const out = JSON.parse(
-    getClaudeUserMessage(
-      p([
-        { role: "user", content: "anything" },
-        { role: "assistant", content: [{ type: "text", text: "ok" }] },
-        { role: "user", content: [{ type: "text", text: "summarize" }] },
-      ]) as any,
-      false,
-      "max",
-      { compactionMode: true },
-    ),
+    getClaudeUserMessage(p([{ role: "user", content: "hello" }]) as any, false),
   )
   const texts = out.message.content
     .filter((b: any) => b.type === "text")
     .map((b: any) => b.text)
     .join("\n")
+  assert.ok(texts.includes("hello"))
   assert.ok(
-    !texts.includes("(ultrathink)"),
-    "reasoning keyword should be suppressed in compaction mode",
-  )
-})
-
-test("non-compaction call still injects reasoning keyword", () => {
-  const out = JSON.parse(
-    getClaudeUserMessage(
-      p([{ role: "user", content: "hello" }]) as any,
-      false,
-      "max",
-    ),
-  )
-  const texts = out.message.content
-    .filter((b: any) => b.type === "text")
-    .map((b: any) => b.text)
-    .join("\n")
-  assert.ok(
-    texts.includes("(ultrathink)"),
-    "reasoning keyword should still be injected for normal turns",
+    !/\((think( hard(er)?)?|megathink|ultrathink)\)/.test(texts),
+    "no reasoning keyword may be injected into the message",
   )
 })
 

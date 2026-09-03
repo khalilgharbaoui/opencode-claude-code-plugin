@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { claudeSpawnEnv } from "./src/session-manager.js"
+import { claudeSpawnEnv, cliEffortLevel } from "./src/session-manager.js"
 
 function withEnv<T>(
   vars: Record<string, string | undefined>,
@@ -50,5 +50,28 @@ test("claudeSpawnEnv with ignore flag leaves other env vars intact", () => {
     assert.equal("ANTHROPIC_API_KEY" in env, false)
     assert.equal(env.PATH, process.env.PATH)
     assert.equal(env.TERM, "xterm-256color")
+  })
+})
+
+test("claudeSpawnEnv exports a requested effort as CLAUDE_CODE_EFFORT_LEVEL", () => {
+  withEnv({ CLAUDE_CODE_EFFORT_LEVEL: undefined }, () => {
+    assert.equal(claudeSpawnEnv({ effort: "xhigh" }).CLAUDE_CODE_EFFORT_LEVEL, "xhigh")
+    assert.equal(claudeSpawnEnv({ effort: "max" }).CLAUDE_CODE_EFFORT_LEVEL, "max")
+    assert.equal("CLAUDE_CODE_EFFORT_LEVEL" in claudeSpawnEnv(), false)
+  })
+})
+
+test("claudeSpawnEnv maps the provider's minimal onto the CLI's low", () => {
+  withEnv({ CLAUDE_CODE_EFFORT_LEVEL: undefined }, () => {
+    assert.equal(cliEffortLevel("minimal"), "low")
+    assert.equal(claudeSpawnEnv({ effort: "minimal" }).CLAUDE_CODE_EFFORT_LEVEL, "low")
+  })
+})
+
+test("a requested effort wins over a shell-level CLAUDE_CODE_EFFORT_LEVEL", () => {
+  withEnv({ CLAUDE_CODE_EFFORT_LEVEL: "low" }, () => {
+    assert.equal(claudeSpawnEnv({ effort: "max" }).CLAUDE_CODE_EFFORT_LEVEL, "max")
+    // No request-level effort: the shell value passes through untouched.
+    assert.equal(claudeSpawnEnv().CLAUDE_CODE_EFFORT_LEVEL, "low")
   })
 })

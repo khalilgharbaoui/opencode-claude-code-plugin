@@ -666,16 +666,19 @@ The plugin forwards Claude's thinking blocks (`thinking_delta` stream events) to
 
 What you see is a **summary** of the model's thinking, not the raw chain-of-thought. Anthropic [stopped exposing raw thinking on the Claude 4 family](https://platform.claude.com/docs/en/build-with-claude/extended-thinking#summarized-thinking) and ships a server-generated digest instead. For Claude Opus 4.7 specifically, [thinking content is omitted from responses by default](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default); the plugin opts back in by passing `--thinking-display summarized` on every spawn. Claude Code CLI 2.1.142+ is required for that flag to take effect; older CLIs skip it silently.
 
-### Reasoning effort variants
+### Reasoning effort
 
-Each model exposes `low` / `medium` / `high` / `xhigh` / `max` variants. Picking one injects the corresponding Claude CLI thinking keyword (e.g. `(ultrathink)` for `max`) into the user message. Compaction calls skip this injection so the full output budget goes to the summary.
+Each model exposes `low` / `medium` / `high` / `xhigh` / `max` variants, and an agent can set `reasoningEffort` in its own frontmatter (`minimal` is also accepted and maps to the CLI's `low`). The plugin hands the level to the CLI as `CLAUDE_CODE_EFFORT_LEVEL` at spawn, which Claude Code treats as the session-wide override: it beats the `effortLevel` in that account's `settings.json` and a shell export of the same variable. Effort is fixed for the life of a `claude` process, so it is part of the session key: changing the variant mid-conversation spawns a fresh process with the conversation replayed as context, the same as switching models.
+
+Earlier versions injected a thinking keyword such as `(ultrathink)` into the user message instead. Claude Code stopped recognising every keyword except `ultrathink`, so that path is gone and nothing is appended to your messages any more. Compaction calls never carry an effort, so the summary gets the whole output budget.
 
 ### Env-var overrides
 
-The plugin respects the standard Claude Code thinking env vars. If you set them in your shell, they pass through to the spawned process untouched.
+The plugin respects the standard Claude Code thinking env vars. If you set them in your shell, they pass through to the spawned process untouched, with the one exception in the first row.
 
 | Env var | Effect |
 |---|---|
+| `CLAUDE_CODE_EFFORT_LEVEL=<level>` | Session effort override. Passes through when no effort was requested; a variant or an agent's `reasoningEffort` replaces it for that spawn. |
 | `CLAUDE_CODE_DISABLE_THINKING=1` | Disable thinking entirely. |
 | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` | Disable adaptive thinking only. |
 | `CLAUDE_CODE_SHOW_THINKING_SUMMARIES=0` | Suppress summaries (the plugin sets this to `1` by default when unset). |

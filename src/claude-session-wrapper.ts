@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events"
 import { unlink } from "node:fs/promises"
 import { ClaudeSession } from "./claude-session-bun.js"
-import type { ActiveProcess } from "./session-manager.js"
+import { cliEffortLevel, type ActiveProcess } from "./session-manager.js"
+import type { ReasoningEffort } from "./types.js"
 import { log } from "./logger.js"
 
 export interface InteractiveSpawnOptions {
@@ -30,6 +31,8 @@ export interface InteractiveSpawnOptions {
   /** Strip ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN from the spawn env so the
    *  CLI uses subscription auth instead of pay-as-you-go API billing. */
   ignoreAnthropicApiKey?: boolean
+  /** Reasoning effort, exported as CLAUDE_CODE_EFFORT_LEVEL for the session. */
+  effort?: ReasoningEffort
 }
 
 /**
@@ -141,12 +144,14 @@ export function spawnInteractiveProcess(
       opts.settingSources === undefined ? null : opts.settingSources,
     extraArgs,
     ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
+    effort: opts.effort ? cliEffortLevel(opts.effort) : undefined,
   })
   log.info("prepared interactive claude session", {
     cwd: opts.cwd,
     cliPath: opts.cliPath ?? "claude",
     configDir: session.configDir,
     model: opts.model,
+    effort: opts.effort,
     sessionId: session.sessionId,
     jsonlPath: session.jsonlPath,
   })
