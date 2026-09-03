@@ -17,6 +17,7 @@ import type {
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
+import { resolveAgentModel } from "./agent-models.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -1499,7 +1500,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const cwd = resolveSpawnCwd(this.config.cwd)
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
-    const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
+    // An agent may run on a different model than the one opencode routed here
+    // (see agent-models.ts). The session key must carry the effective model or
+    // an overridden agent shares a claude process with its caller.
+    const effectiveModelId = resolveAgentModel(
+      this.getOpencodeAgent(options.providerOptions),
+      this.modelId,
+    )
+    const sk = sessionKey(cwd, `${effectiveModelId}::${scope}::${affinity}`)
 
     // When selective proxying is enabled, doGenerate must not bypass the
     // proxy path. Reuse doStream and aggregate its events so proxied tools
@@ -1616,7 +1624,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // An existing summary still carries: it is this key's prior context.
       { compressEnabled: false, compressionSummary: getCompressionSummary(sk) },
     )
-    const { model: spawnModelId, fast: fastMode } = parseModelId(this.modelId)
+    const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
     const cliArgs = buildCliArgs({
       sessionKey: sk,
       skipPermissions: this.config.skipPermissions !== false,
@@ -1635,7 +1643,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
     log.info("doGenerate starting", {
       cwd,
-      model: this.modelId,
+      model: effectiveModelId,
+      requestedModel: this.modelId,
       textLength: userMsg.length,
       includeHistoryContext,
     })
@@ -2023,7 +2032,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // never collides with the main conversation's claude process.
     const effectiveModelId = compactionMode
       ? this.resolveCompactionModel()
-      : this.modelId
+      : resolveAgentModel(
+          this.getOpencodeAgent(options.providerOptions),
+          this.modelId,
+        )
     // `effectiveModelId` stays intact for session keys, logs, and metadata;
     // only the name handed to the CLI gets the `-fast` marker stripped.
     // Session keys keeping it is deliberate: fast and standard must not share
@@ -2032,7 +2044,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
-      : sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
+      : sessionKey(cwd, `${effectiveModelId}::${scope}::${affinity}`)
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
     const handleControlRequest = this.handleControlRequest.bind(this)

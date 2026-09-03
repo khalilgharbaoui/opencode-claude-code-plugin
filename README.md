@@ -176,6 +176,54 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login
 
 The account model IDs are internally suffixed, for example `claude-sonnet-4-6@work`, so long-lived Claude subprocess sessions do not collide across accounts. The generated wrapper strips the suffix before calling `claude --model`.
 
+### Subagents: your account, their model
+
+opencode's agent config cannot express "inherit the account, choose the model". A subagent that omits `model` inherits the invoking agent's whole model string; one that pins `model` inherits neither half, so pinning Opus also pins whichever account was written into it. This plugin closes that gap, because it is the piece that knows the account is the *provider* while the model is only a `--model` flag.
+
+Write an agent markdown file. Nothing goes in `opencode.json`.
+
+```markdown
+---
+description: Designs and builds UI work
+mode: subagent
+---
+You are a designer...
+```
+
+`@designer` now runs on **the account of the session that invoked it**, on whatever model you point it at. Which model comes from one of two places.
+
+Per agent, in the agent's own file:
+
+```yaml
+forceModel: claude-haiku-4-5
+```
+
+Or once, for every subagent that pins nothing, in the provider options:
+
+```json
+{ "provider": { "claude-code": { "options": { "defaultSubagentModel": "claude-opus-5" } } } }
+```
+
+The rules, in order:
+
+| The agent | Runs on |
+| --- | --- |
+| `forceModel: <id>` | the caller's account, that model |
+| `mode: subagent`, no model, `defaultSubagentModel` set | the caller's account, that model |
+| `mode: subagent`, no model, no default set | untouched, inherits the caller's model |
+| `model: <provider>/<id>` | exactly that, account and all (untouched) |
+| anything opencode ships (`explore`, `general`, `compaction`) | untouched |
+
+**`defaultSubagentModel` is unset by default and nothing is overridden without it.** That is deliberate: this feature rewrites what the model picker said would run, so an existing setup that upgrades the plugin has to behave exactly as it did before. Built-ins are excluded for the same reason, since forcing Opus onto a cheap exploration agent would be an expensive surprise nobody asked for. An unknown model id is refused and the original kept, rather than spawning the CLI with a `--model` it will reject.
+
+Two things worth knowing. The overridden model is part of the Claude session key, so a subagent forced to Opus never shares a `claude` process with a Fable parent in the same directory. And opencode still prices the turn against the model *it* routed, so a cost readout attributes the work to the caller's model, not the one that actually ran.
+
+To force an **account** rather than a model, pin the full string. Both halves are needed, because the provider selects the account's config dir and the `@account` marker is what the model was registered under for that provider:
+
+```yaml
+model: claude-code-appical/claude-opus-5@appical
+```
+
 ### Options reference
 
 ```json

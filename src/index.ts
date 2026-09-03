@@ -1,7 +1,12 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
 import { defaultModels, toConfigModel } from "./models.js"
-import type { OpenCodeModel, OpenCodePlugin, OpenCodeProvider } from "./opencode-types.js"
+import type {
+  OpenCodeConfig,
+  OpenCodeModel,
+  OpenCodePlugin,
+  OpenCodeProvider,
+} from "./opencode-types.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 import {
   BASE_PROVIDER_ID,
@@ -11,9 +16,18 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
+import {
+  type AgentRecord,
+  agentDirectories,
+  getDefaultSubagentModel,
+  readAgentMarkdownRecords,
+  setAgentRegistry,
+  setDefaultSubagentModel,
+} from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { configureLogger, log } from "./logger.js"
 import {
+  getOpencodeProjectDirectory,
   isUsableDirectory,
   setOpencodeClient,
   setOpencodeProjectDirectory,
@@ -154,6 +168,8 @@ function cleanProviderOptions(
 ): Record<string, unknown> {
   const result = { ...options }
   delete result.accounts
+  // Consumed by the config hook (agent registry), not by the language model.
+  delete result.defaultSubagentModel
   return result
 }
 
@@ -356,6 +372,53 @@ async function expandAccountProviders(config: {
   return expandedCount > 0
 }
 
+/**
+ * Record what every known agent asked for, so `resolveAgentModel` can answer
+ * at spawn time without the language model needing to see opencode's config.
+ *
+ * Runs BEFORE `expandAccountProviders`, which deletes the seed provider entry
+ * once it has expanded it: `defaultSubagentModel` has to be read while it is
+ * still there.
+ *
+ * Purely observational. It defines no agents and changes no agent's config;
+ * an agent this plugin never heard of is simply absent from the registry,
+ * which is what keeps opencode's built-ins out of the override path.
+ */
+async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
+  const options = config.provider?.[PROVIDER_ID]?.options
+  const configured = options?.defaultSubagentModel
+  setDefaultSubagentModel(
+    typeof configured === "string" ? configured : undefined,
+  )
+
+  // Markdown agents may or may not reach a plugin's config hook (undocumented
+  // either way), so they are read from disk and then overlaid with whatever
+  // config does carry, which is authoritative when both describe one agent.
+  const records: Record<string, AgentRecord> = await readAgentMarkdownRecords(
+    agentDirectories(
+      process.env.HOME ?? process.env.USERPROFILE,
+      getOpencodeProjectDirectory(),
+    ),
+  )
+
+  for (const [name, agent] of Object.entries(config.agent ?? {})) {
+    const pick = (key: string): string | undefined =>
+      typeof agent[key] === "string" ? (agent[key] as string) : undefined
+
+    records[name] = {
+      mode: pick("mode") ?? records[name]?.mode,
+      model: pick("model") ?? records[name]?.model,
+      forceModel: pick("forceModel") ?? records[name]?.forceModel,
+    }
+  }
+
+  setAgentRegistry(records)
+  log.debug("agent registry built", {
+    agents: Object.keys(records).length,
+    defaultSubagentModel: getDefaultSubagentModel(),
+  })
+}
+
 const server: OpenCodePlugin = async (input) => {
   cleanupStaleUnscopedInstall()
 
@@ -379,6 +442,8 @@ const server: OpenCodePlugin = async (input) => {
   return {
     config: async (config) => {
       config.provider ??= {}
+
+      await buildAgentRegistry(config)
 
       const expanded = await expandAccountProviders(config)
       if (expanded) {
@@ -465,6 +530,12 @@ export default {
 
 export { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
 export { bridgeOpencodeMcp } from "./mcp-bridge.js"
+export {
+  type AgentRecord,
+  getAgentRegistry,
+  getDefaultSubagentModel,
+  resolveAgentModel,
+} from "./agent-models.js"
 export { defaultModels } from "./models.js"
 export type {
   ClaudeCodeConfig,

@@ -97,6 +97,12 @@ export interface ClaudeCodeProviderSettings {
   account?: string
   configDir?: string
   accounts?: string[]
+  /**
+   * Model that subagents run on when their own definition pins nothing.
+   * Unset means no implicit override at all, so an agent keeps inheriting the
+   * caller's model exactly as opencode intends. See `src/agent-models.ts`.
+   */
+  defaultSubagentModel?: string
   skipPermissions?: boolean
   permissionMode?: PermissionMode
   mcpConfig?: string | string[]

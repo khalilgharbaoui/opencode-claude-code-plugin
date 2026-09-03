@@ -78,6 +78,10 @@ export type OpenCodeConfig = {
       models?: Record<string, unknown>
     }
   >
+  // Agent definitions. Kept loose (opencode adds agent fields over time) and
+  // only ever added to: `expandAccountAgents` never overwrites an entry the
+  // user defined.
+  agent?: Record<string, Record<string, unknown>>
 }
 
 /**
