@@ -3,9 +3,11 @@ import { createInterface } from "node:readline"
 import { EventEmitter } from "node:events"
 import { unlink } from "node:fs/promises"
 import { log } from "./logger.js"
-import type { ProxyMcpServer } from "./proxy-mcp.js"
+import type { ProxyMcpServer, ProxyToolResult } from "./proxy-mcp.js"
+import { getPendingProxyCalls, type PendingProxyCall } from "./proxy-broker.js"
 import { clearLedger } from "./todo-ledger.js"
-import { clearExitPlanModeQuestions } from "./plan-mode-question.js"
+import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mode-question.js"
+import { clearCompression } from "./compression-store.js"
 import {
   cliSupportsFastMode,
   cliSupportsThinking,
@@ -13,6 +15,7 @@ import {
   type CliVersion,
 } from "./cli-version.js"
 import type { ReasoningEffort } from "./types.js"
+import { dispatchSideQuestionResponse, isSideQuestionPending } from "./side-question.js"
 
 export interface ActiveProcess {
   proc: ChildProcess
@@ -29,6 +32,55 @@ export interface ActiveProcess {
   systemPromptFile?: string
   /** Effort the process was spawned with, so a respawn keeps it. */
   effort?: ReasoningEffort
+  cliArgs?: string[]
+  // Retain resolved calls until continuation settles, including late channel closure.
+  pendingProxyCompletions?: Map<string, {
+    call: PendingProxyCall
+    result: ProxyToolResult
+    recoveryRequired: boolean
+  }>
+  /**
+   * stdout lines the child emitted while no turn had a line listener
+   * attached (between opencode turns). Bounded; see `bufferUnattendedLine`.
+   * Absent on the interactive shim, which has no unattended window.
+   */
+  unattendedLines?: string[]
+  /** Lines evicted from `unattendedLines` because the cap was hit. */
+  unattendedDropped?: number
+}
+
+// A child normally only speaks while a doStream turn is listening. The one
+// exception is a turn that ended on the CLI's side while opencode was still
+// waiting on a proxy call (Claude's MCP client gave up on the request and
+// the model carried on alone). Keep what it said so the next turn can show
+// it instead of losing it; cap it so a runaway child cannot grow the heap.
+const UNATTENDED_LINE_CAP = 500
+const UNATTENDED_BYTE_CAP = 2 * 1024 * 1024
+
+export function bufferUnattendedLine(ap: ActiveProcess, line: string): void {
+  const lines = (ap.unattendedLines ??= [])
+  lines.push(line)
+  let bytes = 0
+  for (const kept of lines) bytes += Buffer.byteLength(kept)
+  while (
+    lines.length > 0 &&
+    (lines.length > UNATTENDED_LINE_CAP || bytes > UNATTENDED_BYTE_CAP)
+  ) {
+    bytes -= Buffer.byteLength(lines.shift()!)
+    ap.unattendedDropped = (ap.unattendedDropped ?? 0) + 1
+  }
+}
+
+/** Hand over and clear everything the child said while nobody listened. */
+export function takeUnattendedLines(ap: ActiveProcess): {
+  lines: string[]
+  dropped: number
+} {
+  const lines = ap.unattendedLines ?? []
+  const dropped = ap.unattendedDropped ?? 0
+  ap.unattendedLines = []
+  ap.unattendedDropped = 0
+  return { lines, dropped }
 }
 
 // One active CLI process per session key. Keyed by a composite
@@ -218,6 +270,44 @@ export function deleteClaudeSessionId(key: string): void {
   claudeSessions.delete(key)
 }
 
+export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): string {
+  return effort ? `${baseKey}::effort=${effort}` : baseKey
+}
+
+/** Retire sibling effort sessions before deciding whether to replay history. */
+export function invalidateOtherEffortSessions(
+  baseKey: string,
+  effort?: ReasoningEffort,
+): void {
+  const levels: (ReasoningEffort | undefined)[] = [
+    undefined, "minimal", "low", "medium", "high", "xhigh", "max",
+  ]
+  const staleKeys = levels
+    .filter((level) => level !== effort)
+    .map((level) => effortSessionKey(baseKey, level))
+
+  // Refuse the transition atomically. Tool results and recovery completions
+  // still belong to the old process; they must finish at its original effort.
+  for (const key of staleKeys) {
+    const active = activeProcesses.get(key)
+    if (
+      getPendingProxyCalls(key).length ||
+      hasExitPlanModeQuestions(key) ||
+      active?.pendingProxyCompletions?.size ||
+      (active && (active.lineEmitter.listenerCount("line") > 0 || isSideQuestionPending(active)))
+    ) {
+      throw new Error(
+        "Cannot change reasoning effort while the previous effort session has pending work. Finish that work at its original effort first.",
+      )
+    }
+  }
+  for (const key of staleKeys) {
+    deleteActiveProcess(key)
+    deleteClaudeSessionId(key)
+    clearCompression(key)
+  }
+}
+
 export function spawnClaudeProcess(
   cliPath: string,
   cliArgs: string[],
@@ -247,14 +337,6 @@ export function spawnClaudeProcess(
 
   const lineEmitter = new EventEmitter()
 
-  const rl = createInterface({ input: proc.stdout! })
-  rl.on("line", (line: string) => {
-    lineEmitter.emit("line", line)
-  })
-  rl.on("close", () => {
-    lineEmitter.emit("close")
-  })
-
   const ap: ActiveProcess = {
     proc,
     lineEmitter,
@@ -262,7 +344,23 @@ export function spawnClaudeProcess(
     mcpHash,
     systemPromptFile,
     effort,
+    cliArgs: [...cliArgs],
+    unattendedLines: [],
+    unattendedDropped: 0,
   }
+
+  const rl = createInterface({ input: proc.stdout! })
+  rl.on("line", (line: string) => {
+    if (dispatchSideQuestionResponse(ap, line)) return
+    if (lineEmitter.listenerCount("line") === 0) {
+      bufferUnattendedLine(ap, line)
+      return
+    }
+    lineEmitter.emit("line", line)
+  })
+  rl.on("close", () => {
+    lineEmitter.emit("close")
+  })
   activeProcesses.set(sessionKey, ap)
 
   // Baseline 'error' listener so Node doesn't throw when the process emits
@@ -383,9 +481,9 @@ export function respawnActiveProcess(
   try {
     old.proc.kill()
   } catch {}
-  return spawnClaudeProcess(
+  const replacement = spawnClaudeProcess(
     cliPath,
-    appendResumeIfNeeded(sessionKey, cliArgs),
+    appendResumeIfNeeded(sessionKey, old.cliArgs ?? cliArgs),
     cwd,
     sessionKey,
     old.proxyServer,
@@ -394,6 +492,9 @@ export function respawnActiveProcess(
     ignoreAnthropicApiKey,
     old.effort,
   )
+  replacement.pendingProxyCompletions = old.pendingProxyCompletions
+  delete old.pendingProxyCompletions
+  return replacement
 }
 
 export function buildCliArgs(opts: {

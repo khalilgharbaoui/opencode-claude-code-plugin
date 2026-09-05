@@ -17,6 +17,8 @@ import {
   resolvePendingProxyCallById,
   rejectPendingProxyCallById,
   rejectAllPendingProxyCallsForSession,
+  isPendingProxyCallChannelClosed,
+  markPendingProxyCallEmitted,
   type PendingProxyCall,
 } from "./src/proxy-broker.js"
 import type { ProxyToolCall, ProxyToolResult } from "./src/proxy-mcp.js"
@@ -284,4 +286,24 @@ test("queuePendingProxyCall with a duplicate callId replaces the old entry clean
   assert.equal(matching.length, 1, "only one entry for the replaced id")
 
   rejectAllPendingProxyCallsForSession(sk, new Error("cleanup"))
+})
+
+test("queuePendingProxyCall carries the channel and markPendingProxyCallEmitted flags the entry", () => {
+  const handle = makeCall("task")
+  handle.call.channel = { closed: false }
+  const pending = queuePendingProxyCall("sess-channel", handle.call)
+  assert.equal(isPendingProxyCallChannelClosed(pending), false)
+  assert.equal(pending.emitted, undefined)
+  markPendingProxyCallEmitted(handle.id)
+  assert.equal(getPendingProxyCalls("sess-channel")[0].emitted, true)
+  handle.call.channel.closed = true
+  assert.equal(isPendingProxyCallChannelClosed(pending), true)
+  resolvePendingProxyCallById(handle.id, { kind: "text", text: "ok" })
+})
+
+test("isPendingProxyCallChannelClosed treats a call without a channel as open", () => {
+  const handle = makeCall("bash")
+  const pending = queuePendingProxyCall("sess-no-channel", handle.call)
+  assert.equal(isPendingProxyCallChannelClosed(pending), false)
+  resolvePendingProxyCallById(handle.id, { kind: "text", text: "ok" })
 })

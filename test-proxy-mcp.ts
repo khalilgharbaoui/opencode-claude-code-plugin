@@ -706,3 +706,167 @@ test("security: two servers get distinct tokens, and one's token is rejected by 
     await b.close()
   }
 })
+
+// ---------------------------------------------------------------------------
+// SSE reply channel. Claude Code's MCP client aborts a tools/call request
+// that has produced no bytes for about five minutes (measured on 2.1.258),
+// which is how a long `task` ended up answered to a client that had already
+// given up. A client that accepts text/event-stream must get headers and a
+// first byte immediately and the JSON-RPC result as the final event.
+// ---------------------------------------------------------------------------
+
+type SseCapture = {
+  status: number
+  contentType: string
+  chunks: Array<{ at: number; text: string }>
+  done: Promise<void>
+  destroy(): void
+}
+
+function openSse(srv: ProxyMcpServer, body: unknown): Promise<SseCapture> {
+  const payload = JSON.stringify(body)
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      srv.url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload).toString(),
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${srv.authToken}`,
+        },
+      },
+      (res) => {
+        const capture: SseCapture = {
+          status: res.statusCode ?? 0,
+          contentType: String(res.headers["content-type"] ?? ""),
+          chunks: [],
+          done: new Promise<void>((done) => {
+            res.on("end", done)
+            res.on("close", done)
+          }),
+          destroy: () => req.destroy(),
+        }
+        res.on("data", (chunk: Buffer) => {
+          capture.chunks.push({ at: Date.now(), text: chunk.toString("utf8") })
+        })
+        resolve(capture)
+      },
+    )
+    req.on("error", reject)
+    req.write(payload)
+    req.end()
+  })
+}
+
+function lastSseMessage(capture: SseCapture): any {
+  const text = capture.chunks.map((c) => c.text).join("")
+  const data = text
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .pop()
+  assert.ok(data, `no data line in SSE body: ${JSON.stringify(text)}`)
+  return JSON.parse(data.slice("data: ".length))
+}
+
+test("tools/call answers over SSE when the client accepts it: first byte before the result, envelope last", async () => {
+  await withServer(async (srv) => {
+    let pending: ProxyToolCall | null = null
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      pending = call
+    })
+    const capture = await openSse(srv, {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "bash", arguments: {} },
+    })
+    assert.equal(capture.status, 200)
+    assert.match(capture.contentType, /^text\/event-stream/)
+    // Headers resolved the request already; the open comment is the first
+    // byte and must land while the call is still pending.
+    await new Promise((r) => setTimeout(r, 50))
+    assert.ok(pending, "call was queued")
+    assert.ok(capture.chunks.length >= 1, "a first byte arrived before the result")
+    assert.match(capture.chunks[0].text, /^: open/)
+    const resolvedAt = Date.now()
+    pending!.resolve({ kind: "text", text: "done late" })
+    await capture.done
+    const envelope = lastSseMessage(capture)
+    assert.equal(envelope.id, 7)
+    assert.equal(envelope.result.isError, false)
+    assert.equal(envelope.result.content[0].text, "done late")
+    assert.ok(capture.chunks[0].at <= resolvedAt)
+  })
+})
+
+test("tools/call over SSE: a broker rejection still arrives as an MCP result with isError", async () => {
+  await withServer(async (srv) => {
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      setTimeout(() => call.reject(new Error("boom")), 20)
+    })
+    const capture = await openSse(srv, {
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "bash", arguments: {} },
+    })
+    await capture.done
+    const envelope = lastSseMessage(capture)
+    assert.equal(envelope.id, 8)
+    assert.equal(envelope.result.isError, true)
+    assert.equal(envelope.result.content[0].text, "boom")
+    assert.equal(envelope.error, undefined)
+  })
+})
+
+test("tools/call without event-stream in Accept still gets a plain JSON body", async () => {
+  await withServer(async (srv) => {
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      call.resolve({ kind: "text", text: "json" })
+    })
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: { name: "bash", arguments: {} },
+    })
+    const res = await post(srv.url, null, {
+      rawBody: payload,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload).toString(),
+        Accept: "application/json",
+        Authorization: `Bearer ${srv.authToken}`,
+      },
+    })
+    assert.equal(res.status, 200)
+    assert.equal(res.json.result.content[0].text, "json")
+  })
+})
+
+test("a client that drops the request flips the call's channel to closed; a late resolve is harmless", async () => {
+  await withServer(async (srv) => {
+    let pending: ProxyToolCall | null = null
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      pending = call
+    })
+    const capture = await openSse(srv, {
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: { name: "task", arguments: {} },
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    assert.ok(pending, "call was queued")
+    assert.equal(pending!.channel?.closed, false)
+    capture.destroy()
+    // The server sees the socket close on the next turn of the loop.
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(pending!.channel?.closed, true)
+    // Resolving now must neither throw nor keep the server from closing.
+    pending!.resolve({ kind: "text", text: "nobody home" })
+    await new Promise((r) => setTimeout(r, 30))
+  })
+})

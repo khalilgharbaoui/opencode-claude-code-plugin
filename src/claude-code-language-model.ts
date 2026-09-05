@@ -18,6 +18,7 @@ import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mappin
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
+import { parseSideQuestion, requestSideQuestion, isSideQuestionPending, SIDE_QUESTION_USAGE } from "./side-question.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -42,9 +43,12 @@ import {
   deleteActiveProcess,
   deleteActiveProcessAndWait,
   respawnActiveProcess,
+  takeUnattendedLines,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
   sessionKey,
+  effortSessionKey,
+  invalidateOtherEffortSessions,
 } from "./session-manager.js"
 import { spawnInteractiveProcess } from "./claude-session-wrapper.js"
 import {
@@ -71,6 +75,8 @@ import {
 } from "./proxy-mcp.js"
 import {
   getPendingProxyCalls,
+  isPendingProxyCallChannelClosed,
+  markPendingProxyCallEmitted,
   onPendingProxyCall,
   queuePendingProxyCall,
   rejectAllPendingProxyCallsForSession,
@@ -520,6 +526,33 @@ function makeAutoContinueMessage(): string {
     message: {
       role: "user",
       content: [{ type: "text", text: AUTO_CONTINUE_PROMPT }],
+    },
+  })
+}
+
+/**
+ * A proxy result whose HTTP reply channel Claude already abandoned cannot
+ * go back as a `tool_result` (the CLI closed that tool_use with a timeout
+ * error). Hand it over as a user message that names the call instead.
+ */
+export function makeLateProxyResultMessage(
+  entries: Array<{ call: PendingProxyCall; result: ProxyToolResult }>,
+): string {
+  const sections = entries.map(({ call, result }) => {
+    const failed = result.kind === "error" || result.isError === true
+    const body = result.kind === "error" ? result.message : result.text
+    return (
+      `Your earlier \`${call.toolName}\` tool call (id ${call.toolCallId})` +
+      ` has ${failed ? "failed" : "completed"}, but delivery or continuation was interrupted.` +
+      ` Treat the following as its ${failed ? "error" : "result"} and continue from there;` +
+      ` do not re-run it.\n\n${body}`
+    )
+  })
+  return JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: sections.join("\n\n---\n\n") }],
     },
   })
 }
@@ -1277,16 +1310,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return true
   }
 
-  /**
-   * Session-key fragment for effort. Effort is a spawn-time env var, so a
-   * different effort must be a different claude process; otherwise the
-   * variant picker would silently keep whatever level the first turn spawned
-   * with. Empty when nothing was requested so plain keys stay as they were.
-   */
-  private effortKeySuffix(effort: ReasoningEffort | undefined): string {
-    return effort ? `::effort=${effort}` : ""
-  }
-
   private getReasoningEffort(
     providerOptions?: LanguageModelV3CallOptions["providerOptions"],
   ): ReasoningEffort | undefined {
@@ -1506,6 +1529,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   async doGenerate(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+    if (!this.isCompactionCall(options) && this.requestScope(options as any) !== "no-tools" && parseSideQuestion(options.prompt)) {
+      return this.doGenerateViaStream(options)
+    }
     const warnings: SharedV3Warning[] = []
     const cwd = resolveSpawnCwd(this.config.cwd)
     const scope = this.requestScope(options as any)
@@ -1521,10 +1547,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.getOpencodeAgent(options.providerOptions),
       this.getReasoningEffort(options.providerOptions),
     ) as ReasoningEffort | undefined
-    const sk = sessionKey(
+    // Keep effort invalidation inside one agent/provider, even when callers
+    // share a model and opencode session (for example switching agents).
+    const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}${this.effortKeySuffix(reasoningEffort)}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
     )
+    const sk = effortSessionKey(baseKey, reasoningEffort)
 
     // When selective proxying is enabled, doGenerate must not bypass the
     // proxy path. Reuse doStream and aggregate its events so proxied tools
@@ -1601,6 +1630,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         warnings,
       }
     }
+
+    invalidateOtherEffortSessions(baseKey, reasoningEffort)
 
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
@@ -2059,20 +2090,20 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // a claude process, both because the spawn flags differ and because
     // switching speed invalidates the prompt cache anyway.
     const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
-    // Compaction never carries effort (the summary gets the whole budget);
-    // every other call keys on it, see `effortKeySuffix`.
+    // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
       : (resolveAgentEffort(
           this.getOpencodeAgent(options.providerOptions),
           this.getReasoningEffort(options.providerOptions),
         ) as ReasoningEffort | undefined)
+    const baseKey = sessionKey(
+      cwd,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
+    )
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
-      : sessionKey(
-          cwd,
-          `${effectiveModelId}::${scope}::${affinity}${this.effortKeySuffix(reasoningEffort)}`,
-        )
+      : effortSessionKey(baseKey, reasoningEffort)
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
     const handleControlRequest = this.handleControlRequest.bind(this)
@@ -2092,6 +2123,48 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const interactiveBypassRequested =
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
+
+    const aside = !compactionMode && scope !== "no-tools" ? parseSideQuestion(options.prompt) : null
+    if (aside) {
+      const active = getActiveProcess(sk)
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+        async start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          try {
+            if (aside.question && !active) {
+              throw new Error("/btw needs an existing Claude Code session. Send a normal message with this model first.")
+            }
+            const answer = aside.question && active
+              ? await requestSideQuestion(active, aside.question, {
+                  cliVersion: await detectCliVersion(cliPath),
+                  interactive: useInteractive,
+                  busy: getPendingProxyCalls(sk).length > 0 || !!active.pendingProxyCompletions?.size,
+                  abortSignal: options.abortSignal,
+                })
+              : { response: SIDE_QUESTION_USAGE, synthetic: true }
+            const id = generateId()
+            controller.enqueue({ type: "text-start", id })
+            controller.enqueue({ type: "text-delta", id, delta: answer.response })
+            controller.enqueue({ type: "text-end", id })
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason("stop"),
+              usage: toUsage({}),
+              providerMetadata: { "claude-code": { path: "side-question", synthetic: answer.synthetic, usageUnavailable: true } },
+            })
+          } catch (error) {
+            controller.enqueue({ type: "error", error })
+          } finally {
+            controller.close()
+          }
+        },
+      })
+      return { stream, request: { body: { text: aside.question } } }
+    }
+    const existing = getActiveProcess(sk)
+    if (existing && isSideQuestionPending(existing)) {
+      throw new Error("Wait for /btw to finish before sending another message.")
+    }
 
     if (scope === "no-tools" && !compactionMode) {
       log.info("doStream no-tools title stub", {
@@ -2156,6 +2229,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       })
       return { stream, request: { body: { text: "" } } }
     }
+
+    if (!compactionMode) invalidateOtherEffortSessions(baseKey, reasoningEffort)
 
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
@@ -2615,10 +2690,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           let turnCompleted = false
           let controllerClosed = false
+          // Buffered terminal results belong to the previous CLI turn.
+          let unattendedTurnEnded = false
+          let watchdogMessage = userMsg
           let pendingProxyUnsubscribe: (() => void) | null = null
           let resultFallbackTimer: ReturnType<typeof setTimeout> | null = null
           let pendingResultCompletion: (() => void) | null = null
           let hasReceivedContent = false
+          let hasReceivedProgress = false
           let visibleTextSinceContinue = ""
           let lastVisibleTextSinceContinue = ""
           let hadReasoningSinceContinue = false
@@ -2650,7 +2729,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // with sonnet between text-end and the next tool_use_start).
           const startResultFallback = (delayMs = 60_000) => {
             clearFallbackTimer()
-            if (!hasReceivedContent || controllerClosed) return
+            if ((!hasReceivedContent && !hasReceivedProgress) || controllerClosed) return
             resultFallbackTimer = setTimeout(() => {
               if (controllerClosed) return
               log.warn("result fallback timer fired — closing stream without result event", {
@@ -2684,7 +2763,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
           const onStartWatchdogFire = () => {
             startWatchdog = null
-            if (controllerClosed || hasReceivedContent) return
+            if (controllerClosed || hasReceivedContent || hasReceivedProgress) return
             if (respawnAttempted) {
               log.error(
                 "claude process still silent after respawn; ending turn",
@@ -2745,24 +2824,48 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             lineEmitter.on("close", closeHandler)
             proc.on("error", procErrorHandler)
             try {
-              proc.stdin?.write(userMsg + "\n")
+              if (!deliverPendingCompletions(true)) proc.stdin?.write(watchdogMessage + "\n")
               log.debug("re-sent user message after respawn", {
-                textLength: userMsg.length,
+                textLength: watchdogMessage.length,
               })
             } catch (err) {
               log.error("failed to re-send envelope after respawn", {
                 error: err instanceof Error ? err.message : String(err),
               })
             }
-            startWatchdog = setTimeout(
-              onStartWatchdogFire,
-              START_WATCHDOG_MS,
-            )
+            armStartWatchdog()
           }
           const armStartWatchdog = () => {
             clearStartWatchdog()
             if (controllerClosed) return
             startWatchdog = setTimeout(onStartWatchdogFire, START_WATCHDOG_MS)
+          }
+
+          // Both buffered/live terminal boundaries and respawn consume through
+          // this path. Open-channel results remain available for a later close.
+          const deliverPendingCompletions = (force = false): boolean => {
+            const pending = activeProcess?.pendingProxyCompletions
+            const entries = [...(pending?.values() ?? [])].filter(
+              (entry) => force || entry.recoveryRequired || isPendingProxyCallChannelClosed(entry.call),
+            )
+            if (entries.length === 0) return false
+            endTextBlock()
+            watchdogMessage = makeLateProxyResultMessage(entries)
+            proc.stdin!.write(watchdogMessage + "\n")
+            for (const { call } of entries) pending!.delete(call.toolCallId)
+            log.warn("delivering proxy results after interrupted continuation", {
+              sessionKey: sk,
+              toolCallIds: entries.map(({ call }) => call.toolCallId),
+              respawn: force,
+            })
+            gotPartialEvents = false
+            hasReceivedContent = false
+            hasReceivedProgress = false
+            turnCompleted = false
+            resetAutoContinueWindow()
+            clearFallbackTimer()
+            armStartWatchdog()
+            return true
           }
 
           const toolCallMap = new Map<
@@ -2811,6 +2914,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               providerExecuted: false,
             } as any)
             skipResultForIds.add(call.toolCallId)
+            markPendingProxyCallEmitted(call.toolCallId)
           }
           controller.enqueue({
             type: "finish",
@@ -2936,6 +3040,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         const completeResult = (msg: ClaudeStreamMessage) => {
           if (controllerClosed) return
+          // The socket may have closed after the tool-result prompt was matched,
+          // or while the result-boundary grace timer was running.
+          if (deliverPendingCompletions()) {
+            if (drainBuffer.length > 0) drainNow()
+            return
+          }
           if (drainBuffer.length > 0) {
             drainNow()
             return
@@ -2948,6 +3058,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               count: pendingSiblings.length,
             })
           }
+
+          activeProcess?.pendingProxyCompletions?.clear()
 
           const autoDecision = shouldAutoContinueIncompleteTurn(
             autoContinueState,
@@ -3054,9 +3166,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // Any line from the CLI counts as activity — reset the inactivity
           // watchdog so mid-turn pauses between blocks don't get killed.
           startResultFallback()
-          // First stdout line means the child is alive and responding —
-          // disarm the start watchdog (covers the "no output at all" gap).
-          clearStartWatchdog()
 
           try {
             const outer: ClaudeStreamMessage = JSON.parse(line)
@@ -3067,6 +3176,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               outer.type === "stream_event" && outer.event
                 ? { ...outer.event, session_id: outer.session_id }
                 : outer
+
+            const modelProgress =
+              (msg.type === "assistant" && !!msg.message?.content?.length) ||
+              (msg.type === "content_block_start" && msg.content_block?.type === "tool_use") ||
+              (msg.type === "content_block_delta" &&
+                ((msg.delta?.type === "text_delta" && !!msg.delta.text) ||
+                 (msg.delta?.type === "thinking_delta" && !!msg.delta.thinking)))
+            if (modelProgress) {
+              hasReceivedProgress = true
+              clearStartWatchdog()
+              startResultFallback()
+            }
 
             if (outer.type === "stream_event") {
               gotPartialEvents = true
@@ -3704,6 +3825,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 setClaudeSessionId(sk, msg.session_id)
               }
 
+              if (deliverPendingCompletions()) {
+                // Finish the abandoned turn before submitting its late result.
+                // Otherwise this result could close the stream for the new turn.
+                return
+              }
+
               // Some CLI failures only include user-readable text in
               // `result.result` (no prior assistant text blocks). Emit it so
               // opencode users don't see a blank turn.
@@ -3869,6 +3996,60 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           } catch {}
         }
 
+        // Whatever the child said while no turn was listening comes first:
+        // the operator gets to see it, and a turn that already ended on the
+        // CLI's side is known before this one decides what to send.
+        if (activeProcess) {
+          const unattended = takeUnattendedLines(activeProcess)
+          if (unattended.lines.length > 0 || unattended.dropped > 0) {
+            log.notice("replaying stdout the child emitted between turns", {
+              sessionKey: sk,
+              lines: unattended.lines.length,
+              dropped: unattended.dropped,
+            })
+            // Render narration only. Replaying actionable events could execute
+            // old tools or close this new stream on a stale approval/result.
+            let partialText = false
+            {
+              if (unattended.dropped > 0) {
+                const id = startTextBlock()
+                controller.enqueue({
+                  type: "text-delta",
+                  id,
+                  delta: `> _${unattended.dropped} lines of output emitted between turns were dropped._\n\n`,
+                })
+              }
+              for (const line of unattended.lines) {
+                try {
+                  const outer: ClaudeStreamMessage = JSON.parse(line)
+                  const msg = outer.type === "stream_event" && outer.event ? outer.event : outer
+                  let text = ""
+                  if (msg.type === "content_block_delta" && msg.delta?.type === "text_delta") {
+                    text = msg.delta.text ?? ""
+                    partialText = true
+                  } else if (msg.type === "assistant") {
+                    if (!partialText) text = (msg.message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text ?? "").join("")
+                    partialText = false
+                  } else if (msg.type === "result") {
+                    unattendedTurnEnded = true
+                    for (const entry of activeProcess.pendingProxyCompletions?.values() ?? []) {
+                      if (isPendingProxyCallChannelClosed(entry.call)) entry.recoveryRequired = true
+                    }
+                    if (outer.session_id) setClaudeSessionId(sk, outer.session_id)
+                    if (msg.is_error && msg.result) text = msg.result
+                  }
+                  if (text) controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: text })
+                } catch { /* Ignore incomplete or malformed buffered lines. */ }
+              }
+            }
+            endTextBlock()
+            // Replayed lines are history, not liveness: the watchdogs below
+            // must judge the child on what it does from here on.
+            clearFallbackTimer()
+            hasReceivedContent = false
+          }
+        }
+
         lineEmitter.on("line", lineHandler)
         lineEmitter.on("close", closeHandler)
 
@@ -3957,11 +4138,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // abort/new user turn, or the proxy deadline.
           for (const { call, result } of previousPendingProxyMatches) {
             if (result) {
+              const channelClosed = isPendingProxyCallChannelClosed(call)
               log.info("resolving pending proxy call from tool result prompt", {
                 sessionKey: sk,
                 toolCallId: call.toolCallId,
                 toolName: call.toolName,
+                channelClosed,
               })
+              const completions = (activeProcess!.pendingProxyCompletions ??= new Map())
+              if (!completions.has(call.toolCallId)) {
+                completions.set(call.toolCallId, {
+                  call,
+                  result,
+                  recoveryRequired: channelClosed || unattendedTurnEnded,
+                })
+              }
+              // With a closed channel this only clears the broker entry;
+              // proxy-mcp drops the write and the result travels below.
               resolvePendingProxyCallById(call.toolCallId, result)
             } else {
               log.info(
@@ -3973,6 +4166,27 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 },
               )
             }
+          }
+
+          if (unattendedTurnEnded) deliverPendingCompletions()
+
+          // Calls queued while no turn was attached were never handed to
+          // opencode; the child is blocked on them right now.
+          const unemitted = getPendingProxyCalls(sk).filter(
+            (call) => !call.emitted,
+          )
+          if (unemitted.length > 0) {
+            log.notice("draining proxy calls queued between turns", {
+              sessionKey: sk,
+              toolCallIds: unemitted.map((call) => call.toolCallId),
+            })
+            drainBuffer.push(...unemitted)
+            drainNow()
+            return
+          }
+
+          if (getPendingProxyCalls(sk).length === 0) {
+            armStartWatchdog()
           }
           return
         }

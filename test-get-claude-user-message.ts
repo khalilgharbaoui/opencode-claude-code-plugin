@@ -9,7 +9,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { getClaudeUserMessage } from "./src/message-builder.js"
+import {
+  compactConversationHistory,
+  filterSideQuestionHistory,
+  getClaudeUserMessage,
+} from "./src/message-builder.js"
 
 const p = (msgs: any[]) => msgs as any
 
@@ -352,4 +356,76 @@ test("part.data still wins when part.image is absent", () => {
   assert.ok(image, "data-carrying file part must still produce an image block")
   assert.equal(image.source.media_type, "image/webp")
   assert.equal(image.source.data, "aGVsbG8=")
+})
+
+test("fresh-session and compaction histories exclude aside exchanges, not subsequent work", () => {
+  const prompt = p([
+    { role: "user", content: "main task" },
+    { role: "assistant", content: [{ type: "text", text: "main answer" }] },
+    { role: "user", content: [{ type: "text", text: "/btw private aside" }] },
+    { role: "assistant", content: [{ type: "text", text: "private answer" }] },
+    { role: "user", content: "/btw" },
+    { role: "assistant", content: [{ type: "text", text: "aside usage" }] },
+    { role: "user", content: "ordinary next user" },
+    { role: "assistant", content: [{ type: "text", text: "ordinary next answer" }] },
+    { role: "user", content: "current instruction" },
+  ])
+  const original = structuredClone(prompt)
+  for (const mode of ["fresh-session", "compaction"] as const) {
+    const transcript = compactConversationHistory(prompt, { mode })!
+    assert.match(transcript, /main task/)
+    assert.match(transcript, /main answer/)
+    assert.match(transcript, /ordinary next user/)
+    assert.match(transcript, /ordinary next answer/)
+    assert.doesNotMatch(transcript, /private|aside usage|\/btw|current instruction/)
+    const message = JSON.parse(getClaudeUserMessage(prompt, true, { compactionMode: mode === "compaction" }))
+    assert.doesNotMatch(JSON.stringify(message), /private|aside usage|\/btw/)
+    assert.equal(message.message.content.at(-1).text, "current instruction")
+  }
+  assert.deepEqual(prompt, original, "history filtering must not mutate the prompt")
+})
+
+test("an unanswered aside never removes the following ordinary user or replays in its envelope", () => {
+  const prompt = p([
+    { role: "user", content: "main task" },
+    { role: "assistant", content: [{ type: "text", text: "main answer" }] },
+    { role: "user", content: "/btw unanswered aside" },
+    { role: "user", content: "ordinary next user" },
+  ])
+  const message = JSON.parse(getClaudeUserMessage(prompt, true))
+  assert.doesNotMatch(JSON.stringify(message), /unanswered aside|\/btw/)
+  assert.equal(message.message.content.at(-1).text, "ordinary next user")
+  assert.equal(filterSideQuestionHistory(prompt).at(-1), prompt.at(-1))
+})
+
+test("aside filtering preserves ordinary /btw mentions, mixed media, tools, and their replies", () => {
+  const prompt = p([
+    { role: "user", content: "explain /btw please" },
+    { role: "assistant", content: [{ type: "text", text: "/btw is a command" }] },
+    { role: "user", content: [{ type: "text", text: "/btw image question" }, { type: "image", image: "image data" }] },
+    { role: "assistant", content: [{ type: "text", text: "image response" }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "call", output: { type: "text", value: "tool result" } }] },
+    { role: "user", content: "summarize" },
+  ])
+  assert.deepEqual(filterSideQuestionHistory(prompt), prompt)
+  const transcript = compactConversationHistory(prompt, { mode: "compaction" })!
+  assert.match(transcript, /explain \/btw please/)
+  assert.match(transcript, /image question/)
+  assert.match(transcript, /image response/)
+  assert.match(transcript, /tool result/)
+})
+
+test("consecutive and split aside responses stay excluded until the next user", () => {
+  const nextUser = { role: "user", content: "main follow-up" }
+  const nextAnswer = { role: "assistant", content: [{ type: "text", text: "main reply" }] }
+  const prompt = p([
+    { role: "user", content: "/btw first\nsecond line" },
+    { role: "assistant", content: [{ type: "reasoning", text: "aside reasoning" }] },
+    { role: "assistant", content: [{ type: "text", text: "aside response" }] },
+    { role: "user", content: "/btw another" },
+    { role: "assistant", content: [{ type: "text", text: "another aside response" }] },
+    nextUser,
+    nextAnswer,
+  ])
+  assert.deepEqual(filterSideQuestionHistory(prompt), [nextUser, nextAnswer])
 })

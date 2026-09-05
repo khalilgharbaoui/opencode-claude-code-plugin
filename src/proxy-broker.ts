@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events"
 import {
   buildProxyTimeoutError,
   resolveProxyCallTimeoutMs,
+  type ProxyCallChannel,
   type ProxyToolCall,
   type ProxyToolResult,
 } from "./proxy-mcp.js"
@@ -12,6 +13,18 @@ export interface PendingProxyCall {
   toolCallId: string
   toolName: string
   input: Record<string, unknown>
+  /**
+   * Liveness of Claude's HTTP request for this call. Once `closed`, a
+   * result written to it is lost; the language model then delivers the
+   * result as a user message instead. Absent means open.
+   */
+  channel?: ProxyCallChannel
+  /**
+   * True once the language model has handed this call to opencode as a
+   * tool-call part. A call that is still pending without it was queued
+   * while no turn was attached and has to be drained by the next one.
+   */
+  emitted?: boolean
 }
 
 type InternalPending = PendingProxyCall & {
@@ -105,6 +118,7 @@ export function queuePendingProxyCall(
     toolCallId: call.id,
     toolName: call.toolName,
     input: call.input,
+    channel: call.channel,
     createdAt: Date.now(),
     timer,
     resolve: call.resolve,
@@ -119,6 +133,19 @@ export function queuePendingProxyCall(
     toolName: call.toolName,
   })
   return pending
+}
+
+/** Record that opencode has been given this call as a tool-call part. */
+export function markPendingProxyCallEmitted(toolCallId: string): void {
+  const pending = pendingByCallId.get(toolCallId)
+  if (pending) pending.emitted = true
+}
+
+/** True when Claude's request for this call is gone (see `channel`). */
+export function isPendingProxyCallChannelClosed(
+  call: PendingProxyCall,
+): boolean {
+  return call.channel?.closed === true
 }
 
 export function getPendingProxyCalls(sessionKey: string): PendingProxyCall[] {

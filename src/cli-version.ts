@@ -90,6 +90,12 @@ export function cliSupportsFastMode(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 1, patch: 220 })
 }
 
+/** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
+export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 258 })
+}
+
 /**
  * `--thinking` has been part of Claude Code's CLI since the 2.x line.
  * We require a detected 2.0.0+ before passing it; unknown version → skip

@@ -1,7 +1,14 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
+import type { ChildProcess } from "node:child_process"
+import type {
+  LanguageModelV3CallOptions,
+  LanguageModelV3StreamPart,
+} from "@ai-sdk/provider"
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,6 +30,7 @@ import {
 } from "./src/proxy-mcp.js"
 import {
   getPendingProxyCalls,
+  markPendingProxyCallEmitted,
   onPendingProxyCall,
   queuePendingProxyCall,
   rejectAllPendingProxyCallsForSession,
@@ -30,7 +38,17 @@ import {
   resolvePendingProxyCallById,
   type PendingProxyCall,
 } from "./src/proxy-broker.js"
-import { deleteActiveProcess, sessionKey } from "./src/session-manager.js"
+import {
+  deleteActiveProcess,
+  deleteActiveProcessAndWait,
+  deleteClaudeSessionId,
+  getActiveProcess,
+  setActiveProcess,
+  setClaudeSessionId,
+  bufferUnattendedLine,
+  type ActiveProcess,
+  sessionKey,
+} from "./src/session-manager.js"
 
 const TASK_INPUT = {
   description: "Inspect provider flow",
@@ -63,10 +81,16 @@ function createFakeTaskCli(
     | "duplicate"
     | "error"
     | "abort"
-    | "followup",
+    | "followup"
+    | "late"
+    | "late-queued"
+    | "swallow"
+    | "bookkeeping"
+    | "bookkeeping-respawn",
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-proxy-task-"))
   const cliPath = join(cwd, "fake-claude.cjs")
+  const eventsPath = join(cwd, "events.jsonl")
   const source = `#!/usr/bin/env node
 const fs = require("node:fs")
 const readline = require("node:readline")
@@ -225,10 +249,15 @@ function emitAssistant() {
   emit(assistant)
 }
 
-async function callTask(input = taskInput, id = 1) {
+async function callTask(input = taskInput, id = 1, signal) {
   const response = await fetch(proxyUrl, {
     method: "POST",
-    headers: { "content-type": "application/json", ...proxyHeaders },
+    headers: {
+      "content-type": "application/json",
+      accept: recoveryMode ? "application/json, text/event-stream" : "application/json",
+      ...proxyHeaders,
+    },
+    signal,
     body: JSON.stringify({
       jsonrpc: "2.0",
       id,
@@ -236,11 +265,110 @@ async function callTask(input = taskInput, id = 1) {
       params: { name: "task", arguments: input },
     }),
   })
+  if (recoveryMode) {
+    record({ type: "http-response", id, status: response.status, contentType: response.headers.get("content-type") })
+  }
+  if (response.headers.get("content-type")?.includes("text/event-stream")) {
+    const body = await response.text()
+    const data = body.split("\\n").find((line) => line.startsWith("data: "))
+    if (!data) throw new Error("SSE response had no JSON-RPC result")
+    return JSON.parse(data.slice(6))
+  }
   return response.json()
 }
 
+const recoveryMode = ["late", "late-queued", "swallow", "bookkeeping", "bookkeeping-respawn"].includes(mode)
+const swallowMode = mode === "swallow" || mode.startsWith("bookkeeping")
+const eventsPath = ${JSON.stringify(eventsPath)}
+function record(event) {
+  fs.appendFileSync(eventsPath, JSON.stringify(event) + "\\n")
+}
+function answer(text) {
+  emit({
+    ...assistant,
+    message: {
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text }],
+    },
+  })
+  emit(result)
+}
+const resumed = args.includes("--resume")
+if (recoveryMode) {
+  emit({ type: "system", subtype: "init", session_id: "fake-session" })
+  const promptIndex = args.indexOf("--append-system-prompt-file")
+  record({
+    type: "spawn",
+    args,
+    pid: process.pid,
+    proxyUrl,
+    resumed,
+    prompt: promptIndex >= 0 ? fs.readFileSync(args[promptIndex + 1], "utf8") : null,
+  })
+}
+const abandoned = new AbortController()
+let secondTaskBody
+let lateEnvelopeReceived = false
+function finishQueuedTask() {
+  if (secondTaskBody && lateEnvelopeReceived) {
+    answer("Fresh answer after queued task: " + secondTaskBody.result.content[0].text)
+  }
+}
+if (recoveryMode && !swallowMode) {
+  // The test signals only after the provider stream has closed on tool-calls.
+  process.once("SIGUSR2", () => {
+    abandoned.abort()
+    record({ type: "abandoned" })
+    answer("Unattended narration after the task connection timed out.")
+    if (mode === "late-queued") {
+      void callTask(secondTaskInput, 2).then((body) => {
+        secondTaskBody = body
+        record({ type: "queued-result", body })
+        finishQueuedTask()
+      }).catch((error) => record({ type: "fixture-error", message: error.message }))
+    }
+  })
+}
+
 let handled = false
-readline.createInterface({ input: process.stdin }).on("line", () => {
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  if (recoveryMode) {
+    const envelope = JSON.parse(line)
+    record({ type: "input", envelope, resumed })
+    if (handled || resumed) {
+      const content = envelope.message?.content
+      const isCompletion = envelope.type === "user" &&
+        envelope.message?.role === "user" && Array.isArray(content) &&
+        content.length > 0 && content.every((block) => block.type === "text") &&
+        content.some((block) => block.text.includes("subagent complete"))
+      if (!isCompletion) {
+        record({ type: "fixture-error", message: "Expected a plain user completion envelope" })
+        return
+      }
+      lateEnvelopeReceived = true
+      if (mode === "bookkeeping-respawn") {
+        emit({ type: "system", subtype: "status", status: null })
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "old-call", content: "ack" }] } })
+        return
+      }
+      if (mode === "late-queued") finishQueuedTask()
+      else answer(resumed ? "Fresh answer after watchdog recovery." : "Fresh answer after late completion.")
+      return
+    }
+    handled = true
+    emitAssistant()
+    void callTask(taskInput, 1, abandoned.signal).then((body) => {
+      // A successful HTTP response alone does not prove the CLI resumed.
+      record({ type: "swallowed-result", body })
+      if (mode.startsWith("bookkeeping")) {
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "old-call", content: "ack" }] } })
+      }
+    }).catch((error) => {
+      if (!abandoned.signal.aborted) record({ type: "fixture-error", message: error.message })
+    })
+    return
+  }
   if (handled) return
   handled = true
   emitAssistant()
@@ -296,7 +424,7 @@ readline.createInterface({ input: process.stdin }).on("line", () => {
 `
   writeFileSync(cliPath, source)
   chmodSync(cliPath, 0o755)
-  return { cliPath, cwd }
+  return { cliPath, cwd, eventsPath }
 }
 
 async function streamTaskBoundary(
@@ -304,7 +432,7 @@ async function streamTaskBoundary(
 ) {
   const fake = createFakeTaskCli(mode)
   const modelId = `claude-test-task-${mode}`
-  const sk = sessionKey(fake.cwd, `${modelId}::tools::default`)
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
 
   try {
     const model = createClaudeCode({
@@ -407,6 +535,346 @@ function waitForBrokerCalls(sessionKey: string, count: number) {
       unsubscribe()
       resolve(calls)
     })
+  })
+}
+
+async function eventually(description: string, ready: () => boolean) {
+  const deadline = performance.now() + 5_000
+  while (!ready()) {
+    assert.ok(performance.now() < deadline, `Timed out waiting for ${description}`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+async function collectRecoveryStream(
+  stream: ReadableStream<LanguageModelV3StreamPart>,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      (async () => {
+        const parts: LanguageModelV3StreamPart[] = []
+        for await (const part of stream) parts.push(part)
+        return parts
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("Recovery stream did not finish within 5s"))
+        }, 5_000)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function exerciseTaskRecovery(mode: "late" | "late-queued" | "swallow" | "bookkeeping" | "bookkeeping-respawn") {
+  const swallowMode = mode === "swallow" || mode.startsWith("bookkeeping")
+  const fake = createFakeTaskCli(mode)
+  const modelId = `claude-test-task-${mode}`
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const previousWatchdog = process.env.CLAUDE_CODE_START_WATCHDOG_MS
+  // Leave ample room for the Node fixture to start, even under the full suite.
+  process.env.CLAUDE_CODE_START_WATCHDOG_MS = "500"
+  const events = () => existsSync(fake.eventsPath)
+    ? readFileSync(fake.eventsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    : []
+  const options: LanguageModelV3CallOptions = {
+    prompt: [{
+      role: "user",
+      content: [{ type: "text", text: "Delegate the focused provider check." }],
+    }],
+    tools: [{
+      type: "function",
+      name: "task",
+      description: "Delegate work to an opencode subagent",
+      inputSchema: { type: "object", properties: {} },
+    }],
+  }
+  const addResult = (
+    call: Extract<LanguageModelV3StreamPart, { type: "tool-call" }>,
+    text: string,
+  ) => {
+    options.prompt.push({
+      role: "assistant",
+      content: [{
+        type: "tool-call",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: JSON.parse(call.input),
+      }],
+    }, {
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: { type: "text", value: text },
+      }],
+    })
+  }
+
+  try {
+    const model = createClaudeCode({
+      cliPath: fake.cliPath,
+      cwd: fake.cwd,
+      bridgeOpencodeMcp: false,
+      proxyOpencodeMcpTools: false,
+      proxyTools: ["Task"],
+      autoContinueIncompleteTurns: false,
+    }).languageModel(modelId)
+    const firstResponse = await model.doStream(options)
+    const firstParts = await collectRecoveryStream(firstResponse.stream)
+    assertNativeTaskBoundary(firstParts, getPendingProxyCalls(sk))
+    const taskCall = firstParts.find((part) => part.type === "tool-call")!
+    const originalProcess = getActiveProcess(sk)!
+    assert.ok(originalProcess)
+    assert.equal(originalProcess.lineEmitter.listenerCount("line"), 0)
+    const originalCall = getPendingProxyCalls(sk)[0]
+    assert.equal(originalCall.channel?.closed, false)
+    assert.equal(originalCall.emitted, true)
+
+    if (!swallowMode) {
+      assert.equal(originalProcess.proc.kill("SIGUSR2"), true)
+      await eventually("disconnected HTTP channel and buffered terminal result", () =>
+        originalCall.channel?.closed === true &&
+        (originalProcess.unattendedLines ?? []).some((line) => JSON.parse(line).type === "result"),
+      )
+      assert.equal(getPendingProxyCalls(sk)[0].toolCallId, taskCall.toolCallId)
+      assert.equal(events().filter((event) => event.type === "abandoned").length, 1)
+      if (mode === "late-queued") {
+        await eventually("a task queued with no stream listener", () => getPendingProxyCalls(sk).length === 2)
+        const queued = getPendingProxyCalls(sk)[1]
+        assert.deepEqual(queued.input, PARALLEL_TASK_INPUT)
+        assert.notEqual(queued.emitted, true)
+        assert.equal(queued.channel?.closed, false)
+      }
+    }
+
+    addResult(taskCall, "subagent complete")
+    const secondResponse = await model.doStream(options)
+    const secondParts = await collectRecoveryStream(secondResponse.stream)
+    if (mode === "bookkeeping-respawn") {
+      const errors = secondParts.filter((part) => part.type === "error")
+      assert.equal(errors.length, 1)
+      assert.match(String(errors[0].error), /start watchdog timeout/)
+      assert.equal(secondParts.filter((part) => part.type === "finish").length, 0)
+      assert.equal(getActiveProcess(sk), undefined)
+      assert.equal(getPendingProxyCalls(sk).length, 0)
+      const recorded = events()
+      assert.equal(recorded.filter((event) => event.type === "spawn").length, 2)
+      assert.equal(recorded.filter((event) => event.type === "input").length, 2)
+      assert.equal(recorded.filter((event) => event.type === "swallowed-result").length, 1)
+      assert.deepEqual(recorded.filter((event) => event.type === "fixture-error"), [])
+      return
+    }
+    const secondText = secondParts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.delta)
+      .join("")
+    if (!swallowMode) {
+      assert.ok(secondText.startsWith("Unattended narration after the task connection timed out."))
+      assert.equal(secondText.split("Unattended narration").length - 1, 1)
+    }
+
+    let finalParts = secondParts
+    if (mode === "late-queued") {
+      assertNativeTaskBoundary(secondParts, getPendingProxyCalls(sk), [PARALLEL_TASK_INPUT])
+      const queuedCall = secondParts.find((part) => part.type === "tool-call")!
+      assert.notEqual(queuedCall.toolCallId, taskCall.toolCallId)
+      assert.equal(getPendingProxyCalls(sk)[0].emitted, true)
+      addResult(queuedCall, "queued subagent complete")
+      const finalResponse = await model.doStream(options)
+      finalParts = await collectRecoveryStream(finalResponse.stream)
+      assert.equal(
+        [...firstParts, ...secondParts, ...finalParts].filter((part) =>
+          part.type === "tool-call" && part.toolCallId === queuedCall.toolCallId,
+        ).length,
+        1,
+      )
+      assert.equal(events().filter((event) => event.type === "queued-result").length, 1)
+    }
+
+    const finalText = finalParts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.delta)
+      .join("")
+    const expectedAnswer = swallowMode
+      ? "Fresh answer after watchdog recovery."
+      : mode === "late-queued"
+        ? "Fresh answer after queued task: queued subagent complete"
+        : "Fresh answer after late completion."
+    assert.ok(finalText.endsWith(expectedAnswer), `Expected fresh completion, received: ${finalText}`)
+    assert.equal(finalParts.filter((part) => part.type === "tool-call").length, 0)
+    assert.equal(finalParts.filter((part) => part.type === "error").length, 0)
+    const finishes = finalParts.filter((part) => part.type === "finish")
+    assert.equal(finishes.length, 1)
+    assert.equal(finishes[0].finishReason.unified, "stop")
+    const answerIndex = finalParts.findIndex((part) =>
+      part.type === "text-delta" && part.delta.includes(expectedAnswer),
+    )
+    assert.ok(answerIndex >= 0 && answerIndex < finalParts.indexOf(finishes[0]))
+    assert.equal(getPendingProxyCalls(sk).length, 0)
+
+    const recorded = events()
+    assert.deepEqual(recorded.filter((event) => event.type === "fixture-error"), [])
+    const httpResponses = recorded.filter((event) => event.type === "http-response")
+    assert.equal(httpResponses.length, mode === "late-queued" ? 2 : 1)
+    for (const response of httpResponses) {
+      assert.equal(response.status, 200)
+      assert.match(response.contentType, /text\/event-stream/)
+    }
+    const inputs = recorded.filter((event) => event.type === "input")
+    assert.equal(inputs.length, 2, "Only the original prompt and one completion envelope reach stdin")
+    const completion = inputs[1].envelope
+    assert.equal(completion.type, "user")
+    assert.equal(completion.message.role, "user")
+    assert.ok(completion.message.content.every((block: { type: string }) => block.type === "text"))
+    const completionText = completion.message.content.map((block: { text: string }) => block.text).join("")
+    assert.ok(completionText.includes(taskCall.toolCallId))
+    assert.ok(completionText.includes("task"))
+    assert.ok(completionText.includes("subagent complete"))
+    assert.match(completionText, /do not re-run/i)
+    assert.doesNotMatch(JSON.stringify(completion), /"tool_result"|"tool_use_id"/)
+    const spawns = recorded.filter((event) => event.type === "spawn")
+    if (swallowMode) {
+      const swallowed = recorded.filter((event) => event.type === "swallowed-result")
+      assert.equal(swallowed.length, 1)
+      assert.equal(swallowed[0].body.result.content[0].text, "subagent complete")
+      assert.equal(recorded.filter((event) => event.type === "abandoned").length, 0)
+      assert.equal(spawns.length, 2)
+      assert.equal(inputs[1].resumed, true)
+      assert.notEqual(spawns[1].pid, spawns[0].pid)
+      assert.deepEqual(spawns[1].args, [...spawns[0].args, "--resume", "fake-session"])
+      assert.equal(spawns[1].proxyUrl, spawns[0].proxyUrl)
+      assert.ok(spawns[0].prompt)
+      assert.equal(spawns[1].prompt, spawns[0].prompt)
+      assert.equal(getActiveProcess(sk)?.proxyServer, originalProcess.proxyServer)
+    } else {
+      assert.equal(spawns.length, 1, "A disconnected HTTP call does not require a respawn")
+      assert.equal(getActiveProcess(sk)?.proc, originalProcess.proc)
+    }
+  } finally {
+    if (previousWatchdog === undefined) delete process.env.CLAUDE_CODE_START_WATCHDOG_MS
+    else process.env.CLAUDE_CODE_START_WATCHDOG_MS = previousWatchdog
+    rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+    await deleteActiveProcessAndWait(sk)
+    deleteClaudeSessionId(sk)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+}
+
+test("late Task result replays unattended narration without finishing before the fresh answer", {
+  timeout: 20_000,
+}, () => exerciseTaskRecovery("late"))
+
+test("Task queued while unattended is emitted exactly once and resolved on the following turn", {
+  timeout: 20_000,
+}, () => exerciseTaskRecovery("late-queued"))
+
+test("silently swallowed HTTP Task result recovers through a resumed completion envelope", {
+  timeout: 20_000,
+}, () => exerciseTaskRecovery("swallow"))
+
+test("tool-result bookkeeping does not disarm the recovery watchdog", {
+  timeout: 20_000,
+}, () => exerciseTaskRecovery("bookkeeping"))
+
+test("bookkeeping-only output after respawn still reaches the second watchdog deadline", {
+  timeout: 20_000,
+}, () => exerciseTaskRecovery("bookkeeping-respawn"))
+
+for (const ordering of ["buffered-terminal", "delayed-terminal", "close-after-resolution"] as const) {
+  test(`recovery consumes each completion once: ${ordering}`, async () => {
+    const cwd = process.cwd()
+    const modelId = `claude-test-recovery-${ordering}`
+    const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+    const writes: string[] = []
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: { write: (line: string) => { writes.push(line); return true } },
+      kill: () => true,
+    }) as unknown as ChildProcess
+    const active: ActiveProcess = { proc, lineEmitter: new EventEmitter(), unattendedLines: [] }
+    const terminal = { type: "result", session_id: "recovery-session", is_error: false }
+    const emit = (message: unknown) => active.lineEmitter.emit("line", JSON.stringify(message))
+    const options: LanguageModelV3CallOptions = {
+      tools: [{ type: "function", name: "task", inputSchema: { type: "object" } }],
+      prompt: [{ role: "user", content: [{ type: "text", text: "Delegate." }] }],
+    }
+    const appendResult = (id: string, text: string) => {
+      options.prompt.push({
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: id, toolName: "task", input: {} }],
+      }, {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: id, toolName: "task", output: { type: "text", value: text } }],
+      })
+    }
+    const firstId = `${ordering}-A`
+    const secondId = `${ordering}-B`
+    const channel = { closed: ordering !== "close-after-resolution" }
+    let resolutions = 0
+    try {
+      setActiveProcess(sk, active)
+      setClaudeSessionId(sk, "recovery-session")
+      queuePendingProxyCall(sk, {
+        id: firstId, toolName: "task", input: {}, channel,
+        resolve: () => {
+          resolutions++
+          if (ordering === "close-after-resolution") queueMicrotask(() => { channel.closed = true })
+        },
+        reject: () => {},
+      })
+      markPendingProxyCallEmitted(firstId)
+      appendResult(firstId, "completion A")
+      const model = createClaudeCode({
+        cwd, cliPath: process.execPath, bridgeOpencodeMcp: false,
+        proxyOpencodeMcpTools: false, proxyTools: [], autoContinueIncompleteTurns: false,
+      }).languageModel(modelId)
+      if (ordering !== "close-after-resolution") {
+        // This call arrived while opencode executed A, before A's old terminal.
+        queuePendingProxyCall(sk, {
+          id: secondId, toolName: "task", input: {}, channel: { closed: true },
+          resolve: () => { resolutions++ }, reject: () => {},
+        })
+        const boundary = await model.doStream(options)
+        const parts = await collectRecoveryStream(boundary.stream)
+        assert.deepEqual(parts.filter((part) => part.type === "tool-call").map((part) => part.toolCallId), [secondId])
+        assert.equal(writes.length, 0)
+        assert.equal(active.pendingProxyCompletions?.size, 1)
+        if (ordering === "buffered-terminal") bufferUnattendedLine(active, JSON.stringify(terminal))
+        appendResult(secondId, "completion B")
+      }
+      const response = await model.doStream(options)
+      const collected = collectRecoveryStream(response.stream)
+      await eventually("tool results resolved", () => getPendingProxyCalls(sk).length === 0)
+      if (ordering !== "buffered-terminal") {
+        assert.equal(writes.length, 0)
+        emit(terminal)
+      }
+      await eventually("one recovery envelope", () => writes.length === 1)
+      assert.equal(active.lineEmitter.listenerCount("line"), 1, "Old terminal must not finish the recovered stream")
+      assert.equal(active.pendingProxyCompletions?.size, 0)
+      const completion = JSON.parse(writes[0]).message.content[0].text as string
+      assert.equal(completion.split(firstId).length - 1, 1)
+      assert.ok(completion.includes("completion A"))
+      if (ordering !== "close-after-resolution") {
+        assert.equal(completion.split(secondId).length - 1, 1)
+        assert.ok(completion.includes("completion B"))
+      }
+      emit({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Fresh recovered answer." }] } })
+      emit(terminal)
+      const parts = await collected
+      assert.equal(parts.filter((part) => part.type === "finish").length, 1)
+      assert.equal(parts.filter((part) => part.type === "error" || part.type === "tool-call").length, 0)
+      assert.ok(parts.some((part) => part.type === "text-delta" && part.delta === "Fresh recovered answer."))
+      assert.equal(writes.length, 1, "The fresh terminal must not submit stale recovery again")
+      assert.equal(resolutions, ordering === "close-after-resolution" ? 1 : 2)
+    } finally {
+      rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+      deleteActiveProcess(sk)
+      deleteClaudeSessionId(sk)
+    }
   })
 }
 
@@ -746,7 +1214,7 @@ test("error result does not wait for a missing proxy call", async () => {
 test("immediate abort rejects a buffered Task call", async () => {
   const fake = createFakeTaskCli("abort")
   const modelId = "claude-test-task-abort"
-  const sk = sessionKey(fake.cwd, `${modelId}::tools::default`)
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
   const abortController = new AbortController()
   const brokerCalls = waitForBrokerCalls(sk, 1)
 
@@ -803,7 +1271,7 @@ test("parent tool-result turn defers MCP hot reload and continues the same Claud
 }, async () => {
   const fake = createFakeTaskCli("followup")
   const modelId = "claude-test-task-followup"
-  const sk = sessionKey(fake.cwd, `${modelId}::tools::default`)
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
   const configPath = join(fake.cwd, "opencode.json")
 
   mkdirSync(join(fake.cwd, ".git"))
@@ -870,6 +1338,8 @@ test("parent tool-result turn defers MCP hot reload and continues the same Claud
         unmatchedRejected = true
       },
     })
+    // This sibling was already dispatched by an earlier opencode turn.
+    markPendingProxyCallEmitted(unmatchedToolCallId)
     assert.equal(getPendingProxyCalls(sk).length, 2)
 
     writeFileSync(

@@ -499,6 +499,10 @@ Every proxied tool call has a deadline: if opencode hasn't resolved it (run the 
 
 The `task` and `question` defaults are deliberately generous. Subagents routinely run 20–40 min, and a question can sit on a slow operator; under the old flat 10-minute ceiling the proxy fired mid-call, Claude believed its dispatch had failed, and the subagent's eventual result was dropped (the parent turn had already ended on the timeout error). If a `task` call *does* time out, the error tells Claude not to "schedule a wake-up" — that is a Claude Code affordance which cannot fire in this headless/proxy context, so deferring silently loses the work.
 
+Starting with 0.15.0, clients advertising SSE receive immediate headers and keepalive comments every 15 seconds while a proxy call runs. This prevents long unanswered HTTP requests from being abandoned before the configured tool deadline; JSON-only clients retain their existing response format. Keepalives do not extend the tool deadline.
+
+If Claude nevertheless abandons the HTTP call, the plugin preserves narration emitted while opencode was running the tool, renders it on return, and delivers the late completion as a plain-text continuation naming the original call. It tells Claude not to run the tool again. A silent post-tool continuation gets one resumed-process retry, preserving the original model, account, effort, and proxy configuration; a second failure ends with an error rather than an indefinite hang. Buffered narration is capped at 500 lines and 2 MiB, with a warning if output was dropped.
+
 ```json
 "options": {
   "proxyTools": ["Bash", "Edit", "Write", "WebFetch", "Task"],
@@ -507,6 +511,25 @@ The `task` and `question` defaults are deliberately generous. Subagents routinel
 ```
 
 ---
+
+## Side questions with /btw
+
+After a normal Claude Code turn, use:
+
+```text
+/btw Why did you choose that approach?
+```
+
+The plugin registers the command without replacing an existing user-defined `btw` command. It calls Claude Code's native `side_question` control protocol on the current process, using the same model and account. The answer renders in the opencode conversation, but neither the question nor answer is sent as a normal Claude user turn or included in plugin-generated history and compaction transcripts.
+
+- Requires Claude Code CLI **2.1.258 or newer**, the oldest verified version.
+- Requires an existing, idle **headless** session with the same model and effort. Send a normal message first if the process has not started or was evicted. Interactive transport is not supported.
+- This is not a concurrent TUI overlay: opencode may queue the command while a turn runs, and the plugin refuses it while a tool or another aside is outstanding.
+- Each aside sees the main conversation, not previous aside exchanges. Include the relevant detail explicitly when asking a follow-up.
+- The control response has no token/cost usage fields. Aside usage is not reported in opencode's counters; this does not mean the request is free.
+- A request times out after two minutes. Abort and timeout cancel that side request without killing the main session.
+
+Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
 
 ## WebSearch routing
 
@@ -680,9 +703,9 @@ What you see is a **summary** of the model's thinking, not the raw chain-of-thou
 
 ### Reasoning effort
 
-Each model exposes `low` / `medium` / `high` / `xhigh` / `max` variants, and an agent can set `reasoningEffort` in its own frontmatter (`minimal` is also accepted and maps to the CLI's `low`). The plugin hands the level to the CLI as `CLAUDE_CODE_EFFORT_LEVEL` at spawn, which Claude Code treats as the session-wide override: it beats the `effortLevel` in that account's `settings.json` and a shell export of the same variable. Effort is fixed for the life of a `claude` process, so it is part of the session key: changing the variant mid-conversation spawns a fresh process with the conversation replayed as context, the same as switching models.
+Each model exposes `low` / `medium` / `high` / `xhigh` / `max` variants, and an agent can set `reasoningEffort` in its own frontmatter (`minimal` is also accepted and maps to the CLI's `low`). The plugin hands the level to the CLI as `CLAUDE_CODE_EFFORT_LEVEL` at spawn, which Claude Code treats as the session-wide override: it beats the `effortLevel` in that account's `settings.json` and a shell export of the same variable. Effort is fixed for the life of a `claude` process, so it is part of the session key. Changing effort retires the previous effort's process and remembered transcript ID before replaying the conversation into a fresh process. Switching back cannot resume stale context; same-effort streaming turns still reuse their process. This reset is scoped to the same directory, model, provider/account, agent, and conversation. If the previous effort still has pending work (including tool results, plan approval, recovery, or `/btw`), the switch is rejected: finish that work at its original effort first. Title, compaction, and `/btw` calls do not trigger effort resets.
 
-Earlier versions injected a thinking keyword such as `(ultrathink)` into the user message instead. Claude Code stopped recognising every keyword except `ultrathink`, so that path is gone and nothing is appended to your messages any more. Compaction calls never carry an effort, so the summary gets the whole output budget.
+Earlier versions injected a thinking keyword such as `(ultrathink)` into the user message instead. Claude Code stopped recognising every keyword except `ultrathink`, so that path is gone and nothing is appended to your messages any more. Compaction skips request and agent effort overrides, but still inherits a shell-level `CLAUDE_CODE_EFFORT_LEVEL` when set.
 
 ### Env-var overrides
 

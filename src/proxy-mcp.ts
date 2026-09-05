@@ -42,12 +42,39 @@ export interface ProxyToolDef {
   inputSchema: Record<string, unknown>
 }
 
+/**
+ * Liveness of the HTTP reply channel behind one proxy call. Shared by
+ * reference between proxy-mcp (which flips `closed` when Claude's request
+ * goes away) and the broker / language model (which read it before
+ * answering), so the two never need to import each other.
+ */
+export interface ProxyCallChannel {
+  closed: boolean
+}
+
 export interface ProxyToolCall {
   id: string
   toolName: string
   input: Record<string, unknown>
   resolve: (result: ProxyToolResult) => void
   reject: (err: Error) => void
+  /** Absent for calls built by hand in tests; treated as open. */
+  channel?: ProxyCallChannel
+}
+
+/**
+ * Keep unanswered HTTP calls active independently of the tool deadline.
+ * A held call timed out before delivery on CLI 2.1.258; with immediate
+ * headers and these comments, the same 390-second hold completed.
+ */
+export const SSE_KEEPALIVE_MS = 15_000
+
+/** True when the client advertised `text/event-stream` in Accept. */
+export function acceptsEventStream(acceptHeader: unknown): boolean {
+  return (
+    typeof acceptHeader === "string" &&
+    acceptHeader.toLowerCase().includes("text/event-stream")
+  )
 }
 
 export type ProxyToolResult =
@@ -707,6 +734,10 @@ export async function createProxyMcpServer(
     // result that failed schema validation" (seen live 2026-07-04).
     let requestId: number | string | null = null
     let requestMethod: string | null = null
+    // Hoisted for the same reason: once SSE headers are out, an error must
+    // travel down the stream instead of through writeJson (which would try
+    // to set headers again and throw inside the catch).
+    let sse: EventStream | null = null
     try {
       const body = await readBody(req)
       const request = JSON.parse(body) as {
@@ -817,6 +848,25 @@ export async function createProxyMcpServer(
           callId,
           toolName,
           hasInput: input != null,
+          sse: acceptsEventStream(req.headers.accept),
+        })
+
+        // Broker-backed calls can block for an hour on a subagent. Use SSE when the
+        // client accepts one: headers and a comment go out now, keepalive
+        // comments follow, and the JSON-RPC result is the final event. A
+        // client that only accepts JSON gets the old single-shot reply.
+        const channel: ProxyCallChannel = { closed: false }
+        if (acceptsEventStream(req.headers.accept)) {
+          sse = openEventStream(res)
+        }
+        res.once("close", () => {
+          sse?.stop()
+          if (res.writableFinished) return
+          channel.closed = true
+          log.notice("proxy-mcp client closed a tool call before its result", {
+            callId,
+            toolName,
+          })
         })
 
         let timer: ReturnType<typeof setTimeout> | null = null
@@ -828,6 +878,7 @@ export async function createProxyMcpServer(
               input,
               resolve,
               reject,
+              channel,
             }
             pending.set(callId, entry)
             const deadlineMs = resolveProxyCallTimeoutMs(
@@ -856,7 +907,16 @@ export async function createProxyMcpServer(
           pending.delete(callId)
         })
 
-        writeToolCallResult(res, requestId, result)
+        if (channel.closed) {
+          // Nobody is reading. The language model already saw the closed
+          // channel and hands the result to Claude another way.
+          log.notice("proxy-mcp dropping result for a closed tool call", {
+            callId,
+            toolName,
+          })
+          return
+        }
+        writeToolCallResult(res, requestId, result, sse)
         return
       }
 
@@ -877,14 +937,12 @@ export async function createProxyMcpServer(
       // rejects the response as schema-invalid.
       if (requestMethod === "tools/call") {
         try {
-          writeJson(res, {
-            jsonrpc: "2.0",
-            id: requestId,
-            result: {
-              content: [{ type: "text", text: errorMessage }],
-              isError: true,
-            },
-          })
+          writeToolCallResult(
+            res,
+            requestId,
+            { kind: "error", message: errorMessage },
+            sse,
+          )
         } catch {
           try {
             res.statusCode = 500
@@ -1089,20 +1147,70 @@ function writeToolCallResult(
   res: ServerResponse,
   requestId: unknown,
   result: ProxyToolResult,
+  sse: EventStream | null = null,
 ): void {
   const text = result.kind === "error" ? result.message : result.text
   const isError = result.kind === "error" || result.isError === true
-  writeJson(res, {
+  const envelope = {
     jsonrpc: "2.0",
     id: requestId ?? null,
     result: {
       content: [{ type: "text", text }],
       isError,
     },
-  })
+  }
+  if (sse) {
+    sse.finish(envelope)
+    return
+  }
+  writeJson(res, envelope)
+}
+
+/**
+ * An in-flight SSE reply. `finish` writes the JSON-RPC response as the
+ * single `message` event and ends the stream, which is what the MCP
+ * Streamable HTTP client expects for a request answered over SSE.
+ */
+interface EventStream {
+  finish(envelope: unknown): void
+  stop(): void
+}
+
+function openEventStream(res: ServerResponse): EventStream {
+  res.statusCode = 200
+  res.setHeader("Content-Type", "text/event-stream")
+  res.setHeader("Cache-Control", "no-cache, no-transform")
+  res.setHeader("Connection", "keep-alive")
+  res.flushHeaders()
+  // Start the response body without waiting for the tool result.
+  res.write(": open\n\n")
+  let timer: ReturnType<typeof setInterval> | null = setInterval(() => {
+    if (res.writableEnded || res.destroyed) {
+      stop()
+      return
+    }
+    res.write(": keepalive\n\n")
+  }, SSE_KEEPALIVE_MS)
+  // Never keep the host process alive for a keepalive alone.
+  timer.unref?.()
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+  return {
+    stop,
+    finish(envelope) {
+      stop()
+      if (res.writableEnded || res.destroyed) return
+      res.end(`event: message\ndata: ${JSON.stringify(envelope)}\n\n`)
+    },
+  }
 }
 
 function writeJson(res: ServerResponse, body: unknown): void {
+  if (res.destroyed || res.writableEnded) return
   const payload = JSON.stringify(body)
   res.statusCode = 200
   res.setHeader("Content-Type", "application/json")

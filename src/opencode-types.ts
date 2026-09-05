@@ -68,6 +68,14 @@ export type OpenCodeProvider = {
 }
 
 export type OpenCodeConfig = {
+  command?: Record<string, {
+    template: string
+    description?: string
+    agent?: string
+    model?: string
+    variant?: string
+    subtask?: boolean
+  }>
   provider?: Record<
     string,
     {

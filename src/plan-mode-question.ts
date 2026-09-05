@@ -64,6 +64,11 @@ export function clearExitPlanModeQuestions(sessionKey: string): void {
   }
 }
 
+export function hasExitPlanModeQuestions(sessionKey: string): boolean {
+  const prefix = `${sessionKey}${KEY_SEPARATOR}`
+  return [...pendingQuestions.keys()].some((key) => key.startsWith(prefix))
+}
+
 export function createExitPlanModeQuestionCall(
   sessionKey: string,
   exitPlanModeToolUseId: string,

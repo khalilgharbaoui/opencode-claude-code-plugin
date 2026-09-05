@@ -72,6 +72,14 @@ export const DEFAULT_PROXY_TOOL_NAMES = [
   "Task",
 ]
 
+export function registerSideQuestionCommand(config: OpenCodeConfig): void {
+  config.command ??= {}
+  config.command.btw ??= {
+    template: "/btw $ARGUMENTS",
+    description: "Ask a side question in the live Claude Code session without changing its context",
+  }
+}
+
 // One-time heads-up: an API key in the environment makes Claude Code bill
 // pay-as-you-go (Console) instead of the logged-in Pro/Max subscription, which
 // silently bypasses the Agent SDK plan credit. Surfaced once per process.
@@ -447,6 +455,7 @@ const server: OpenCodePlugin = async (input) => {
 
   return {
     config: async (config) => {
+      registerSideQuestionCommand(config)
       config.provider ??= {}
 
       await buildAgentRegistry(config)

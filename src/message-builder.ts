@@ -1,7 +1,19 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { log } from "./logger.js"
+import { parseSideQuestionContent } from "./side-question.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
+
+export function filterSideQuestionHistory(prompt: Prompt): Prompt {
+  let aside = false
+  return prompt.filter((message) => {
+    if (message.role === "user") {
+      aside = parseSideQuestionContent(message.content) !== null
+      return !aside
+    }
+    return message.role !== "assistant" || !aside
+  })
+}
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -186,6 +198,7 @@ export function compactConversationHistory(
   opts: { mode?: "fresh-session" | "compaction" } = {},
 ): string | null {
   const mode = opts.mode ?? "fresh-session"
+  prompt = filterSideQuestionHistory(prompt)
 
   if (mode === "compaction") {
     return buildCompactionHistory(prompt)
@@ -368,6 +381,7 @@ Now continuing with the current message:
 
   for (const msg of messages) {
     if (msg.role === "user") {
+      if (parseSideQuestionContent(msg.content) !== null) continue
       if (typeof msg.content === "string") {
         const str = msg.content as string
         if (str.trim()) {
