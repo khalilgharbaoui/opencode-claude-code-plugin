@@ -3381,6 +3381,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               const tc = toolCallMap.get(idx)
               if (tc) {
+                // Block indices restart at 0 on every assistant message, and a
+                // turn can hold several (tool_use -> tool_result -> answer).
+                // Without this delete the entry outlives its message, so the
+                // next message's block at the same index re-emits a tool-call
+                // for an id opencode already completed. That second part never
+                // gets a result, opencode aborts it at stream end, and a
+                // subagent's `task` call reports "Tool execution aborted"
+                // even though the child answered correctly.
+                toolCallMap.delete(idx)
                 let parsedInput: any = {}
                 try {
                   parsedInput = JSON.parse(tc.inputJson || "{}")
