@@ -208,28 +208,37 @@ export function clearPendingSideQuestionAnswers(): void {
  * for a fresh Claude process. Kept as the first characters of its own text
  * part so the strip is exact rather than a guess at where the block ends.
  */
-export const INLINE_ASIDE_MARKER = "> **btw:**"
+export const INLINE_ASIDE_MARKER = "▌ **btw:**"
 
 /**
- * Quotes every line, blank ones included. A bare blank line would close the
- * quote and split the aside into two blocks, so the rule the TUI draws has to
- * be carried by `>` on its own for those.
+ * Markers of blocks written before the bar replaced the blockquote. Only the
+ * strip reads these: a conversation that already holds an old aside still has
+ * to keep it out of a rebuilt transcript.
  */
-function quoteEveryLine(text: string): string {
+export const LEGACY_INLINE_ASIDE_MARKERS = ["> **btw:**"]
+
+/**
+ * A literal bar on every line, blank ones included, so the aside reads as one
+ * block down its whole height.
+ *
+ * The obvious alternative, a markdown blockquote, was tried first and is why
+ * this exists: opencode renders assistant text with OpenTUI's markdown, which
+ * draws a blockquote's left border in the `conceal` scope's colour, not the
+ * theme's `markdownBlockQuote`. That border is dim by design and there is no
+ * per-block way to change it, so the bar has to be text the plugin emits.
+ * Line breaks survive because OpenTUI renders a paragraph from `token.raw`,
+ * verbatim, rather than reflowing it.
+ */
+function barEveryLine(text: string): string {
   return text
     .split("\n")
-    .map((line) => (line.trim() === "" ? ">" : `> ${line}`))
+    .map((line) => (line.trim() === "" ? "▌" : `▌ ${line}`))
     .join("\n")
 }
 
-/**
- * The whole aside is one blockquote, answer included, so the TUI's quote rule
- * runs down the full block rather than only the header. Its colour is the
- * theme's `markdownBlockQuote`, which the plugin cannot set per block.
- */
 export function formatInlineAside(question: string, answer: string): string {
   const header = `${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}`
-  return `\n${header}\n>\n${quoteEveryLine(answer.trim())}\n`
+  return `\n${header}\n▌\n${barEveryLine(answer.trim())}\n`
 }
 
 /**

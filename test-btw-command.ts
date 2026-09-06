@@ -271,11 +271,11 @@ test("an aside written into a turn is marked so a rebuilt transcript drops it", 
   assert.match(block, /what did i say\?/)
   assert.match(block, /You said pineapple\./)
   assert.deepEqual(
-    block.trim().split("\n").filter((line) => !line.startsWith(">")),
+    block.trim().split("\n").filter((line) => !line.startsWith("▌")),
     [],
-    "every line is quoted, so the rule runs down the whole block",
+    "every line carries the bar, so it runs down the whole block",
   )
-  assert.match(block, /^> Twice\.$/m, "a blank line inside the answer does not end the quote")
+  assert.match(block, /^▌ Twice\.$/m, "a blank line inside the answer keeps the bar")
   const kept = filterSideQuestionHistory([
     user("Start."),
     { role: "assistant", content: [{ type: "text", text: "Main answer" }, { type: "text", text: block }] },
@@ -286,6 +286,25 @@ test("an aside written into a turn is marked so a rebuilt transcript drops it", 
     (kept[1] as { content: { text: string }[] }).content.map((part) => part.text),
     ["Main answer"],
     "only Claude's own text is replayed",
+  )
+})
+
+test("an aside written before the bar replaced the blockquote is still dropped", () => {
+  const kept = filterSideQuestionHistory([
+    user("Start."),
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Main answer" },
+        { type: "text", text: "\n> **btw:** old shape\n>\n> Old answer.\n" },
+      ],
+    },
+    user("Next."),
+  ] as never)
+  assert.deepEqual(
+    (kept[1] as { content: { text: string }[] }).content.map((part) => part.text),
+    ["Main answer"],
+    "a conversation that predates the bar keeps its asides out of Claude's prompt",
   )
 })
 
@@ -578,7 +597,7 @@ test("an answer that arrives while a turn is streaming is written into that turn
     )
     const turn = await streaming
     assert.deepEqual(turn.errors, [])
-    assert.match(turn.answer, /> \*\*btw:\*\* What did i say\?/)
+    assert.match(turn.answer, /▌ \*\*btw:\*\* What did i say\?/)
     assert.match(turn.answer, /Aside 1: What did i say\?/)
     assert.match(turn.answer, /Main answer/, "the turn still delivers its own reply")
     assert.ok(

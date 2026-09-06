@@ -1,9 +1,17 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
-import { INLINE_ASIDE_MARKER } from "./btw-command.js"
+import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
 import { log } from "./logger.js"
 import { parseSideQuestionContent } from "./side-question.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
+
+const ASIDE_MARKERS = [INLINE_ASIDE_MARKER, ...LEGACY_INLINE_ASIDE_MARKERS]
+
+function isInlineAside(part: any): boolean {
+  if (!part || part.type !== "text" || typeof part.text !== "string") return false
+  const text = part.text.trimStart()
+  return ASIDE_MARKERS.some((marker) => text.startsWith(marker))
+}
 
 /**
  * An aside answered while a turn was running was written into that turn's
@@ -13,10 +21,7 @@ type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
  */
 function stripInlineAsides(content: unknown): unknown {
   if (!Array.isArray(content)) return content
-  const kept = content.filter(
-    (part: any) =>
-      !(part && part.type === "text" && typeof part.text === "string" && part.text.trimStart().startsWith(INLINE_ASIDE_MARKER)),
-  )
+  const kept = content.filter((part: any) => !isInlineAside(part))
   return kept.length === content.length ? content : kept
 }
 
