@@ -60,6 +60,7 @@ function pickOpencodeDirectory(input: unknown): string | undefined {
 }
 
 let warnedAnthropicApiKey = false
+let warnedPlanModeNoExit = false
 
 // `Question` is deliberately absent: enabling it disables Claude Code's
 // built-in AskUserQuestion (via --disallowedTools) and replaces the
@@ -110,6 +111,25 @@ function warnIfAnthropicApiKey(ignore: boolean | undefined): void {
   }
 }
 
+// Plan mode is enforced (buildCliArgs drops the skip-permissions flag for it),
+// so the read-only guarantee holds. The cost is that headless Claude Code is
+// not offered an `ExitPlanMode` tool, measured on 2.1.258, so nothing can
+// release plan mode mid-session and approving a plan in chat will not let
+// Claude write. Say so once per process rather than let it look like a hang.
+export function _resetPlanModeWarningForTests(): void {
+  warnedPlanModeNoExit = false
+}
+
+export function warnIfPlanModeCannotExit(permissionMode: string | undefined): void {
+  if (permissionMode !== "plan") return
+  if (warnedPlanModeNoExit) return
+  warnedPlanModeNoExit = true
+  log.warn(
+    "permissionMode \"plan\" is enforced: claude cannot edit files or run commands, and --dangerously-skip-permissions is deliberately not passed so it stays that way. Headless Claude Code is not offered an ExitPlanMode tool, so nothing releases plan mode mid-session; approving a plan in chat does not unlock writes. Leaving plan mode means changing the config and restarting opencode.",
+    { permissionMode, measuredOn: "claude-code 2.1.258" },
+  )
+}
+
 export function createClaudeCode(
   settings: ClaudeCodeProviderSettings = {},
 ): ClaudeCodeProvider {
@@ -122,6 +142,7 @@ export function createClaudeCode(
     })
   }
   warnIfAnthropicApiKey(settings.ignoreAnthropicApiKey)
+  warnIfPlanModeCannotExit(settings.permissionMode)
   const cliPath =
     settings.cliPath ?? process.env.CLAUDE_CLI_PATH ?? "claude"
   const providerName = settings.providerID ?? settings.name ?? "claude-code"

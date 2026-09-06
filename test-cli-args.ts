@@ -536,3 +536,72 @@ test("resolveDisallowedTools still appends WebSearch when it is disabled", () =>
 test("resolveDisallowedTools is empty when nothing asks for anything", () => {
   assert.deepEqual(resolveDisallowedTools({}), [])
 })
+
+test("plan mode drops --dangerously-skip-permissions so it cannot permit edits", () => {
+  const args = buildCliArgs({
+    sessionKey: "plan-mode",
+    skipPermissions: true,
+    permissionMode: "plan",
+  })
+
+  assert.equal(args.includes("--dangerously-skip-permissions"), false)
+  assert.deepEqual(args.slice(-2), ["--permission-mode", "plan"])
+})
+
+test("every other permission mode still passes the skip flag", () => {
+  for (const mode of ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk"]) {
+    const args = buildCliArgs({
+      sessionKey: `mode-${mode}`,
+      skipPermissions: true,
+      permissionMode: mode,
+    })
+
+    assert.equal(
+      args.includes("--dangerously-skip-permissions"),
+      true,
+      `${mode} should keep the skip flag`,
+    )
+  }
+})
+
+test("plan mode without skipPermissions is unchanged", () => {
+  const args = buildCliArgs({
+    sessionKey: "plan-mode-explicit",
+    skipPermissions: false,
+    permissionMode: "plan",
+  })
+
+  assert.equal(args.includes("--dangerously-skip-permissions"), false)
+  assert.equal(args.includes("plan"), true)
+})
+
+test("plan mode warns once that nothing can release it mid-session", async () => {
+  const { warnIfPlanModeCannotExit, _resetPlanModeWarningForTests } = await import(
+    "./src/index.js"
+  )
+
+  _resetPlanModeWarningForTests()
+  const lines = captureLogs(() => {
+    warnIfPlanModeCannotExit("plan")
+    warnIfPlanModeCannotExit("plan")
+  })
+
+  assert.equal(lines.length, 1)
+  assert.match(lines[0]!, /WARN/)
+  assert.match(lines[0]!, /ExitPlanMode/)
+  assert.match(lines[0]!, /restarting opencode/)
+})
+
+test("no plan-mode warning for other permission modes", async () => {
+  const { warnIfPlanModeCannotExit, _resetPlanModeWarningForTests } = await import(
+    "./src/index.js"
+  )
+
+  _resetPlanModeWarningForTests()
+  const lines = captureLogs(() => {
+    warnIfPlanModeCannotExit("acceptEdits")
+    warnIfPlanModeCannotExit(undefined)
+  })
+
+  assert.deepEqual(lines, [])
+})

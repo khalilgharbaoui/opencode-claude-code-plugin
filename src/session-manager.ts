@@ -786,7 +786,16 @@ export function buildCliArgs(opts: {
     args.push("--settings", JSON.stringify({ fastMode: true }))
   }
 
-  if (skipPermissions) {
+  // Plan mode is a capability restriction, not a prompt policy, and the CLI
+  // lets `--dangerously-skip-permissions` override it outright: measured on
+  // 2.1.258, a plan-mode run carrying both flags wrote a file on request
+  // without prompting, while the same run without the skip flag refused and
+  // created nothing. Since `skipPermissions` defaults to true, passing both
+  // is the common case, so anyone asking for plan mode was silently getting
+  // full write access. Plan mode must never permit edits, so it wins here.
+  // Every other `permissionMode` value governs prompting, which is exactly
+  // what the skip flag is for, so those still pass both.
+  if (skipPermissions && permissionMode !== "plan") {
     args.push("--dangerously-skip-permissions")
   }
 
