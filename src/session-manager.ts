@@ -687,6 +687,8 @@ export function buildCliArgs(opts: {
   strictMcpConfig?: boolean
   disallowedTools?: string[]
   appendSystemPromptFile?: string
+  /** `--plugin-dir` values (skill bridge), one flag per directory. */
+  pluginDirs?: string[]
   thinking?: "enabled" | "disabled"
   thinkingDisplay?: "summarized" | "omitted"
   fastMode?: boolean
@@ -702,6 +704,7 @@ export function buildCliArgs(opts: {
     strictMcpConfig,
     disallowedTools,
     appendSystemPromptFile,
+    pluginDirs,
     thinking,
     thinkingDisplay,
     fastMode,
@@ -769,6 +772,9 @@ export function buildCliArgs(opts: {
 
   if (appendSystemPromptFile) {
     args.push("--append-system-prompt-file", appendSystemPromptFile)
+  }
+  for (const dir of pluginDirs ?? []) {
+    args.push("--plugin-dir", dir)
   }
 
   // Fast mode's only headless opt-in. `--settings` feeds the CLI's

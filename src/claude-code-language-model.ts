@@ -20,6 +20,7 @@ import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
 import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
+import { resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -2661,6 +2662,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     compressionSummary: getCompressionSummary(sk),
                   },
                 )
+            // Opt-in skill bridge (@broskees): stage opencode skills as a
+            // session-scoped --plugin-dir so Claude's Skill tool can run them.
+            const skillPluginDirs = await resolveSkillPluginDirs({
+              cwd,
+              cliPath,
+              enabled: self.config.bridgeOpencodeSkills === true,
+            })
             cliArgs = buildCliArgs({
               sessionKey: sk,
               skipPermissions,
@@ -2670,6 +2678,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               strictMcpConfig: self.config.strictMcpConfig,
               disallowedTools: allDisallowed.length > 0 ? allDisallowed : undefined,
               appendSystemPromptFile: systemPromptFile,
+              pluginDirs: skillPluginDirs,
               ...self.thinkingCliOptions(),
               fastMode,
               cliVersion,

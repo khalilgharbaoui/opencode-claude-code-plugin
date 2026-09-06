@@ -155,6 +155,7 @@ export function createClaudeCode(
       compactionModel: settings.compactionModel,
       ignoreAnthropicApiKey: settings.ignoreAnthropicApiKey,
       idleProcessTimeoutMs: settings.idleProcessTimeoutMs,
+      bridgeOpencodeSkills: settings.bridgeOpencodeSkills === true,
       interactive: settings.interactive,
       interactiveBypass: settings.interactiveBypass,
       interactiveAllowTools: settings.interactiveAllowTools,

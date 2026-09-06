@@ -47,6 +47,8 @@ export interface ClaudeCodeConfig {
   ignoreAnthropicApiKey?: boolean
   /** Kill an idle headless Claude worker after this many milliseconds. */
   idleProcessTimeoutMs?: number
+  /** Stage opencode skills as a `--plugin-dir` so Claude's Skill tool can run them. */
+  bridgeOpencodeSkills?: boolean
   logging?: LoggingConfig
 }
 
@@ -237,6 +239,15 @@ export interface ClaudeCodeProviderSettings {
    * is excluded because it does not currently guarantee session-id resume.
    */
   idleProcessTimeoutMs?: number
+  /**
+   * Expose your opencode skills (`.opencode/skills`, `~/.config/opencode/skills`)
+   * to Claude Code's native Skill tool by staging them as a session-scoped
+   * `--plugin-dir`. Off by default: every bridged skill is also listed in the
+   * system prompt opencode already forwards, so a large skill set is paid for
+   * twice per turn. Turn it on when the model tries `Skill("<name>")` and gets
+   * `Unknown skill`. No-op on CLIs without `--plugin-dir`.
+   */
+  bridgeOpencodeSkills?: boolean
 
   /**
    * Routing for Claude's built-in `WebSearch` tool.
