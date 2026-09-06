@@ -357,7 +357,7 @@ By default, the plugin proxies `Bash`, `Edit`, `Write`, `WebFetch`, and `Task`. 
 | `"Edit"` | `Edit`, `MultiEdit` | `mcp__opencode_proxy__edit` |
 | `"Write"` | `Write` | `mcp__opencode_proxy__write` |
 | `"WebFetch"` | `WebFetch` | `mcp__opencode_proxy__webfetch` |
-| `"Task"` | `Agent` | `mcp__opencode_proxy__task` |
+| `"Task"` | `Agent` | `mcp__opencode_proxy__task`, `mcp__opencode_proxy__task_batch` |
 | `"Question"` | `AskUserQuestion` | `mcp__opencode_proxy__question` |
 | `"Compress"` | none | `mcp__opencode_proxy__compress` |
 
@@ -369,6 +369,7 @@ By default, the plugin proxies `Bash`, `Edit`, `Write`, `WebFetch`, and `Task`. 
 - **Resume:** pass the child session ID back as `task_id` to continue that subagent session. Omit it to create a fresh child.
 - **Nested tasks:** current opencode defaults `subagent_depth` to `1`, so a first-level child cannot launch another child. Increase top-level `subagent_depth` to permit deeper nesting, and explicitly grant `permission.task` on every subagent that should delegate; opencode otherwise adds a task deny to spawned subagent sessions.
 - **Background:** `background: true` returns after starting the child and lets opencode notify the parent when it finishes. Current opencode requires `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in the environment of the opencode process. Foreground is the default.
+- **Several at once:** `mcp__opencode_proxy__task_batch` takes a `tasks` array of ordinary task inputs and runs them concurrently. It exists because Claude Code sends MCP requests one at a time: when the model emits two `task` calls in one response, the second only leaves the CLI after the first has returned (measured live, 2026-09-06), so "launch two subagents" was always serial. The plugin turns one `task_batch` call into N opencode `task` calls inside a single tool boundary, which opencode executes in parallel, then hands the model every result together, labelled in task order. Same permissions, same 60-minute deadline, same `subagent_type` list. Enabled whenever `Task` is proxied. Designed and first implemented by [@broskees](https://github.com/broskees) on his fork.
 
 **Steering models to it.** Headless Claude Code CLIs expose no `Agent`/`Task`
 dispatch tool of their own (verified on 2.1.211), while they *do* expose
@@ -965,7 +966,7 @@ This plugin absorbs work from its forks directly, cherry-picked with the origina
 | [@galvani](https://github.com/galvani) (Jan Kozak) | Per-session working directory for `opencode serve`, so one server spawns each project's `claude` in the right place. Also found the stale `toolCallMap` re-emission three months before it was fixed here. | `9e02ce4`, `2238ed0` |
 | [@HeikoAtGitHub](https://github.com/HeikoAtGitHub) | Stopped sending `AGENTS.md` to the model twice (opencode already forwards it). Independently diagnosed the 5-minute proxy wall. | `25260a4`, `42f426d` |
 | [@bernardofortes](https://github.com/bernardofortes) (Bernardo Fortes) | `idleProcessTimeoutMs`, idle eviction of retained `claude` workers. | `a5f723a` |
-| [@broskees](https://github.com/broskees) (Joseph Roberts) | Task proxy default-on (PR #18), the abort `interrupt` so Esc really stops the CLI, the skill bridge, and the undici 300 s diagnosis of the proxy wall. | PR #18, `68ed142` |
+| [@broskees](https://github.com/broskees) (Joseph Roberts) | Task proxy default-on (PR #18), the abort `interrupt` so Esc really stops the CLI, the skill bridge, `task_batch` for concurrent subagents (and the measurement that the CLI serialises MCP calls), and the undici 300 s diagnosis of the proxy wall. | PR #18, `68ed142` |
 | [@jknlsn](https://github.com/jknlsn) (Jake Nelson) | Per-tool proxy timeouts, subagent dispatch steering, the question proxy, the start watchdog respawn. | `84f3db9`, `94980a6`, `47501d0`, `ffefc24` |
 | [@CollieIsCute](https://github.com/CollieIsCute) (Collie Tsai) | The plan-mode approval bridge. | `8c5b583` |
 | [@flupkede](https://github.com/flupkede) | The compress proxy tool design and the AI-SDK v4 image-part fix. | `4ac319f`, `60a6e9a` |

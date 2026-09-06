@@ -132,6 +132,7 @@ export const PROXY_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 // matches the "prefer fewer, high-signal questions" guidance in the def.
 export const PROXY_PER_TOOL_DEFAULT_TIMEOUT_MS: Record<string, number> = {
   task: 60 * 60 * 1000, // 60 min
+  task_batch: 60 * 60 * 1000, // 60 min, same reasoning: it IS task calls
   question: 30 * 60 * 1000, // 30 min
 }
 
@@ -219,10 +220,11 @@ export function resolveProxyClientCeilingMs(
 export function buildProxyTimeoutError(toolName: string, ms: number): Error {
   const key = toolName.toLowerCase()
   const base = `Proxy tool '${toolName}' timed out after ${ms}ms waiting for opencode to resolve the call`
-  if (key === "task") {
+  if (key === "task" || key === TASK_BATCH_TOOL_NAME) {
     return new Error(
       base +
-        " (the subagent). The subagent may still be running but its result" +
+        (key === "task" ? " (the subagent)." : " (the subagents).") +
+        " The subagent may still be running but its result" +
         " is no longer reachable in this session. Do not declare the dispatch" +
         " failed, and do not 'schedule a wake-up' or defer -- that mechanism" +
         " does not apply here. If the result is required, re-dispatch or" +
@@ -242,14 +244,99 @@ export function buildProxyTimeoutError(toolName: string, ms: number): Error {
  * Both failure modes are addressed here, at the tool the model reads.
  */
 export const TASK_PROXY_NOTE =
-  "This is the ONLY tool that dispatches opencode subagents (including" +
-  " user @-mentions). Claude Code's built-in TaskCreate/TaskUpdate manage" +
-  " a local todo list and cannot dispatch subagents. Do not search config" +
-  " files to verify a subagent type exists — invalid types fail fast with" +
-  " a clear error. Foreground calls block until the subagent finishes; set" +
-  " `background` to request opencode's background execution mode. Task calls" +
-  " get a 60-minute proxy deadline by default (configurable via" +
-  " proxyToolTimeoutMs)."
+  "This and task_batch are the ONLY tools that dispatch opencode subagents" +
+  " (including user @-mentions). Claude Code's built-in TaskCreate/TaskUpdate" +
+  " manage a local todo list and cannot dispatch subagents. Do not search" +
+  " config files to verify a subagent type exists: invalid types fail fast" +
+  " with a clear error. Foreground calls block until the subagent finishes;" +
+  " set `background` to request opencode's background execution mode. For" +
+  " two or more independent subagents in one response use task_batch, not" +
+  " several task calls: those run one after another. Task calls get a" +
+  " 60-minute proxy deadline by default (configurable via proxyToolTimeoutMs)."
+
+/**
+ * `task_batch`: one MCP call that opencode runs as N parallel `task` calls.
+ *
+ * Design and first implementation by Joseph Roberts (@broskees) on his fork
+ * (68ed142), absorbed here with credit. The limitation it works around is
+ * measured, not assumed: Claude Code emits several `mcp__opencode_proxy__*`
+ * tool_use blocks in one assistant message but sends the MCP requests one at
+ * a time, each only after the previous result (2026-09-06, haiku, two
+ * 8-second bash calls: second request arrived 7 ms after the first resolved).
+ * So "call task twice" is serial by construction, and the only way to get two
+ * subagents running at once is a single proxy call that the plugin fans out
+ * inside one opencode tool boundary, where opencode executes tool calls
+ * concurrently. The children are ordinary `task` calls with ids derived from
+ * the parent (`taskBatchChildToolCallId`), and their results are gathered
+ * back onto the parent id (`formatTaskBatchResults`) before the CLI sees it.
+ */
+export const TASK_BATCH_TOOL_NAME = "task_batch"
+
+export const TASK_BATCH_PROXY_NOTE =
+  "Use this instead of several task calls in one response: Claude Code runs" +
+  " MCP tool calls one at a time, so separate task calls run serially even" +
+  " when emitted together, while one task_batch call fans them out as" +
+  " parallel opencode task calls. Each task takes the same fields as the" +
+  " task tool. Results come back in task order, each labelled. Same" +
+  " 60-minute proxy deadline as task (configurable via proxyToolTimeoutMs)."
+
+export const TASK_INPUT_REQUIRED = ["description", "prompt", "subagent_type"]
+
+/** Why a `task_batch` input is unusable, or null when it is fine. */
+export function taskBatchInputError(input: Record<string, unknown> | undefined): string | null {
+  const tasks = input?.tasks
+  if (!Array.isArray(tasks) || tasks.length < 2) {
+    return "task_batch requires a `tasks` array with at least two items; use `task` for one subagent"
+  }
+  for (const [index, task] of tasks.entries()) {
+    if (task === null || typeof task !== "object" || Array.isArray(task)) {
+      return `task_batch tasks[${index}] must be an object`
+    }
+    const item = task as Record<string, unknown>
+    for (const field of TASK_INPUT_REQUIRED) {
+      if (typeof item[field] !== "string") {
+        return `task_batch tasks[${index}].${field} must be a string`
+      }
+    }
+  }
+  return null
+}
+
+/** The batch's task inputs, or [] when the input never passed validation. */
+export function taskBatchTasks(input: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  if (taskBatchInputError(input)) return []
+  return input!.tasks as Record<string, unknown>[]
+}
+
+/**
+ * Child ids stay derivable from the parent so the next turn can find every
+ * child's `tool-result` without extra state. Only `[A-Za-z0-9_-]`: AI SDK
+ * bridges normalise other characters and the round trip would not match.
+ */
+export function taskBatchChildToolCallId(parentToolCallId: string, index: number): string {
+  return `${parentToolCallId}_task_${index}`
+}
+
+/**
+ * One readable result for the parent call. Children are labelled in task
+ * order; a child opencode did not answer is said so rather than dropped,
+ * since a silent gap would read as a subagent that never ran.
+ */
+export function formatTaskBatchResults(
+  children: Array<{ task: Record<string, unknown>; result: ProxyToolResult | null }>,
+): ProxyToolResult {
+  const total = children.length
+  const sections = children.map(({ task, result }, index) => {
+    const label = typeof task.description === "string" ? task.description : `task ${index + 1}`
+    const agent = typeof task.subagent_type === "string" ? ` (${task.subagent_type})` : ""
+    const header = `## task ${index + 1} of ${total}: ${label}${agent}`
+    if (!result) return `${header}\n[missing] opencode returned no result for this task in the batch`
+    if (result.kind === "error") return `${header}\n[error] ${result.message}`
+    return `${header}\n${result.isError ? "[error] " : ""}${result.text}`
+  })
+  const failed = children.some(({ result }) => !result || result.kind === "error" || result.isError)
+  return { kind: "text", text: sections.join("\n\n"), ...(failed ? { isError: true } : {}) }
+}
 
 const AGENT_TYPES_HEADING = "Available agent types"
 
@@ -348,7 +435,7 @@ export function overlayTaskProxyDescription(
   const agentTypes = extractAgentTypeList(liveDescription)
   if (!agentTypes) return tools
   return tools.map((t) =>
-    t.name === "task"
+    t.name === "task" || t.name === TASK_BATCH_TOOL_NAME
       ? { ...t, description: `${agentTypes}\n\n${t.description}` }
       : t,
   )
@@ -386,6 +473,38 @@ export function filterQuestionProxyByOpencodeSupport(
 ): ProxyToolDef[] {
   if (opencodeHasQuestion) return tools
   return tools.filter((t) => t.name !== "question")
+}
+
+/** Input fields of one `task`, shared with each `task_batch` item. */
+export const TASK_INPUT_PROPERTIES = {
+  description: {
+    type: "string",
+    description: "A short (3-5 words) description of the task",
+  },
+  prompt: {
+    type: "string",
+    description: "The task for the agent to perform",
+  },
+  subagent_type: {
+    type: "string",
+    description: "The type of specialized agent to use for this task",
+  },
+  task_id: {
+    type: "string",
+    description:
+      "Set this only if you mean to resume a previous task: pass the" +
+      " prior task_id to continue the same subagent session instead of" +
+      " creating a fresh one.",
+  },
+  command: {
+    type: "string",
+    description: "The command that triggered this task",
+  },
+  background: {
+    type: "boolean",
+    description:
+      "Run the task in the background when supported by opencode",
+  },
 }
 
 export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
@@ -498,37 +617,32 @@ export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
       TASK_PROXY_NOTE,
     inputSchema: {
       type: "object",
+      properties: TASK_INPUT_PROPERTIES,
+      required: TASK_INPUT_REQUIRED,
+    },
+  },
+  {
+    name: TASK_BATCH_TOOL_NAME,
+    description:
+      "Launch two or more independent opencode subagents at the same time and" +
+      " get all their results back together. Put one ordinary task input in" +
+      " `tasks` for each subagent. " +
+      TASK_BATCH_PROXY_NOTE,
+    inputSchema: {
+      type: "object",
       properties: {
-        description: {
-          type: "string",
-          description: "A short (3-5 words) description of the task",
-        },
-        prompt: {
-          type: "string",
-          description: "The task for the agent to perform",
-        },
-        subagent_type: {
-          type: "string",
-          description: "The type of specialized agent to use for this task",
-        },
-        task_id: {
-          type: "string",
-          description:
-            "Set this only if you mean to resume a previous task — pass the" +
-            " prior task_id to continue the same subagent session instead of" +
-            " creating a fresh one.",
-        },
-        command: {
-          type: "string",
-          description: "The command that triggered this task",
-        },
-        background: {
-          type: "boolean",
-          description:
-            "Run the task in the background when supported by opencode",
+        tasks: {
+          type: "array",
+          minItems: 2,
+          description: "Independent subagent tasks to run concurrently",
+          items: {
+            type: "object",
+            properties: TASK_INPUT_PROPERTIES,
+            required: TASK_INPUT_REQUIRED,
+          },
         },
       },
-      required: ["description", "prompt", "subagent_type"],
+      required: ["tasks"],
     },
   },
   {
@@ -821,6 +935,16 @@ export async function createProxyMcpServer(
           return
         }
 
+        if (toolName === TASK_BATCH_TOOL_NAME) {
+          const problem = taskBatchInputError(input)
+          if (problem) {
+            // Same rule as the unknown-tool path: an MCP result with isError,
+            // never a JSON-RPC error envelope.
+            writeToolCallResult(res, requestId, { kind: "error", message: problem })
+            return
+          }
+        }
+
         // Intercepted tools act on plugin state, not on the workspace, so
         // they are answered here and never queued for opencode. The result
         // still goes through the shared MCP envelope below — a JSON-RPC
@@ -1078,6 +1202,7 @@ export function disallowedToolFlags(tools: ProxyToolDef[]): string[] {
     grep: ["Grep"],
     webfetch: ["WebFetch"],
     task: ["Agent"],
+    task_batch: ["Agent"],
     // `question` disables Claude Code's built-in `AskUserQuestion` so the
     // structured-questions path flows through opencode's native `question`
     // tool instead — same UI/permission/audit benefits as the other

@@ -19,6 +19,11 @@ import {
   resolveProxyClientCeilingMs,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
+  formatTaskBatchResults,
+  taskBatchChildToolCallId,
+  taskBatchInputError,
+  taskBatchTasks,
+  TASK_BATCH_TOOL_NAME,
   DEFAULT_PROXY_TOOLS,
   PROXY_DEFAULT_TIMEOUT_MS,
   MAX_PROXY_TIMEOUT_MS,
@@ -869,4 +874,89 @@ test("a client that drops the request flips the call's channel to closed; a late
     pending!.resolve({ kind: "text", text: "nobody home" })
     await new Promise((r) => setTimeout(r, 30))
   })
+})
+
+// --- task_batch (from @broskees' 68ed142, adapted) --------------------------
+//
+// Claude Code emits several proxy tool_use blocks in one assistant message but
+// sends the MCP requests one at a time, so two `task` calls in one response
+// run serially. `task_batch` is one call the plugin fans out into N opencode
+// `task` calls inside one tool boundary, which opencode runs concurrently.
+
+test("task_batch is a default proxy def that reuses the task input shape", async () => {
+  const batch = DEFAULT_PROXY_TOOLS.find((t) => t.name === TASK_BATCH_TOOL_NAME)
+  const task = DEFAULT_PROXY_TOOLS.find((t) => t.name === "task")
+  assert.ok(batch && task)
+  const items = (batch!.inputSchema as any).properties.tasks.items
+  assert.equal(items.properties, (task!.inputSchema as any).properties, "same object: one source of truth for the task fields")
+  assert.deepEqual(items.required, (task!.inputSchema as any).required)
+  assert.equal((batch!.inputSchema as any).properties.tasks.minItems, 2)
+  await withServer(async (srv) => {
+    const res = await authedPost(srv, { jsonrpc: "2.0", id: 1, method: "tools/list" })
+    const names = res.json.result.tools.map((t: any) => t.name)
+    assert.ok(names.includes(TASK_BATCH_TOOL_NAME))
+  })
+})
+
+test("task_batch input validation names the first problem", () => {
+  const good = { description: "d", prompt: "p", subagent_type: "general" }
+  assert.equal(taskBatchInputError({ tasks: [good, good] }), null)
+  assert.match(taskBatchInputError(undefined)!, /at least two/)
+  assert.match(taskBatchInputError({ tasks: [good] })!, /at least two/)
+  assert.match(taskBatchInputError({ tasks: [good, "nope"] })!, /tasks\[1\] must be an object/)
+  assert.match(taskBatchInputError({ tasks: [good, { ...good, prompt: 7 }] })!, /tasks\[1\]\.prompt must be a string/)
+  assert.deepEqual(taskBatchTasks({ tasks: [good, good] }), [good, good])
+  assert.deepEqual(taskBatchTasks({ tasks: [good] }), [], "an invalid batch fans out to nothing")
+  assert.equal(taskBatchChildToolCallId("abc-123", 1), "abc-123_task_1")
+  assert.match(taskBatchChildToolCallId("abc-123", 0), /^[A-Za-z0-9_-]+$/, "ids survive AI SDK normalisation")
+})
+
+test("task_batch shares the task deadline and its timeout guidance", () => {
+  assert.equal(resolveProxyCallTimeoutMs(TASK_BATCH_TOOL_NAME, undefined, undefined), 60 * MIN)
+  assert.equal(resolveProxyCallTimeoutMs("Task_Batch", undefined, { task_batch: 5 * MIN }), 5 * MIN)
+  const err = buildProxyTimeoutError(TASK_BATCH_TOOL_NAME, 1234)
+  assert.match(err.message, /timed out after 1234ms waiting for opencode to resolve/)
+  assert.match(err.message, /the subagents/)
+  assert.match(err.message, /wake-up/)
+})
+
+test("tools/call rejects a bad task_batch as an MCP error result without queueing it", async () => {
+  await withServer(async (srv) => {
+    const seen: ProxyToolCall[] = []
+    srv.calls.on("call", (call: ProxyToolCall) => { seen.push(call) })
+    const res = await authedPost(srv, {
+      jsonrpc: "2.0",
+      id: "batch-bad",
+      method: "tools/call",
+      params: { name: TASK_BATCH_TOOL_NAME, arguments: { tasks: [{ description: "only one", prompt: "p", subagent_type: "general" }] } },
+    })
+    assert.equal(res.json.id, "batch-bad")
+    assert.equal(res.json.result.isError, true)
+    assert.match(res.json.result.content[0].text, /at least two/)
+    assert.equal(seen.length, 0, "nothing reached the broker")
+  })
+})
+
+test("formatTaskBatchResults labels every child in order and never drops a gap", () => {
+  const task = (description: string) => ({ description, prompt: "p", subagent_type: "general" })
+  const ok = formatTaskBatchResults([
+    { task: task("first"), result: { kind: "text", text: "alpha" } },
+    { task: task("second"), result: { kind: "text", text: "beta" } },
+  ])
+  assert.equal(ok.kind, "text")
+  assert.equal((ok as any).isError, undefined)
+  assert.equal(
+    (ok as { text: string }).text,
+    "## task 1 of 2: first (general)\nalpha\n\n## task 2 of 2: second (general)\nbeta",
+  )
+  const mixed = formatTaskBatchResults([
+    { task: task("first"), result: { kind: "error", message: "boom" } },
+    { task: task("second"), result: null },
+    { task: task("third"), result: { kind: "text", text: "gamma", isError: true } },
+  ])
+  assert.equal((mixed as any).isError, true)
+  const text = (mixed as { text: string }).text
+  assert.match(text, /## task 1 of 3: first \(general\)\n\[error\] boom/)
+  assert.match(text, /## task 2 of 3: second \(general\)\n\[missing\] opencode returned no result/)
+  assert.match(text, /## task 3 of 3: third \(general\)\n\[error\] gamma/)
 })

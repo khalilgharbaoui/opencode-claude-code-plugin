@@ -73,6 +73,10 @@ import {
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
   PROXY_TOOL_PREFIX,
+  TASK_BATCH_TOOL_NAME,
+  taskBatchTasks,
+  taskBatchChildToolCallId,
+  formatTaskBatchResults,
   type ProxyMcpServer,
   type ProxyToolCall,
   type ProxyToolDef,
@@ -610,8 +614,9 @@ mark meaningful checkpoints, not every completed substep.`
  */
 export const SUBAGENT_DISPATCH_HINT = `## opencode subagents
 
-Subagent dispatch in this environment goes through exactly one tool: \`mcp__opencode_proxy__task\`.
+Subagent dispatch in this environment goes through exactly two tools: \`mcp__opencode_proxy__task\` for one subagent and \`mcp__opencode_proxy__task_batch\` for two or more at once.
 
+- Two or more independent subagents in one response: make ONE \`mcp__opencode_proxy__task_batch\` call with a \`tasks\` array (each item is a normal task input). Claude Code runs MCP calls one at a time, so several \`mcp__opencode_proxy__task\` calls in the same response run serially; \`task_batch\` runs them concurrently in opencode and returns every result together, labelled in order.
 - When the user mentions \`@<agent>\` or an instruction says "call the task tool with subagent: <name>", call \`mcp__opencode_proxy__task\` with \`subagent_type: "<name>"\`.
 - If that tool is not in your visible tool list it is deferred — load it with ToolSearch (\`select:mcp__opencode_proxy__task\`), then call it.
 - Claude Code's built-in TaskCreate/TaskUpdate/TaskList manage a local todo list. They cannot dispatch subagents; creating a task there runs nothing. Never report a subagent as dispatched unless \`mcp__opencode_proxy__task\` returned its result.
@@ -956,11 +961,27 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       DEFAULT_PROXY_TOOLS.map((t) => [t.name.toLowerCase(), t]),
     )
     const picked: ProxyToolDef[] = []
+    const seen = new Set<string>()
     const unknown: string[] = []
+    const pick = (def: ProxyToolDef) => {
+      if (seen.has(def.name)) return
+      seen.add(def.name)
+      picked.push(def)
+    }
     for (const n of names) {
       const def = defsByName.get(String(n).toLowerCase())
-      if (def) picked.push(def)
-      else unknown.push(String(n))
+      if (!def) {
+        unknown.push(String(n))
+        continue
+      }
+      pick(def)
+      // `task_batch` rides along with `task`: it is the same dispatch path for
+      // two or more subagents at once (TASK_BATCH_PROXY_NOTE), and a
+      // `proxyTools` list that names `Task` should not have to know it exists.
+      if (def.name === "task") {
+        const batch = defsByName.get(TASK_BATCH_TOOL_NAME)
+        if (batch) pick(batch)
+      }
     }
     // A typo used to vanish here. Silence is the wrong response: unknown
     // names are not proxied, so the matching Claude built-in stays enabled
@@ -1196,6 +1217,45 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
 
     return null
+  }
+
+  /**
+   * The result opencode produced for a pending proxy call, if the prompt
+   * carries it. For `task_batch` that means every child's result gathered
+   * back onto the parent: opencode runs the children in one step and hands
+   * all their results to the next call together, so a partial set is not
+   * expected. If it ever happens the batch still resolves, with the gap
+   * named in the text, because leaving the parent pending would send this
+   * turn down the fresh-envelope path and reject the call as orphaned.
+   */
+  private extractPendingProxyResultForCall(
+    prompt: LanguageModelV3CallOptions["prompt"],
+    call: PendingProxyCall,
+  ): ProxyToolResult | null {
+    if (call.toolName !== TASK_BATCH_TOOL_NAME) {
+      return this.extractPendingProxyResult(prompt, call.toolCallId)
+    }
+    const tasks = taskBatchTasks(call.input)
+    if (tasks.length === 0) {
+      return { kind: "error", message: "task_batch input is not a list of task objects" }
+    }
+    const children = tasks.map((task, index) => ({
+      task,
+      result: this.extractPendingProxyResult(
+        prompt,
+        taskBatchChildToolCallId(call.toolCallId, index),
+      ),
+    }))
+    const answered = children.filter((child) => child.result !== null).length
+    if (answered === 0) return null
+    if (answered < children.length) {
+      log.warn("task_batch resolving with child results missing", {
+        toolCallId: call.toolCallId,
+        answered,
+        total: children.length,
+      })
+    }
+    return formatTaskBatchResults(children)
   }
 
   /**
@@ -2327,7 +2387,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       result: ProxyToolResult | null
     }> = previousPendingProxyCalls.map((call) => ({
       call,
-      result: this.extractPendingProxyResult(options.prompt, call.toolCallId),
+      result: this.extractPendingProxyResultForCall(options.prompt, call),
     }))
     const hasMatchedPendingResults = previousPendingProxyMatches.some(
       (m) => m.result !== null,
@@ -2969,20 +3029,44 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const finishWithToolCalls = (calls: PendingProxyCall[]) => {
           if (controllerClosed) return
           if (calls.length === 0) return
-          for (const call of calls) {
+          const enqueueToolCall = (
+            toolCallId: string,
+            toolName: string,
+            input: Record<string, unknown>,
+          ) => {
             controller.enqueue({
               type: "tool-input-start",
-              id: call.toolCallId,
-              toolName: call.toolName,
+              id: toolCallId,
+              toolName,
             } as any)
             controller.enqueue({
               type: "tool-call",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              input: JSON.stringify(call.input),
+              toolCallId,
+              toolName,
+              input: JSON.stringify(input),
               providerExecuted: false,
             } as any)
-            skipResultForIds.add(call.toolCallId)
+            skipResultForIds.add(toolCallId)
+          }
+          for (const call of calls) {
+            if (call.toolName === TASK_BATCH_TOOL_NAME) {
+              // One MCP call from the CLI becomes N opencode `task` calls in
+              // this single tool boundary, which is what makes them run at the
+              // same time: the CLI serialises MCP calls, opencode runs the
+              // tool calls of one step concurrently. Their results are
+              // gathered back onto the parent id in
+              // extractPendingProxyResultForCall.
+              for (const [index, task] of taskBatchTasks(call.input).entries()) {
+                enqueueToolCall(
+                  taskBatchChildToolCallId(call.toolCallId, index),
+                  "task",
+                  task,
+                )
+              }
+              skipResultForIds.add(call.toolCallId)
+            } else {
+              enqueueToolCall(call.toolCallId, call.toolName, call.input)
+            }
             markPendingProxyCallEmitted(call.toolCallId)
           }
           controller.enqueue({

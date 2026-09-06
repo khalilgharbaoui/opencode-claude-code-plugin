@@ -86,7 +86,8 @@ function createFakeTaskCli(
     | "late-queued"
     | "swallow"
     | "bookkeeping"
-    | "bookkeeping-respawn",
+    | "bookkeeping-respawn"
+    | "task_batch",
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-proxy-task-"))
   const cliPath = join(cwd, "fake-claude.cjs")
@@ -135,12 +136,19 @@ const assistant = {
     stop_reason: "end_turn",
     content: [
       { type: "text", text: "I found the relevant files and will delegate the focused check." },
-      {
-        type: "tool_use",
-        id: "claude-proxy-task",
-        name: "mcp__opencode_proxy__task",
-        input: taskInput,
-      },
+      ...(mode === "task_batch"
+        ? [{
+            type: "tool_use",
+            id: "claude-proxy-task-batch",
+            name: "mcp__opencode_proxy__task_batch",
+            input: { tasks: [taskInput, secondTaskInput] },
+          }]
+        : [{
+            type: "tool_use",
+            id: "claude-proxy-task",
+            name: "mcp__opencode_proxy__task",
+            input: taskInput,
+          }]),
       ...(mode === "batch"
         ? [{
             type: "tool_use",
@@ -177,7 +185,7 @@ function emitAssistant() {
     })
     return
   }
-  if (mode === "normal") {
+  if (mode === "normal" || mode === "task_batch") {
     emit(assistant)
     return
   }
@@ -249,7 +257,7 @@ function emitAssistant() {
   emit(assistant)
 }
 
-async function callTask(input = taskInput, id = 1, signal) {
+async function callTask(input = taskInput, id = 1, signal, name = "task") {
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
@@ -262,7 +270,7 @@ async function callTask(input = taskInput, id = 1, signal) {
       jsonrpc: "2.0",
       id,
       method: "tools/call",
-      params: { name: "task", arguments: input },
+      params: { name: name, arguments: input },
     }),
   })
   if (recoveryMode) {
@@ -397,6 +405,29 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     setTimeout(() => emit(result), 40)
     return
   }
+  if (mode === "task_batch") {
+    // One MCP call carrying two tasks; the plugin fans it out and the
+    // gathered result comes back on this single HTTP response.
+    void callTask({ tasks: [taskInput, secondTaskInput] }, 1, undefined, "task_batch")
+      .then((body) => {
+        emit({
+          type: "assistant",
+          session_id: "fake-session",
+          message: {
+            role: "assistant",
+            stop_reason: "end_turn",
+            content: [{
+              type: "text",
+              text: "Batch received: " + body.result.content[0].text,
+            }],
+          },
+        })
+        emit({ ...result, num_turns: 2 })
+      })
+      .catch(() => {})
+    setTimeout(() => emit(result), 100)
+    return
+  }
   if (mode === "followup") {
     void callTask()
       .then((body) => {
@@ -428,7 +459,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 }
 
 async function streamTaskBoundary(
-  mode: "normal" | "race" | "batch" | "duplicate" | "error",
+  mode: "normal" | "race" | "batch" | "duplicate" | "error" | "task_batch",
 ) {
   const fake = createFakeTaskCli(mode)
   const modelId = `claude-test-task-${mode}`
@@ -1192,6 +1223,113 @@ test("parallel Task calls drain in one native tool boundary", async () => {
     TASK_INPUT,
     PARALLEL_TASK_INPUT,
   ])
+})
+
+// task_batch (from @broskees' 68ed142, adapted): the CLI serialises MCP
+// calls, so one batch call is the only way two subagents run at once. The
+// plugin fans it out as child `task` calls in one stream finish and gathers
+// their results back onto the parent id on the next turn.
+test("task_batch fans out into child task calls and gathers their results onto the parent", {
+  timeout: 15_000,
+}, async () => {
+  const fake = createFakeTaskCli("task_batch")
+  const modelId = "claude-test-task-batch"
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const tools = [{
+    type: "function",
+    name: "task",
+    description: "Delegate work to an opencode subagent",
+    inputSchema: { type: "object", properties: {} },
+  }]
+  const firstPrompt = [{
+    role: "user",
+    content: [{ type: "text", text: "Run both checks at the same time." }],
+  }]
+  try {
+    const model = createClaudeCode({
+      cliPath: fake.cliPath,
+      cwd: fake.cwd,
+      bridgeOpencodeMcp: false,
+      proxyOpencodeMcpTools: false,
+      proxyTools: ["Task"],
+    }).languageModel(modelId)
+
+    const firstResponse = await model.doStream({ prompt: firstPrompt, tools } as any)
+    const firstParts: any[] = []
+    for await (const part of firstResponse.stream) firstParts.push(part)
+
+    const pending = getPendingProxyCalls(sk)
+    assert.equal(pending.length, 1, "one broker entry: the parent batch")
+    assert.equal(pending[0].toolName, "task_batch")
+    assert.equal(pending[0].emitted, true)
+    const parent = pending[0].toolCallId
+
+    const children = firstParts.filter((part) => part.type === "tool-call")
+    assert.deepEqual(
+      children.map((call) => [call.toolCallId, call.toolName, call.providerExecuted]),
+      [[`${parent}_task_0`, "task", false], [`${parent}_task_1`, "task", false]],
+      "N ordinary opencode task calls, ids derived from the parent",
+    )
+    assert.deepEqual(children.map((call) => JSON.parse(call.input)), [TASK_INPUT, PARALLEL_TASK_INPUT])
+    assert.deepEqual(
+      firstParts.filter((part) => part.type === "tool-input-start").map((part) => [part.id, part.toolName]),
+      [[`${parent}_task_0`, "task"], [`${parent}_task_1`, "task"]],
+      "opencode learns each child's name from its own input-start",
+    )
+    const finishes = firstParts.filter((part) => part.type === "finish")
+    assert.equal(finishes.length, 1)
+    assert.equal(finishes[0].finishReason.unified, "tool-calls", "both children in ONE tool boundary is what makes them concurrent")
+
+    // opencode runs both children as one step and hands back both results.
+    const secondResponse = await model.doStream({
+      prompt: [
+        ...firstPrompt,
+        {
+          role: "assistant",
+          content: children.map((call) => ({
+            type: "tool-call",
+            toolCallId: call.toolCallId,
+            toolName: "task",
+            input: JSON.parse(call.input),
+          })),
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: `${parent}_task_0`, toolName: "task", output: { type: "text", value: "alpha done" } },
+            { type: "tool-result", toolCallId: `${parent}_task_1`, toolName: "task", output: { type: "text", value: "beta done" } },
+          ],
+        },
+      ],
+      tools,
+    } as any)
+    const secondParts: any[] = []
+    for await (const part of secondResponse.stream) secondParts.push(part)
+
+    const text = secondParts.filter((part) => part.type === "text-delta").map((part) => part.delta).join("")
+    assert.equal(
+      text,
+      "Batch received: ## task 1 of 2: Inspect provider flow (general)\nalpha done\n\n## task 2 of 2: Inspect parallel flow (general)\nbeta done",
+      "the CLI gets one labelled result for its one call",
+    )
+    assert.equal(secondParts.filter((part) => part.type === "tool-call").length, 0, "nothing re-emitted")
+    const secondFinish = secondParts.filter((part) => part.type === "finish")
+    assert.equal(secondFinish.length, 1)
+    assert.equal(secondFinish[0].finishReason.unified, "stop")
+    assert.equal(getPendingProxyCalls(sk).length, 0, "the parent resolved")
+  } finally {
+    rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+    deleteActiveProcess(sk)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("proxyTools Task brings task_batch along, once", () => {
+  const names = (list: string[]) =>
+    ((createClaudeCode({ proxyTools: list }).languageModel("claude-haiku-4-5") as any).resolvedProxyTools() as { name: string }[]).map((t) => t.name)
+  assert.deepEqual(names(["Task"]), ["task", "task_batch"])
+  assert.deepEqual(names(["Task", "task_batch", "TASK"]), ["task", "task_batch"])
+  assert.deepEqual(names(["Bash"]), ["bash"], "only task carries the companion")
 })
 
 test("duplicate Claude results still produce one native Task completion", async () => {

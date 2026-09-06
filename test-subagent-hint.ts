@@ -9,6 +9,8 @@ import {
   filterQuestionProxyByOpencodeSupport,
   disallowedToolFlags,
   TASK_PROXY_NOTE,
+  TASK_BATCH_PROXY_NOTE,
+  TASK_BATCH_TOOL_NAME,
   QUESTION_PROXY_NOTE,
   type ProxyToolDef,
 } from "./src/proxy-mcp.js"
@@ -265,4 +267,39 @@ test("question proxy hint names the exact MCP tool and defuses bare 'question'",
   // Must mention that AskUserQuestion is disabled.
   assert.match(QUESTION_PROXY_HINT, /AskUserQuestion/)
   assert.match(QUESTION_PROXY_HINT, /disabled/i)
+})
+
+// --- task_batch: the concurrency path (from @broskees' 68ed142) ----------------
+
+test("subagent dispatch hint names task_batch as the way to run subagents concurrently", () => {
+  assert.match(SUBAGENT_DISPATCH_HINT, /mcp__opencode_proxy__task_batch/)
+  assert.match(SUBAGENT_DISPATCH_HINT, /one at a time|serially/)
+  assert.match(SUBAGENT_DISPATCH_HINT, /`tasks` array/)
+  // The single-subagent tool is still named in full, first.
+  assert.ok(
+    SUBAGENT_DISPATCH_HINT.indexOf("mcp__opencode_proxy__task`") < SUBAGENT_DISPATCH_HINT.indexOf("mcp__opencode_proxy__task_batch"),
+  )
+})
+
+test("task and task_batch point at each other and both disable only Agent", () => {
+  const task = DEFAULT_PROXY_TOOLS.find((t) => t.name === "task")!
+  const batch = DEFAULT_PROXY_TOOLS.find((t) => t.name === TASK_BATCH_TOOL_NAME)!
+  assert.match(task.description, /task_batch/)
+  assert.ok(batch.description.endsWith(TASK_BATCH_PROXY_NOTE))
+  assert.match(batch.description, /one at a time/)
+  assert.deepEqual(disallowedToolFlags([task, batch]), ["Agent"], "the CLI's own Agent is disabled once, not twice")
+})
+
+test("the agent-list overlay lands on task_batch too, within the truncation budget", () => {
+  const out = overlayTaskProxyDescription(DEFAULT_PROXY_TOOLS, LIVE_TASK_DESCRIPTION)
+  const batch = out.find((t) => t.name === TASK_BATCH_TOOL_NAME)!
+  assert.match(batch.description.split("\n")[0], /subagent_type/)
+  assert.match(batch.description, /- explore:/)
+  assert.ok(batch.description.endsWith(TASK_BATCH_PROXY_NOTE))
+  assert.ok(
+    batch.description.length < 1600,
+    `task_batch description too long to survive truncation: ${batch.description.length}`,
+  )
+  const task = out.find((t) => t.name === "task")!
+  assert.ok(task.description.length < 1600, `task description too long: ${task.description.length}`)
 })
