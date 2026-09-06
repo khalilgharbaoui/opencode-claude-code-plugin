@@ -512,9 +512,7 @@ test("v0.4.16 end_turn does NOT beat abort", () => {
   assert.deepEqual(result, { continue: false, reason: "aborted" })
 })
 
-test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
-  // v0.4.17: ANY stop_reason value is authoritative. max_tokens is the
-  // model signaling a stop (it was cut off but the protocol said stop).
+test("max_tokens continues: truncation is not a finished turn", () => {
   const result = shouldAutoContinueIncompleteTurn(
     state(),
     snap({
@@ -524,7 +522,79 @@ test("v0.4.17 max_tokens stop_reason stops via protocol signal", () => {
       stopReason: "max_tokens",
     }),
   )
-  assert.deepEqual(result, { continue: false, reason: "max-tokens" })
+  assert.deepEqual(result, { continue: true, reason: "truncated" })
+})
+
+test("truncated prose continues even with no tool or reasoning activity", () => {
+  // The common truncation case: one long answer, cut off mid-sentence. This
+  // is why truncation cannot simply fall through to the keyword heuristic —
+  // it would stop at the no-activity gate.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text: "The migration works by first taking the old rows and",
+      lastVisibleText: "The migration works by first taking the old rows and",
+      stopReason: "max_tokens",
+    }),
+  )
+  assert.deepEqual(result, { continue: true, reason: "truncated" })
+})
+
+test("max_output_tokens is treated as truncation too", () => {
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({ stopReason: "max_output_tokens" }),
+  )
+  assert.deepEqual(result, { continue: true, reason: "truncated" })
+})
+
+// Mirrors the module-private caps: 8 attempts, 10 minutes.
+const MAX_ATTEMPTS = 8
+const MAX_ELAPSED_MS = 10 * 60 * 1000
+
+test("truncation still respects the attempt cap", () => {
+  const result = shouldAutoContinueIncompleteTurn(
+    { ...state(), attempts: MAX_ATTEMPTS },
+    snap({ stopReason: "max_tokens" }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "max-attempts" })
+})
+
+test("truncation still respects the elapsed cap", () => {
+  const started = 1_000
+  const result = shouldAutoContinueIncompleteTurn(
+    { ...state(), startedAt: started },
+    snap({
+      stopReason: "max_tokens",
+      now: started + MAX_ELAPSED_MS + 1,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "max-elapsed" })
+})
+
+test("truncation does not override an abort or an error", () => {
+  assert.deepEqual(
+    shouldAutoContinueIncompleteTurn(
+      { ...state(), aborted: true },
+      snap({ stopReason: "max_tokens" }),
+    ),
+    { continue: false, reason: "aborted" },
+  )
+  assert.deepEqual(
+    shouldAutoContinueIncompleteTurn(
+      state(),
+      snap({ stopReason: "max_tokens", isError: true }),
+    ),
+    { continue: false, reason: "error" },
+  )
+})
+
+test("truncation does not override a pending operator question", () => {
+  const result = shouldAutoContinueIncompleteTurn(
+    { ...state(), sawAskUserQuestion: true },
+    snap({ stopReason: "max_tokens" }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "question" })
 })
 
 test("v0.4.17 stop_sequence stops via protocol signal", () => {

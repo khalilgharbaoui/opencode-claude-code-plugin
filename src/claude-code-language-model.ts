@@ -291,6 +291,15 @@ interface AutoContinueSnapshot {
   now?: number
 }
 
+/**
+ * Stop reasons that mean "cut off", not "done". Anthropic sends `max_tokens`;
+ * `max_output_tokens` is accepted as a defensive alias so a rename upstream
+ * degrades to today's behaviour rather than silently mis-reading a real stop.
+ */
+function isTruncationStopReason(stopReason: string): boolean {
+  return stopReason === "max_tokens" || stopReason === "max_output_tokens"
+}
+
 interface AutoContinueDecision {
   continue: boolean
   reason: string
@@ -488,6 +497,27 @@ export function shouldAutoContinueIncompleteTurn(
   // CLI versions / edge cases). Maps snake_case → kebab-case for reason
   // label consistency with other reasons.
   if (snapshot.stopReason) {
+    // ...with one exception, which is the narrow half of @JWebCoder's PR #15
+    // worth keeping. Truncation is the single stop_reason that does NOT mean
+    // the model finished: the response hit the output cap mid-sentence. The
+    // old guard read it as a stop, so a cut-off answer was silently accepted
+    // as complete. Falling through to the keyword heuristic below would not
+    // fix it either, because a truncated prose answer has no tool or
+    // reasoning activity and would die at the `no-activity` gate. So
+    // truncation is authoritative in the opposite direction: continue, still
+    // bounded by the attempt and elapsed rails. PR #15 itself deleted the
+    // whole guard, which would have handed every turn back to the regex that
+    // v0.4.17 deliberately demoted; that is why it was closed.
+    if (isTruncationStopReason(snapshot.stopReason)) {
+      if (state.attempts >= AUTO_CONTINUE_MAX_ATTEMPTS) {
+        return { continue: false, reason: "max-attempts" }
+      }
+      const truncatedAt = snapshot.now ?? Date.now()
+      if (truncatedAt - state.startedAt > AUTO_CONTINUE_MAX_ELAPSED_MS) {
+        return { continue: false, reason: "max-elapsed" }
+      }
+      return { continue: true, reason: "truncated" }
+    }
     return {
       continue: false,
       reason: snapshot.stopReason.replace(/_/g, "-"),
