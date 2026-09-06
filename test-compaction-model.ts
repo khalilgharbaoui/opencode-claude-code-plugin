@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -108,6 +108,38 @@ test("headless prompt path still preserves forwarded opencode system prompt", ()
     } else {
       process.env.XDG_CONFIG_HOME = previousConfigHome
     }
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// AGENTS.md dedup (from @HeikoAtGitHub's 25260a4): opencode already forwards
+// the global AGENTS.md inside its system prompt, so the disk-read copy must
+// only be appended when the forwarded text does not already carry it.
+test("global AGENTS.md is appended once, not twice, when opencode already forwarded it", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "opencode-cc-test-"))
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
+  const agents = "# AGENTS.md\n\nGLOBAL-AGENTS-SENTINEL-7731\n\nSome rules.\n"
+  const files: string[] = []
+  try {
+    process.env.XDG_CONFIG_HOME = join(tmp, "config")
+    mkdirSync(join(tmp, "config", "opencode"), { recursive: true })
+    writeFileSync(join(tmp, "config", "opencode", "AGENTS.md"), agents)
+
+    const forwarded = buildAppendedSystemPrompt(tmp, true, [
+      "Instructions from: /home/x/.config/opencode/AGENTS.md\n" + agents,
+    ])!
+    files.push(forwarded)
+    const withForward = readFileSync(forwarded, "utf8")
+    assert.equal(withForward.split("GLOBAL-AGENTS-SENTINEL-7731").length - 1, 1, "forwarded copy only")
+
+    const bare = buildAppendedSystemPrompt(tmp, true, [])!
+    files.push(bare)
+    const withoutForward = readFileSync(bare, "utf8")
+    assert.equal(withoutForward.split("GLOBAL-AGENTS-SENTINEL-7731").length - 1, 1, "disk copy still appended when nothing was forwarded")
+  } finally {
+    for (const f of files) unlinkSync(f)
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previousConfigHome
     rmSync(tmp, { recursive: true, force: true })
   }
 })

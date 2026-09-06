@@ -261,7 +261,7 @@ model: claude-code-appical/claude-opus-5@appical
 |---|---|---|---|
 | `cliPath` | string | `process.env.CLAUDE_CLI_PATH ?? "claude"` | Path to the `claude` binary. |
 | `accounts` | string[] | – | Optional account list. `default` is implicit. Expands into `Claude Code (Default)`, `Claude Code (Personal)`, etc. |
-| `cwd` | string | `process.cwd()` | Working directory for the spawned CLI. Resolved **lazily per request**, so opencode's project switching works. |
+| `cwd` | string | session directory, then `process.cwd()` | Working directory for the spawned CLI. Resolved **lazily per request**: an explicit value wins, then the opencode session's own `directory` (so `opencode serve` and the web UI spawn in the right project even though one server handles many), then `process.cwd()`. Contributed by [@galvani](https://github.com/galvani). |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. Ignored when `proxyTools` is set — the proxy handles permissions through opencode instead. |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to `claude --permission-mode`. |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Claude built-in tools to route through opencode's executor + permission UI. Opt-in extras: `"Question"`, `"Compress"`. See [Selective tool proxy](#selective-tool-proxy). |
@@ -279,7 +279,8 @@ model: claude-code-appical/claude-opus-5@appical
 | `autoContinueIncompleteTurns` | boolean \| `"smart"` | `"smart"` | Smartly continue incomplete Claude CLI results inside the same opencode turn. Reduces manual "continue" presses when Claude ends after reasoning/tool activity without a useful final answer. Set `false` to disable. |
 | `compactionModel` | string | `"claude-haiku-4-5"` | Model used when opencode invokes `/compact`. Override per-process via the `CLAUDE_CODE_COMPACTION_MODEL` env var (env wins over config). See [Compaction](#compaction). |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from every spawned `claude` process so it authenticates with your logged-in subscription instead of pay-as-you-go API billing. The plugin warns once at startup whenever an API key is detected, regardless of this setting. See [Billing](#billing-change-june-15-2026-agent-sdk-credit). |
-| `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The session id is preserved for `--resume`; a new turn cancels the timer. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set to `0` to retain workers until LRU eviction. Interactive transport is excluded. |
+| `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The session id is preserved for `--resume`; a new turn cancels the timer. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set to `0` to retain workers until LRU eviction. Interactive transport is excluded. Contributed by [@bernardofortes](https://github.com/bernardofortes). |
+| `bridgeOpencodeSkills` | boolean | `false` | Expose your opencode skills to Claude's native `Skill` tool. See [Skill bridge](#skill-bridge). Written by [@broskees](https://github.com/broskees). |
 | `interactive` | boolean | `false` | **Experimental.** Drive the interactive `claude` TUI (subscription billing) instead of headless `--print`. Requires opencode running under Bun with PTY support; silently falls back to headless otherwise. Env: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`. See [Interactive transport](#interactive-transport-experimental). |
 | `interactiveBypass` | boolean | `false` | Deprecated/no-op with `interactive`: Claude Code's TUI shows a manual safety confirmation for `bypassPermissions`, so the plugin intentionally does not pass it. |
 | `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With `interactive`: built-in tools pre-allowed without prompting (replaces the default list). MCP server wildcards (`mcp__<server>__*`) are always added from the bridged config. |
@@ -551,6 +552,25 @@ Notes:
 
 Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
 
+## Skill bridge
+
+opencode and Claude Code use the same on-disk skill format, a `<name>/SKILL.md` whose frontmatter carries `name` and `description`, but they read from different directories. opencode looks in `.opencode/skills/` and `~/.config/opencode/skills/`; the Claude CLI looks in `~/.claude/skills/` and its own plugins. So opencode advertises your skills in the system prompt it forwards, the model calls `Skill("browser-automation")`, and Claude answers `Unknown skill`.
+
+With `bridgeOpencodeSkills: true` the plugin discovers your opencode skills, stages a throwaway Claude Code plugin directory that links them, and passes it as `claude --plugin-dir`. They register natively, prefixed with the plugin name:
+
+```text
+opencode-skills:browser-automation
+opencode-skills:rtk
+```
+
+Claude can invoke them with the Skill tool or as `/opencode-skills:<name>`. `--plugin-dir` is scoped to the spawned session, so nothing is written into your `~/.claude`.
+
+Discovery order, first match wins: `.opencode/skills/` walking up from the working directory, then `~/.opencode/skills/`, then `$OPENCODE_CONFIG_DIR/skills/`, then `~/.config/opencode/skills/`. A project skill shadows a global one of the same name. If the skill set is unchanged the staged directory is reused between spawns.
+
+It is **off by default** here, unlike on the fork it came from: every bridged skill is also listed in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Turn it on when you see `Unknown skill`. It no-ops on the compaction path and on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
+
+This bridge was written by [@broskees](https://github.com/broskees) (Joseph Roberts) on his fork and absorbed here with credit; see [Credits](#credits).
+
 ## WebSearch routing
 
 Claude Code ships a built-in `WebSearch` tool. The `webSearch` option controls who actually executes those calls:
@@ -615,7 +635,7 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 - **Same chat, multiple turns** → process reused, full Claude context retained.
 - **New chat** → fresh process under the new session key.
 - **Resumed chat after restart** → in-memory state is gone; a new process spawns and the conversation history is summarized and prepended.
-- **Abort (Ctrl+C)** → stream closes, process stays alive for the next message in that chat.
+- **Abort (Esc / Ctrl+C)** → the plugin sends the Claude CLI a stream-json `interrupt` control request, so the CLI actually stops generating and running tools instead of finishing the abandoned turn on your bill. The process stays alive for the next message in that chat. If a turn is somehow still running when the next one starts, it is interrupted first (5 s cap). Contributed by [@broskees](https://github.com/broskees).
 - **Idle timeout** → when `idleProcessTimeoutMs` is configured, a completed headless turn arms an eviction timer; reuse cancels it, and eviction preserves the session id for `--resume`.
 - **Cap**: 16 active processes, LRU eviction.
 
@@ -935,6 +955,26 @@ The GitHub Actions workflow at `.github/workflows/publish.yml` runs `npm publish
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=khalilgharbaoui/opencode-claude-code-plugin&type=date&legend=top-left&sealed_token=XBPNnYotm7Eti4lpRGsbKl_dsq6XGUtRkvCxE4UpQH2HM4LifiiTNV1hqjCOsivRZ-e2hFDohid8iERSP5XO5JdkNhHcuS2bLZFIdQIWZO1NldJLD2TjaaSYK6GJcnXYZHivkbiiynG7b8-V8z9LLn8Uo2ED15OWnUd3devehrMyKJJO_dtOW1ivZ3yJ" />
  </picture>
 </a>
+
+## Credits
+
+This plugin absorbs work from its forks directly, cherry-picked with the original authorship preserved or reimplemented with the author named in the commit, rather than waiting on pull requests. The people behind the features you are using:
+
+| Who | What | Where |
+|---|---|---|
+| [@galvani](https://github.com/galvani) (Jan Kozak) | Per-session working directory for `opencode serve`, so one server spawns each project's `claude` in the right place. Also found the stale `toolCallMap` re-emission three months before it was fixed here. | `9e02ce4`, `2238ed0` |
+| [@HeikoAtGitHub](https://github.com/HeikoAtGitHub) | Stopped sending `AGENTS.md` to the model twice (opencode already forwards it). Independently diagnosed the 5-minute proxy wall. | `25260a4`, `42f426d` |
+| [@bernardofortes](https://github.com/bernardofortes) (Bernardo Fortes) | `idleProcessTimeoutMs`, idle eviction of retained `claude` workers. | `a5f723a` |
+| [@broskees](https://github.com/broskees) (Joseph Roberts) | Task proxy default-on (PR #18), the abort `interrupt` so Esc really stops the CLI, the skill bridge, and the undici 300 s diagnosis of the proxy wall. | PR #18, `68ed142` |
+| [@jknlsn](https://github.com/jknlsn) (Jake Nelson) | Per-tool proxy timeouts, subagent dispatch steering, the question proxy, the start watchdog respawn. | `84f3db9`, `94980a6`, `47501d0`, `ffefc24` |
+| [@CollieIsCute](https://github.com/CollieIsCute) (Collie Tsai) | The plan-mode approval bridge. | `8c5b583` |
+| [@flupkede](https://github.com/flupkede) | The compress proxy tool design and the AI-SDK v4 image-part fix. | `4ac319f`, `60a6e9a` |
+| [@CNQQC](https://github.com/CNQQC) | Cost units corrected to dollars per million tokens (PR #25). | PR #25 |
+| [@willmcginnis](https://github.com/willmcginnis) | The proxy endpoint authentication (PR #28, GHSA-3mxm-w7gf-3c5x). | PR #28 |
+| [@nic-lan](https://github.com/nic-lan) | The issue #29 diagnosis of subagent output lost across the CLI resume boundary. | #29 |
+| [@JWebCoder](https://github.com/JWebCoder) (joao moura) | Diagnosed that auto-continue never fires on current CLIs (PR #15). | PR #15 |
+
+Commit hashes are on the contributors' forks where the work was cherry-picked; `git log --author` on this repo shows the preserved authorship.
 
 ## License
 

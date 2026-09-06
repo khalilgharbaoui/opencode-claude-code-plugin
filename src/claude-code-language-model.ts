@@ -733,10 +733,12 @@ export function buildAppendedSystemPrompt(
   const globalAgents = readPromptFileIfPresent(join(configRoot, "opencode", "AGENTS.md"))
   const workspaceAgents = nearestWorkspaceAgentsPrompt(cwd)
 
-  // Claude CLI erhält AGENTS.md bereits über opencodes forwarded System-Prompt
-  // (extraSystemContent). Nur pushen, wenn dort noch nicht enthalten, um die
-  // Verdopplung zu vermeiden. Kein Match (Formatting-Drift oder interaktiver
-  // Pfad mit leerem extraSystemContent) → altes Verhalten, nie AGENTS.md-Verlust.
+  // opencode already forwards AGENTS.md inside its own system prompt
+  // (`extraSystemContent`, under an "Instructions from:" header), so a
+  // disk-read copy would reach the model twice. Only push ours when the
+  // forwarded text does not already contain it. No match (formatting drift,
+  // or the interactive path, which forwards nothing) keeps the old behaviour,
+  // so AGENTS.md is never lost. (Dedup by @HeikoAtGitHub, 25260a4.)
   const forwarded = extraSystemContent.join("\n\n")
   const pushGlobal = !!globalAgents && !forwarded.includes(globalAgents)
   const pushWorkspace =
