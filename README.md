@@ -532,6 +532,7 @@ Notes:
 
 - Requires Claude Code CLI **2.1.258 or newer**, the oldest verified version.
 - Requires a live **headless** process for the conversation. Send a normal message with a Claude Code model first if the process has not started or was evicted; the answer in the transcript tells you when that is the case. Interactive transport is not supported.
+- Asking immediately after starting a turn is fine. The conversation's process only exists once that turn reaches the model, so `/btw` waits for it (up to 30 seconds) instead of falling back to being queued. If no Claude Code process turns up in that window, because the running turn belongs to another provider, the question is answered when the turn ends.
 - One aside per conversation at a time. A second `/btw` while one is in flight is asked once the turn ends; a toast says so.
 - The `/btw` pair in the transcript reports 0 tokens and $0. The control response has no usage fields, so aside usage is not in opencode's counters; this does not mean the request is free.
 - A request times out after two minutes. Abort and timeout cancel that side request without killing the main session. If the running turn is still not over after 30 minutes, the plugin gives up on that `/btw` with a toast; ask again once the turn ends.

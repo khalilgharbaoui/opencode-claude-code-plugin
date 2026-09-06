@@ -17,7 +17,9 @@ import {
   fetchAsideHistory,
   handleBtwCommand,
   rememberSideQuestionAnswer,
+  settleSessionBusy,
   takeSideQuestionAnswer,
+  waitForAsideProcess,
   type BtwSdkClient,
   type BtwSdkMessage,
   type BtwToast,
@@ -114,9 +116,64 @@ test("bare /btw shows the usage text as a toast and drops the prompt", async () 
 test("/btw without a live process lets the message through so the turn can explain", async () => {
   clearPendingSideQuestionAnswers()
   const fake = fakeClient()
-  await handleBtwCommand(fake.client, input("why?", "ses_nobody"))
+  await handleBtwCommand(fake.client, input("why?", "ses_nobody"), { pollMs: 5, settleMs: 20 })
   assert.deepEqual(fake.toasts(), [])
   assert.equal(takeSideQuestionAnswer("ses_nobody", "why?"), undefined)
+})
+
+test("/btw typed before the turn's process is tagged waits for it instead of being queued", async () => {
+  clearPendingSideQuestionAnswers()
+  const key = "btw-test::late"
+  const fake = fakeClient()
+  fake.status.ses_late = { type: "busy" }
+  const appear = setTimeout(() => fakeActive("ses_late", key), 30)
+  const goIdle = setTimeout(() => {
+    fake.status.ses_late = { type: "idle" }
+  }, 150)
+  try {
+    await handleBtwCommand(fake.client, input("why?", "ses_late"), {
+      pollMs: 5,
+      settleMs: 20,
+      spawnWaitMs: 5_000,
+      timeoutMs: 5_000,
+    })
+    const early = takeSideQuestionAnswer("ses_late", "why?")
+    assert.ok(early, "the aside is sent as soon as the process exists, not skipped")
+    await assert.rejects(early, /headless Claude Code transport/, "the fake process has no stdin")
+    assert.equal(fake.toasts()[0]?.message, BTW_BUSY_TOAST_MESSAGE, "the turn was still running when it was asked")
+  } finally {
+    clearTimeout(appear)
+    clearTimeout(goIdle)
+    dropActive(key)
+    clearPendingSideQuestionAnswers()
+  }
+})
+
+test("/btw during a turn that never produces a claude process gives up rather than holding the message", async () => {
+  clearPendingSideQuestionAnswers()
+  const fake = fakeClient()
+  fake.status.ses_elsewhere = { type: "busy" }
+  await handleBtwCommand(fake.client, input("why?", "ses_elsewhere"), { pollMs: 5, settleMs: 10, spawnWaitMs: 40 })
+  assert.deepEqual(fake.toasts(), [], "the turn belongs to another provider; nothing to say")
+  assert.equal(takeSideQuestionAnswer("ses_elsewhere", "why?"), undefined)
+})
+
+test("a status that has not registered the turn yet does not skip the hold", async () => {
+  const key = "btw-test::settle"
+  const active = fakeActive("ses_settle", key)
+  const fake = fakeClient()
+  const flip = setTimeout(() => {
+    fake.status.ses_settle = { type: "busy" }
+  }, 20)
+  try {
+    assert.equal(await settleSessionBusy(fake.client, "ses_settle", active, { pollMs: 5, settleMs: 2_000 }), true)
+    delete fake.status.ses_settle
+    assert.equal(await settleSessionBusy(fake.client, "ses_settle", active, { pollMs: 5, settleMs: 20 }), false)
+    assert.equal(await waitForAsideProcess(fake.client, "ses_settle", { pollMs: 5, settleMs: 20 }), active)
+  } finally {
+    clearTimeout(flip)
+    dropActive(key)
+  }
 })
 
 test("/btw whose early request cannot be sent still lets the message through", async () => {
@@ -127,7 +184,7 @@ test("/btw whose early request cannot be sent still lets the message through", a
   try {
     // The fake process has no stdin, so requestSideQuestion rejects. The
     // rejection is remembered (and handled) and the queued turn asks again.
-    await handleBtwCommand(fake.client, input("why?", "ses_nostdin"))
+    await handleBtwCommand(fake.client, input("why?", "ses_nostdin"), { pollMs: 5, settleMs: 20 })
     const early = takeSideQuestionAnswer("ses_nostdin", "why?")
     assert.ok(early)
     await assert.rejects(early, /headless Claude Code transport/)
@@ -388,7 +445,7 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
     assert.equal(fake.events().filter((event) => event.envelope?.type === "control_request").length, 1, "answered from the early request")
 
     // A follow-up typed while idle: the hook asks at once (no toast), the turn takes it, with history.
-    await handleBtwCommand(fakeSdk.client, input("Second?", "ses_main"))
+    await handleBtwCommand(fakeSdk.client, input("Second?", "ses_main"), { pollMs: 5, settleMs: 20 })
     assert.equal(fakeSdk.toasts().length, 2, "no toast when the transcript shows the answer right away")
     const followUp = await fake.turn("ses_main", [
       user("Start."), assistant("Main answer"), user("/btw First?"), assistant("Aside 1: First?"), user("/btw Second?"),

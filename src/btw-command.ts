@@ -69,6 +69,18 @@ export interface BtwCommandInput {
   arguments: string
 }
 
+/** Every wait the hook can make, so tests do not have to sit through them. */
+export interface BtwWaitOptions {
+  /** How often to re-read opencode's session status. */
+  pollMs?: number
+  /** Cap on holding the `/btw` message back while a turn runs. */
+  timeoutMs?: number
+  /** Cap on treating an idle-looking status as not yet registered. */
+  settleMs?: number
+  /** Cap on waiting for the running turn's `claude` process to be tagged. */
+  spawnWaitMs?: number
+}
+
 /** Thrown to make opencode drop the prompt when there is nothing worth keeping. */
 export class BtwHandledError extends Error {
   override readonly name = "BtwHandledError"
@@ -91,6 +103,21 @@ export const BTW_TURN_TOO_LONG_MESSAGE =
 
 const IDLE_POLL_MS = 500
 const IDLE_WAIT_MAX_MS = 30 * 60_000
+/**
+ * How long a single status read is allowed to be wrong. opencode registers
+ * the turn a moment after the TUI sends the command, and a session missing
+ * from `GET /session/status` reads as idle, so a `/btw` typed inside that gap
+ * would decide the conversation is free and let its message queue.
+ */
+const BUSY_SETTLE_MS = 1_500
+/**
+ * How long to wait for the turn's `claude` process to appear. doStream tags
+ * the process only once it attaches its line listener, which is after the
+ * whole spawn path, so the first `/btw` of a conversation regularly arrives
+ * before there is anything to ask. Bounded, because the running turn may
+ * belong to another provider and then no process is ever coming.
+ */
+const SPAWN_WAIT_MAX_MS = 30_000
 
 const ANSWER_TOAST_MIN_MS = 10_000
 const ANSWER_TOAST_MAX_MS = 60_000
@@ -224,6 +251,71 @@ export async function waitForSessionIdle(
   }
 }
 
+/**
+ * The `claude` process serving this conversation, waiting for it when a turn
+ * is already running but has not yet reached the point where doStream tags it
+ * (`claude-code-language-model.ts`, where the line listener attaches). That
+ * gap is the whole spawn path on a conversation's first turn, and a `/btw`
+ * typed inside it used to fall straight through, which is exactly what leaves
+ * a "Queued" bubble in the transcript: measured live on 2026-09-06, a `/btw`
+ * logged "no live claude process for session" and the same question 22 s
+ * later found one and was answered concurrently.
+ */
+export async function waitForAsideProcess(
+  client: BtwSdkClient | null,
+  sessionID: string,
+  options: BtwWaitOptions = {},
+): Promise<ActiveProcess | undefined> {
+  const pollMs = options.pollMs ?? IDLE_POLL_MS
+  const settleMs = options.settleMs ?? BUSY_SETTLE_MS
+  const spawnWaitMs = options.spawnWaitMs ?? SPAWN_WAIT_MAX_MS
+  const started = Date.now()
+  for (;;) {
+    const active = findActiveProcessBySessionId(sessionID)
+    if (active) return active
+    const busy = (await sessionStatus(client, sessionID)) === "busy"
+    const waitedMs = Date.now() - started
+    if (!busy && waitedMs >= settleMs) {
+      // Nothing is running, so no process is on its way either.
+      log.info("btw: no live claude process for session, leaving it to the turn", { sessionID, waitedMs })
+      return undefined
+    }
+    if (busy && waitedMs >= spawnWaitMs) {
+      // A turn is running but it never produced a process of ours: it belongs
+      // to another provider, or the spawn failed. Do not hold the message for
+      // the rest of it.
+      log.warn("btw: a turn is running but no claude process appeared for it", { sessionID, waitedMs })
+      return undefined
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+}
+
+/**
+ * Whether a turn is running, tolerant of the same registration lag: a status
+ * read taken the instant `/btw` is typed can still say idle while opencode is
+ * starting the turn, and skipping the hold on that reading is what queues the
+ * message behind the turn instead of releasing it afterwards.
+ */
+export async function settleSessionBusy(
+  client: BtwSdkClient | null,
+  sessionID: string,
+  active: Pick<ActiveProcess, "lineEmitter">,
+  options: BtwWaitOptions = {},
+): Promise<boolean> {
+  const pollMs = options.pollMs ?? IDLE_POLL_MS
+  const settleMs = options.settleMs ?? BUSY_SETTLE_MS
+  const started = Date.now()
+  for (;;) {
+    const status = await sessionStatus(client, sessionID)
+    if (status === "busy") return true
+    // No status route to poll: the process's own stream is all there is.
+    if (status === "unknown") return isProcessBusy(active)
+    if (Date.now() - started >= settleMs) return false
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+}
+
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message
   if (error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string") {
@@ -285,40 +377,55 @@ export async function fetchAsideHistory(
  * opencode already keeps the command route open for a queued prompt, so
  * holding it here changes nothing on the wire, and the TUI's call is
  * fire-and-forget.
+ *
+ * Both waits before that hold exist because a `/btw` typed early in a turn
+ * used to be seen as belonging to an idle conversation with no process, and
+ * was let through to be queued: `waitForAsideProcess` covers the spawn gap,
+ * `settleSessionBusy` covers opencode registering the turn.
  */
 export async function handleBtwCommand(
   client: BtwSdkClient | null,
   input: BtwCommandInput,
-  options: { pollMs?: number; timeoutMs?: number } = {},
+  options: BtwWaitOptions = {},
 ): Promise<void> {
   const question = input.arguments.trim()
   if (!question) {
     showToast(client, { title: "btw", message: SIDE_QUESTION_USAGE, variant: "warning", duration: 6_000 })
     throw new BtwHandledError("/btw needs a question.")
   }
-  const active = findActiveProcessBySessionId(input.sessionID)
+  const active = await waitForAsideProcess(client, input.sessionID, options)
   const transport = active?.asideTransport
   if (!active || !transport) {
-    // The message still goes through: the session is idle, so the aside
-    // branch answers it at once with an explanation that stays readable.
-    log.info("btw: no live claude process for session, leaving it to the turn", { sessionID: input.sessionID })
+    // The message still goes through: the aside branch answers it with an
+    // explanation that stays readable in the conversation.
+    if (active) log.info("btw: process has no aside transport, leaving it to the turn", { sessionID: input.sessionID })
     return
   }
-  const status = await sessionStatus(client, input.sessionID)
-  const busy = status === "busy" || (status === "unknown" && isProcessBusy(active))
+  let busy = false
   if (isSideQuestionPending(active)) {
     // One aside per process at a time. Leave the earlier answer in place for
     // its own message; this one asks when its turn comes.
+    busy = await settleSessionBusy(client, input.sessionID, active, options)
     log.info("btw: an aside is already in flight, leaving this one to the turn", { sessionID: input.sessionID, busy })
     showToast(client, { title: "btw", message: BTW_IN_FLIGHT_TOAST_MESSAGE, variant: "info", duration: 5_000 })
   } else {
+    // Settled alongside the request rather than before it: an aside asked
+    // while the conversation is idle must not wait out the settle window
+    // before it is even sent.
+    const settling = settleSessionBusy(client, input.sessionID, active, options)
     const history = await fetchAsideHistory(client, input.sessionID, question)
     const answer = requestSideQuestion(active, question, {
       cliVersion: await detectCliVersion(transport.cliPath),
       interactive: transport.interactive,
       ...(history.length ? { history } : {}),
     })
+    // Handled from this tick on. The settle below can span several timer
+    // ticks, and an aside that fails immediately (a dead process, an
+    // interactive transport) would otherwise raise an unhandled rejection in
+    // the host before the real handlers further down are attached.
+    answer.catch(() => undefined)
     rememberSideQuestionAnswer(input.sessionID, question, answer)
+    busy = await settling
     log.info("btw: aside sent ahead of its message", {
       sessionID: input.sessionID,
       busy,
