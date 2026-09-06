@@ -90,6 +90,9 @@ export type OpenCodeConfig = {
   // only ever added to: `expandAccountAgents` never overwrites an entry the
   // user defined.
   agent?: Record<string, Record<string, unknown>>
+  // Extra skill roots opencode scans for `**/SKILL.md` (absolute or `~/`
+  // paths). The plugin adds its bundled skills directory here.
+  skills?: { paths?: string[]; urls?: string[] }
 }
 
 /**

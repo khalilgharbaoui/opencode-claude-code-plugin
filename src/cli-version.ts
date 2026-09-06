@@ -123,10 +123,14 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
   if (cached) return cached
   const promise = (async (): Promise<boolean> => {
     try {
-      const { stdout } = await execFileAsync(cliPath, ["--help"], {
+      const execution = execFileAsync(cliPath, ["--help"], {
         timeout: 5000,
+        killSignal: "SIGKILL",
         maxBuffer: 4 * 1024 * 1024,
       })
+      // A wrapper may wait for stdin EOF even when asked for help.
+      execution.child.stdin?.end()
+      const { stdout } = await execution
       return stdout.includes(flag)
     } catch (err) {
       log.warn("failed to probe claude cli flag support", {

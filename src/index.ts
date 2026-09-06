@@ -27,6 +27,7 @@ import {
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { configureLogger, log } from "./logger.js"
 import { handleBtwCommand, type BtwSdkClient } from "./btw-command.js"
+import { registerBundledSkillPath } from "./skill-bridge.js"
 import { getOpencodeClient } from "./runtime-status.js"
 import {
   getOpencodeProjectDirectory,
@@ -469,6 +470,10 @@ const server: OpenCodePlugin = async (input) => {
   return {
     config: async (config) => {
       if (registerSideQuestionCommand(config)) ownsSideQuestionCommand = true
+      // The bundled `claude-code-plugin` skill: opencode lists it for every
+      // provider via skills.paths; the spawn path also stages it as a
+      // --plugin-dir so Claude's own Skill tool can load it.
+      registerBundledSkillPath(config)
       config.provider ??= {}
 
       await buildAgentRegistry(config)

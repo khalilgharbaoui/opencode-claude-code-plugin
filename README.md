@@ -553,6 +553,20 @@ Notes:
 
 Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
 
+## Configuration skill
+
+The package includes a `claude-code-plugin` skill so your agent can configure it without asking you to navigate all its options. Ask, for example:
+
+```text
+Use the claude-code-plugin skill to configure a work account and idle worker cleanup.
+```
+
+It covers accounts, models and agent effort, proxy tools, permissions, MCP/skill bridging, timeouts, logging, upgrades and troubleshooting. It directs the agent to preserve JSONC comments, change only requested settings, validate the result, protect credentials and ask before paid probes or broader permissions.
+
+The plugin registers the bundled directory with opencode's `skills.paths`, making it available to other providers too on supporting opencode versions. For ordinary headless Claude turns it also loads through Claude's native Skill tool as `opencode-skills:claude-code-plugin`, even when `bridgeOpencodeSkills` is off. This requires CLI `--plugin-dir` support; interactive transport, compaction and direct `doGenerate` calls do not load the native bridge.
+
+No separate skill installation or copying is needed. It ships with each package version, so upgrading updates the reference. Fully restart opencode to load it. `test-configure-skill.ts` checks coverage of provider/logging options, model ids, proxy tools and environment variables; maintainers must update behavior and default guidance in the same change as the implementation.
+
 ## Skill bridge
 
 opencode and Claude Code use the same on-disk skill format, a `<name>/SKILL.md` whose frontmatter carries `name` and `description`, but they read from different directories. opencode looks in `.opencode/skills/` and `~/.config/opencode/skills/`; the Claude CLI looks in `~/.claude/skills/` and its own plugins. So opencode advertises your skills in the system prompt it forwards, the model calls `Skill("browser-automation")`, and Claude answers `Unknown skill`.
@@ -568,7 +582,7 @@ Claude can invoke them with the Skill tool or as `/opencode-skills:<name>`. `--p
 
 Discovery order, first match wins: `.opencode/skills/` walking up from the working directory, then `~/.opencode/skills/`, then `$OPENCODE_CONFIG_DIR/skills/`, then `~/.config/opencode/skills/`. A project skill shadows a global one of the same name. If the skill set is unchanged the staged directory is reused between spawns.
 
-It is **off by default** here, unlike on the fork it came from: every bridged skill is also listed in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Turn it on when you see `Unknown skill`. It no-ops on the compaction path and on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
+Bridging **your own skills is off by default** here, unlike on the fork it came from: every bridged skill is also listed in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Turn it on when you see `Unknown skill`. The bundled configuration skill is loaded independently of this opt-in. The native bridge is not used for compaction or interactive transport, or on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
 
 This bridge was written by [@broskees](https://github.com/broskees) (Joseph Roberts) on his fork and absorbed here with credit; see [Credits](#credits).
 

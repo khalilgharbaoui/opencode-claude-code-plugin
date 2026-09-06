@@ -445,6 +445,10 @@ if (process.argv.includes("--version")) {
   process.stdout.write("2.1.258\\n")
   process.exit(0)
 }
+if (process.argv.includes("--help")) {
+  process.stdout.write("--plugin-dir <path>\\n")
+  process.exit(0)
+}
 record({ type: "spawn" })
 let turns = 0
 readline.createInterface({ input: process.stdin }).on("line", (line) => {

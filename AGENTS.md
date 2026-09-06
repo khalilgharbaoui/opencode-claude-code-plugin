@@ -12,6 +12,8 @@
 
 ## Commands
 
+- Keep `skills/claude-code-plugin/SKILL.md` current in the same change whenever options, defaults, env vars, model ids, proxy tools, agent configuration or troubleshooting behavior change. This bundled skill is the agent-facing configuration reference, not a generated file. `test-configure-skill.ts` checks identifier coverage against source; reviewers must still verify defaults, precedence, safety and recipes. `test-skill-bridge.ts` covers native delivery and opencode skill-path registration. Keep `skills` in the npm package files list and verify built-package discovery when changing layout.
+
 - Typecheck: `npm run typecheck` (`tsc --noEmit`).
 - Test suite: `npm test`. The script enumerates test files explicitly — when adding a `test-*.ts` file you MUST add it to `package.json`'s `test` script or it silently never runs (this had drifted: `test-config-models.ts` and `test-ask-user-question.ts` were missing until 2026-06-10).
 - Single focused test file: `npx tsx --test test-get-claude-user-message.ts` (replace file as needed).
