@@ -89,7 +89,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Case-insensitive replacement list, not additive and not a capability allowlist. Known entries expose `mcp__opencode_proxy__<name>`; omitted/unknown tools are not disabled. `Task` also brings `task_batch`; `[]` disables this list, not MCP proxying. See the proxy table for exceptions. |
 | `extraDisallowedTools` | string[] | unset | Claude built-ins to switch off outright with `--disallowedTools`, for tools that have no proxy (`["NotebookEdit"]`). Removes the capability rather than routing it. |
 | `proxyToolTimeoutMs` | object of proxy tool name to ms | unset | Positive deadlines, case-insensitive keys. Fallback 10 min (including dynamic MCP tools); `task` and `task_batch` 60 min each; `question` 30 min. Set both task keys to override both. Zero/negative values do not disable deadlines; values above 2147483647 are clamped. Bash `input.timeout` raises the resolved deadline, but executor/client ceilings still apply. `compress` is intercepted without a deadline. |
-| `planModeQuestion` | boolean | `false` | Bridge `ExitPlanMode` approval to opencode's `question` and return a real CLI tool result. Requires a live question registry entry; otherwise keeps text fallback. Keep off on affected opencode builds: the form has failed to render (anomalyco/opencode#36604). Prose yes/no is not a verified CLI plan-mode unlock. |
+| `planModeQuestion` | boolean | `false` | Bridge `ExitPlanMode` approval to opencode's `question` and return a real CLI tool result. Requires a live question registry entry; otherwise keeps text fallback. The form it uses is verified working, but this bridge's own approval round-trip is not, so opt in only on request. Prose yes/no is not a verified CLI plan-mode unlock. |
 | `webSearch` | `"claude"` / `"disabled"` / `"<opencode tool name>"` | `"claude"` | Default: CLI search with the query rendered as text. Custom target forwards a tool call to an existing opencode tool accepting `query`; this is mapping, not the authenticated proxy replacement, so do not assume CLI search is suppressed. `"disabled"` disallows headless `WebSearch`. |
 | `bridgeOpencodeMcp` | boolean | `true` | Discover/translate disk MCP config plus runtime enabled status. False stops this bridge, not explicit `mcpConfig`, the built-in-tool proxy, or Claude's own MCP settings. Only bridge trusted servers. |
 | `mcpConfig` | string or string[] | unset | Extra `--mcp-config` paths or inline JSON passed alongside the bridged config. |
@@ -262,7 +262,7 @@ Names below become `mcp__opencode_proxy__<name>`; input config is case-insensiti
 | `webfetch` | `"WebFetch"`, default; replaces CLI WebFetch. |
 | `task` | `"Task"`, default; disables CLI Agent and dispatches opencode subagents under its permissions. |
 | `task_batch` | Included with Task; one MCP call fans out two or more independent task inputs concurrently. Separate task calls were measured serial on CLI 2.1.258. |
-| `question` | `"Question"`, opt-in; replaces AskUserQuestion only if the live opencode registry has question. Requires `permission.question`; form rendering is broken on affected versions, so keep off. |
+| `question` | `"Question"`, opt-in; replaces AskUserQuestion only if the live opencode registry has question. Round-trip verified on plugin 0.18.0 / CLI 2.1.258 / opencode 1.18.29, headless and as a real TUI form, with no `permission` block; grant `permission.question` only if a subagent's form is refused. Opt-in because it disables Claude's own AskUserQuestion. |
 | `compress` | `"Compress"`, opt-in; in-process summary/reset interceptor, no opencode permission prompt and no built-in replacement. Discards prior CLI detail on a later eligible turn, retaining the summary, not the full transcript. Keep off unless explicitly requested; end-to-end reset remains unverified live. |
 
 ### Let Claude load the user's opencode skills
@@ -421,7 +421,7 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | Warning that a fast turn ran at standard speed | Fast mode ineligible (usage credits off, cooldown, not first-party) | Prefer non-fast id; paid usage changes require approval |
 | `claude --model claude-mythos-*` errors | Limited-availability model | Use `claude-fable-5` or `claude-fable-5-1` |
 | Startup warning about `ANTHROPIC_API_KEY` | CLI may prefer env credentials | Confirm billing intent; strip only with approval, without displaying the key |
-| A question form never renders and the turn hangs | Known affected opencode TUI versions with `"Question"` or `planModeQuestion: true` | Keep both off until a tested upstream fix; prose fallback can ask/wait but does not prove plan-mode unlock |
+| A question form never renders and the turn hangs | Blocking notification/tool hooks, or a pending request not reaching the visible session | Check `GET /question` on the same server/workspace: absent means investigate pre-tool hooks or replacement tools; present means inspect session ownership, permission priority and event delivery. On the maintainer's Mac, awaiting `alerter` dismissal in `tool.execute.before` blocked the tool itself. Native providers load global plugins too. The separate detach/reattach issue #36604 remains open; #36603 closed unmerged. |
 | No thinking summary | CLI version, explicit disable/summary env, or no thinking text emitted | Check version and nonsecret flag presence; do not override deliberate user suppression |
 | `⚙ invalid` rows for `todowrite` inside a subagent | Subagent lacks `permission.todowrite: "allow"` | Grant it on the agent definition with approval |
 | Other `⚙ invalid` or `⚙ unknown` tool rows | A Claude tool the plugin does not map for this version | Note plugin version, CLI version and the tool name; upgrade or report |
@@ -429,8 +429,11 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 
 ## Do not
 
-- Do not enable `planModeQuestion` or `"Question"` by default; both depend on an
-  opencode form broken on measured versions. Recheck upstream, do not assume a fix.
+- Do not enable `planModeQuestion` or `"Question"` without the user asking. `"Question"`
+  works (round-trip verified) but disables Claude's own AskUserQuestion; `planModeQuestion`
+  delivers through the same working form yet its approval round-trip is still untested.
+  The historical blanket TUI diagnosis was confounded by a local macOS notification
+  hook; do not repeat it as established fact.
 - Do not "fix" the `-fast` model ids by passing Anthropic-looking names; the real ones are
   retired and the `--settings` opt-in is the only headless path.
 - Do not add long-context `cost.tiers` to a model; Claude 4.6+ bills the full 1M window
