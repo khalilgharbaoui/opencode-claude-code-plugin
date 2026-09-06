@@ -19,7 +19,7 @@ import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
-import { BTW_NO_SESSION_MESSAGE, takeSideQuestionAnswer } from "./btw-command.js"
+import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -2711,6 +2711,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           let unattendedTurnEnded = false
           let watchdogMessage = userMsg
           let pendingProxyUnsubscribe: (() => void) | null = null
+          let asideSinkUnregister: (() => void) | null = null
           let resultFallbackTimer: ReturnType<typeof setTimeout> | null = null
           let pendingResultCompletion: (() => void) | null = null
           let hasReceivedContent = false
@@ -3994,6 +3995,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           lineEmitter.off("close", closeHandler)
           pendingProxyUnsubscribe?.()
           pendingProxyUnsubscribe = null
+          asideSinkUnregister?.()
+          asideSinkUnregister = null
           proc.off("error", procErrorHandler)
         }
 
@@ -4079,6 +4082,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         if (activeProcess && !compactionMode) {
           activeProcess.opencodeSessionID = affinity
           activeProcess.asideTransport = asideTransportRef
+        }
+        if (!compactionMode) {
+          // Lets a `/btw` answered while this turn runs land in the turn's own
+          // reply instead of a toast (btw-command.ts). Its own text block, so
+          // the marker stays at the start of a part and the block can be
+          // stripped exactly when a transcript is rebuilt.
+          asideSinkUnregister = registerAsideSink(affinity, (text) => {
+            if (controllerClosed) return false
+            const asideId = startTextBlock()
+            controller.enqueue({ type: "text-delta", id: asideId, delta: text })
+            endTextBlock()
+            return true
+          })
         }
         lineEmitter.on("line", lineHandler)
         lineEmitter.on("close", closeHandler)

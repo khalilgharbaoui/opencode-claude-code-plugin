@@ -13,9 +13,14 @@ import {
   BTW_NO_SESSION_MESSAGE,
   BTW_TURN_TOO_LONG_MESSAGE,
   BtwHandledError,
+  clearAsideSinks,
   clearPendingSideQuestionAnswers,
+  emitAsideInline,
   fetchAsideHistory,
+  formatInlineAside,
   handleBtwCommand,
+  INLINE_ASIDE_MARKER,
+  registerAsideSink,
   rememberSideQuestionAnswer,
   settleSessionBusy,
   takeSideQuestionAnswer,
@@ -24,6 +29,7 @@ import {
   type BtwSdkMessage,
   type BtwToast,
 } from "./src/btw-command.js"
+import { filterSideQuestionHistory } from "./src/message-builder.js"
 import { createClaudeCode, registerSideQuestionCommand } from "./src/index.js"
 import type { OpenCodeConfig } from "./src/opencode-types.js"
 import {
@@ -231,6 +237,52 @@ test("without a status route the hook falls back to the process's own listener c
   }
 })
 
+test("an aside sink belongs to the stream that registered it", () => {
+  clearAsideSinks()
+  const written: string[] = []
+  const first = registerAsideSink("ses_sink", (text) => {
+    written.push(`first:${text}`)
+    return true
+  })
+  assert.equal(emitAsideInline("ses_sink", "a"), true)
+  const second = registerAsideSink("ses_sink", (text) => {
+    written.push(`second:${text}`)
+    return true
+  })
+  // The previous turn's cleanup must not take the current turn's sink away.
+  first()
+  assert.equal(emitAsideInline("ses_sink", "b"), true)
+  second()
+  assert.equal(emitAsideInline("ses_sink", "c"), false, "no stream is open")
+  assert.deepEqual(written, ["first:a", "second:b"])
+  // A closed stream reports it rather than throwing, so the toast can stand in.
+  registerAsideSink("ses_sink", () => false)
+  assert.equal(emitAsideInline("ses_sink", "d"), false)
+  registerAsideSink("ses_sink", () => {
+    throw new Error("stream is gone")
+  })
+  assert.equal(emitAsideInline("ses_sink", "e"), false)
+  clearAsideSinks()
+})
+
+test("an aside written into a turn is marked so a rebuilt transcript drops it", () => {
+  const block = formatInlineAside("  what   did i say?  ", "  You said pineapple.  ")
+  assert.equal(block.trimStart().startsWith(INLINE_ASIDE_MARKER), true, "the marker leads the part")
+  assert.match(block, /what did i say\?/)
+  assert.match(block, /You said pineapple\./)
+  const kept = filterSideQuestionHistory([
+    user("Start."),
+    { role: "assistant", content: [{ type: "text", text: "Main answer" }, { type: "text", text: block }] },
+    user("Next."),
+  ] as never)
+  assert.deepEqual(kept.map((message) => message.role), ["user", "assistant", "user"])
+  assert.deepEqual(
+    (kept[1] as { content: { text: string }[] }).content.map((part) => part.text),
+    ["Main answer"],
+    "only Claude's own text is replayed",
+  )
+})
+
 test("remembered answers are per session, per question, consumed once, and expire", async () => {
   clearPendingSideQuestionAnswers()
   const answer = Promise.resolve({ response: "yes", synthetic: false })
@@ -335,12 +387,18 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     })
     return
   }
-  emit({
-    type: "assistant",
-    session_id: "fake-session",
-    message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Main answer" }] },
-  })
-  emit({ type: "result", subtype: "success", session_id: "fake-session", is_error: false, usage: { input_tokens: 3, output_tokens: 2 } })
+  const answer = () => {
+    emit({
+      type: "assistant",
+      session_id: "fake-session",
+      message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Main answer" }] },
+    })
+    emit({ type: "result", subtype: "success", session_id: "fake-session", is_error: false, usage: { input_tokens: 3, output_tokens: 2 } })
+  }
+  // "SLOW" keeps the turn's stream open long enough for a test to write an
+  // aside into it, which is what happens for real while a turn is streaming.
+  if (line.includes("SLOW")) setTimeout(answer, 1500)
+  else answer()
 })
 `, { mode: 0o755 })
   const modelId = "claude-test-btw"
@@ -408,7 +466,9 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
     // attached, so the process's own listener count is not consulted).
     fakeSdk.status.ses_main = { type: "busy" }
     let released = false
-    const hook = handleBtwCommand(fakeSdk.client, input("First?", "ses_main"), { pollMs: 5 }).then(() => {
+    // Busy with no stream open to write into, which is what a tool step looks
+    // like: the answer falls back to a toast and the message is held.
+    const hook = handleBtwCommand(fakeSdk.client, input("First?", "ses_main"), { pollMs: 5, inlineWaitMs: 0 }).then(() => {
       released = true
     })
     const early = await (async () => {
@@ -481,6 +541,54 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
   } finally {
     fakeSdk.status.ses_main = { type: "idle" }
     await fake.cleanup(["ses_main", "ses_lonely"])
+    clearPendingSideQuestionAnswers()
+  }
+})
+
+test("an answer that arrives while a turn is streaming is written into that turn's own reply", {
+  timeout: 30_000,
+}, async () => {
+  clearPendingSideQuestionAnswers()
+  clearAsideSinks()
+  const fake = createAsideCli()
+  const fakeSdk = fakeClient()
+  try {
+    // A first turn only so the conversation has a live process to ask.
+    assert.equal((await fake.turn("ses_inline", [user("Start.")])).answer, "Main answer")
+    fakeSdk.status.ses_inline = { type: "busy" }
+
+    const streaming = fake.turn("ses_inline", [user("Start."), assistant("Main answer"), user("SLOW next.")])
+    await assert.rejects(
+      // Bounded so a missing sink fails on the assertions below rather than
+      // hanging on a conversation this test never marks idle.
+      handleBtwCommand(fakeSdk.client, input("What did i say?", "ses_inline"), {
+        pollMs: 5,
+        inlinePollMs: 5,
+        inlineWaitMs: 3_000,
+        timeoutMs: 3_000,
+      }),
+      BtwHandledError,
+      "the message is dropped because the answer is already in the conversation",
+    )
+    const turn = await streaming
+    assert.deepEqual(turn.errors, [])
+    assert.match(turn.answer, /> \*\*btw:\*\* What did i say\?/)
+    assert.match(turn.answer, /Aside 1: What did i say\?/)
+    assert.match(turn.answer, /Main answer/, "the turn still delivers its own reply")
+    assert.ok(
+      turn.parts.filter((part) => part.type === "text-start").length >= 2,
+      "the aside is a block of its own, so its marker leads a part",
+    )
+    assert.deepEqual(
+      fakeSdk.toasts().map((toast) => toast.message),
+      [BTW_BUSY_TOAST_MESSAGE],
+      "no answer toast: the conversation itself carries the answer",
+    )
+    assert.equal(emitAsideInline("ses_inline", "late"), false, "the sink goes with the stream")
+  } finally {
+    fakeSdk.status.ses_inline = { type: "idle" }
+    await fake.cleanup(["ses_inline"])
+    clearAsideSinks()
     clearPendingSideQuestionAnswers()
   }
 })

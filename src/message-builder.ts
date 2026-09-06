@@ -1,18 +1,37 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
+import { INLINE_ASIDE_MARKER } from "./btw-command.js"
 import { log } from "./logger.js"
 import { parseSideQuestionContent } from "./side-question.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
 
+/**
+ * An aside answered while a turn was running was written into that turn's
+ * reply as its own text part (btw-command.ts). It was never Claude's own
+ * output and was never in Claude's context, so a rebuilt transcript must not
+ * hand it back as something Claude said.
+ */
+function stripInlineAsides(content: unknown): unknown {
+  if (!Array.isArray(content)) return content
+  const kept = content.filter(
+    (part: any) =>
+      !(part && part.type === "text" && typeof part.text === "string" && part.text.trimStart().startsWith(INLINE_ASIDE_MARKER)),
+  )
+  return kept.length === content.length ? content : kept
+}
+
 export function filterSideQuestionHistory(prompt: Prompt): Prompt {
   let aside = false
-  return prompt.filter((message) => {
+  const kept = prompt.filter((message) => {
     if (message.role === "user") {
       aside = parseSideQuestionContent(message.content) !== null
       return !aside
     }
     return message.role !== "assistant" || !aside
   })
+  return kept.map((message) =>
+    message.role === "assistant" ? ({ ...message, content: stripInlineAsides(message.content) } as typeof message) : message,
+  )
 }
 
 const SUPPORTED_IMAGE_TYPES = new Set([

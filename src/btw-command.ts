@@ -23,19 +23,24 @@ import {
  * exits when the newest assistant message answers the newest user message
  * (`session/prompt.ts`, `lastAssistant.parentID === lastUser.id`).
  *
- * So the hook does two things and then lets the message through:
- *   1. sends the question to the conversation's live `claude` process as a
- *      `side_question` control request right away (Claude Code answers those
- *      on a separate advisor call, concurrently with a running turn, from the
- *      conversation's context), and remembers the pending answer per session;
- *   2. when the turn was busy, shows the answer as a toast the moment it
- *      arrives, since the transcript cannot show it until the turn ends.
- * The queued `/btw` message then reaches the aside branch in
- * `claude-code-language-model.ts`, which takes the remembered answer (or asks
- * the now idle process) and emits it as that message's assistant reply, at no
- * cost. `filterSideQuestionHistory` keeps every such pair out of Claude's
- * prompt afterwards, and the control request never touches Claude's own
- * transcript, so the aside is persisted for the operator only.
+ * So the hook sends the question to the conversation's live `claude` process
+ * as a `side_question` control request right away (Claude Code answers those
+ * on a separate advisor call, concurrently with a running turn, from the
+ * conversation's context) and remembers the pending answer per session. Where
+ * the answer lands then depends on what is open when it arrives:
+ *   1. a turn is streaming, so the answer is written into that turn's own
+ *      reply as its own text block and the `/btw` message is dropped. The
+ *      operator reads it in place, the moment it is ready, and it stays;
+ *   2. nothing is open to write to, so the answer is previewed as a toast and
+ *      the `/btw` message is held until the turn ends. It then reaches the
+ *      aside branch in `claude-code-language-model.ts`, which takes the
+ *      remembered answer and emits it as that message's reply, at no cost;
+ *   3. the conversation was idle all along, so the message runs at once and
+ *      case 2's second half is all that happens, with no toast.
+ * `filterSideQuestionHistory` keeps every `/btw` pair out of Claude's prompt,
+ * `INLINE_ASIDE_MARKER` does the same for case 1's block, and the control
+ * request never touches Claude's own transcript, so an aside is persisted for
+ * the operator only.
  */
 
 type SdkResult<T = unknown> = Promise<{ data?: T; error?: unknown }>
@@ -79,6 +84,10 @@ export interface BtwWaitOptions {
   settleMs?: number
   /** Cap on waiting for the running turn's `claude` process to be tagged. */
   spawnWaitMs?: number
+  /** How often to retry writing the answer into the running turn. */
+  inlinePollMs?: number
+  /** Cap on waiting for a stream to write the answer into. */
+  inlineWaitMs?: number
 }
 
 /** Thrown to make opencode drop the prompt when there is nothing worth keeping. */
@@ -93,7 +102,10 @@ export const BTW_NO_SESSION_MESSAGE =
   "/btw needs a live Claude Code session in this conversation. Send a normal message with a Claude Code model first, then ask again."
 
 export const BTW_BUSY_TOAST_MESSAGE =
-  "Answering alongside the running turn. The full answer is added to this conversation when the turn ends."
+  "Answering alongside the running turn. The answer appears in this conversation as soon as it is ready."
+
+export const BTW_INLINE_HANDLED_MESSAGE =
+  "/btw was answered inside the running turn; nothing to add to this conversation."
 
 export const BTW_IN_FLIGHT_TOAST_MESSAGE =
   "A previous /btw is still being answered. This one is asked once the turn ends."
@@ -118,6 +130,15 @@ const BUSY_SETTLE_MS = 1_500
  * belong to another provider and then no process is ever coming.
  */
 const SPAWN_WAIT_MAX_MS = 30_000
+
+const INLINE_POLL_MS = 200
+/**
+ * How long to keep trying to write into the turn. A turn is a run of streams,
+ * not one: every proxy tool call ends the current stream and opencode opens
+ * the next one with the tool's result, so an answer that arrives inside that
+ * gap has nothing to write to yet and has to wait for the next stream.
+ */
+const INLINE_WAIT_MAX_MS = 20_000
 
 const ANSWER_TOAST_MIN_MS = 10_000
 const ANSWER_TOAST_MAX_MS = 60_000
@@ -181,6 +202,53 @@ export function clearPendingSideQuestionAnswers(): void {
   pendingAnswers.clear()
 }
 
+/**
+ * Header of the block an aside writes into the running turn's own reply, and
+ * the marker `message-builder` strips by when a transcript has to be rebuilt
+ * for a fresh Claude process. Kept as the first characters of its own text
+ * part so the strip is exact rather than a guess at where the block ends.
+ */
+export const INLINE_ASIDE_MARKER = "> **btw:**"
+
+export function formatInlineAside(question: string, answer: string): string {
+  return `\n${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}\n\n${answer.trim()}\n`
+}
+
+/**
+ * Writes one finished text block into a stream that is open right now.
+ * Returns false when there is nothing to write to, which is the whole reason
+ * the toast path is still here.
+ */
+export type AsideSink = (text: string) => boolean
+
+/** At most one open stream per conversation, so a plain map is enough. */
+const asideSinks = new Map<string, AsideSink>()
+
+export function registerAsideSink(sessionID: string, sink: AsideSink): () => void {
+  asideSinks.set(sessionID, sink)
+  return () => {
+    // Only the stream that registered may unregister: a later turn's sink
+    // must survive the earlier turn's cleanup.
+    if (asideSinks.get(sessionID) === sink) asideSinks.delete(sessionID)
+  }
+}
+
+export function emitAsideInline(sessionID: string, text: string): boolean {
+  const sink = asideSinks.get(sessionID)
+  if (!sink) return false
+  try {
+    return sink(text)
+  } catch (error) {
+    log.debug("btw: could not write the aside into the running turn", { sessionID, error: errorText(error) })
+    return false
+  }
+}
+
+/** Test seam. */
+export function clearAsideSinks(): void {
+  asideSinks.clear()
+}
+
 export function answerToastMessage(answer: string): string {
   const flat = answer.replace(/\s+/g, " ").trim()
   return flat.length > ANSWER_TOAST_CHARS ? `${flat.slice(0, ANSWER_TOAST_CHARS - 3)}...` : flat
@@ -239,14 +307,43 @@ export async function sessionStatus(
 export async function waitForSessionIdle(
   client: BtwSdkClient | null,
   sessionID: string,
-  options: { pollMs?: number; timeoutMs?: number } = {},
+  options: { pollMs?: number; timeoutMs?: number; stop?: () => boolean } = {},
 ): Promise<boolean> {
   const pollMs = options.pollMs ?? IDLE_POLL_MS
   const timeoutMs = options.timeoutMs ?? IDLE_WAIT_MAX_MS
   const started = Date.now()
   for (;;) {
+    if (options.stop?.()) return true
     if ((await sessionStatus(client, sessionID)) !== "busy") return true
     if (Date.now() - started >= timeoutMs) return false
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+}
+
+/**
+ * Puts the answer in the conversation while the turn that prompted it is
+ * still running, by writing it as its own text block into that turn's live
+ * stream. It lands in the assistant reply the operator is already watching:
+ * full markdown, scrollable, kept by opencode, and readable long after a
+ * toast would have gone.
+ *
+ * Retries while the conversation stays busy, because a turn is a run of
+ * streams rather than one and the gap between two of them is short. Gives up
+ * once the turn ends, leaving the message to carry the answer instead.
+ */
+export async function deliverAsideInline(
+  client: BtwSdkClient | null,
+  sessionID: string,
+  text: string,
+  options: BtwWaitOptions = {},
+): Promise<boolean> {
+  const pollMs = options.inlinePollMs ?? INLINE_POLL_MS
+  const timeoutMs = options.inlineWaitMs ?? INLINE_WAIT_MAX_MS
+  const started = Date.now()
+  for (;;) {
+    if (emitAsideInline(sessionID, text)) return true
+    if (Date.now() - started >= timeoutMs) return false
+    if ((await sessionStatus(client, sessionID)) !== "busy") return false
     await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }
@@ -402,6 +499,14 @@ export async function handleBtwCommand(
     return
   }
   let busy = false
+  let inlineDone = false
+  let markInlineDelivered = (): void => {}
+  const inlineDelivered = new Promise<"inline">((resolve) => {
+    markInlineDelivered = () => {
+      inlineDone = true
+      resolve("inline")
+    }
+  })
   if (isSideQuestionPending(active)) {
     // One aside per process at a time. Leave the earlier answer in place for
     // its own message; this one asks when its turn comes.
@@ -436,16 +541,30 @@ export async function handleBtwCommand(
       showToast(client, { title: "btw", message: BTW_BUSY_TOAST_MESSAGE, variant: "info", duration: 4_000 })
     }
     answer.then(
-      (result) => {
+      async (result) => {
         log.info("btw: early answer arrived", { sessionID: input.sessionID, busy, responseLength: result.response.length })
-        if (busy && !result.synthetic) {
-          showToast(client, {
-            title: "btw",
-            message: answerToastMessage(result.response),
-            variant: "success",
-            duration: answerToastDuration(result.response),
-          })
+        if (!busy || result.synthetic) return
+        const inline = await deliverAsideInline(
+          client,
+          input.sessionID,
+          formatInlineAside(question, result.response),
+          options,
+        )
+        if (inline) {
+          // The answer is in the conversation already, so the `/btw` message
+          // has nothing left to carry. The remembered answer is deliberately
+          // left in place: if the drop below does not take, the message
+          // replays this answer instead of paying for a second one.
+          log.info("btw: answer written into the running turn", { sessionID: input.sessionID })
+          markInlineDelivered()
+          return
         }
+        showToast(client, {
+          title: "btw",
+          message: answerToastMessage(result.response),
+          variant: "success",
+          duration: answerToastDuration(result.response),
+        })
       },
       (error: unknown) => {
         // The message asks again once its turn runs, so no toast here.
@@ -458,9 +577,25 @@ export async function handleBtwCommand(
   }
   if (!busy) return
   const started = Date.now()
-  const idle = await waitForSessionIdle(client, input.sessionID, options)
-  log.info("btw: turn over, releasing the /btw message", { sessionID: input.sessionID, idle, waitedMs: Date.now() - started })
-  if (!idle) {
+  const outcome = await Promise.race([
+    inlineDelivered,
+    waitForSessionIdle(client, input.sessionID, { ...options, stop: () => inlineDone }).then((idle) =>
+      idle ? ("idle" as const) : ("timeout" as const),
+    ),
+  ])
+  if (outcome === "inline") {
+    log.info("btw: answered inside the running turn, dropping the /btw message", {
+      sessionID: input.sessionID,
+      waitedMs: Date.now() - started,
+    })
+    throw new BtwHandledError(BTW_INLINE_HANDLED_MESSAGE)
+  }
+  log.info("btw: turn over, releasing the /btw message", {
+    sessionID: input.sessionID,
+    idle: outcome === "idle",
+    waitedMs: Date.now() - started,
+  })
+  if (outcome === "timeout") {
     showToast(client, { title: "btw", message: BTW_TURN_TOO_LONG_MESSAGE, variant: "warning", duration: 8_000 })
     throw new BtwHandledError(BTW_TURN_TOO_LONG_MESSAGE)
   }

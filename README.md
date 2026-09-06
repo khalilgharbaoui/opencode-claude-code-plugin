@@ -522,10 +522,10 @@ After a normal Claude Code turn, at any time, including while Claude is still wo
 
 The plugin registers the command without replacing an existing user-defined `btw` command. The question goes to Claude Code's native `side_question` control protocol on the conversation's live process, using the same model, account, and context. Claude Code answers it on a separate call, concurrently with whatever the main turn is doing. Claude never sees the aside afterwards: the question never enters Claude Code's own transcript, and the plugin keeps every `/btw` exchange out of the prompt it sends the model.
 
-Where the answer appears:
+Where the answer appears, in the conversation either way:
 
-- **In the conversation itself.** The `/btw` message and its answer are kept as an ordinary pair in the transcript, so they render in full and stay there. While a turn is running, the pair appears the moment that turn ends (the message is held back rather than shown as "Queued"); when the conversation is idle, it appears right away.
-- **As a toast while the turn is still running.** The question is asked the moment you type it, and the answer pops up as soon as it arrives (up to 600 characters, on screen between 10 and 46 seconds depending on length). The transcript copy follows when the turn ends.
+- **Inside the running turn's own reply**, as soon as the answer arrives, when you asked while Claude was working. It is written into the reply you are already watching as its own block, headed `> **btw:** <your question>`, so it renders in full markdown and stays there. Nothing is queued and the `/btw` message itself is dropped, because the answer is already in the transcript. The turn goes on to deliver its own reply as usual.
+- **As its own `/btw` message and answer** when the conversation is idle, or when the turn had no stream open to write into at that moment (opencode was running a tool between two of them). In the second case a toast previews the answer right away (up to 600 characters, on screen between 10 and 46 seconds depending on length) and the pair lands when the turn ends.
 - Follow-ups work: earlier asides in the conversation are sent along as the aside's history.
 
 Notes:
@@ -534,7 +534,8 @@ Notes:
 - Requires a live **headless** process for the conversation. Send a normal message with a Claude Code model first if the process has not started or was evicted; the answer in the transcript tells you when that is the case. Interactive transport is not supported.
 - Asking immediately after starting a turn is fine. The conversation's process only exists once that turn reaches the model, so `/btw` waits for it (up to 30 seconds) instead of falling back to being queued. If no Claude Code process turns up in that window, because the running turn belongs to another provider, the question is answered when the turn ends.
 - One aside per conversation at a time. A second `/btw` while one is in flight is asked once the turn ends; a toast says so.
-- The `/btw` pair in the transcript reports 0 tokens and $0. The control response has no usage fields, so aside usage is not in opencode's counters; this does not mean the request is free.
+- An aside costs nothing in opencode's counters: a `/btw` pair reports 0 tokens and $0, and a block written into a running turn adds nothing to that turn's usage. The control response has no usage fields, so aside usage is not counted anywhere; this does not mean the request is free.
+- An aside written into a turn is marked, and the plugin strips it again if the conversation ever has to be replayed into a fresh Claude Code process. It was never Claude's own output.
 - A request times out after two minutes. Abort and timeout cancel that side request without killing the main session. If the running turn is still not over after 30 minutes, the plugin gives up on that `/btw` with a toast; ask again once the turn ends.
 - A bare `/btw` shows the usage text as a toast and adds nothing to the conversation.
 
