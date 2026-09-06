@@ -47,6 +47,24 @@ export interface ActiveProcess {
   unattendedLines?: string[]
   /** Lines evicted from `unattendedLines` because the cap was hit. */
   unattendedDropped?: number
+  /**
+   * opencode session this process last served, tagged by doStream each turn.
+   * `/btw` runs from a command hook that only knows the session id, so this is
+   * how it finds the process to ask (see `findActiveProcessBySessionId`).
+   */
+  opencodeSessionID?: string
+  /** The opencode model routed to this process, for prompting a btw child session. */
+  opencodeModel?: { providerID: string; modelID: string }
+}
+
+/** Most recently used process serving an opencode session id, if any. */
+export function findActiveProcessBySessionId(sessionID: string): ActiveProcess | undefined {
+  let found: ActiveProcess | undefined
+  // Map order is LRU (see `touch`), so the last match is the freshest.
+  for (const ap of activeProcesses.values()) {
+    if (ap.opencodeSessionID === sessionID) found = ap
+  }
+  return found
 }
 
 // A child normally only speaks while a doStream turn is listening. The one

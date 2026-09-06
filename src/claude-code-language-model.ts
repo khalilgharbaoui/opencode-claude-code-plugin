@@ -18,7 +18,8 @@ import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mappin
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
-import { parseSideQuestion, requestSideQuestion, isSideQuestionPending, SIDE_QUESTION_USAGE } from "./side-question.js"
+import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE } from "./side-question.js"
+import { resolveAsideParent, showBtwAnswerToast } from "./btw-command.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -34,6 +35,7 @@ import {
 } from "./runtime-status.js"
 import {
   getActiveProcess,
+  findActiveProcessBySessionId,
   setActiveProcess,
   spawnClaudeProcess,
   buildCliArgs,
@@ -2124,24 +2126,39 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
 
+    // Tagged onto the process each turn so the /btw command hook, which only
+    // knows the opencode session id, can find it (btw-command.ts).
+    const opencodeModelRef = { providerID: this.config.provider, modelID: this.modelId }
+
     const aside = !compactionMode && scope !== "no-tools" ? parseSideQuestion(options.prompt) : null
     if (aside) {
-      const active = getActiveProcess(sk)
+      // A btw child session (opened by the command hook) has no process of its
+      // own: the aside goes to the PARENT conversation's live process, which
+      // Claude Code answers concurrently with whatever that process is doing.
+      // Earlier exchanges in the child ride along as `history` so follow-ups
+      // work. A raw /btw in an ordinary session still asks that session's own
+      // process, which is what non-hook clients get.
+      const parentSessionID = await resolveAsideParent(affinity)
+      const active = parentSessionID ? findActiveProcessBySessionId(parentSessionID) : getActiveProcess(sk)
+      const history = parentSessionID ? collectSideQuestionHistory(options.prompt) : []
       const stream = new ReadableStream<LanguageModelV3StreamPart>({
         async start(controller) {
           controller.enqueue({ type: "stream-start", warnings })
           try {
             if (aside.question && !active) {
-              throw new Error("/btw needs an existing Claude Code session. Send a normal message with this model first.")
+              throw new Error(parentSessionID
+                ? "/btw needs a live Claude Code session in the parent conversation. Send a normal message there first."
+                : "/btw needs an existing Claude Code session. Send a normal message with this model first.")
             }
             const answer = aside.question && active
               ? await requestSideQuestion(active, aside.question, {
                   cliVersion: await detectCliVersion(cliPath),
                   interactive: useInteractive,
-                  busy: getPendingProxyCalls(sk).length > 0 || !!active.pendingProxyCompletions?.size,
                   abortSignal: options.abortSignal,
+                  ...(history.length ? { history } : {}),
                 })
               : { response: SIDE_QUESTION_USAGE, synthetic: true }
+            if (parentSessionID && !answer.synthetic) showBtwAnswerToast(answer.response)
             const id = generateId()
             controller.enqueue({ type: "text-start", id })
             controller.enqueue({ type: "text-delta", id, delta: answer.response })
@@ -2160,10 +2177,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         },
       })
       return { stream, request: { body: { text: aside.question } } }
-    }
-    const existing = getActiveProcess(sk)
-    if (existing && isSideQuestionPending(existing)) {
-      throw new Error("Wait for /btw to finish before sending another message.")
     }
 
     if (scope === "no-tools" && !compactionMode) {
@@ -4059,6 +4072,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
         }
 
+        if (activeProcess && !compactionMode) {
+          activeProcess.opencodeSessionID = affinity
+          activeProcess.opencodeModel = opencodeModelRef
+        }
         lineEmitter.on("line", lineHandler)
         lineEmitter.on("close", closeHandler)
 

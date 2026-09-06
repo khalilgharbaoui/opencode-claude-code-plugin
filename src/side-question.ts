@@ -13,11 +13,17 @@ export interface SideQuestionResult {
 export interface SideQuestionOptions {
   cliVersion: CliVersion | null
   interactive?: boolean
-  busy?: boolean
   abortSignal?: AbortSignal
   timeoutMs?: number
   history?: readonly { question: string; response: string }[]
 }
+
+export interface SideQuestionExchange {
+  question: string
+  response: string
+}
+
+const MAX_HISTORY_EXCHANGES = 20
 
 export const SIDE_QUESTION_USAGE =
   "Usage: /btw <question>. Ask a side question about the current conversation without adding it to the main context."
@@ -67,6 +73,39 @@ export function parseSideQuestion(
   return latest?.role === "user" ? parseSideQuestionContent(latest.content) : null
 }
 
+function assistantText(content: unknown): string {
+  if (typeof content === "string") return content.trim()
+  if (!Array.isArray(content)) return ""
+  const parts: string[] = []
+  for (const part of content) {
+    if (isRecord(part) && part.type === "text" && typeof part.text === "string") parts.push(part.text)
+  }
+  return parts.join("\n").trim()
+}
+
+/**
+ * Earlier `/btw` exchanges in a btw child session, oldest first, for the
+ * control request's `history` so follow-ups can refer to previous asides.
+ * The final user message is the current question and is left out.
+ */
+export function collectSideQuestionHistory(
+  prompt: readonly { role: string; content: unknown }[],
+): SideQuestionExchange[] {
+  const history: SideQuestionExchange[] = []
+  for (let index = 0; index < prompt.length - 1; index++) {
+    const message = prompt[index]
+    if (message.role !== "user") continue
+    const aside = parseSideQuestionContent(message.content)
+    if (!aside?.question) continue
+    const reply = prompt[index + 1]
+    if (reply.role !== "assistant") continue
+    const response = assistantText(reply.content)
+    if (!response || response === SIDE_QUESTION_USAGE) continue
+    history.push({ question: aside.question, response })
+  }
+  return history.slice(-MAX_HISTORY_EXCHANGES)
+}
+
 export function isSideQuestionPending(activeProcess: SideQuestionProcess): boolean {
   return pendingProcesses.has(activeProcess.proc)
 }
@@ -93,7 +132,14 @@ export function dispatchSideQuestionResponse(
   return activeProcess.lineEmitter.emit(`side-question:${response.request_id}`, response)
 }
 
-/** Uses an existing idle headless process, never a user envelope or a new spawn. */
+/**
+ * Uses an existing headless process, never a user envelope or a new spawn.
+ * The process may be mid-turn: Claude Code answers `side_question` on a
+ * separate advisor call while the main loop keeps running (measured live on
+ * 2.1.258 with the turn blocked on a held MCP tool). Only one aside per
+ * process is in flight at a time; responses are matched by request id ahead
+ * of the normal stdout routing, so a streaming turn never sees them.
+ */
 export async function requestSideQuestion(
   activeProcess: SideQuestionProcess,
   question: string,
@@ -109,8 +155,8 @@ export async function requestSideQuestion(
   if (!cliSupportsSideQuestion(options.cliVersion)) {
     throw new Error("/btw requires Claude Code CLI 2.1.258 or newer (the oldest verified version).")
   }
-  if (options.busy || lineEmitter.listenerCount("line") > 0 || pendingProcesses.has(proc)) {
-    throw new Error("/btw requires an idle Claude Code session. Wait for the current turn to finish.")
+  if (pendingProcesses.has(proc)) {
+    throw new Error("Wait for the current /btw to finish before asking another.")
   }
   const stdin = proc.stdin
   if (proc.killed || proc.exitCode != null || proc.signalCode != null ||

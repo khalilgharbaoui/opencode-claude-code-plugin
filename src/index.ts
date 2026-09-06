@@ -26,6 +26,8 @@ import {
 } from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { configureLogger, log } from "./logger.js"
+import { handleBtwCommand, type BtwSdkClient } from "./btw-command.js"
+import { getOpencodeClient } from "./runtime-status.js"
 import {
   getOpencodeProjectDirectory,
   isUsableDirectory,
@@ -72,13 +74,22 @@ export const DEFAULT_PROXY_TOOL_NAMES = [
   "Task",
 ]
 
-export function registerSideQuestionCommand(config: OpenCodeConfig): void {
+/**
+ * Registers `/btw` unless the user defined their own. Returns whether the
+ * registration is ours: the command hook only intercepts `btw` in that case,
+ * so a user-defined command keeps opencode's normal behaviour end to end.
+ */
+export function registerSideQuestionCommand(config: OpenCodeConfig): boolean {
   config.command ??= {}
-  config.command.btw ??= {
+  if (config.command.btw) return false
+  config.command.btw = {
     template: "/btw $ARGUMENTS",
     description: "Ask a side question in the live Claude Code session without changing its context",
   }
+  return true
 }
+
+let ownsSideQuestionCommand = false
 
 // One-time heads-up: an API key in the environment makes Claude Code bill
 // pay-as-you-go (Console) instead of the logged-in Pro/Max subscription, which
@@ -455,7 +466,7 @@ const server: OpenCodePlugin = async (input) => {
 
   return {
     config: async (config) => {
-      registerSideQuestionCommand(config)
+      if (registerSideQuestionCommand(config)) ownsSideQuestionCommand = true
       config.provider ??= {}
 
       await buildAgentRegistry(config)
@@ -495,6 +506,13 @@ const server: OpenCodePlugin = async (input) => {
     // model can distinguish /compact (and title) calls from normal turns.
     // Without this, every no-tools call looks like a title request and
     // gets short-circuited to a synthetic stub.
+    // /btw runs from here, not from the queued prompt: the hook fires the
+    // moment the command is typed, busy or not, and throws after dispatching
+    // the aside to a child session so nothing lands in this conversation.
+    "command.execute.before": async (input) => {
+      if (input.command !== "btw" || !ownsSideQuestionCommand) return
+      await handleBtwCommand(getOpencodeClient() as BtwSdkClient | null, input)
+    },
     "chat.params": async (input, output) => {
       const providerID = input.model?.providerID ?? input.provider?.info?.id
       // The hook fires for every provider opencode is configured with, not

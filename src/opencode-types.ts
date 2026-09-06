@@ -148,6 +148,14 @@ export type OpenCodeHooks = {
     input: OpenCodeChatParamsInput,
     output: OpenCodeChatParamsOutput,
   ) => Promise<void>
+  // Fires as soon as a slash command is submitted, even while the session is
+  // busy; the resulting prompt is what gets queued, not the hook. Throwing
+  // drops that prompt (opencode answers the command route with a 500 the
+  // TUI ignores). Used for /btw.
+  "command.execute.before"?: (
+    input: { command: string; sessionID: string; arguments: string },
+    output: { parts: unknown[] },
+  ) => Promise<void>
 }
 
 export type OpenCodePlugin = (input: unknown, options?: Record<string, unknown>) => Promise<OpenCodeHooks>

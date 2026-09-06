@@ -28,6 +28,14 @@ export function setOpencodeClient(client: unknown): void {
 }
 
 /**
+ * The captured SDK client, untyped: callers narrow to the surface they use
+ * (this module's `OpencodeClient` only mirrors the MCP/tool routes).
+ */
+export function getOpencodeClient(): unknown {
+  return opencodeClient
+}
+
+/**
  * Captured opencode project directory from `PluginInput.directory` (with
  * `worktree` as secondary signal). Used as a *fallback* at Claude CLI
  * spawn time only when `process.cwd()` is unusable (macOS GUI launches

@@ -19,6 +19,7 @@ import {
   sessionKey,
 } from "./src/session-manager.js"
 import {
+  collectSideQuestionHistory,
   dispatchSideQuestionResponse,
   isSideQuestionPending,
   parseSideQuestion,
@@ -329,22 +330,53 @@ test("process/stdout close and errors reject without cancelling a dead process",
   }
 })
 
-test("busy streams and simultaneous side questions are refused", async () => {
+test("a running main turn does not block /btw; only a simultaneous side question is refused", async () => {
   const fake = fakeProcess()
+  // A streaming turn keeps a `line` listener attached. Claude Code answers a
+  // side question concurrently with the turn, so the request goes out anyway.
   const onLine = (): void => {}
   fake.activeProcess.lineEmitter.on("line", onLine)
-  await assert.rejects(requestSideQuestion(fake.activeProcess, "ping", options), /idle Claude Code/)
-  assert.equal(fake.activeProcess.lineEmitter.listenerCount("line"), 1)
-  assert.equal(fake.writes.length, 0)
-  fake.activeProcess.lineEmitter.off("line", onLine)
-  await assert.rejects(requestSideQuestion(fake.activeProcess, "ping", { ...options, busy: true }), /idle Claude Code/)
-
-  const pending = requestSideQuestion(fake.activeProcess, "ping", options)
-  await assert.rejects(requestSideQuestion(fake.activeProcess, "second", options), /idle Claude Code/)
+  const during = requestSideQuestion(fake.activeProcess, "ping", options)
   assert.equal(fake.writes.length, 1)
-  fake.answer()
-  await pending
+  assert.equal(fake.writes[0].type, "control_request")
+
+  await assert.rejects(requestSideQuestion(fake.activeProcess, "second", options), /current \/btw/)
+  assert.equal(fake.writes.length, 1)
+  assert.equal(fake.answer(), true, "the response must be routed by request id, not to the turn's listener")
+  assert.equal((await during).response, "pong")
+  assert.equal(fake.activeProcess.lineEmitter.listenerCount("line"), 1, "the turn's listener is untouched")
+  fake.activeProcess.lineEmitter.off("line", onLine)
   fake.assertClean()
+})
+
+test("collectSideQuestionHistory pairs earlier /btw questions with their answers and drops the current one", () => {
+  const reminder = "<system-reminder>\nplan mode\n</system-reminder>"
+  const prompt = [
+    { role: "user", content: [{ type: "text", text: "normal turn" }] },
+    { role: "assistant", content: [{ type: "text", text: "normal answer" }] },
+    { role: "user", content: [{ type: "text", text: "/btw first?" }, { type: "text", text: reminder }] },
+    { role: "assistant", content: [{ type: "text", text: "one" }, { type: "text", text: "more" }] },
+    { role: "user", content: "/btw" },
+    { role: "assistant", content: SIDE_QUESTION_USAGE },
+    { role: "user", content: "/btw unanswered?" },
+    { role: "user", content: "/btw second?" },
+    { role: "assistant", content: "two" },
+    { role: "user", content: [{ type: "text", text: "/btw current?" }] },
+  ]
+  assert.deepEqual(collectSideQuestionHistory(prompt), [
+    { question: "first?", response: "one\nmore" },
+    { question: "second?", response: "two" },
+  ])
+  assert.deepEqual(collectSideQuestionHistory([{ role: "user", content: "/btw only?" }]), [])
+  const many = Array.from({ length: 25 }, (_, index) => [
+    { role: "user", content: `/btw q${index}` },
+    { role: "assistant", content: `a${index}` },
+  ]).flat()
+  many.push({ role: "user", content: "/btw now?" })
+  const capped = collectSideQuestionHistory(many)
+  assert.equal(capped.length, 20)
+  assert.equal(capped[0].question, "q5")
+  assert.equal(capped[19].question, "q24")
 })
 
 test("interactive, old/unknown CLI, dead processes, and invalid deadlines never receive a request", async () => {
