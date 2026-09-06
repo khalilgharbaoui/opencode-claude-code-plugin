@@ -5,7 +5,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { shouldAutoContinueIncompleteTurn } from "./src/claude-code-language-model.js"
+import {
+  shouldAutoContinueIncompleteTurn,
+  autoContinueEnabledFor,
+} from "./src/claude-code-language-model.js"
 
 function state(overrides: Record<string, unknown> = {}) {
   return {
@@ -685,4 +688,26 @@ test("sawAskUserQuestion latch blocks auto-continue even with non-question trail
     }),
   )
   assert.deepEqual(result, { continue: false, reason: "question" })
+})
+
+test("a compaction turn never continues, not even on truncation", () => {
+  // doStream builds the state with `enabled: false` for compaction turns.
+  // AUTO_CONTINUE_PROMPT says "Do not summarize; keep working", so nudging a
+  // /compact turn would append non-summary text to the session summary.
+  const result = shouldAutoContinueIncompleteTurn(
+    { ...state(), enabled: false },
+    snap({ stopReason: "max_tokens" }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "disabled" })
+})
+
+test("doStream disables auto-continue for compaction turns", () => {
+  // The wiring doStream uses. A compaction turn is off regardless of config;
+  // every other turn passes the configured value through untouched.
+  assert.equal(autoContinueEnabledFor(true, "smart"), false)
+  assert.equal(autoContinueEnabledFor(true, true), false)
+  assert.equal(autoContinueEnabledFor(false, "smart"), "smart")
+  assert.equal(autoContinueEnabledFor(false, true), true)
+  assert.equal(autoContinueEnabledFor(false, false), false)
+  assert.equal(autoContinueEnabledFor(false, undefined), undefined)
 })

@@ -292,6 +292,23 @@ interface AutoContinueSnapshot {
 }
 
 /**
+ * A compaction turn must never be nudged to continue. `AUTO_CONTINUE_PROMPT`
+ * says "Do not summarize; keep working", the exact inverse of what `/compact`
+ * is for, and continuation reopens the same stream rather than closing it, so
+ * the non-summary text would land inside what opencode stores as the session
+ * summary. This was unreachable while every `stop_reason` ended the turn;
+ * truncation-continue made a summary that hits the output cap reach it.
+ * Exported so the wiring is testable, since the state itself is built inline
+ * in `doStream`.
+ */
+export function autoContinueEnabledFor(
+  compactionMode: boolean,
+  configured: boolean | "smart" | undefined,
+): boolean | "smart" | undefined {
+  return compactionMode ? false : configured
+}
+
+/**
  * Stop reasons that mean "cut off", not "done". Anthropic sends `max_tokens`;
  * `max_output_tokens` is accepted as a defensive alias so a rename upstream
  * degrades to today's behaviour rather than silently mis-reading a real stop.
@@ -2864,7 +2881,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // top-level `assistant` message, whichever arrives first.
           let lastStopReason: string | null = null
           const autoContinueState: AutoContinueState = {
-            enabled: self.config.autoContinueIncompleteTurns,
+            enabled: autoContinueEnabledFor(
+              compactionMode,
+              self.config.autoContinueIncompleteTurns,
+            ),
             attempts: 0,
             startedAt: Date.now(),
             noProgressCount: 0,
