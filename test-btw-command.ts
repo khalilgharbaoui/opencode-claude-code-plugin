@@ -298,10 +298,11 @@ test("the receipt quotes the question back, marks it sent, and is dropped like t
     "the bar runs down the receipt too",
   )
   assert.doesNotMatch(ask, /answering|asking/i, "the note stays true once the answer lands below it")
+  assert.match(ask, /^▌ \*sent to Claude on the side\*$/m, "the note has its own line, so the question is not crowded")
 
   const long = formatInlineAsideAsk("q".repeat(400))
-  assert.match(long, /q\.\.\. \*sent to Claude on the side\*$/m, "a long aside is elided so the receipt stays glanceable")
-  assert.equal(long.includes("q".repeat(300)), false, "the elision actually drops text")
+  assert.equal(long.includes("q".repeat(400)), true, "the receipt is the only readback of the question, so it is never cut")
+  assert.doesNotMatch(long, /\.\.\./, "nothing is elided")
 
   const kept = filterSideQuestionHistory([
     user("Start."),
@@ -620,7 +621,7 @@ test("an answer that arrives while a turn is streaming is written into that turn
     assert.match(turn.answer, /▌ \*\*btw:\*\* What did i say\?/)
     assert.match(
       turn.answer,
-      /▌ \*\*btw:\*\* What did i say\? \*sent to Claude on the side\*/,
+      /▌ \*\*btw:\*\* What did i say\?\n▌ \*sent to Claude on the side\*/,
       "the receipt names the question it took, since no /btw message is ever created to show it",
     )
     assert.match(turn.answer, /Aside 1: What did i say\?/)

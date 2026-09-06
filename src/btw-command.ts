@@ -250,28 +250,23 @@ export function formatInlineAside(question: string, answer: string): string {
 export const INLINE_ASIDE_SENT_NOTE = "*sent to Claude on the side*"
 
 /**
- * How much of the question the receipt quotes back. A receipt is read at a
- * glance beside the model's own streaming output, so a long aside is elided
- * here; the answer block below still carries it in full.
- */
-const RECEIPT_QUESTION_MAX = 240
-
-/**
  * A receipt written into the running turn the moment the question goes out, so
  * a `/btw` typed mid-turn shows as taken instead of looking swallowed until
  * the answer arrives.
  *
- * It quotes the question back, which is what the operator asked for: the
- * prompt box clears on submit and no `/btw` message is ever created, so
- * without it nothing on screen says what was sent. The answer block repeats
- * the question rather than dropping it, because the model keeps streaming its
- * own text between the two and a headerless answer arriving after that reads
- * as orphaned.
+ * It quotes the question back **in full**, which is what the operator asked
+ * for: the prompt box clears on submit and no `/btw` message is ever created,
+ * so this is the only place the question can be read back. It was briefly
+ * capped at 240 characters and that was wrong for the same reason, since a
+ * long aside would then be unreadable everywhere. The note goes on its own bar
+ * line so the question is never crowded by it.
+ *
+ * The answer block repeats the question rather than dropping it, because the
+ * model keeps streaming its own text between the two and a headerless answer
+ * arriving after that reads as orphaned.
  */
 export function formatInlineAsideAsk(question: string): string {
-  const asked = oneLine(question)
-  const shown = asked.length > RECEIPT_QUESTION_MAX ? `${asked.slice(0, RECEIPT_QUESTION_MAX).trimEnd()}...` : asked
-  return `\n${INLINE_ASIDE_MARKER} ${shown} ${INLINE_ASIDE_SENT_NOTE}\n`
+  return `\n${asideHeader(question)}\n▌ ${INLINE_ASIDE_SENT_NOTE}\n`
 }
 
 /**
