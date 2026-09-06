@@ -106,6 +106,73 @@ test("parses only a complete latest all-text /btw user message", () => {
   }
 })
 
+test("drops opencode's appended system-reminder parts from the question", () => {
+  // Shape measured live on opencode 1.18.29: the typed text and the reminder
+  // arrive as two separate text parts on the same user message.
+  const reminder =
+    "<system-reminder>\n# Plan Mode - System Reminder\n\nCRITICAL: Plan mode ACTIVE" +
+    " - you are in READ-ONLY phase.\n</system-reminder>"
+  const asked = parseSideQuestion([{
+    role: "user",
+    content: [
+      { type: "text", text: "/btw What fruit did I ask for? One word.\n\n" },
+      { type: "text", text: reminder },
+    ],
+  }])
+  assert.deepEqual(asked, { question: "What fruit did I ask for? One word." })
+
+  // A bare /btw must still look empty so the usage text renders.
+  assert.deepEqual(
+    parseSideQuestion([{
+      role: "user",
+      content: [{ type: "text", text: "/btw\n\n" }, { type: "text", text: reminder }],
+    }]),
+    { question: "" },
+  )
+
+  // More than one appended block, and surrounding whitespace, are both handled.
+  assert.deepEqual(
+    parseSideQuestion([{
+      role: "user",
+      content: [
+        { type: "text", text: "/btw why?" },
+        { type: "text", text: `\n${reminder}\n` },
+        { type: "text", text: reminder },
+      ],
+    }]),
+    { question: "why?" },
+  )
+
+  // A block is removed wherever it sits, including inside a part that also
+  // carries real text, which is kept.
+  assert.deepEqual(
+    parseSideQuestion([{
+      role: "user",
+      content: [{ type: "text", text: `/btw why?\n${reminder}\nand also this` }],
+    }]),
+    { question: "why?\n\nand also this" },
+  )
+
+  // Measured live: opencode-dcp appends its own marker after the closing tag,
+  // so an end-anchored check would leave the whole reminder in the question.
+  assert.deepEqual(
+    parseSideQuestion([{
+      role: "user",
+      content: [
+        { type: "text", text: "/btw why?" },
+        { type: "text", text: `${reminder}\n\n<dcp-message-id>m0003</dcp-message-id>` },
+      ],
+    }]),
+    { question: "why?\n\n\n<dcp-message-id>m0003</dcp-message-id>" },
+  )
+
+  // Reminder-only content never becomes a side question of its own.
+  assert.equal(
+    parseSideQuestion([{ role: "user", content: [{ type: "text", text: reminder }] }]),
+    null,
+  )
+})
+
 test("gates the protocol at the oldest measured CLI version", () => {
   assert.equal(cliSupportsSideQuestion(null), false)
   assert.equal(cliSupportsSideQuestion({ ...cliVersion, patch: 257 }), false)

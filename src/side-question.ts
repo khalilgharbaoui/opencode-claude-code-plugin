@@ -28,6 +28,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
+/**
+ * opencode appends its own `<system-reminder>` blocks to the user message, as
+ * extra text parts on the same message. They instruct a normal turn and are not
+ * part of what the operator typed after `/btw`, so they must not travel with the
+ * aside: a plan-mode reminder alone is over 1.5 KB, and measured live it both
+ * steered the answer and kept a bare `/btw` from ever looking empty.
+ *
+ * Blocks are removed wherever they sit rather than by matching a whole part,
+ * because a harness may append its own trailing metadata after one (opencode-dcp
+ * adds a `<dcp-message-id>` marker), which an end-anchored check would miss.
+ */
+const SYSTEM_REMINDER_BLOCK = /<system-reminder>[\s\S]*?<\/system-reminder>/g
+
 export function parseSideQuestionContent(content: unknown): { question: string } | null {
   let text: string
   if (typeof content === "string") {
@@ -42,7 +55,7 @@ export function parseSideQuestionContent(content: unknown): { question: string }
   } else {
     return null
   }
-  const match = /^\/btw(?:\s+([\s\S]*))?$/.exec(text.trim())
+  const match = /^\/btw(?:\s+([\s\S]*))?$/.exec(text.replace(SYSTEM_REMINDER_BLOCK, "").trim())
   return match ? { question: (match[1] ?? "").trim() } : null
 }
 
