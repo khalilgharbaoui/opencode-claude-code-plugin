@@ -32,8 +32,12 @@ export type OpenCodeModel = {
     }
     // opencode widened this between 1.18.5 and 1.18.18: `reasoning_details`
     // became `reasoning_text`, and bare strings are now accepted. This is a
-    // hand-written mirror of opencode's schema, so it drifts silently —
-    // re-check it when auditing a new opencode version.
+    // hand-written mirror of opencode's schema, so it drifts silently:
+    // re-check it when auditing a new opencode version. Audited clean at
+    // 1.18.29 on 2026-09-07. Note the type below is deliberately a BLEND of
+    // two upstream schemas (v1 config for `release_date` and the flat
+    // provider entry, v2 runtime for nested `capabilities`/`interleaved`),
+    // so do not "correct" it by copying either one wholesale. See AGENTS.md.
     interleaved:
       | boolean
       | string
