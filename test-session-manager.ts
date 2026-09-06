@@ -11,6 +11,11 @@ import {
   getActiveProcess,
   getClaudeSessionId,
   scheduleIdleProcessEviction,
+  noteTurnStarted,
+  noteTurnLine,
+  isTurnInFlight,
+  awaitTurnIdle,
+  interruptTurn,
   setActiveProcess,
   setClaudeSessionId,
   spawnClaudeProcess,
@@ -235,4 +240,67 @@ test("timeouts above Node's maximum delay do not evict immediately", async () =>
   assert.equal(kills, 0)
   assert.equal(getActiveProcess(key), process)
   deleteActiveProcess(key)
+})
+
+// Turn lifecycle and abort interrupt (adapted from @broskees' 68ed142).
+function fakeTurnProcess(): { ap: ActiveProcess; writes: string[] } {
+  const writes: string[] = []
+  const ap: ActiveProcess = {
+    proc: {
+      stdin: {
+        writable: true,
+        write(chunk: string) {
+          writes.push(chunk)
+          return true
+        },
+      },
+    } as unknown as ActiveProcess["proc"],
+    lineEmitter: new EventEmitter(),
+  }
+  return { ap, writes }
+}
+
+test("a turn is in flight from the envelope write until the terminal result line", async () => {
+  const { ap } = fakeTurnProcess()
+  assert.equal(isTurnInFlight(ap), false)
+  noteTurnStarted(ap)
+  assert.equal(isTurnInFlight(ap), true)
+  noteTurnLine(ap, JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "result" }] } }))
+  assert.equal(isTurnInFlight(ap), true, "a content line that merely mentions result does not settle")
+  noteTurnLine(ap, "not json \"result\"")
+  assert.equal(isTurnInFlight(ap), true)
+  const idle = awaitTurnIdle(ap, 1_000)
+  noteTurnLine(ap, JSON.stringify({ type: "result", subtype: "success" }))
+  assert.equal(isTurnInFlight(ap), false)
+  assert.equal(await idle, true)
+})
+
+test("interruptTurn writes an interrupt control request and waits for the result", async () => {
+  const { ap, writes } = fakeTurnProcess()
+  assert.equal(await interruptTurn(ap), true, "nothing in flight is already idle, nothing written")
+  assert.deepEqual(writes, [])
+
+  noteTurnStarted(ap)
+  const pending = interruptTurn(ap, 1_000)
+  assert.equal(writes.length, 1)
+  const request = JSON.parse(writes[0]!)
+  assert.equal(request.type, "control_request")
+  assert.equal(request.request.subtype, "interrupt")
+  assert.ok(request.request_id)
+  noteTurnLine(ap, JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true }))
+  assert.equal(await pending, true)
+})
+
+test("interruptTurn reports false when the CLI never answers", async () => {
+  const { ap } = fakeTurnProcess()
+  noteTurnStarted(ap)
+  assert.equal(await interruptTurn(ap, 20), false)
+  assert.equal(isTurnInFlight(ap), true, "still in flight; the next turn's guard will retry")
+})
+
+test("the interactive transport is never marked in flight", () => {
+  const { ap } = fakeTurnProcess()
+  ap.asideTransport = { cliPath: "claude", interactive: true }
+  noteTurnStarted(ap)
+  assert.equal(isTurnInFlight(ap), false)
 })

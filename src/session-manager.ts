@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { createInterface } from "node:readline"
+import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { unlink } from "node:fs/promises"
 import { log } from "./logger.js"
@@ -55,6 +56,13 @@ export interface ActiveProcess {
   opencodeSessionID?: string
   /** What the /btw command hook needs to send a side question to this process early. */
   asideTransport?: { cliPath: string; interactive: boolean }
+  /**
+   * True from a stdin write that asks the CLI for work until its terminal
+   * `result` line, whether or not a turn is still listening. Set by
+   * `noteTurnStarted`, cleared by `noteTurnLine` (see `interruptTurn`).
+   */
+  turnInFlight?: boolean
+  turnIdleWaiters?: Array<() => void>
 }
 
 /** Most recently used process serving an opencode session id, if any. */
@@ -198,6 +206,105 @@ function evictIfNeeded(): void {
     log.info("evicting LRU claude process", { sessionKey: oldestKey })
     deleteActiveProcess(oldestKey)
   }
+}
+
+// Turn lifecycle and interrupt (from @broskees' 68ed142, adapted).
+//
+// The Claude CLI runs one turn per process. Closing the opencode-side stream
+// tells it nothing: before this, an abort only detached our listeners and the
+// CLI ran the abandoned turn to completion (Joseph Roberts measured ~7,500
+// extra characters generated after abort on a haiku probe), kept billing, kept
+// running tools, and its late output landed in whatever turn came next, whose
+// own stream was then closed early by the stale `result`. The CLI answers a
+// stream-json `control_request` of subtype `interrupt` by aborting the turn
+// and emitting a terminal `result`, normally within milliseconds.
+
+const TURN_INTERRUPT_TIMEOUT_MS = 5_000
+
+/** Cheap pre-filter before JSON.parse, since every CLI stdout line hits this. */
+function isTerminalResultLine(line: string): boolean {
+  if (!line.includes('"result"')) return false
+  try {
+    return (JSON.parse(line) as { type?: string }).type === "result"
+  } catch {
+    return false
+  }
+}
+
+function settleTurn(ap: ActiveProcess): void {
+  ap.turnInFlight = false
+  const waiters = ap.turnIdleWaiters ?? []
+  ap.turnIdleWaiters = []
+  for (const wake of waiters) wake()
+}
+
+/** Call immediately before any stdin write that asks the CLI to do work. */
+export function noteTurnStarted(ap: ActiveProcess): void {
+  // The interactive transport never reports through `noteTurnLine`, so a flag
+  // set there would never clear.
+  if (ap.asideTransport?.interactive) return
+  ap.turnInFlight = true
+}
+
+/**
+ * Feed every CLI stdout line here, independent of whichever turn currently
+ * owns the stream: a `result` that lands after its turn detached (the abort
+ * case) must still mark the CLI idle rather than leak into the next turn.
+ */
+export function noteTurnLine(ap: ActiveProcess, line: string): void {
+  if (!ap.turnInFlight) return
+  if (isTerminalResultLine(line)) settleTurn(ap)
+}
+
+export function isTurnInFlight(ap: ActiveProcess): boolean {
+  return ap.turnInFlight === true
+}
+
+/** Resolves true once the CLI is idle, false if it stayed busy past the timeout. */
+export function awaitTurnIdle(ap: ActiveProcess, timeoutMs: number): Promise<boolean> {
+  if (!ap.turnInFlight) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const wake = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    const timer = setTimeout(() => {
+      const waiters = ap.turnIdleWaiters ?? []
+      const at = waiters.indexOf(wake)
+      if (at >= 0) waiters.splice(at, 1)
+      resolve(false)
+    }, timeoutMs)
+    ;(ap.turnIdleWaiters ??= []).push(wake)
+  })
+}
+
+/** Ask the CLI to abandon the in-flight turn, and wait for it to say it did. */
+export function interruptTurn(
+  ap: ActiveProcess,
+  timeoutMs = TURN_INTERRUPT_TIMEOUT_MS,
+): Promise<boolean> {
+  if (!ap.turnInFlight) return Promise.resolve(true)
+  const stdin = ap.proc.stdin
+  if (ap.asideTransport?.interactive || !stdin || !stdin.writable) {
+    // A TUI stdin would type the JSON in as text. Wait the turn out instead.
+    log.notice("cannot interrupt this transport; waiting for the turn to end")
+    return awaitTurnIdle(ap, timeoutMs)
+  }
+  try {
+    stdin.write(
+      JSON.stringify({
+        type: "control_request",
+        request_id: randomUUID(),
+        request: { subtype: "interrupt" },
+      }) + "\n",
+    )
+  } catch (error) {
+    log.warn("failed to write interrupt control request", {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return Promise.resolve(false)
+  }
+  return awaitTurnIdle(ap, timeoutMs)
 }
 
 function cancelIdleProcessEviction(key: string): void {
@@ -419,6 +526,7 @@ export function spawnClaudeProcess(
   const rl = createInterface({ input: proc.stdout! })
   rl.on("line", (line: string) => {
     if (dispatchSideQuestionResponse(ap, line)) return
+    noteTurnLine(ap, line)
     if (lineEmitter.listenerCount("line") === 0) {
       bufferUnattendedLine(ap, line)
       return
@@ -426,6 +534,7 @@ export function spawnClaudeProcess(
     lineEmitter.emit("line", line)
   })
   rl.on("close", () => {
+    settleTurn(ap)
     lineEmitter.emit("close")
   })
   cancelIdleProcessEviction(sessionKey)

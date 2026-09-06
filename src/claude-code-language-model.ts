@@ -45,6 +45,9 @@ import {
   deleteActiveProcessAndWait,
   respawnActiveProcess,
   scheduleIdleProcessEviction,
+  noteTurnStarted,
+  isTurnInFlight,
+  interruptTurn,
   takeUnattendedLines,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
@@ -2698,6 +2701,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
           }
 
+          // The CLI serves one turn at a time. If the previous one is still
+          // running (the user aborted it, or it ended on our inactivity
+          // fallback rather than a real `result`), stop it before this turn
+          // attaches any listeners; otherwise its tail streams into us and its
+          // `result` closes us before our own answer arrives. Skipped for
+          // tool-result turns: there the CLI is deliberately parked inside a
+          // proxy MCP call waiting for the result we are about to deliver.
+          if (activeProcess && !hasMatchedPendingResults && isTurnInFlight(activeProcess)) {
+            log.warn("previous turn still in flight; interrupting it", { sk })
+            const idle = await interruptTurn(activeProcess)
+            if (!idle) {
+              log.warn("previous turn did not stop in time; this turn may see stale output", { sk })
+            }
+          }
+
           controller.enqueue({ type: "stream-start", warnings })
 
           let currentTextId: string | null = null
@@ -2861,7 +2879,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             lineEmitter.on("close", closeHandler)
             proc.on("error", procErrorHandler)
             try {
-              if (!deliverPendingCompletions(true)) proc.stdin?.write(watchdogMessage + "\n")
+              if (!deliverPendingCompletions(true)) {
+                noteTurnStarted(newAp)
+                proc.stdin?.write(watchdogMessage + "\n")
+              }
               log.debug("re-sent user message after respawn", {
                 textLength: watchdogMessage.length,
               })
@@ -3137,6 +3158,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             })
             turnCompleted = false
             resetAutoContinueWindow()
+            // The `result` just consumed marked the CLI idle; this puts it back to work.
+            if (activeProcess) noteTurnStarted(activeProcess)
             proc.stdin?.write(makeAutoContinueMessage() + "\n")
             return
           }
@@ -4163,6 +4186,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             autoContinueState.aborted = true
             if (turnCompleted || controllerClosed) return
 
+            // Stop the CLI's turn, not just our end of the stream: it would
+            // otherwise run the abandoned turn to completion, billing tokens
+            // and executing tools, with its late output landing in the next
+            // turn. The process itself stays alive for the next message.
+            if (activeProcess) {
+              void interruptTurn(activeProcess).then((idle) => {
+                log.info("interrupt sent for aborted turn", { sk, idle })
+              })
+            }
+
             if (!hasReceivedContent) {
               log.info(
                 "abort signal received before content, closing stream immediately",
@@ -4275,6 +4308,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         }
 
         // Send the user message for a fresh turn.
+        if (activeProcess) noteTurnStarted(activeProcess)
         proc.stdin?.write(userMsg + "\n")
         log.debug("sent user message", { textLength: userMsg.length })
         // Arm the start watchdog so a reused child that goes silent after
