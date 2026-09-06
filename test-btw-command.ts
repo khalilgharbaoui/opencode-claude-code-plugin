@@ -266,10 +266,16 @@ test("an aside sink belongs to the stream that registered it", () => {
 })
 
 test("an aside written into a turn is marked so a rebuilt transcript drops it", () => {
-  const block = formatInlineAside("  what   did i say?  ", "  You said pineapple.  ")
+  const block = formatInlineAside("  what   did i say?  ", "  You said pineapple.\n\nTwice.  ")
   assert.equal(block.trimStart().startsWith(INLINE_ASIDE_MARKER), true, "the marker leads the part")
   assert.match(block, /what did i say\?/)
   assert.match(block, /You said pineapple\./)
+  assert.deepEqual(
+    block.trim().split("\n").filter((line) => !line.startsWith(">")),
+    [],
+    "every line is quoted, so the rule runs down the whole block",
+  )
+  assert.match(block, /^> Twice\.$/m, "a blank line inside the answer does not end the quote")
   const kept = filterSideQuestionHistory([
     user("Start."),
     { role: "assistant", content: [{ type: "text", text: "Main answer" }, { type: "text", text: block }] },

@@ -210,8 +210,26 @@ export function clearPendingSideQuestionAnswers(): void {
  */
 export const INLINE_ASIDE_MARKER = "> **btw:**"
 
+/**
+ * Quotes every line, blank ones included. A bare blank line would close the
+ * quote and split the aside into two blocks, so the rule the TUI draws has to
+ * be carried by `>` on its own for those.
+ */
+function quoteEveryLine(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line.trim() === "" ? ">" : `> ${line}`))
+    .join("\n")
+}
+
+/**
+ * The whole aside is one blockquote, answer included, so the TUI's quote rule
+ * runs down the full block rather than only the header. Its colour is the
+ * theme's `markdownBlockQuote`, which the plugin cannot set per block.
+ */
 export function formatInlineAside(question: string, answer: string): string {
-  return `\n${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}\n\n${answer.trim()}\n`
+  const header = `${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}`
+  return `\n${header}\n>\n${quoteEveryLine(answer.trim())}\n`
 }
 
 /**
