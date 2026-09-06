@@ -18,8 +18,8 @@ import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mappin
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
-import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE } from "./side-question.js"
-import { resolveAsideParent, showBtwAnswerToast } from "./btw-command.js"
+import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
+import { BTW_NO_SESSION_MESSAGE, takeSideQuestionAnswer } from "./btw-command.js"
 import { parseModelId } from "./models.js"
 import {
   QUESTION_TOOL_NAME,
@@ -35,7 +35,6 @@ import {
 } from "./runtime-status.js"
 import {
   getActiveProcess,
-  findActiveProcessBySessionId,
   setActiveProcess,
   spawnClaudeProcess,
   buildCliArgs,
@@ -2127,38 +2126,43 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
 
     // Tagged onto the process each turn so the /btw command hook, which only
-    // knows the opencode session id, can find it (btw-command.ts).
-    const opencodeModelRef = { providerID: this.config.provider, modelID: this.modelId }
+    // knows the opencode session id, can find it and ask it early
+    // (btw-command.ts).
+    const asideTransportRef = { cliPath, interactive: !!useInteractive }
 
     const aside = !compactionMode && scope !== "no-tools" ? parseSideQuestion(options.prompt) : null
     if (aside) {
-      // A btw child session (opened by the command hook) has no process of its
-      // own: the aside goes to the PARENT conversation's live process, which
-      // Claude Code answers concurrently with whatever that process is doing.
-      // Earlier exchanges in the child ride along as `history` so follow-ups
-      // work. A raw /btw in an ordinary session still asks that session's own
-      // process, which is what non-hook clients get.
-      const parentSessionID = await resolveAsideParent(affinity)
-      const active = parentSessionID ? findActiveProcessBySessionId(parentSessionID) : getActiveProcess(sk)
-      const history = parentSessionID ? collectSideQuestionHistory(options.prompt) : []
+      // `/btw` is an ordinary user message in this conversation, so opencode
+      // keeps the exchange, but it is answered over the CLI's side_question
+      // control channel, never as a turn. The command hook normally sent the
+      // question ahead, while the previous turn was still streaming, and its
+      // answer is taken here; otherwise the process is idle now and is asked
+      // directly. Earlier asides in this conversation ride along as history.
+      const active = getActiveProcess(sk)
+      const early = aside.question ? takeSideQuestionAnswer(affinity, aside.question) : undefined
+      const history = collectSideQuestionHistory(options.prompt)
+      const answerAside = async (): Promise<SideQuestionResult> => {
+        if (!aside.question) return { response: SIDE_QUESTION_USAGE, synthetic: true }
+        if (early) {
+          try {
+            return await early
+          } catch (error) {
+            log.info("btw: early answer failed, asking the idle process", { error: String(error) })
+          }
+        }
+        if (!active) return { response: BTW_NO_SESSION_MESSAGE, synthetic: true }
+        return requestSideQuestion(active, aside.question, {
+          cliVersion: await detectCliVersion(cliPath),
+          interactive: useInteractive,
+          abortSignal: options.abortSignal,
+          ...(history.length ? { history } : {}),
+        })
+      }
       const stream = new ReadableStream<LanguageModelV3StreamPart>({
         async start(controller) {
           controller.enqueue({ type: "stream-start", warnings })
           try {
-            if (aside.question && !active) {
-              throw new Error(parentSessionID
-                ? "/btw needs a live Claude Code session in the parent conversation. Send a normal message there first."
-                : "/btw needs an existing Claude Code session. Send a normal message with this model first.")
-            }
-            const answer = aside.question && active
-              ? await requestSideQuestion(active, aside.question, {
-                  cliVersion: await detectCliVersion(cliPath),
-                  interactive: useInteractive,
-                  abortSignal: options.abortSignal,
-                  ...(history.length ? { history } : {}),
-                })
-              : { response: SIDE_QUESTION_USAGE, synthetic: true }
-            if (parentSessionID && !answer.synthetic) showBtwAnswerToast(answer.response)
+            const answer = await answerAside()
             const id = generateId()
             controller.enqueue({ type: "text-start", id })
             controller.enqueue({ type: "text-delta", id, delta: answer.response })
@@ -4074,7 +4078,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         if (activeProcess && !compactionMode) {
           activeProcess.opencodeSessionID = affinity
-          activeProcess.opencodeModel = opencodeModelRef
+          activeProcess.asideTransport = asideTransportRef
         }
         lineEmitter.on("line", lineHandler)
         lineEmitter.on("close", closeHandler)

@@ -84,7 +84,7 @@ function assistantText(content: unknown): string {
 }
 
 /**
- * Earlier `/btw` exchanges in a btw child session, oldest first, for the
+ * Earlier `/btw` exchanges in this conversation, oldest first, for the
  * control request's `history` so follow-ups can refer to previous asides.
  * The final user message is the current question and is left out.
  */

@@ -506,9 +506,10 @@ const server: OpenCodePlugin = async (input) => {
     // model can distinguish /compact (and title) calls from normal turns.
     // Without this, every no-tools call looks like a title request and
     // gets short-circuited to a synthetic stub.
-    // /btw runs from here, not from the queued prompt: the hook fires the
-    // moment the command is typed, busy or not, and throws after dispatching
-    // the aside to a child session so nothing lands in this conversation.
+    // /btw is asked from here, the moment the command is typed, busy or not.
+    // The message itself still goes through: opencode queues it behind the
+    // running turn and the aside branch in the language model then answers it
+    // from the early answer, so the exchange is kept in this conversation.
     "command.execute.before": async (input) => {
       if (input.command !== "btw" || !ownsSideQuestionCommand) return
       await handleBtwCommand(getOpencodeClient() as BtwSdkClient | null, input)

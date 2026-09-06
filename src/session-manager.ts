@@ -53,8 +53,8 @@ export interface ActiveProcess {
    * how it finds the process to ask (see `findActiveProcessBySessionId`).
    */
   opencodeSessionID?: string
-  /** The opencode model routed to this process, for prompting a btw child session. */
-  opencodeModel?: { providerID: string; modelID: string }
+  /** What the /btw command hook needs to send a side question to this process early. */
+  asideTransport?: { cliPath: string; interactive: boolean }
 }
 
 /** Most recently used process serving an opencode session id, if any. */

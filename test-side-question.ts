@@ -592,15 +592,12 @@ test("provider /btw uses native control response between normal turns on the sam
   }
 })
 
-test("provider /btw without a live session emits a friendly error without spawning", async () => {
+test("provider /btw without a live session answers with a readable explanation without spawning", async () => {
   const fake = createSideQuestionCli()
   try {
     const { parts, answer } = await fake.turn("/btw What changed?")
-    assert.equal(answer, "")
-    assert.deepEqual(parts.map((part) => part.type), ["stream-start", "error"])
-    const error = parts.find((part) => part.type === "error")!.error
-    assert.ok(error instanceof Error)
-    assert.match(error.message, /needs an existing Claude Code session.*Send a normal message/)
+    assert.match(answer, /needs a live Claude Code session.*Send a normal message/)
+    assert.deepEqual(parts.map((part) => part.type), ["stream-start", "text-start", "text-delta", "text-end", "finish"])
     assert.equal(getActiveProcess(fake.sk), undefined)
     assert.equal(getClaudeSessionId(fake.sk), undefined)
     assert.deepEqual(fake.events(), [])

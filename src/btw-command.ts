@@ -1,27 +1,41 @@
+import { detectCliVersion } from "./cli-version.js"
 import { log } from "./logger.js"
 import { getOpencodeClient } from "./runtime-status.js"
-import { findActiveProcessBySessionId } from "./session-manager.js"
-import { SIDE_QUESTION_USAGE } from "./side-question.js"
+import { findActiveProcessBySessionId, type ActiveProcess } from "./session-manager.js"
+import {
+  collectSideQuestionHistory,
+  isSideQuestionPending,
+  requestSideQuestion,
+  SIDE_QUESTION_USAGE,
+  type SideQuestionExchange,
+  type SideQuestionResult,
+} from "./side-question.js"
 
 /**
- * `/btw` as a concurrent aside.
+ * `/btw`: a side question that is answered while the main turn keeps running,
+ * and whose exchange is kept in the conversation where it was asked.
  *
  * opencode's TUI sends every slash command to the server the moment it is
  * typed, busy or not (`tui/component/prompt/index.tsx`), so the
- * `command.execute.before` hook fires immediately. Only the user message the
- * command would produce is held back ("Queued") until the running turn ends.
- * That hook is therefore the one place a side question can be answered while
- * the main lane is still working.
+ * `command.execute.before` hook fires immediately. The user message the
+ * command produces is what gets held back ("Queued") until the running turn
+ * ends, and opencode's loop then runs it as a step of its own: the loop only
+ * exits when the newest assistant message answers the newest user message
+ * (`session/prompt.ts`, `lastAssistant.parentID === lastUser.id`).
  *
- * The hook never lets `/btw` into the parent conversation. It creates (or
- * reuses) one child session per parent, sends the question there, and throws
- * so opencode drops the parent prompt. The child's own model turn is
- * intercepted by the aside branch in `claude-code-language-model.ts`, which
- * routes the question to the PARENT's live `claude` process as a
- * `side_question` control request. Claude Code answers those concurrently
- * with a running turn (measured on 2.1.258: answered 1.4 s into a 45 s tool
- * hold), from the parent's context, at zero opencode-visible cost, and the
- * question never enters the parent's transcript on either side.
+ * So the hook does two things and then lets the message through:
+ *   1. sends the question to the conversation's live `claude` process as a
+ *      `side_question` control request right away (Claude Code answers those
+ *      on a separate advisor call, concurrently with a running turn, from the
+ *      conversation's context), and remembers the pending answer per session;
+ *   2. when the turn was busy, shows the answer as a toast the moment it
+ *      arrives, since the transcript cannot show it until the turn ends.
+ * The queued `/btw` message then reaches the aside branch in
+ * `claude-code-language-model.ts`, which takes the remembered answer (or asks
+ * the now idle process) and emits it as that message's assistant reply, at no
+ * cost. `filterSideQuestionHistory` keeps every such pair out of Claude's
+ * prompt afterwards, and the control request never touches Claude's own
+ * transcript, so the aside is persisted for the operator only.
  */
 
 type SdkResult<T = unknown> = Promise<{ data?: T; error?: unknown }>
@@ -33,18 +47,16 @@ export interface BtwToast {
   duration?: number
 }
 
+export interface BtwSdkMessage {
+  info?: { role?: string }
+  parts?: unknown[]
+}
+
 export interface BtwSdkClient {
   session?: {
-    create?: (options: { body: { parentID?: string; title?: string } }) => SdkResult<{ id?: string }>
-    get?: (options: { path: { id: string } }) => SdkResult<{ id?: string; parentID?: string }>
-    update?: (options: { path: { id: string }; body: { title?: string } }) => SdkResult
-    promptAsync?: (options: {
-      path: { id: string }
-      body: {
-        model?: { providerID: string; modelID: string }
-        parts: { type: "text"; text: string }[]
-      }
-    }) => SdkResult
+    messages?: (options: { path: { id: string } }) => SdkResult<BtwSdkMessage[]>
+    /** `GET /session/status`: sessions missing from the map are idle. */
+    status?: () => SdkResult<Record<string, { type: string }>>
   }
   tui?: {
     showToast?: (options: { body: BtwToast }) => SdkResult
@@ -57,83 +69,100 @@ export interface BtwCommandInput {
   arguments: string
 }
 
-/** Thrown to make opencode drop the parent prompt after the aside was dispatched. */
+/** Thrown to make opencode drop the prompt when there is nothing worth keeping. */
 export class BtwHandledError extends Error {
   override readonly name = "BtwHandledError"
-  constructor(message = "/btw was answered in a child session; nothing to add to this conversation.") {
+  constructor(message = "/btw was handled by the claude-code plugin; nothing to add to this conversation.") {
     super(message)
   }
 }
 
 export const BTW_NO_SESSION_MESSAGE =
-  "/btw needs a live Claude Code session here. Send a normal message with a Claude Code model first."
+  "/btw needs a live Claude Code session in this conversation. Send a normal message with a Claude Code model first, then ask again."
 
-const ANSWER_TOAST_MS = 12_000
-const ANSWER_TOAST_CHARS = 280
-const TITLE_CHARS = 60
+export const BTW_BUSY_TOAST_MESSAGE =
+  "Answering alongside the running turn. The full answer is added to this conversation when the turn ends."
 
-const childByParent = new Map<string, string>()
-const parentByChild = new Map<string, string>()
+export const BTW_IN_FLIGHT_TOAST_MESSAGE =
+  "A previous /btw is still being answered. This one is asked once the turn ends."
 
-export function registerAsideSession(childID: string, parentID: string): void {
-  const previous = childByParent.get(parentID)
-  if (previous && previous !== childID) parentByChild.delete(previous)
-  childByParent.set(parentID, childID)
-  parentByChild.set(childID, parentID)
+export const BTW_TURN_TOO_LONG_MESSAGE =
+  "/btw gave up waiting for this turn to end. Ask again once it is over."
+
+const IDLE_POLL_MS = 500
+const IDLE_WAIT_MAX_MS = 30 * 60_000
+
+const ANSWER_TOAST_MIN_MS = 10_000
+const ANSWER_TOAST_MAX_MS = 60_000
+const ANSWER_TOAST_MS_PER_CHAR = 60
+const ANSWER_TOAST_CHARS = 600
+const PENDING_ANSWER_TTL_MS = 10 * 60_000
+const PENDING_ANSWER_CAP = 32
+
+interface PendingAnswer {
+  question: string
+  answer: Promise<SideQuestionResult>
+  at: number
 }
 
-export function asideParentOf(childID: string): string | undefined {
-  return parentByChild.get(childID)
+/** Answers the hook requested ahead of the queued prompt, one per opencode session. */
+const pendingAnswers = new Map<string, PendingAnswer>()
+
+export function rememberSideQuestionAnswer(
+  sessionID: string,
+  question: string,
+  answer: Promise<SideQuestionResult>,
+  now = Date.now(),
+): void {
+  for (const [id, entry] of pendingAnswers) {
+    if (now - entry.at > PENDING_ANSWER_TTL_MS) pendingAnswers.delete(id)
+  }
+  pendingAnswers.delete(sessionID)
+  while (pendingAnswers.size >= PENDING_ANSWER_CAP) {
+    const oldest = pendingAnswers.keys().next().value
+    if (oldest === undefined) break
+    pendingAnswers.delete(oldest)
+  }
+  pendingAnswers.set(sessionID, { question: question.trim(), answer, at: now })
 }
 
-export function forgetAsideSession(childID: string): void {
-  const parentID = parentByChild.get(childID)
-  parentByChild.delete(childID)
-  if (parentID && childByParent.get(parentID) === childID) childByParent.delete(parentID)
+/**
+ * The answer the hook already requested for this session, if it was for this
+ * question and is still fresh. Taking it consumes it: a later `/btw` with the
+ * same text asks again rather than replaying a stale answer.
+ *
+ * The question the turn parses may be longer than what the hook saw: a
+ * harness can append trailing metadata to the message text (opencode-dcp adds
+ * a `<dcp-message-id>` marker), so the hook's question only has to be a prefix.
+ * Measured live: an exact match missed, the turn asked again, and the
+ * single-flight guard refused it as a second concurrent aside.
+ */
+export function takeSideQuestionAnswer(
+  sessionID: string,
+  question: string,
+  now = Date.now(),
+): Promise<SideQuestionResult> | undefined {
+  const entry = pendingAnswers.get(sessionID)
+  if (!entry) return undefined
+  pendingAnswers.delete(sessionID)
+  if (!question.trim().startsWith(entry.question) || now - entry.at > PENDING_ANSWER_TTL_MS) return undefined
+  return entry.answer
 }
 
 /** Test seam. */
-export function clearAsideSessions(): void {
-  childByParent.clear()
-  parentByChild.clear()
-}
-
-/**
- * The in-memory map is authoritative while opencode runs. After a restart a
- * follow-up typed in an old btw child still carries `parentID`, so fall back
- * to asking opencode.
- */
-export async function resolveAsideParent(
-  sessionID: string,
-  client: BtwSdkClient | null = getOpencodeClient() as BtwSdkClient | null,
-): Promise<string | undefined> {
-  const known = asideParentOf(sessionID)
-  if (known) return known
-  if (!client?.session?.get) return undefined
-  try {
-    const result = await client.session.get({ path: { id: sessionID } })
-    const parentID = result.data?.parentID
-    if (typeof parentID !== "string" || !parentID) return undefined
-    registerAsideSession(sessionID, parentID)
-    return parentID
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * The TUI's subagent footer labels a child session from its title
- * (`/@(\w+) subagent/`), so this reads as "Btw" there instead of "Subagent".
- */
-export function asideSessionTitle(question: string): string {
-  const flat = question.replace(/\s+/g, " ").trim()
-  const short = flat.length > TITLE_CHARS ? `${flat.slice(0, TITLE_CHARS - 3)}...` : flat
-  return `@btw subagent · ${short}`
+export function clearPendingSideQuestionAnswers(): void {
+  pendingAnswers.clear()
 }
 
 export function answerToastMessage(answer: string): string {
   const flat = answer.replace(/\s+/g, " ").trim()
   return flat.length > ANSWER_TOAST_CHARS ? `${flat.slice(0, ANSWER_TOAST_CHARS - 3)}...` : flat
+}
+
+/** Long enough to read: the TUI's toast is 60 columns wide and word-wraps. */
+export function answerToastDuration(answer: string): number {
+  const chars = Math.min(answer.trim().length, ANSWER_TOAST_CHARS)
+  return Math.min(ANSWER_TOAST_MAX_MS, Math.max(ANSWER_TOAST_MIN_MS, ANSWER_TOAST_MIN_MS + chars * ANSWER_TOAST_MS_PER_CHAR))
 }
 
 export function showToast(client: BtwSdkClient | null, body: BtwToast): void {
@@ -148,14 +177,51 @@ export function showToast(client: BtwSdkClient | null, body: BtwToast): void {
   }
 }
 
-/** Called from the child's aside branch once the parent's process has answered. */
-export function showBtwAnswerToast(answer: string, client: BtwSdkClient | null = getOpencodeClient() as BtwSdkClient | null): void {
-  showToast(client, {
-    title: "btw",
-    message: answerToastMessage(answer),
-    variant: "success",
-    duration: ANSWER_TOAST_MS,
-  })
+/** A turn is streaming from this process, so its transcript cannot show an answer yet. */
+export function isProcessBusy(active: Pick<ActiveProcess, "lineEmitter">): boolean {
+  return active.lineEmitter.listenerCount("line") > 0
+}
+
+/**
+ * opencode's own view of the session: `busy` for the whole turn, including
+ * the gaps where opencode runs a tool and no stream is attached to the
+ * process, which `isProcessBusy` cannot see. `unknown` when the SDK has no
+ * status route or it fails.
+ */
+export async function sessionStatus(
+  client: BtwSdkClient | null,
+  sessionID: string,
+): Promise<"busy" | "idle" | "unknown"> {
+  const status = client?.session?.status
+  if (!status) return "unknown"
+  try {
+    const result = await status.call(client!.session)
+    const entry = result.data?.[sessionID]
+    return entry && entry.type !== "idle" ? "busy" : "idle"
+  } catch (error) {
+    log.debug("btw: could not read session status", { sessionID, error: errorText(error) })
+    return "unknown"
+  }
+}
+
+/**
+ * Resolves once the session is no longer busy. Returns false on timeout. A
+ * client without a status route resolves at once, since there is nothing to
+ * wait on.
+ */
+export async function waitForSessionIdle(
+  client: BtwSdkClient | null,
+  sessionID: string,
+  options: { pollMs?: number; timeoutMs?: number } = {},
+): Promise<boolean> {
+  const pollMs = options.pollMs ?? IDLE_POLL_MS
+  const timeoutMs = options.timeoutMs ?? IDLE_WAIT_MAX_MS
+  const started = Date.now()
+  for (;;) {
+    if ((await sessionStatus(client, sessionID)) !== "busy") return true
+    if (Date.now() - started >= timeoutMs) return false
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
 }
 
 function errorText(error: unknown): string {
@@ -166,85 +232,129 @@ function errorText(error: unknown): string {
   return String(error)
 }
 
-async function ensureChildSession(
-  client: BtwSdkClient,
-  parentID: string,
-  question: string,
-): Promise<string> {
-  const session = client.session
-  if (!session?.create) throw new Error("opencode's SDK client has no session.create; cannot open a /btw session.")
-  const existing = childByParent.get(parentID)
-  if (existing && session.get) {
-    const found = await session.get({ path: { id: existing } }).catch(() => ({ data: undefined, error: true }))
-    if (found.data?.id === existing && !found.error) {
-      if (session.update) {
-        await session.update({ path: { id: existing }, body: { title: asideSessionTitle(question) } }).catch(() => undefined)
-      }
-      return existing
-    }
-    forgetAsideSession(existing)
-  }
-  const created = await session.create({ body: { parentID, title: asideSessionTitle(question) } })
-  const childID = created.data?.id
-  if (created.error || typeof childID !== "string" || !childID) {
-    throw new Error(`opencode could not create the /btw session: ${errorText(created.error ?? "no session id returned")}`)
-  }
-  registerAsideSession(childID, parentID)
-  return childID
+function isTextPart(part: unknown): part is { type: "text"; text: string } {
+  return (
+    part !== null &&
+    typeof part === "object" &&
+    (part as { type?: unknown }).type === "text" &&
+    typeof (part as { text?: unknown }).text === "string"
+  )
 }
 
 /**
- * `command.execute.before` handler for `btw`. Always throws: either
- * `BtwHandledError` after dispatching the aside (or after telling the
- * operator why it could not), so the raw `/btw` text never becomes a queued
- * parent prompt that a later turn would have to reject.
+ * Earlier `/btw` exchanges in this conversation, read back from opencode
+ * because the hook runs before the current question exists as a message.
+ * Best effort: a follow-up without history still gets an answer, just one
+ * that cannot refer to previous asides.
+ */
+export async function fetchAsideHistory(
+  client: BtwSdkClient | null,
+  sessionID: string,
+  question: string,
+): Promise<SideQuestionExchange[]> {
+  const messages = client?.session?.messages
+  if (!messages) return []
+  try {
+    const result = await messages.call(client!.session, { path: { id: sessionID } })
+    const prompt: { role: string; content: unknown }[] = []
+    for (const message of result.data ?? []) {
+      const role = message.info?.role
+      if (role !== "user" && role !== "assistant") continue
+      prompt.push({ role, content: (message.parts ?? []).filter(isTextPart) })
+    }
+    // collectSideQuestionHistory skips the final message as the question being
+    // asked; stand in for the one opencode has not created yet.
+    prompt.push({ role: "user", content: `/btw ${question}` })
+    return collectSideQuestionHistory(prompt)
+  } catch (error) {
+    log.debug("btw: could not read aside history", { sessionID, error: errorText(error) })
+    return []
+  }
+}
+
+/**
+ * `command.execute.before` handler for `btw`. Returns normally so opencode
+ * creates the `/btw` message in this conversation; throws only when there is
+ * nothing to keep (a bare `/btw`, or a turn that never ended).
+ *
+ * While the session is busy the return is delayed until it is idle. opencode
+ * would otherwise queue the message behind the running turn and run it as
+ * that turn's next step, which is also the step that carries the results of
+ * the tools opencode just ran: answering the aside there would swallow the
+ * turn's own continuation (measured live: the main answer never appeared).
+ * opencode already keeps the command route open for a queued prompt, so
+ * holding it here changes nothing on the wire, and the TUI's call is
+ * fire-and-forget.
  */
 export async function handleBtwCommand(
   client: BtwSdkClient | null,
   input: BtwCommandInput,
-): Promise<never> {
+  options: { pollMs?: number; timeoutMs?: number } = {},
+): Promise<void> {
   const question = input.arguments.trim()
   if (!question) {
     showToast(client, { title: "btw", message: SIDE_QUESTION_USAGE, variant: "warning", duration: 6_000 })
     throw new BtwHandledError("/btw needs a question.")
   }
-  const parent = findActiveProcessBySessionId(input.sessionID)
-  if (!parent) {
-    log.info("btw: no live claude process for session", { sessionID: input.sessionID })
-    showToast(client, { title: "btw", message: BTW_NO_SESSION_MESSAGE, variant: "warning", duration: 8_000 })
-    throw new BtwHandledError(BTW_NO_SESSION_MESSAGE)
+  const active = findActiveProcessBySessionId(input.sessionID)
+  const transport = active?.asideTransport
+  if (!active || !transport) {
+    // The message still goes through: the session is idle, so the aside
+    // branch answers it at once with an explanation that stays readable.
+    log.info("btw: no live claude process for session, leaving it to the turn", { sessionID: input.sessionID })
+    return
   }
-  const model = parent.opencodeModel
-  if (!client?.session?.promptAsync || !model) {
-    const message = "/btw could not reach opencode's session API to open a side session."
-    log.warn("btw: cannot dispatch aside", { sessionID: input.sessionID, hasClient: !!client, hasModel: !!model })
-    showToast(client, { title: "btw", message, variant: "error", duration: 8_000 })
-    throw new BtwHandledError(message)
-  }
-  try {
-    const childID = await ensureChildSession(client, input.sessionID, question)
-    const sent = await client.session.promptAsync({
-      path: { id: childID },
-      body: { model, parts: [{ type: "text", text: `/btw ${question}` }] },
+  const status = await sessionStatus(client, input.sessionID)
+  const busy = status === "busy" || (status === "unknown" && isProcessBusy(active))
+  if (isSideQuestionPending(active)) {
+    // One aside per process at a time. Leave the earlier answer in place for
+    // its own message; this one asks when its turn comes.
+    log.info("btw: an aside is already in flight, leaving this one to the turn", { sessionID: input.sessionID, busy })
+    showToast(client, { title: "btw", message: BTW_IN_FLIGHT_TOAST_MESSAGE, variant: "info", duration: 5_000 })
+  } else {
+    const history = await fetchAsideHistory(client, input.sessionID, question)
+    const answer = requestSideQuestion(active, question, {
+      cliVersion: await detectCliVersion(transport.cliPath),
+      interactive: transport.interactive,
+      ...(history.length ? { history } : {}),
     })
-    if (sent.error) throw new Error(errorText(sent.error))
-    log.info("btw: aside dispatched to child session", {
+    rememberSideQuestionAnswer(input.sessionID, question, answer)
+    log.info("btw: aside sent ahead of its message", {
       sessionID: input.sessionID,
-      childID,
+      busy,
       questionLength: question.length,
-      model: `${model.providerID}/${model.modelID}`,
+      history: history.length,
     })
-    showToast(client, {
-      title: "btw",
-      message: "Asking in the btw session. The answer will show here and in that session.",
-      variant: "info",
-      duration: 4_000,
-    })
-  } catch (error) {
-    const message = `/btw failed: ${errorText(error)}`
-    log.warn("btw: dispatch failed", { sessionID: input.sessionID, error: errorText(error) })
-    showToast(client, { title: "btw", message, variant: "error", duration: 8_000 })
-    throw new BtwHandledError(message)
+    if (busy) {
+      showToast(client, { title: "btw", message: BTW_BUSY_TOAST_MESSAGE, variant: "info", duration: 4_000 })
+    }
+    answer.then(
+      (result) => {
+        log.info("btw: early answer arrived", { sessionID: input.sessionID, busy, responseLength: result.response.length })
+        if (busy && !result.synthetic) {
+          showToast(client, {
+            title: "btw",
+            message: answerToastMessage(result.response),
+            variant: "success",
+            duration: answerToastDuration(result.response),
+          })
+        }
+      },
+      (error: unknown) => {
+        // The message asks again once its turn runs, so no toast here.
+        log.warn("btw: early aside failed; the message will ask again", {
+          sessionID: input.sessionID,
+          error: errorText(error),
+        })
+      },
+    )
   }
-  throw new BtwHandledError()
+  if (!busy) return
+  const started = Date.now()
+  const idle = await waitForSessionIdle(client, input.sessionID, options)
+  log.info("btw: turn over, releasing the /btw message", { sessionID: input.sessionID, idle, waitedMs: Date.now() - started })
+  if (!idle) {
+    showToast(client, { title: "btw", message: BTW_TURN_TOO_LONG_MESSAGE, variant: "warning", duration: 8_000 })
+    throw new BtwHandledError(BTW_TURN_TOO_LONG_MESSAGE)
+  }
 }

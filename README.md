@@ -520,22 +520,22 @@ After a normal Claude Code turn, at any time, including while Claude is still wo
 /btw Why did you choose that approach?
 ```
 
-The plugin registers the command without replacing an existing user-defined `btw` command. The question goes to Claude Code's native `side_question` control protocol on the conversation's live process, using the same model, account, and context. Claude Code answers it on a separate call, concurrently with whatever the main turn is doing, and nothing about the aside enters that conversation: not in opencode's transcript, not in Claude's.
+The plugin registers the command without replacing an existing user-defined `btw` command. The question goes to Claude Code's native `side_question` control protocol on the conversation's live process, using the same model, account, and context. Claude Code answers it on a separate call, concurrently with whatever the main turn is doing. Claude never sees the aside afterwards: the question never enters Claude Code's own transcript, and the plugin keeps every `/btw` exchange out of the prompt it sends the model.
 
 Where the answer appears:
 
-- A toast shows the answer (truncated if long) as soon as it arrives.
-- The full exchange lives in a **btw child session** of the conversation, one per parent, reused for every later `/btw`. It sits next to subagent sessions: `<leader>down` opens the first child, `left`/`right` cycle, `up` returns to the parent (default keybinds). Its title starts with `@btw subagent` so the footer labels it "Btw".
-- Follow-ups work: earlier exchanges in that child session are sent along as the aside's history.
+- **In the conversation itself.** The `/btw` message and its answer are kept as an ordinary pair in the transcript, so they render in full and stay there. While a turn is running, the pair appears the moment that turn ends (the message is held back rather than shown as "Queued"); when the conversation is idle, it appears right away.
+- **As a toast while the turn is still running.** The question is asked the moment you type it, and the answer pops up as soon as it arrives (up to 600 characters, on screen between 10 and 46 seconds depending on length). The transcript copy follows when the turn ends.
+- Follow-ups work: earlier asides in the conversation are sent along as the aside's history.
 
 Notes:
 
 - Requires Claude Code CLI **2.1.258 or newer**, the oldest verified version.
-- Requires a live **headless** process for the conversation. Send a normal message with a Claude Code model first if the process has not started or was evicted; the toast tells you when that is the case. Interactive transport is not supported.
-- One aside per conversation at a time. A second `/btw` while one is in flight is refused with a toast.
-- The control response has no token/cost usage fields. Aside usage is not reported in opencode's counters; this does not mean the request is free.
-- A request times out after two minutes. Abort and timeout cancel that side request without killing the main session.
-- Nothing is added to the parent conversation, so after typing `/btw` the prompt box clears and the parent transcript stays as it was. opencode logs the dropped command as a server error; that is expected.
+- Requires a live **headless** process for the conversation. Send a normal message with a Claude Code model first if the process has not started or was evicted; the answer in the transcript tells you when that is the case. Interactive transport is not supported.
+- One aside per conversation at a time. A second `/btw` while one is in flight is asked once the turn ends; a toast says so.
+- The `/btw` pair in the transcript reports 0 tokens and $0. The control response has no usage fields, so aside usage is not in opencode's counters; this does not mean the request is free.
+- A request times out after two minutes. Abort and timeout cancel that side request without killing the main session. If the running turn is still not over after 30 minutes, the plugin gives up on that `/btw` with a toast; ask again once the turn ends.
+- A bare `/btw` shows the usage text as a toast and adds nothing to the conversation.
 
 Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
 
