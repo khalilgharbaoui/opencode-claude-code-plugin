@@ -1654,7 +1654,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
     const userMsg =
       consumeExitPlanModeQuestionResult(sk, options.prompt as any) ??
-      getClaudeUserMessage(options.prompt, includeHistoryContext)
+      // doGenerate has no proxy wiring, so this process issued no tool calls
+      // at all: every tool result reaching it belongs to opencode and must be
+      // rendered as text rather than an orphaned `tool_result` (issue #29).
+      getClaudeUserMessage(options.prompt, includeHistoryContext, {
+        cliToolCallIds: new Set<string>(),
+      })
 
     // doGenerate always spawns a fresh process, never reuse session ID.
     // Pre-fetch opencode's MCP runtime status so the bridge overlays
@@ -2278,10 +2283,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // that carries none of their typed text needs the reason in the log.
       log.info("sending plan approval decision to claude", { sk })
     }
+    // Read before the envelope is built, and used by it: only these ids were
+    // issued by this CLI process, so only these may be sent back as
+    // `tool_result` blocks (issue #29).
+    const previousPendingProxyCalls = compactionMode
+      ? []
+      : getPendingProxyCalls(sk)
     const userMsg =
       exitPlanModeQuestionResult ??
       getClaudeUserMessage(options.prompt, includeHistoryContext, {
         compactionMode,
+        cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
       })
     const resolvedProxy = compactionMode ? null : this.resolvedProxyTools()
     const loadLiveToolInfo = this.createLiveToolInfoLoader()
@@ -2294,9 +2306,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     )
     const self = this
 
-    const previousPendingProxyCalls = compactionMode
-      ? []
-      : getPendingProxyCalls(sk)
     const previousPendingProxyMatches: Array<{
       call: PendingProxyCall
       result: ProxyToolResult | null

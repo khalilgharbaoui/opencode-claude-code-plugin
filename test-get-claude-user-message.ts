@@ -429,3 +429,73 @@ test("consecutive and split aside responses stay excluded until the next user", 
   ])
   assert.deepEqual(filterSideQuestionHistory(prompt), [nextUser, nextAnswer])
 })
+
+// Issue #29 (@nic-lan): opencode runs some tools itself, notably the `task`
+// call a `subtask: true` command dispatches. The resumed CLI session never
+// emitted those `tool_use` blocks, so sending a `tool_result` for one is
+// orphaned: Claude cannot resolve the id and the payload sitting in the
+// envelope is unreachable. The result was a subagent that finished correctly
+// while the main session saw no output at all.
+const subtaskPrompt = () =>
+  p([
+    { role: "user", content: [{ type: "text", text: "Recall what we decided about X." }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Dispatching the subagent." },
+        { type: "tool-call", toolCallId: "call_X", toolName: "task", input: { subagent_type: "general" } },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_X",
+          toolName: "task",
+          output: { type: "text", value: "We decided X because of Y." },
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [{ type: "text", text: "Summarize the task tool output above and continue with your task." }],
+    },
+  ])
+
+test("a tool result this CLI process never asked for is sent as text, not an orphaned tool_result", () => {
+  const out = JSON.parse(
+    getClaudeUserMessage(subtaskPrompt(), false, { cliToolCallIds: new Set<string>() }),
+  )
+  const blocks = out.message.content
+  assert.equal(
+    blocks.some((b: any) => b.type === "tool_result"),
+    false,
+    "an id the CLI never issued must not be sent back as a tool_result",
+  )
+  const rendered = blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n")
+  assert.match(rendered, /We decided X because of Y\./, "the subagent's answer still reaches the model")
+  assert.match(rendered, /<opencode_tool_result tool="task">/, "and it says what produced it")
+  assert.ok(
+    rendered.indexOf("We decided X because of Y.") < rendered.indexOf("Summarize the task tool output above"),
+    "the output has to precede the instruction that calls it 'above'",
+  )
+})
+
+test("a tool result this CLI process is waiting on is still a real tool_result block", () => {
+  const out = JSON.parse(
+    getClaudeUserMessage(subtaskPrompt(), false, { cliToolCallIds: new Set(["call_X"]) }),
+  )
+  const result = out.message.content.find((b: any) => b.type === "tool_result")
+  assert.ok(result, "the proxy round-trip depends on this block, so the gate must let it through")
+  assert.equal(result.tool_use_id, "call_X")
+  assert.match(result.content, /We decided X because of Y\./)
+})
+
+test("the fresh-session history keeps tool inputs and result bodies", () => {
+  const history = compactConversationHistory(subtaskPrompt())
+  assert.ok(history, "there is prior conversation to render")
+  assert.match(history!, /We decided X because of Y\./, "the result body survives, not just a count")
+  assert.match(history!, /\[tool_use:task\(/, "and the call that produced it is named with its input")
+  assert.doesNotMatch(history!, /Called 1 tool\(s\)/, "the lossy placeholder is gone")
+})

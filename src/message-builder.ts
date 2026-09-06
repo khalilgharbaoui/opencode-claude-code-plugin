@@ -208,10 +208,13 @@ function renderMessageContentForCompaction(
 /**
  * Compact conversation history into a context summary.
  *
- * - mode "fresh-session" (default): legacy behavior. Filters to
- *   user/assistant only, clips each message at 2000 chars, drops tool
- *   payloads to placeholders. Used when starting a fresh CLI session
- *   that lost its prior session id.
+ * - mode "fresh-session" (default): includes user, assistant and tool roles,
+ *   renders each with the same serializer /compact uses so tool inputs and
+ *   result bodies survive, then clips each message at 2000 chars. Used when
+ *   starting a fresh CLI session that lost its prior session id. It used to
+ *   filter to user/assistant only and reduce tool content to
+ *   `[Called N tool(s)]` placeholders, which silently dropped subagent
+ *   output entirely (issue #29).
  * - mode "compaction": rich serializer for opencode /compact. Includes
  *   tool roles, renders tool_use input and tool_result content (each
  *   clipped at MAX_TOOL_RESULT_CHARS), and caps aggregate output at
@@ -228,8 +231,13 @@ export function compactConversationHistory(
     return buildCompactionHistory(prompt)
   }
 
+  // `tool`-role messages carry the results of everything opencode ran itself,
+  // so they belong in the transcript. Filtering them out (issue #29) meant a
+  // subagent's whole answer vanished: the assistant message kept a
+  // `[Called 1 tool(s): task]` placeholder and the result it referred to was
+  // never rendered at all.
   const conversationMessages = prompt.filter(
-    (m) => m.role === "user" || m.role === "assistant",
+    (m) => m.role === "user" || m.role === "assistant" || m.role === "tool",
   )
 
   if (conversationMessages.length <= 1) {
@@ -240,31 +248,14 @@ export function compactConversationHistory(
 
   for (let i = 0; i < conversationMessages.length - 1; i++) {
     const msg = conversationMessages[i]
-    const role = msg.role === "user" ? "User" : "Assistant"
+    const role =
+      msg.role === "user" ? "User" : msg.role === "assistant" ? "Assistant" : "Tool"
 
-    let text = ""
-    if (typeof msg.content === "string") {
-      text = msg.content
-    } else if (Array.isArray(msg.content)) {
-      const textParts = (msg.content as any[])
-        .filter((p) => p.type === "text" && p.text)
-        .map((p) => p.text)
-      text = textParts.join("\n")
-
-      const toolCalls = (msg.content as any[]).filter(
-        (p) => p.type === "tool-call",
-      )
-      const toolResults = (msg.content as any[]).filter(
-        (p) => p.type === "tool-result",
-      )
-
-      if (toolCalls.length > 0) {
-        text += `\n[Called ${toolCalls.length} tool(s): ${toolCalls.map((t: any) => t.toolName).join(", ")}]`
-      }
-      if (toolResults.length > 0) {
-        text += `\n[Received ${toolResults.length} tool result(s)]`
-      }
-    }
+    // Same renderer the /compact transcript uses, so tool inputs and result
+    // bodies survive instead of collapsing to counts. This path used to write
+    // `[Called N tool(s): ...]` / `[Received N tool result(s)]` and discard
+    // every byte of the payload, which is the second half of issue #29.
+    const { text } = renderMessageContentForCompaction(msg)
 
     if (text.trim()) {
       const truncated =
@@ -350,10 +341,43 @@ function buildCompactionHistory(prompt: Prompt): string | null {
 export function getClaudeUserMessage(
   prompt: Prompt,
   includeHistoryContext: boolean = false,
-  opts: { compactionMode?: boolean } = {},
+  opts: { compactionMode?: boolean; cliToolCallIds?: ReadonlySet<string> } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
+  const cliToolCallIds = opts.cliToolCallIds
   const content: any[] = []
+
+  /**
+   * A `tool_result` block is only meaningful to a resumed CLI session when
+   * that session issued the matching `tool_use`. Anything opencode ran on its
+   * own behalf (a `subtask: true` command's `task` call, issue #29) has an id
+   * the CLI never emitted, so the block is orphaned: Claude cannot resolve it
+   * and the payload, which is right there in the envelope, is unreachable.
+   * Those are rendered as plain text instead, which keeps the content and
+   * loses only the pairing the CLI could not have honoured anyway.
+   *
+   * `cliToolCallIds` is the set of calls this CLI process is waiting on. When
+   * a caller does not supply it we keep the old unconditional block, so a
+   * forgotten call site degrades to today's behaviour rather than breaking
+   * the proxy round-trip.
+   */
+  const pushToolResult = (part: any): void => {
+    const id = part.toolCallId
+    const text = getToolResultText(part)
+    if (!cliToolCallIds || cliToolCallIds.has(id)) {
+      content.push({ type: "tool_result", tool_use_id: id, content: text })
+      return
+    }
+    log.info("rendering opencode-side tool result as text", {
+      toolCallId: id,
+      toolName: part.toolName,
+      chars: text.length,
+    })
+    content.push({
+      type: "text",
+      text: `<opencode_tool_result tool="${part.toolName ?? "unknown"}">\n${text}\n</opencode_tool_result>`,
+    })
+  }
 
   if (compactionMode) {
     const transcript = compactConversationHistory(prompt, {
@@ -427,12 +451,7 @@ Now continuing with the current message:
               })
             }
           } else if (part.type === "tool-result") {
-            const p = part as any
-            content.push({
-              type: "tool_result",
-              tool_use_id: p.toolCallId,
-              content: getToolResultText(p),
-            })
+            pushToolResult(part)
           }
         }
       }
@@ -444,12 +463,7 @@ Now continuing with the current message:
       if (Array.isArray(msg.content)) {
         for (const part of msg.content as any[]) {
           if (part?.type === "tool-result") {
-            const p = part as any
-            content.push({
-              type: "tool_result",
-              tool_use_id: p.toolCallId,
-              content: getToolResultText(p),
-            })
+            pushToolResult(part)
           }
         }
       }
