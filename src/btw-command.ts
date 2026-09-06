@@ -31,12 +31,16 @@ import {
  *   1. a turn is streaming, so the answer is written into that turn's own
  *      reply as its own text block and the `/btw` message is dropped. The
  *      operator reads it in place, the moment it is ready, and it stays;
- *   2. nothing is open to write to, so the answer is previewed as a toast and
- *      the `/btw` message is held until the turn ends. It then reaches the
- *      aside branch in `claude-code-language-model.ts`, which takes the
- *      remembered answer and emits it as that message's reply, at no cost;
+ *   2. nothing is open to write to, so the `/btw` message is held until the
+ *      turn ends. It then reaches the aside branch in
+ *      `claude-code-language-model.ts`, which takes the remembered answer and
+ *      emits it as that message's reply, at no cost;
  *   3. the conversation was idle all along, so the message runs at once and
- *      case 2's second half is all that happens, with no toast.
+ *      case 2 is all that happens.
+ * Every one of those lands in the conversation, so none of them toasts: a
+ * toast expires and the operator asked for the answer to stay. The two that
+ * remain are the paths where nothing reaches the conversation at all, a bare
+ * `/btw` and a turn that never ended, where a toast is the only feedback left.
  * `filterSideQuestionHistory` keeps every `/btw` pair out of Claude's prompt,
  * `INLINE_ASIDE_MARKER` does the same for case 1's block, and the control
  * request never touches Claude's own transcript, so an aside is persisted for
@@ -101,14 +105,8 @@ export class BtwHandledError extends Error {
 export const BTW_NO_SESSION_MESSAGE =
   "/btw needs a live Claude Code session in this conversation. Send a normal message with a Claude Code model first, then ask again."
 
-export const BTW_BUSY_TOAST_MESSAGE =
-  "Answering alongside the running turn. The answer appears in this conversation as soon as it is ready."
-
 export const BTW_INLINE_HANDLED_MESSAGE =
   "/btw was answered inside the running turn; nothing to add to this conversation."
-
-export const BTW_IN_FLIGHT_TOAST_MESSAGE =
-  "A previous /btw is still being answered. This one is asked once the turn ends."
 
 export const BTW_TURN_TOO_LONG_MESSAGE =
   "/btw gave up waiting for this turn to end. Ask again once it is over."
@@ -140,10 +138,6 @@ const INLINE_POLL_MS = 200
  */
 const INLINE_WAIT_MAX_MS = 20_000
 
-const ANSWER_TOAST_MIN_MS = 10_000
-const ANSWER_TOAST_MAX_MS = 60_000
-const ANSWER_TOAST_MS_PER_CHAR = 60
-const ANSWER_TOAST_CHARS = 600
 const PENDING_ANSWER_TTL_MS = 10 * 60_000
 const PENDING_ANSWER_CAP = 32
 
@@ -244,7 +238,7 @@ export function formatInlineAside(question: string, answer: string): string {
 /**
  * Writes one finished text block into a stream that is open right now.
  * Returns false when there is nothing to write to, which is the whole reason
- * the toast path is still here.
+ * the held-message path is still here.
  */
 export type AsideSink = (text: string) => boolean
 
@@ -274,17 +268,6 @@ export function emitAsideInline(sessionID: string, text: string): boolean {
 /** Test seam. */
 export function clearAsideSinks(): void {
   asideSinks.clear()
-}
-
-export function answerToastMessage(answer: string): string {
-  const flat = answer.replace(/\s+/g, " ").trim()
-  return flat.length > ANSWER_TOAST_CHARS ? `${flat.slice(0, ANSWER_TOAST_CHARS - 3)}...` : flat
-}
-
-/** Long enough to read: the TUI's toast is 60 columns wide and word-wraps. */
-export function answerToastDuration(answer: string): number {
-  const chars = Math.min(answer.trim().length, ANSWER_TOAST_CHARS)
-  return Math.min(ANSWER_TOAST_MAX_MS, Math.max(ANSWER_TOAST_MIN_MS, ANSWER_TOAST_MIN_MS + chars * ANSWER_TOAST_MS_PER_CHAR))
 }
 
 export function showToast(client: BtwSdkClient | null, body: BtwToast): void {
@@ -539,7 +522,6 @@ export async function handleBtwCommand(
     // its own message; this one asks when its turn comes.
     busy = await settleSessionBusy(client, input.sessionID, active, options)
     log.info("btw: an aside is already in flight, leaving this one to the turn", { sessionID: input.sessionID, busy })
-    showToast(client, { title: "btw", message: BTW_IN_FLIGHT_TOAST_MESSAGE, variant: "info", duration: 5_000 })
   } else {
     // Settled alongside the request rather than before it: an aside asked
     // while the conversation is idle must not wait out the settle window
@@ -564,9 +546,6 @@ export async function handleBtwCommand(
       questionLength: question.length,
       history: history.length,
     })
-    if (busy) {
-      showToast(client, { title: "btw", message: BTW_BUSY_TOAST_MESSAGE, variant: "info", duration: 4_000 })
-    }
     answer.then(
       async (result) => {
         log.info("btw: early answer arrived", { sessionID: input.sessionID, busy, responseLength: result.response.length })
@@ -586,15 +565,15 @@ export async function handleBtwCommand(
           markInlineDelivered()
           return
         }
-        showToast(client, {
-          title: "btw",
-          message: answerToastMessage(result.response),
-          variant: "success",
-          duration: answerToastDuration(result.response),
+        // Nothing was open to write to. The held `/btw` message carries this
+        // same answer into the conversation once the turn ends, which is the
+        // durable copy, so there is nothing to announce here.
+        log.info("btw: no open stream for the answer; the held message will carry it", {
+          sessionID: input.sessionID,
         })
       },
       (error: unknown) => {
-        // The message asks again once its turn runs, so no toast here.
+        // The message asks again once its turn runs.
         log.warn("btw: early aside failed; the message will ask again", {
           sessionID: input.sessionID,
           error: errorText(error),

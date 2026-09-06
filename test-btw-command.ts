@@ -7,9 +7,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 import {
-  answerToastDuration,
-  answerToastMessage,
-  BTW_BUSY_TOAST_MESSAGE,
   BTW_NO_SESSION_MESSAGE,
   BTW_TURN_TOO_LONG_MESSAGE,
   BtwHandledError,
@@ -146,7 +143,7 @@ test("/btw typed before the turn's process is tagged waits for it instead of bei
     const early = takeSideQuestionAnswer("ses_late", "why?")
     assert.ok(early, "the aside is sent as soon as the process exists, not skipped")
     await assert.rejects(early, /headless Claude Code transport/, "the fake process has no stdin")
-    assert.equal(fake.toasts()[0]?.message, BTW_BUSY_TOAST_MESSAGE, "the turn was still running when it was asked")
+    assert.deepEqual(fake.toasts(), [], "a busy turn is not announced; the answer itself lands in the conversation")
   } finally {
     clearTimeout(appear)
     clearTimeout(goIdle)
@@ -229,7 +226,7 @@ test("without a status route the hook falls back to the process's own listener c
     const listener = () => undefined
     active.lineEmitter.on("line", listener)
     await handleBtwCommand(fake.client, input("why?", "ses_nostatus"), { pollMs: 5, timeoutMs: 20 })
-    assert.deepEqual(fake.toasts().map((toast) => toast.message), [BTW_BUSY_TOAST_MESSAGE], "busy per the listener, no wait possible")
+    assert.deepEqual(fake.toasts(), [], "busy per the listener, and still nothing to announce")
     active.lineEmitter.off("line", listener)
   } finally {
     dropActive(key)
@@ -363,14 +360,6 @@ test("findActiveProcessBySessionId returns the most recently used process for a 
   }
 })
 
-test("toast previews are flattened and truncated, and stay up long enough to read", () => {
-  assert.equal(answerToastMessage("a\nb"), "a b")
-  assert.equal(answerToastMessage("y".repeat(700)), `${"y".repeat(597)}...`)
-  assert.equal(answerToastDuration("short"), 10_300)
-  assert.equal(answerToastDuration("x".repeat(500)), 40_000)
-  assert.equal(answerToastDuration("x".repeat(5_000)), 46_000, "capped at the preview length, so never the full minute")
-})
-
 test("registerSideQuestionCommand reports ownership so a user-defined btw command is left alone", () => {
   const ours: OpenCodeConfig = {}
   assert.equal(registerSideQuestionCommand(ours), true)
@@ -492,7 +481,8 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
     fakeSdk.status.ses_main = { type: "busy" }
     let released = false
     // Busy with no stream open to write into, which is what a tool step looks
-    // like: the answer falls back to a toast and the message is held.
+    // like: the answer has nowhere to go yet, so the message is held and
+    // carries it once the turn ends.
     const hook = handleBtwCommand(fakeSdk.client, input("First?", "ses_main"), { pollMs: 5, inlineWaitMs: 0 }).then(() => {
       released = true
     })
@@ -506,16 +496,10 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
     })()
     assert.ok(early, "the early answer is remembered while the turn is still running")
     rememberSideQuestionAnswer("ses_main", "First?", early)
-    assert.equal(fakeSdk.toasts()[0]?.message, BTW_BUSY_TOAST_MESSAGE)
     const earlyResult = await early
     assert.equal(earlyResult.response, "Aside 1: First?")
     await new Promise((resolve) => setImmediate(resolve))
-    assert.deepEqual(fakeSdk.toasts().at(-1), {
-      title: "btw",
-      message: "Aside 1: First?",
-      variant: "success",
-      duration: answerToastDuration("Aside 1: First?"),
-    })
+    assert.deepEqual(fakeSdk.toasts(), [], "the answer is never toasted; it lands in the conversation")
     await new Promise((resolve) => setTimeout(resolve, 30))
     assert.equal(released, false, "the /btw message is held back while the turn runs")
 
@@ -529,9 +513,9 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
     assert.equal((queued.finish as any)?.providerMetadata?.["claude-code"]?.path, "side-question")
     assert.equal(fake.events().filter((event) => event.envelope?.type === "control_request").length, 1, "answered from the early request")
 
-    // A follow-up typed while idle: the hook asks at once (no toast), the turn takes it, with history.
+    // A follow-up typed while idle: the hook asks at once, the turn takes it, with history.
     await handleBtwCommand(fakeSdk.client, input("Second?", "ses_main"), { pollMs: 5, settleMs: 20 })
-    assert.equal(fakeSdk.toasts().length, 2, "no toast when the transcript shows the answer right away")
+    assert.deepEqual(fakeSdk.toasts(), [], "still nothing toasted")
     const followUp = await fake.turn("ses_main", [
       user("Start."), assistant("Main answer"), user("/btw First?"), assistant("Aside 1: First?"), user("/btw Second?"),
     ])
@@ -604,11 +588,7 @@ test("an answer that arrives while a turn is streaming is written into that turn
       turn.parts.filter((part) => part.type === "text-start").length >= 2,
       "the aside is a block of its own, so its marker leads a part",
     )
-    assert.deepEqual(
-      fakeSdk.toasts().map((toast) => toast.message),
-      [BTW_BUSY_TOAST_MESSAGE],
-      "no answer toast: the conversation itself carries the answer",
-    )
+    assert.deepEqual(fakeSdk.toasts(), [], "nothing is toasted: the conversation itself carries the answer")
     assert.equal(emitAsideInline("ses_inline", "late"), false, "the sink goes with the stream")
   } finally {
     fakeSdk.status.ses_inline = { type: "idle" }
