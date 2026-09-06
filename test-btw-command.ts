@@ -287,15 +287,21 @@ test("an aside written into a turn is marked so a rebuilt transcript drops it", 
   )
 })
 
-test("the receipt marks the aside as sent, carries no question, and is dropped like the answer", () => {
-  const ask = formatInlineAsideAsk()
+test("the receipt quotes the question back, marks it sent, and is dropped like the answer", () => {
+  const ask = formatInlineAsideAsk("  what   did i say?  ")
   assert.equal(ask.trimStart().startsWith(INLINE_ASIDE_MARKER), true, "the same marker leads it, so the same strip covers it")
+  assert.match(ask, /what did i say\?/, "the operator sees what was sent, since the prompt box is already cleared")
+  assert.match(ask, /sent to Claude on the side/)
   assert.deepEqual(
     ask.trim().split("\n").filter((line) => !line.startsWith("▌")),
     [],
     "the bar runs down the receipt too",
   )
   assert.doesNotMatch(ask, /answering|asking/i, "the note stays true once the answer lands below it")
+
+  const long = formatInlineAsideAsk("q".repeat(400))
+  assert.match(long, /q\.\.\. \*sent to Claude on the side\*$/m, "a long aside is elided so the receipt stays glanceable")
+  assert.equal(long.includes("q".repeat(300)), false, "the elision actually drops text")
 
   const kept = filterSideQuestionHistory([
     user("Start."),
@@ -612,7 +618,11 @@ test("an answer that arrives while a turn is streaming is written into that turn
     const turn = await streaming
     assert.deepEqual(turn.errors, [])
     assert.match(turn.answer, /▌ \*\*btw:\*\* What did i say\?/)
-    assert.match(turn.answer, /sent to Claude on the side/, "the aside is receipted before its answer exists")
+    assert.match(
+      turn.answer,
+      /▌ \*\*btw:\*\* What did i say\? \*sent to Claude on the side\*/,
+      "the receipt names the question it took, since no /btw message is ever created to show it",
+    )
     assert.match(turn.answer, /Aside 1: What did i say\?/)
     assert.match(turn.answer, /Main answer/, "the turn still delivers its own reply")
     assert.ok(

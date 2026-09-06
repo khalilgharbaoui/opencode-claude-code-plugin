@@ -230,8 +230,12 @@ function barEveryLine(text: string): string {
     .join("\n")
 }
 
+function oneLine(question: string): string {
+  return question.replace(/\s+/g, " ").trim()
+}
+
 function asideHeader(question: string): string {
-  return `${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}`
+  return `${INLINE_ASIDE_MARKER} ${oneLine(question)}`
 }
 
 export function formatInlineAside(question: string, answer: string): string {
@@ -239,21 +243,35 @@ export function formatInlineAside(question: string, answer: string): string {
 }
 
 /**
+ * The receipt's trailing note. Past tense, because the block stays in the
+ * conversation and an "answering..." would read as stale the moment the
+ * answer lands.
+ */
+export const INLINE_ASIDE_SENT_NOTE = "*sent to Claude on the side*"
+
+/**
+ * How much of the question the receipt quotes back. A receipt is read at a
+ * glance beside the model's own streaming output, so a long aside is elided
+ * here; the answer block below still carries it in full.
+ */
+const RECEIPT_QUESTION_MAX = 240
+
+/**
  * A receipt written into the running turn the moment the question goes out, so
  * a `/btw` typed mid-turn shows as taken instead of looking swallowed until
  * the answer arrives.
  *
- * Deliberately without the question, though the operator just typed it: the
- * answer block below carries the question anyway, and the model usually
- * streams more of its own text between the two, so echoing it here would put
- * the same question on screen twice for no gain. Past tense, because this
- * block stays in the conversation and an "answering..." would read as stale
- * the moment the answer lands.
+ * It quotes the question back, which is what the operator asked for: the
+ * prompt box clears on submit and no `/btw` message is ever created, so
+ * without it nothing on screen says what was sent. The answer block repeats
+ * the question rather than dropping it, because the model keeps streaming its
+ * own text between the two and a headerless answer arriving after that reads
+ * as orphaned.
  */
-export const INLINE_ASIDE_SENT = `${INLINE_ASIDE_MARKER} *sent to Claude on the side*`
-
-export function formatInlineAsideAsk(): string {
-  return `\n${INLINE_ASIDE_SENT}\n`
+export function formatInlineAsideAsk(question: string): string {
+  const asked = oneLine(question)
+  const shown = asked.length > RECEIPT_QUESTION_MAX ? `${asked.slice(0, RECEIPT_QUESTION_MAX).trimEnd()}...` : asked
+  return `\n${INLINE_ASIDE_MARKER} ${shown} ${INLINE_ASIDE_SENT_NOTE}\n`
 }
 
 /**
@@ -572,7 +590,7 @@ export async function handleBtwCommand(
     // arrives. Only while a turn is running: an idle conversation gets the
     // whole pair as its own message a moment later anyway.
     const asked = busy
-      ? deliverAsideInline(client, input.sessionID, formatInlineAsideAsk(), options).catch(() => false)
+      ? deliverAsideInline(client, input.sessionID, formatInlineAsideAsk(question), options).catch(() => false)
       : Promise.resolve(false)
     answer.then(
       async (result) => {
