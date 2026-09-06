@@ -15,6 +15,7 @@ import {
   emitAsideInline,
   fetchAsideHistory,
   formatInlineAside,
+  formatInlineAsideAsk,
   handleBtwCommand,
   INLINE_ASIDE_MARKER,
   registerAsideSink,
@@ -283,6 +284,35 @@ test("an aside written into a turn is marked so a rebuilt transcript drops it", 
     (kept[1] as { content: { text: string }[] }).content.map((part) => part.text),
     ["Main answer"],
     "only Claude's own text is replayed",
+  )
+})
+
+test("the receipt marks the aside as sent, carries no question, and is dropped like the answer", () => {
+  const ask = formatInlineAsideAsk()
+  assert.equal(ask.trimStart().startsWith(INLINE_ASIDE_MARKER), true, "the same marker leads it, so the same strip covers it")
+  assert.deepEqual(
+    ask.trim().split("\n").filter((line) => !line.startsWith("▌")),
+    [],
+    "the bar runs down the receipt too",
+  )
+  assert.doesNotMatch(ask, /answering|asking/i, "the note stays true once the answer lands below it")
+
+  const kept = filterSideQuestionHistory([
+    user("Start."),
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Main answer" },
+        { type: "text", text: ask },
+        { type: "text", text: formatInlineAside("what did i say?", "You said pineapple.") },
+      ],
+    },
+    user("Next."),
+  ] as never)
+  assert.deepEqual(
+    (kept[1] as { content: { text: string }[] }).content.map((part) => part.text),
+    ["Main answer"],
+    "receipt and answer both stay out of Claude's prompt",
   )
 })
 
@@ -582,11 +612,16 @@ test("an answer that arrives while a turn is streaming is written into that turn
     const turn = await streaming
     assert.deepEqual(turn.errors, [])
     assert.match(turn.answer, /▌ \*\*btw:\*\* What did i say\?/)
+    assert.match(turn.answer, /sent to Claude on the side/, "the aside is receipted before its answer exists")
     assert.match(turn.answer, /Aside 1: What did i say\?/)
     assert.match(turn.answer, /Main answer/, "the turn still delivers its own reply")
     assert.ok(
-      turn.parts.filter((part) => part.type === "text-start").length >= 2,
-      "the aside is a block of its own, so its marker leads a part",
+      turn.answer.indexOf("sent to Claude on the side") < turn.answer.indexOf("Aside 1:"),
+      "a receipt that landed after its own answer would read backwards",
+    )
+    assert.ok(
+      turn.parts.filter((part) => part.type === "text-start").length >= 3,
+      "receipt and answer are blocks of their own, so each marker leads a part",
     )
     assert.deepEqual(fakeSdk.toasts(), [], "nothing is toasted: the conversation itself carries the answer")
     assert.equal(emitAsideInline("ses_inline", "late"), false, "the sink goes with the stream")

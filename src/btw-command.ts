@@ -230,9 +230,30 @@ function barEveryLine(text: string): string {
     .join("\n")
 }
 
+function asideHeader(question: string): string {
+  return `${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}`
+}
+
 export function formatInlineAside(question: string, answer: string): string {
-  const header = `${INLINE_ASIDE_MARKER} ${question.replace(/\s+/g, " ").trim()}`
-  return `\n${header}\n▌\n${barEveryLine(answer.trim())}\n`
+  return `\n${asideHeader(question)}\n▌\n${barEveryLine(answer.trim())}\n`
+}
+
+/**
+ * A receipt written into the running turn the moment the question goes out, so
+ * a `/btw` typed mid-turn shows as taken instead of looking swallowed until
+ * the answer arrives.
+ *
+ * Deliberately without the question, though the operator just typed it: the
+ * answer block below carries the question anyway, and the model usually
+ * streams more of its own text between the two, so echoing it here would put
+ * the same question on screen twice for no gain. Past tense, because this
+ * block stays in the conversation and an "answering..." would read as stale
+ * the moment the answer lands.
+ */
+export const INLINE_ASIDE_SENT = `${INLINE_ASIDE_MARKER} *sent to Claude on the side*`
+
+export function formatInlineAsideAsk(): string {
+  return `\n${INLINE_ASIDE_SENT}\n`
 }
 
 /**
@@ -546,10 +567,21 @@ export async function handleBtwCommand(
       questionLength: question.length,
       history: history.length,
     })
+    // Written before the answer exists, so a `/btw` typed mid-turn shows up in
+    // the turn straight away rather than looking swallowed until the answer
+    // arrives. Only while a turn is running: an idle conversation gets the
+    // whole pair as its own message a moment later anyway.
+    const asked = busy
+      ? deliverAsideInline(client, input.sessionID, formatInlineAsideAsk(), options).catch(() => false)
+      : Promise.resolve(false)
     answer.then(
       async (result) => {
         log.info("btw: early answer arrived", { sessionID: input.sessionID, busy, responseLength: result.response.length })
         if (!busy || result.synthetic) return
+        // Awaited, not raced: a receipt that landed after the answer it
+        // announces would read backwards. In the common case it was written
+        // long before this and the await is already settled.
+        await asked
         const inline = await deliverAsideInline(
           client,
           input.sessionID,

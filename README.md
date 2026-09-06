@@ -524,6 +524,7 @@ The plugin registers the command without replacing an existing user-defined `btw
 
 Where the answer appears, in the conversation either way:
 
+- **A receipt, straight away**, when you asked while a turn was running: a `▌ **btw:** *sent to Claude on the side*` line in the reply you are watching, so a `/btw` typed mid-turn is visibly taken rather than looking swallowed until the answer arrives. If opencode is between two streams at that moment (it was running a tool), the receipt lands when the next one opens.
 - **Inside the running turn's own reply**, as soon as the answer arrives, when you asked while Claude was working. It is written into the reply you are already watching as its own block, headed `▌ **btw:** <your question>`, so it stays there and is easy to pick out. Every line of the aside, answer included, carries that `▌` bar, so it reads as one block down its whole height. Nothing is queued and the `/btw` message itself is dropped, because the answer is already in the transcript. The turn goes on to deliver its own reply as usual.
 - **As its own `/btw` message and answer** when the conversation is idle, or when the turn had no stream open to write into at that moment (opencode was running a tool between two of them). In the second case the pair lands when the turn ends; nothing is announced in the meantime, because the answer itself is what arrives.
 - Follow-ups work: earlier asides in the conversation are sent along as the aside's history.
