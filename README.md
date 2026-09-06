@@ -660,6 +660,8 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 
 Set `permissionMode: "plan"` to forward `--permission-mode plan` to Claude. The plugin handles `ExitPlanMode` specially — instead of forwarding it as a tool call, it converts it to a confirmation prompt that flows through opencode normally.
 
+> **`permissionMode: "plan"` does nothing on its own.** `skipPermissions` defaults to `true`, and the CLI lets `--dangerously-skip-permissions` override `--permission-mode plan` outright: measured on CLI 2.1.258, a plan-mode run with both flags wrote a file on request without so much as a prompt, while the same run without the skip flag refused and created nothing. To get real plan mode, set `skipPermissions: false` as well.
+
 By default that prompt is text: the plan is rendered as markdown, followed by `**Do you want to proceed with this plan?** (yes/no)`, and you answer in your next message.
 
 ### Approval as a real form (`planModeQuestion`, opt-in)
@@ -675,7 +677,7 @@ Set `planModeQuestion: true` to route the approval through opencode's native `qu
 
 The plan is still rendered, but the turn then ends on `tool-calls` and opencode runs its own `question` tool, so approval is a form rather than prose. Your answer is fed back to the CLI as the `tool_result` for the original `ExitPlanMode` call, which is what actually unlocks plan mode on the Claude side. A "yes" typed as ordinary text never does that. Anything other than picking `yes` (including custom text) comes back as rejection feedback the model is told to act on.
 
-> **Verify before enabling.** The question form it delivers through now works (see [AskUserQuestion](#askuserquestion) and [question troubleshooting](#question-troubleshooting)), but nobody has driven an actual `ExitPlanMode` approval through this bridge end to end, so it stays off by default. On opencode builds with no `question` registry entry the plugin silently keeps the text path (look for `plan-mode question gate` in the log).
+> **This cannot currently fire on the default headless transport, so leaving it off costs you nothing.** The form it delivers through works (see [AskUserQuestion](#askuserquestion)), but headless `--print` does not offer the model an `ExitPlanMode` tool at all on CLI 2.1.258, and the bridge keys on that tool call. Measured three ways: asked directly for its tool list in plan mode, the CLI returned `Agent, Bash, Edit, ListAgents, Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow, Write` and nothing else; asked to do work it said "I'm unable to exit plan mode from within the tool set available to me"; and a full probe through this plugin with `planModeQuestion: true` produced no `ExitPlanMode` anywhere in `plugin.log` while the model asked for approval in prose. The name is still known to the CLI (`--disallowedTools ExitPlanMode` validates silently, where a bogus name warns), so this reads as headless dormancy rather than removal, the same shape as the [`AskUserQuestion` fallback](#askuserquestion). The text path below is what you actually get, and it works. Re-run those probes on a newer CLI before assuming the bridge is reachable. On opencode builds with no `question` registry entry the plugin silently keeps the text path (look for `plan-mode question gate` in the log).
 
 Approval bridge contributed by [@CollieIsCute](https://github.com/CollieIsCute).
 

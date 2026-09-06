@@ -82,14 +82,14 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. |
-| `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. Does not negate `skipPermissions: true`; never assume `plan` makes that combination read-only. Not forwarded by the current interactive spawn path. |
+| `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. Does not negate `skipPermissions: true`; never assume `plan` makes that combination read-only. Measured on CLI 2.1.258: with both flags a plan-mode run wrote a file unprompted, without the skip flag the same request was refused, so real plan mode needs `skipPermissions: false`. Not forwarded by the current interactive spawn path. |
 | `controlRequestBehavior` | `allow` / `deny` | `allow` | Automatically answer CLI `can_use_tool` requests if emitted. Not an opencode permission prompt or a sandbox; bypass/pre-allowed tools may never ask. `AskUserQuestion` defaults to deny. |
 | `controlRequestToolBehaviors` | object of tool name to `allow`/`deny` | unset | Case-insensitive per-tool override of the above (`Bash`, `Read`, `mcp__github__list_prs`). Do not allow `AskUserQuestion`: that can let headless Claude self-answer. |
 | `controlRequestDenyMessage` | string | built-in text | Override ordinary deny text. `AskUserQuestion` always uses its own stop-and-wait message. |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Case-insensitive replacement list, not additive and not a capability allowlist. Known entries expose `mcp__opencode_proxy__<name>`; omitted/unknown tools are not disabled. `Task` also brings `task_batch`; `[]` disables this list, not MCP proxying. See the proxy table for exceptions. |
 | `extraDisallowedTools` | string[] | unset | Claude built-ins to switch off outright with `--disallowedTools`, for tools that have no proxy (`["NotebookEdit"]`). Removes the capability rather than routing it. |
 | `proxyToolTimeoutMs` | object of proxy tool name to ms | unset | Positive deadlines, case-insensitive keys. Fallback 10 min (including dynamic MCP tools); `task` and `task_batch` 60 min each; `question` 30 min. Set both task keys to override both. Zero/negative values do not disable deadlines; values above 2147483647 are clamped. Bash `input.timeout` raises the resolved deadline, but executor/client ceilings still apply. `compress` is intercepted without a deadline. |
-| `planModeQuestion` | boolean | `false` | Bridge `ExitPlanMode` approval to opencode's `question` and return a real CLI tool result. Requires a live question registry entry; otherwise keeps text fallback. The form it uses is verified working, but this bridge's own approval round-trip is not, so opt in only on request. Prose yes/no is not a verified CLI plan-mode unlock. |
+| `planModeQuestion` | boolean | `false` | Bridge `ExitPlanMode` approval to opencode's `question` and return a real CLI tool result. Requires a live question registry entry; otherwise keeps text fallback. Cannot fire on the headless transport: CLI 2.1.258 does not offer `ExitPlanMode` under `--print`, measured directly and through a full plugin probe, so the text path is what runs. Prose yes/no is not a verified CLI plan-mode unlock. |
 | `webSearch` | `"claude"` / `"disabled"` / `"<opencode tool name>"` | `"claude"` | Default: CLI search with the query rendered as text. Custom target forwards a tool call to an existing opencode tool accepting `query`; this is mapping, not the authenticated proxy replacement, so do not assume CLI search is suppressed. `"disabled"` disallows headless `WebSearch`. |
 | `bridgeOpencodeMcp` | boolean | `true` | Discover/translate disk MCP config plus runtime enabled status. False stops this bridge, not explicit `mcpConfig`, the built-in-tool proxy, or Claude's own MCP settings. Only bridge trusted servers. |
 | `mcpConfig` | string or string[] | unset | Extra `--mcp-config` paths or inline JSON passed alongside the bridged config. |
@@ -430,10 +430,14 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 ## Do not
 
 - Do not enable `planModeQuestion` or `"Question"` without the user asking. `"Question"`
-  works (round-trip verified) but disables Claude's own AskUserQuestion; `planModeQuestion`
-  delivers through the same working form yet its approval round-trip is still untested.
-  The historical blanket TUI diagnosis was confounded by a local macOS notification
-  hook; do not repeat it as established fact.
+  works (round-trip verified headless and as a real TUI form) but disables Claude's own
+  AskUserQuestion; `planModeQuestion` cannot fire at all on the headless transport,
+  because CLI 2.1.258 does not offer `ExitPlanMode` under `--print`. The historical
+  blanket TUI diagnosis was confounded by a local macOS notification hook; do not
+  repeat it as established fact.
+- Do not recommend `permissionMode: "plan"` without also setting `skipPermissions: false`.
+  The CLI lets `--dangerously-skip-permissions` override plan mode, and `skipPermissions`
+  defaults to true, so plan mode alone changes nothing.
 - Do not "fix" the `-fast` model ids by passing Anthropic-looking names; the real ones are
   retired and the `--settings` opt-in is the only headless path.
 - Do not add long-context `cost.tiers` to a model; Claude 4.6+ bills the full 1M window
