@@ -33,9 +33,9 @@ export interface ClaudeCodeConfig {
   /**
    * Route `ExitPlanMode` through opencode's native `question` tool so plan
    * approval is a real form instead of a "(yes/no)" line the operator has to
-   * answer in prose. Off by default: opencode's question form is currently
-   * broken upstream, so enabling this trades a working text prompt for a
-   * silent hang. See the plan-mode gotcha in AGENTS.md.
+   * answer in prose. Off by default because it cannot currently fire: headless
+   * `--print` is not offered an `ExitPlanMode` tool at all, and this bridge
+   * keys on that tool call. See the plan-mode gotcha in AGENTS.md.
    */
   planModeQuestion?: boolean
   webSearch?: WebSearchRouting
@@ -211,11 +211,15 @@ export interface ClaudeCodeProviderSettings {
    * real form; the answer is fed back to the CLI as the `tool_result` for
    * the original `ExitPlanMode` call, which is what unlocks plan mode.
    *
-   * Two reasons it is opt-in. opencode's `question` form does not currently
-   * render (upstream anomalyco/opencode#36604), so an enabled bridge hangs
-   * the turn until the operator interrupts; and older opencode builds have
-   * no `question` registry entry at all, in which case the plugin silently
-   * keeps the text path. See the plan-mode gotcha in AGENTS.md.
+   * Opt-in, and currently dormant. The delivery surface works: opencode's
+   * `question` form renders and round-trips (verified 2026-09-06, correcting
+   * an earlier claim here that it was broken upstream). What does not work is
+   * the trigger: headless `--print` does not offer the model an
+   * `ExitPlanMode` tool, measured on CLI 2.1.258, so the bridge has nothing
+   * to key on and the text path is what you get. Older opencode builds also
+   * have no `question` registry entry, in which case the plugin silently
+   * keeps the text path. Re-run the probes in AGENTS.md on a newer CLI before
+   * assuming the bridge is reachable.
    */
   planModeQuestion?: boolean
 

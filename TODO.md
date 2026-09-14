@@ -31,3 +31,12 @@
 ## Dropped
 
 - Dropped 2026-09-06 at the user's request: live observation of `idleProcessTimeoutMs: 900000`. The 15-minute eviction and subsequent resume remain unverified in the user's window; no test is planned.
+
+## Backlog
+
+- 2026-09-14: `src/plan-mode-question.ts:37` still carries the retracted "opencode's question
+  form does not currently render (anomalyco/opencode#36604)" claim. The 2026-09-06 correction
+  in AGENTS.md supersedes it: the form renders and round-trips, and the real reason the bridge
+  is dormant is that headless `--print` offers no `ExitPlanMode` tool. The equivalent comments
+  in `src/types.ts` were corrected on the `readme-quickstart` branch; this one was left alone
+  because that lane was scoped to `src/types.ts` only.
