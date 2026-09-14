@@ -426,6 +426,8 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | `⚙ invalid` rows for `todowrite` inside a subagent | Subagent lacks `permission.todowrite: "allow"` | Grant it on the agent definition with approval |
 | Other `⚙ invalid` or `⚙ unknown` tool rows | A Claude tool the plugin does not map for this version | Note plugin version, CLI version and the tool name; upgrade or report |
 | `AGENTS.md` appears twice in Claude's system prompt | Plugin older than 0.16.0 | Upgrade |
+| Turn ends with an error naming an exit code or signal and a stderr tail | The `claude` child died mid-turn without emitting its terminal `result` | Read the quoted stderr; that is the CLI's own reason. Older builds reported this as a normal stop, so a truncated answer looked finished |
+| An answer is cut off with no error, in a window with many open chats | Plugin older than this fix: LRU eviction could kill a process mid-turn | Upgrade. Eviction now takes the oldest idle process and skips the round when all 16 are busy |
 
 ## Do not
 

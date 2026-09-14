@@ -50,6 +50,7 @@ import {
   isTurnInFlight,
   interruptTurn,
   takeUnattendedLines,
+  describeChildCrash,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
   sessionKey,
@@ -234,6 +235,9 @@ const AUTO_CONTINUE_MAX_ATTEMPTS = 8
 const AUTO_CONTINUE_MAX_ELAPSED_MS = 10 * 60 * 1000
 const AUTO_CONTINUE_NO_PROGRESS_LIMIT = 2
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
+// How long a turn that lost its child waits for that child's exit status
+// before reporting the crash without one.
+const CHILD_EXIT_STATUS_GRACE_MS = 250
 
 const AUTO_CONTINUE_PROMPT =
   "Continue the task from where you stopped. Do not summarize; keep working until the requested task is complete, you need clarification, or you hit a real blocker."
@@ -942,7 +946,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private toFinishReason(
-    reason: "stop" | "tool-calls" = "stop",
+    reason: "stop" | "tool-calls" | "error" = "stop",
   ): LanguageModelV3FinishReason {
     return {
       unified: reason,
@@ -4147,25 +4151,78 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             )
             drainBuffer.length = 0
           }
+          // A close without a terminal `result` means the child died mid-turn.
+          // Reporting that as `stop` with empty usage made a crashed CLI look
+          // like a short but successful answer. An abort is not a crash: the
+          // operator asked for it, and the CLI may exit before its interrupt
+          // result lands.
+          const crashed = !turnCompleted && !autoContinueState.aborted
           controllerClosed = true
           cleanupTurn()
           endTextBlock()
-          controller.enqueue({
-            type: "finish",
-            finishReason: toFinishReason("stop"),
-            usage: toUsage(),
-            providerMetadata: {
-              "claude-code": {
-                ...resultMeta,
-                ...(compactionMode
-                  ? { compactionModel: effectiveModelId }
-                  : {}),
+
+          const finishClose = (
+            exitCode: number | null,
+            signal: NodeJS.Signals | null,
+          ) => {
+            if (crashed) {
+              log.warn("claude process closed without a result", {
+                sessionKey: sk,
+                exitCode,
+                signal,
+                stderrBytes: activeProcess?.lastStderr?.length ?? 0,
+              })
+              controller.enqueue({
+                type: "error",
+                error: new Error(
+                  describeChildCrash(exitCode, signal, activeProcess?.lastStderr),
+                ),
+              })
+            }
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason(crashed ? "error" : "stop"),
+              usage: toUsage(),
+              providerMetadata: {
+                "claude-code": {
+                  ...resultMeta,
+                  ...(compactionMode
+                    ? { compactionModel: effectiveModelId }
+                    : {}),
+                },
               },
-            },
-          })
-          try {
-            controller.close()
-          } catch {}
+            })
+            try {
+              controller.close()
+            } catch {}
+          }
+
+          // stdout usually reaches EOF a tick before the child's `exit` event,
+          // so the status that explains the crash is not known yet here. The
+          // turn is over either way; wait briefly for it rather than report a
+          // bare "closed its output". Bounded, and only on the crash path.
+          if (crashed && proc.exitCode === null && proc.signalCode === null) {
+            let reported = false
+            const report = (
+              exitCode: number | null,
+              signal: NodeJS.Signals | null,
+            ) => {
+              if (reported) return
+              reported = true
+              clearTimeout(exitGrace)
+              proc.off("exit", onExit)
+              finishClose(exitCode, signal)
+            }
+            const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+              report(code, signal)
+            const exitGrace = setTimeout(
+              () => report(proc.exitCode, proc.signalCode),
+              CHILD_EXIT_STATUS_GRACE_MS,
+            )
+            proc.once("exit", onExit)
+            return
+          }
+          finishClose(proc.exitCode, proc.signalCode)
         }
 
         // Centralised per-turn teardown. Every exit path funnels through here
