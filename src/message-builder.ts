@@ -1,41 +1,69 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
+import {
+  COMPACT_BOUNDARY_MARKER,
+  RATE_LIMIT_MARKER,
+  RESULT_ERROR_MARKER,
+} from "./cli-events.js"
+import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
 import { parseSideQuestionContent } from "./side-question.js"
+import { TURN_STATS_MARKER } from "./turn-stats.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
 
-const ASIDE_MARKERS = [INLINE_ASIDE_MARKER, ...LEGACY_INLINE_ASIDE_MARKERS]
+/**
+ * Leading markers of text parts the plugin itself wrote into an assistant
+ * reply: the `/btw` aside and its pre-bar form, the turn-stats footer, and the
+ * `▌` notes for a CLI compaction, a rate-limit rejection and a failed result
+ * subtype. None of them was ever model output or ever in Claude's context, so
+ * a transcript rebuilt for a fresh CLI process must not hand any of them back
+ * as something Claude said. Each is the first characters of its own text part,
+ * which is what makes the strip exact instead of a guess at where a block ends.
+ */
+const PLUGIN_NOTE_MARKERS = [
+  INLINE_ASIDE_MARKER,
+  ...LEGACY_INLINE_ASIDE_MARKERS,
+  TURN_STATS_MARKER,
+  COMPACT_BOUNDARY_MARKER,
+  RATE_LIMIT_MARKER,
+  RESULT_ERROR_MARKER,
+  DOCTOR_MARKER,
+]
 
-function isInlineAside(part: any): boolean {
+function isPluginNote(part: any): boolean {
   if (!part || part.type !== "text" || typeof part.text !== "string") return false
   const text = part.text.trimStart()
-  return ASIDE_MARKERS.some((marker) => text.startsWith(marker))
+  return PLUGIN_NOTE_MARKERS.some((marker) => text.startsWith(marker))
 }
 
-/**
- * An aside answered while a turn was running was written into that turn's
- * reply as its own text part (btw-command.ts). It was never Claude's own
- * output and was never in Claude's context, so a rebuilt transcript must not
- * hand it back as something Claude said.
- */
-function stripInlineAsides(content: unknown): unknown {
+function stripPluginNotes(content: unknown): unknown {
   if (!Array.isArray(content)) return content
-  const kept = content.filter((part: any) => !isInlineAside(part))
+  const kept = content.filter((part: any) => !isPluginNote(part))
   return kept.length === content.length ? content : kept
 }
 
+/**
+ * Drop every plugin-authored exchange and note from a transcript before it is
+ * replayed to the CLI: the `/btw` question with its answer, the
+ * `/claude-code-doctor` report with its command, and the `▌` blocks listed in
+ * `PLUGIN_NOTE_MARKERS`. Named for the `/btw` case it started as; it is the
+ * one place all of them are removed, and it is called from both transcript
+ * rebuild paths.
+ */
 export function filterSideQuestionHistory(prompt: Prompt): Prompt {
-  let aside = false
+  let pluginCommand = false
   const kept = prompt.filter((message) => {
     if (message.role === "user") {
-      aside = parseSideQuestionContent(message.content) !== null
-      return !aside
+      pluginCommand =
+        parseSideQuestionContent(message.content) !== null ||
+        parseDoctorCommandContent(message.content) !== null
+      return !pluginCommand
     }
-    return message.role !== "assistant" || !aside
+    return message.role !== "assistant" || !pluginCommand
   })
   return kept.map((message) =>
-    message.role === "assistant" ? ({ ...message, content: stripInlineAsides(message.content) } as typeof message) : message,
+    message.role === "assistant" ? ({ ...message, content: stripPluginNotes(message.content) } as typeof message) : message,
   )
 }
 

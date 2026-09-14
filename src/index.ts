@@ -25,6 +25,7 @@ import {
   setDefaultSubagentModel,
 } from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
+import { DOCTOR_COMMAND } from "./doctor.js"
 import { configureLogger, log } from "./logger.js"
 import { handleBtwCommand, type BtwSdkClient } from "./btw-command.js"
 import { registerBundledSkillPath } from "./skill-bridge.js"
@@ -87,6 +88,26 @@ export function registerSideQuestionCommand(config: OpenCodeConfig): boolean {
   config.command.btw = {
     template: "/btw $ARGUMENTS",
     description: "Ask a side question in the live Claude Code session without changing its context",
+  }
+  return true
+}
+
+/**
+ * Registers `/claude-code-doctor` unless the user defined their own command of
+ * that name. Unlike `/btw` there is no hook to guard: the command is a plain
+ * template and the language model answers the message it produces, so leaving
+ * a user definition alone here is the whole guard.
+ *
+ * The name carries no slash. opencode invokes a command as `/<key>` and takes
+ * everything after the first space as `$ARGUMENTS`, so `claude-code doctor`
+ * would be the command `claude-code` with the argument `doctor`.
+ */
+export function registerDoctorCommand(config: OpenCodeConfig): boolean {
+  config.command ??= {}
+  if (config.command[DOCTOR_COMMAND]) return false
+  config.command[DOCTOR_COMMAND] = {
+    template: `/${DOCTOR_COMMAND} $ARGUMENTS`,
+    description: "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls",
   }
   return true
 }
@@ -178,6 +199,7 @@ export function createClaudeCode(
       ignoreAnthropicApiKey: settings.ignoreAnthropicApiKey,
       idleProcessTimeoutMs: settings.idleProcessTimeoutMs,
       bridgeOpencodeSkills: settings.bridgeOpencodeSkills === true,
+      turnStats: settings.turnStats === true,
       interactive: settings.interactive,
       interactiveBypass: settings.interactiveBypass,
       interactiveAllowTools: settings.interactiveAllowTools,
@@ -491,6 +513,7 @@ const server: OpenCodePlugin = async (input) => {
   return {
     config: async (config) => {
       if (registerSideQuestionCommand(config)) ownsSideQuestionCommand = true
+      registerDoctorCommand(config)
       // The bundled `claude-code-plugin` skill: opencode lists it for every
       // provider via skills.paths; the spawn path also stages it as a
       // --plugin-dir so Claude's own Skill tool can load it.

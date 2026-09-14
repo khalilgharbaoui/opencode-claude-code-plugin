@@ -33,6 +33,8 @@ export interface ActiveProcess {
   systemPromptFile?: string
   /** Effort the process was spawned with, so a respawn keeps it. */
   effort?: ReasoningEffort
+  /** When the child was spawned, so `/claude-code-doctor` can report its age. */
+  startedAt?: number
   cliArgs?: string[]
   // Retain resolved calls until continuation settles, including late channel closure.
   pendingProxyCompletions?: Map<string, {
@@ -518,6 +520,7 @@ export function spawnClaudeProcess(
     mcpHash,
     systemPromptFile,
     effort,
+    startedAt: Date.now(),
     cliArgs: [...cliArgs],
     unattendedLines: [],
     unattendedDropped: 0,
@@ -808,4 +811,72 @@ export function buildCliArgs(opts: {
  */
 export function sessionKey(cwd: string, modelId: string): string {
   return `${cwd}::${modelId}`
+}
+
+/**
+ * Pull the readable parts back out of a session key for the doctor report.
+ * The key is `<cwd>::<model>::<scope>::<affinity>::context=[...]` with an
+ * optional `::effort=<level>` tail, and the compaction variant is
+ * `<cwd>::<model>::compaction::<affinity>`, so the model and the opencode
+ * session id sit at the same two positions either way.
+ */
+export function describeSessionKey(key: string): {
+  cwd: string
+  model: string
+  session: string
+  compaction: boolean
+} {
+  const parts = key.split("::")
+  return {
+    cwd: parts[0] ?? "unknown",
+    model: parts[1] ?? "unknown",
+    session: parts[3] ?? "unknown",
+    compaction: parts[2] === "compaction",
+  }
+}
+
+/** One live `claude` child, flattened for `/claude-code-doctor`. */
+export interface ActiveProcessSnapshot {
+  sessionKey: string
+  session: string
+  model: string
+  compaction: boolean
+  pid?: number
+  inFlight: boolean
+  ageMs?: number
+  effort?: ReasoningEffort
+  attached: boolean
+  proxyUrl?: string
+  /**
+   * Tail of the child's stderr, when something upstream of this module is
+   * recording one. Read through an optional property so the doctor works
+   * whether or not that field exists on the running build.
+   */
+  lastStderr?: string
+}
+
+/**
+ * Every live child, oldest-used first (the map is LRU). Read-only; nothing
+ * here touches eviction or the process's own listeners.
+ */
+export function snapshotActiveProcesses(now = Date.now()): ActiveProcessSnapshot[] {
+  const out: ActiveProcessSnapshot[] = []
+  for (const [key, ap] of activeProcesses) {
+    const described = describeSessionKey(key)
+    const lastStderr = (ap as { lastStderr?: unknown }).lastStderr
+    out.push({
+      sessionKey: key,
+      session: ap.opencodeSessionID ?? described.session,
+      model: described.model,
+      compaction: described.compaction,
+      pid: ap.proc.pid,
+      inFlight: ap.turnInFlight === true,
+      ageMs: ap.startedAt === undefined ? undefined : Math.max(0, now - ap.startedAt),
+      effort: ap.effort,
+      attached: ap.lineEmitter.listenerCount("line") > 0,
+      proxyUrl: ap.proxyServer?.url,
+      lastStderr: typeof lastStderr === "string" ? lastStderr : undefined,
+    })
+  }
+  return out
 }

@@ -199,6 +199,22 @@ export function collectStartupDiagnostics(
 }
 
 let logged = false
+let lastProviders: Record<string, DiagnosticsProviderEntry> = {}
+let lastOpencodeVersion: string | undefined
+
+/**
+ * The providers the config hook last registered, so `/claude-code-doctor` can
+ * re-run `collectStartupDiagnostics` on demand instead of reporting a snapshot
+ * frozen at startup. Kept here rather than in the doctor because this is
+ * already the module that owns the shape.
+ */
+export function lastDiagnosticsProviders(): Record<string, DiagnosticsProviderEntry> {
+  return lastProviders
+}
+
+export function lastKnownOpencodeVersion(): string | undefined {
+  return lastOpencodeVersion
+}
 
 /**
  * Emit the startup block once per process. Fire-and-forget: the Claude CLI
@@ -209,6 +225,11 @@ export function logStartupDiagnostics(
   providers: Record<string, DiagnosticsProviderEntry>,
   opencodeVersion?: string,
 ): void {
+  // Recorded before the once-per-process guard: an account expansion calls
+  // this a second time with the real provider set, and the doctor should read
+  // that one rather than the pre-expansion view.
+  lastProviders = providers
+  if (opencodeVersion) lastOpencodeVersion = opencodeVersion
   if (logged) return
   logged = true
   void (async () => {
@@ -235,4 +256,6 @@ export function logStartupDiagnostics(
 /** For tests. */
 export function _resetStartupDiagnostics(): void {
   logged = false
+  lastProviders = {}
+  lastOpencodeVersion = undefined
 }
