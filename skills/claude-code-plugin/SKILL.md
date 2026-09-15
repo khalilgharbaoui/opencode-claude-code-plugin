@@ -451,6 +451,8 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | A CLI tool row looks successful but its output is an error | Plugin older than this release forwarded `is_error` results as successes | Upgrade; failed CLI tools now render as failed |
 | Claude "forgot" the earlier part of a long conversation | Claude Code compacted its own context | Look for the `▌ **context compacted:**` note in the transcript |
 | Wanting the per-turn cost in the chat | Not shown by default | Set `turnStats: true` and restart opencode |
+| Turn ends with an error naming an exit code or signal and a stderr tail | The `claude` child died mid-turn without emitting its terminal `result` | Read the quoted stderr; that is the CLI's own reason. Older builds reported this as a normal stop, so a truncated answer looked finished |
+| An answer is cut off with no error, in a window with many open chats | Plugin older than this fix: LRU eviction could kill a process mid-turn | Upgrade. Eviction now takes the oldest idle process and skips the round when all 16 are busy |
 
 ## Do not
 

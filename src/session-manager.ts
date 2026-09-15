@@ -65,6 +65,13 @@ export interface ActiveProcess {
    */
   turnInFlight?: boolean
   turnIdleWaiters?: Array<() => void>
+  /**
+   * Tail of what the child last wrote to stderr, capped at
+   * `STDERR_RETAIN_BYTES` with the newest bytes kept. Often the only record
+   * of why a child died when it closed without emitting a terminal `result`
+   * line; see `describeChildCrash`.
+   */
+  lastStderr?: string
 }
 
 /** Most recently used process serving an opencode session id, if any. */
@@ -111,6 +118,39 @@ export function takeUnattendedLines(ap: ActiveProcess): {
   return { lines, dropped }
 }
 
+// The CLI writes its own diagnostics to stderr, which is where the reason a
+// child died is usually the only thing on record. Keep the tail so a turn
+// that ends with the child gone can say why; bounded, newest bytes win.
+const STDERR_RETAIN_BYTES = 2 * 1024
+
+export function retainStderr(ap: ActiveProcess, chunk: string): void {
+  ap.lastStderr = ((ap.lastStderr ?? "") + chunk).slice(-STDERR_RETAIN_BYTES)
+}
+
+/**
+ * One line (plus the stderr tail) explaining a child that closed its stdio
+ * without emitting a terminal `result`. Before this the turn simply finished
+ * with reason `stop` and empty usage, so a crashed CLI read as a short but
+ * successful answer.
+ */
+export function describeChildCrash(
+  exitCode: number | null | undefined,
+  signal: NodeJS.Signals | null | undefined,
+  lastStderr: string | undefined,
+): string {
+  const how = signal
+    ? `was killed by ${signal}`
+    : typeof exitCode === "number"
+      ? `exited with code ${exitCode}`
+      : "closed its output"
+  const tail = lastStderr?.trim()
+  return (
+    `The Claude Code CLI ${how} before finishing this turn (no result was emitted), ` +
+    "so the answer above may be incomplete." +
+    (tail ? `\n\nLast stderr from the CLI:\n${tail}` : "")
+  )
+}
+
 // One active CLI process per session key. Keyed by a composite
 // (cwd + model + opencode session-affinity) so two chats don't race.
 // Iteration order is insertion order, which we refresh on access to
@@ -125,7 +165,7 @@ const MAX_IDLE_TIMEOUT_MS = 2_147_483_647
 // Cap on live CLI subprocesses. Session-affinity-keyed entries accumulate
 // one-per-chat, so an unbounded map would leak processes as users open new
 // chats. This caps at a reasonable working-set and evicts the oldest.
-const MAX_ACTIVE_PROCESSES = 16
+export const MAX_ACTIVE_PROCESSES = 16
 const PROCESS_EXIT_TIMEOUT_MS = 1_500
 const PROCESS_FORCE_EXIT_TIMEOUT_MS = 500
 
@@ -201,12 +241,32 @@ function touch(key: string): void {
   }
 }
 
-function evictIfNeeded(): void {
+/**
+ * Make room for a new child, but never by killing one that is mid-turn.
+ * Insertion order is LRU, so the first idle entry is the oldest safe victim.
+ * Evicting an in-flight process truncates that turn silently: its readline
+ * closes, the close handler finishes the stream, and the operator sees a
+ * half-written answer with no error. When every process is busy we exceed the
+ * cap for now rather than kill live work; the next spawn tries again.
+ */
+export function evictIfNeeded(): void {
   while (activeProcesses.size >= MAX_ACTIVE_PROCESSES) {
-    const oldestKey = activeProcesses.keys().next().value
-    if (!oldestKey) break
-    log.info("evicting LRU claude process", { sessionKey: oldestKey })
-    deleteActiveProcess(oldestKey)
+    let victimKey: string | undefined
+    for (const [key, ap] of activeProcesses) {
+      if (!isTurnInFlight(ap)) {
+        victimKey = key
+        break
+      }
+    }
+    if (!victimKey) {
+      log.warn("every claude process is mid-turn; skipping LRU eviction", {
+        active: activeProcesses.size,
+        cap: MAX_ACTIVE_PROCESSES,
+      })
+      return
+    }
+    log.info("evicting LRU claude process", { sessionKey: victimKey })
+    deleteActiveProcess(victimKey)
   }
 }
 
@@ -549,6 +609,23 @@ export function spawnClaudeProcess(
     log.error("claude process error", { sessionKey, error: err.message })
   })
 
+  // Same baseline for the child's stdin, which is a separate emitter. Every
+  // write that asks the CLI for work (fresh envelope, auto-continue, the
+  // watchdog re-send, the interrupt request) can land after the child died,
+  // and an unhandled 'error' on a stream throws inside opencode's own
+  // process. Ending the turn is not this handler's job: the child is gone,
+  // so its readline 'close' follows and the turn's close handler reports it
+  // (see `describeChildCrash`). Releasing `turnInFlight` is, since no
+  // terminal `result` is ever coming for a write that never arrived.
+  proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+    log.warn("claude process stdin error", {
+      sessionKey,
+      code: err.code,
+      error: err.message,
+    })
+    settleTurn(ap)
+  })
+
   proc.on("exit", (code, signal) => {
     log.info("claude process exited", { code, signal, sessionKey })
     void proxyServer?.close()
@@ -572,6 +649,7 @@ export function spawnClaudeProcess(
   proc.stderr?.on("data", (data: Buffer) => {
     const stderr = data.toString()
     log.debug("stderr", { data: stderr.slice(0, 200) })
+    retainStderr(ap, stderr)
 
     // "No conversation found with session ID: <uuid>" is what `--resume`
     // prints for a purged transcript — note the lowercase "session ID",

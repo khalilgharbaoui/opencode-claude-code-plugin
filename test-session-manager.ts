@@ -8,8 +8,12 @@ import {
   deleteActiveProcess,
   deleteActiveProcessAndWait,
   deleteClaudeSessionId,
+  describeChildCrash,
+  evictIfNeeded,
   getActiveProcess,
   getClaudeSessionId,
+  MAX_ACTIVE_PROCESSES,
+  retainStderr,
   scheduleIdleProcessEviction,
   noteTurnStarted,
   noteTurnLine,
@@ -303,4 +307,158 @@ test("the interactive transport is never marked in flight", () => {
   ap.asideTransport = { cliPath: "claude", interactive: true }
   noteTurnStarted(ap)
   assert.equal(isTurnInFlight(ap), false)
+})
+
+function captureStderr(): { lines: string[]; restore: () => void } {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (line: unknown) => {
+    lines.push(String(line))
+  }
+  return { lines, restore: () => { console.error = original } }
+}
+
+// The child's stdin is its own emitter, so `proc.on("error", ...)` does not
+// cover it. A write that lands after the child died raises EPIPE there, and
+// an 'error' event on a stream with no listener throws: inside opencode's own
+// process, not ours. The EPIPE itself is delivered whenever libuv gets around
+// to failing the queued write, so the event is emitted here directly; the
+// contract under test is that something is listening for it.
+test("an error on a dead child's stdin is logged, not thrown", async () => {
+  const key = `stdin-error-${Date.now()}`
+  const captured = captureStderr()
+  const ap = spawnClaudeProcess(
+    process.execPath,
+    ["-e", "process.stdin.destroy(); setInterval(() => {}, 1000)"],
+    process.cwd(),
+    key,
+  )
+  const stdin = ap.proc.stdin!
+  try {
+    await delay(100)
+    noteTurnStarted(ap)
+    // The write a real turn makes. It must not throw synchronously either.
+    stdin.write(JSON.stringify({ type: "user", pad: "x".repeat(100_000) }) + "\n")
+    stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }))
+  } finally {
+    captured.restore()
+    deleteActiveProcess(key)
+    deleteClaudeSessionId(key)
+  }
+  assert.ok(
+    captured.lines.some((line) => line.includes("claude process stdin error")),
+    `expected a logged stdin error, got: ${captured.lines.join(" | ")}`,
+  )
+  assert.ok(
+    captured.lines.some((line) => line.includes('"code":"EPIPE"')),
+    "the logged error should name the errno the write failed with",
+  )
+  assert.equal(
+    isTurnInFlight(ap),
+    false,
+    "a write that never reached the CLI leaves no turn to wait for",
+  )
+})
+
+function fillActiveProcesses(prefix: string, killed: string[]): {
+  keys: string[]
+  processes: ActiveProcess[]
+} {
+  const keys: string[] = []
+  const processes: ActiveProcess[] = []
+  for (let index = 0; index < MAX_ACTIVE_PROCESSES; index++) {
+    const key = `${prefix}-${index}`
+    const ap = fakeIdleProcess(() => killed.push(key))
+    keys.push(key)
+    processes.push(ap)
+    setActiveProcess(key, ap)
+  }
+  return { keys, processes }
+}
+
+// Killing a process mid-turn truncates that answer silently: the close
+// handler finishes the stream and the operator sees half a reply.
+test("LRU eviction picks the oldest idle process, not the oldest process", () => {
+  const killed: string[] = []
+  const { keys, processes } = fillActiveProcesses(`lru-guard-${Date.now()}`, killed)
+  try {
+    noteTurnStarted(processes[0]!)
+    noteTurnStarted(processes[1]!)
+    evictIfNeeded()
+    assert.deepEqual(killed, [keys[2]])
+    assert.equal(getActiveProcess(keys[0]!), processes[0])
+    assert.equal(getActiveProcess(keys[1]!), processes[1])
+    assert.equal(getActiveProcess(keys[2]!), undefined)
+  } finally {
+    for (const key of keys) deleteActiveProcess(key)
+  }
+})
+
+test("LRU eviction kills nothing while every process is mid-turn", () => {
+  const killed: string[] = []
+  const { keys, processes } = fillActiveProcesses(`lru-busy-${Date.now()}`, killed)
+  const captured = captureStderr()
+  let killedDuringEviction: string[] = []
+  try {
+    for (const ap of processes) noteTurnStarted(ap)
+    evictIfNeeded()
+    killedDuringEviction = [...killed]
+  } finally {
+    captured.restore()
+    for (const key of keys) deleteActiveProcess(key)
+  }
+  assert.deepEqual(killedDuringEviction, [])
+  assert.ok(
+    captured.lines.some((line) => line.includes("every claude process is mid-turn")),
+    `expected a warning about the skipped eviction, got: ${captured.lines.join(" | ")}`,
+  )
+})
+
+test("retained stderr keeps the newest 2 KB", () => {
+  const ap = fakeIdleProcess(() => {})
+  retainStderr(ap, "x".repeat(3_000))
+  retainStderr(ap, "the tail that matters")
+  assert.equal(ap.lastStderr!.length, 2 * 1024)
+  assert.ok(ap.lastStderr!.endsWith("the tail that matters"))
+})
+
+test("describeChildCrash names the exit code, the signal, and the stderr tail", () => {
+  const exited = describeChildCrash(3, null, "  fatal: out of memory\n")
+  assert.match(exited, /exited with code 3/)
+  assert.match(exited, /fatal: out of memory/)
+  assert.match(describeChildCrash(null, "SIGKILL", undefined), /killed by SIGKILL/)
+  assert.doesNotMatch(
+    describeChildCrash(null, "SIGKILL", undefined),
+    /Last stderr/,
+    "no stderr, no empty section",
+  )
+  assert.match(describeChildCrash(null, null, undefined), /closed its output/)
+})
+
+test("a child that dies keeps its stderr for the crash report", async () => {
+  const key = `crash-stderr-${Date.now()}`
+  const ap = spawnClaudeProcess(
+    process.execPath,
+    [
+      "-e",
+      "process.stderr.write('fatal: claude ran out of memory\\n'); setTimeout(() => process.exit(3), 30)",
+    ],
+    process.cwd(),
+    key,
+  )
+  try {
+    await once(ap.proc, "exit")
+    await delay(20)
+    assert.match(ap.lastStderr ?? "", /fatal: claude ran out of memory/)
+    const message = describeChildCrash(
+      ap.proc.exitCode,
+      ap.proc.signalCode,
+      ap.lastStderr,
+    )
+    assert.match(message, /exited with code 3/)
+    assert.match(message, /fatal: claude ran out of memory/)
+  } finally {
+    deleteActiveProcess(key)
+    deleteClaudeSessionId(key)
+  }
 })
