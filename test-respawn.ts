@@ -10,7 +10,7 @@
  */
 import assert from "node:assert/strict"
 import { once } from "node:events"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -30,6 +30,7 @@ import {
 } from "./src/session-manager.js"
 import { EventEmitter } from "node:events"
 import type { ChildProcess } from "node:child_process"
+import { createClaudeCode } from "./src/index.js"
 
 test("unattended output is capped by line count and UTF-8 bytes, including oversized single lines", () => {
   const active: ActiveProcess = { proc: {} as ChildProcess, lineEmitter: new EventEmitter() }
@@ -217,4 +218,112 @@ test("respawn preserves the original CLI args, config and prompt on a real child
     deleteClaudeSessionId(sk)
     rmSync(fixture.cwd, { recursive: true, force: true })
   }
+})
+
+/**
+ * Drive one doStream turn against a fake CLI that answers with a partial text
+ * block, writes to stderr, and then exits non-zero without ever emitting the
+ * terminal `result` line.
+ */
+async function streamCrashingTurn(options: { exitDelayMs: number; abort?: boolean }) {
+  const cwd = mkdtempSync(join(tmpdir(), "opencode-crash-"))
+  const cliPath = join(cwd, "fake-claude.cjs")
+  writeFileSync(
+    cliPath,
+    `#!/usr/bin/env node
+const readline = require("node:readline")
+if (process.argv.includes("--version")) {
+  process.stdout.write("2.1.258\\n")
+  process.exit(0)
+}
+let answered = false
+readline.createInterface({ input: process.stdin }).on("line", () => {
+  if (answered) return
+  answered = true
+  process.stdout.write(JSON.stringify({
+    type: "assistant",
+    session_id: "fake-session",
+    message: { role: "assistant", content: [{ type: "text", text: "Half an answ" }] },
+  }) + "\\n")
+  process.stderr.write("fatal: the CLI ran out of memory\\n")
+  setTimeout(() => process.exit(3), ${options.exitDelayMs})
+})
+`,
+  )
+  chmodSync(cliPath, 0o755)
+
+  const controller = new AbortController()
+  try {
+    const model = createClaudeCode({
+      cliPath,
+      cwd,
+      bridgeOpencodeMcp: false,
+      proxyOpencodeMcpTools: false,
+      proxyTools: [],
+    }).languageModel("claude-test-crash")
+    const response = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Answer briefly." }] }],
+      tools: [
+        {
+          type: "function",
+          name: "bash",
+          description: "Run a command",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      ...(options.abort ? { abortSignal: controller.signal } : {}),
+    } as any)
+
+    const parts: any[] = []
+    for await (const part of response.stream) {
+      parts.push(part)
+      // Abort as soon as the partial answer lands, before the child dies.
+      if (options.abort && part.type === "text-delta") controller.abort()
+    }
+    return parts as any[]
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}
+
+// A child that dies mid-turn used to finish the stream with reason `stop` and
+// empty usage, so a crashed CLI read as a short but successful answer. The
+// stderr tail retained on the ActiveProcess is usually the only record of why.
+test("a child that dies without a result ends the turn as an error", async () => {
+  const parts = await streamCrashingTurn({ exitDelayMs: 40 })
+
+  const errors = parts.filter((part) => part.type === "error")
+  assert.equal(
+    errors.length,
+    1,
+    `expected one error part, got ${JSON.stringify(parts.map((part) => part.type))}`,
+  )
+  const message = String((errors[0] as any).error?.message ?? "")
+  assert.match(message, /exited with code 3/)
+  assert.match(message, /ran out of memory/)
+
+  const finish = parts.find((part) => part.type === "finish") as any
+  assert.ok(finish, "the stream must still finish")
+  assert.equal(finish.finishReason.unified, "error")
+
+  // The partial answer the CLI did produce is still delivered.
+  assert.ok(
+    parts.some(
+      (part) => part.type === "text-delta" && String(part.delta).includes("Half an answ"),
+    ),
+  )
+})
+
+// An abort is not a crash: the operator asked for it, and the CLI may well
+// exit before the interrupt's own `result` line lands.
+test("an aborted turn is not reported as a crash", async () => {
+  const parts = await streamCrashingTurn({ exitDelayMs: 300, abort: true })
+
+  assert.deepEqual(
+    parts.filter((part) => part.type === "error"),
+    [],
+    "an abort must not surface as a child crash",
+  )
+  const finish = parts.find((part) => part.type === "finish") as any
+  if (finish) assert.notEqual(finish.finishReason.unified, "error")
 })

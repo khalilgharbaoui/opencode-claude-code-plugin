@@ -29,9 +29,21 @@ export interface PendingProxyCall {
 
 type InternalPending = PendingProxyCall & {
   createdAt: number
+  deadlineMs: number
   timer: ReturnType<typeof setTimeout>
   resolve(result: ProxyToolResult): void
   reject(error: Error): void
+}
+
+/** One pending call, flattened for `/claude-code-doctor`. */
+export interface PendingProxyCallSnapshot {
+  sessionKey: string
+  toolCallId: string
+  toolName: string
+  ageMs: number
+  deadlineMs: number
+  emitted: boolean
+  channelClosed: boolean
 }
 
 // Primary index: callId -> pending. Tool call IDs are UUIDs produced by
@@ -120,6 +132,7 @@ export function queuePendingProxyCall(
     input: call.input,
     channel: call.channel,
     createdAt: Date.now(),
+    deadlineMs,
     timer,
     resolve: call.resolve,
     reject: call.reject,
@@ -155,6 +168,28 @@ export function getPendingProxyCalls(sessionKey: string): PendingProxyCall[] {
   for (const id of s) {
     const p = pendingByCallId.get(id)
     if (p) out.push(p)
+  }
+  return out
+}
+
+/**
+ * Every call the broker is currently holding, across all sessions, with how
+ * long it has waited and when it gives up. Read-only view for the doctor
+ * report; deliberately carries no `input`, since a pending call's arguments
+ * can be a whole file's contents.
+ */
+export function snapshotPendingProxyCalls(now = Date.now()): PendingProxyCallSnapshot[] {
+  const out: PendingProxyCallSnapshot[] = []
+  for (const pending of pendingByCallId.values()) {
+    out.push({
+      sessionKey: pending.sessionKey,
+      toolCallId: pending.toolCallId,
+      toolName: pending.toolName,
+      ageMs: Math.max(0, now - pending.createdAt),
+      deadlineMs: pending.deadlineMs,
+      emitted: pending.emitted === true,
+      channelClosed: pending.channel?.closed === true,
+    })
   }
   return out
 }

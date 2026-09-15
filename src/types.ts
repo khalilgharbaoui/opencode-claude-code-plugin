@@ -49,6 +49,8 @@ export interface ClaudeCodeConfig {
   idleProcessTimeoutMs?: number
   /** Stage opencode skills as a `--plugin-dir` so Claude's Skill tool can run them. */
   bridgeOpencodeSkills?: boolean
+  /** Append a one-line cost / duration / cache footer to each finished turn. */
+  turnStats?: boolean
   logging?: LoggingConfig
 }
 
@@ -254,6 +256,21 @@ export interface ClaudeCodeProviderSettings {
   bridgeOpencodeSkills?: boolean
 
   /**
+   * Append one compact line to the end of every finished (non-compaction,
+   * non-error) turn with what that turn cost: dollars, wall duration, how many
+   * internal CLI turns it took, and input / output / cache-read / cache-write
+   * tokens. It is rendered as its own text part led by `▌ **stats:**` and is
+   * stripped again from any transcript rebuilt for the CLI, so the model never
+   * reads its own accounting.
+   *
+   * Off by default, because a cost line under every reply is a preference.
+   * The same numbers are logged at INFO regardless of this setting, and
+   * `total_cost_usd`, `duration_ms`, `usage`, `modelUsage` and
+   * `permission_denials` always reach `providerMetadata`.
+   */
+  turnStats?: boolean
+
+  /**
    * Routing for Claude's built-in `WebSearch` tool.
    *
    * - `"claude"` (default): Claude CLI runs WebSearch internally via
@@ -402,8 +419,27 @@ export interface ClaudeStreamMessage {
       tool_use_id?: string
       content?: string | Array<{ type: string; text?: string }>
       thinking?: string
+      /** On a `tool_result` block: the CLI-executed tool failed. */
+      is_error?: boolean
     }>
   }
+
+  // `system`/`init` fields. Read by `reportSystemInit` in `cli-events.ts`;
+  // shapes confirmed against the CLI's own zod schemas on 2.1.263.
+  apiKeySource?: string
+  permissionMode?: string
+  model?: string
+  claude_code_version?: string
+  tools?: string[]
+  mcp_servers?: Array<{ name?: string; status?: string }>
+
+  // `system`/`compact_boundary`. The stream schema emits `compact_metadata`;
+  // the CLI's own transcript reader uses `compactMetadata`.
+  compact_metadata?: Record<string, unknown>
+  compactMetadata?: Record<string, unknown>
+
+  // `rate_limit_event`. See `RateLimitInfo` in `cli-events.ts`.
+  rate_limit_info?: Record<string, unknown>
 
   tool?: {
     name?: string
@@ -425,6 +461,25 @@ export interface ClaudeStreamMessage {
   result?: string
   is_error?: boolean
   num_turns?: number
+  stop_reason?: string | null
+
+  /**
+   * Per-model totals on `result`, keyed by model id: `inputTokens`,
+   * `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`,
+   * `webSearchRequests`, `costUSD`. All numeric, which is what makes it safe
+   * to forward whole into `providerMetadata`.
+   */
+  modelUsage?: Record<string, Record<string, number>>
+  /**
+   * Tool calls the CLI's permission layer refused during the turn. Each entry
+   * also carries a `tool_input` on the wire; it is deliberately not declared
+   * here, because it can be a whole file's contents and must not be copied
+   * into provider metadata.
+   */
+  permission_denials?: Array<{
+    tool_name?: string
+    tool_use_id?: string
+  }>
 
   usage?: {
     input_tokens?: number

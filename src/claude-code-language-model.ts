@@ -20,6 +20,19 @@ import { getClaudeUserMessage } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
 import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
+import {
+  describeResultFailure,
+  formatResultFailureNote,
+  reportCompactBoundary,
+  reportRateLimitEvent,
+  reportSystemInit,
+} from "./cli-events.js"
+import { DOCTOR_COMMAND, buildDoctorReport, parseDoctorCommand } from "./doctor.js"
+import {
+  extractTurnStats,
+  formatTurnStatsBlock,
+  turnStatsLogPayload,
+} from "./turn-stats.js"
 import { resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
 import {
@@ -50,6 +63,7 @@ import {
   isTurnInFlight,
   interruptTurn,
   takeUnattendedLines,
+  describeChildCrash,
   claudeSpawnEnv,
   isClaudeThinkingDisabled,
   sessionKey,
@@ -234,6 +248,9 @@ const AUTO_CONTINUE_MAX_ATTEMPTS = 8
 const AUTO_CONTINUE_MAX_ELAPSED_MS = 10 * 60 * 1000
 const AUTO_CONTINUE_NO_PROGRESS_LIMIT = 2
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
+// How long a turn that lost its child waits for that child's exit status
+// before reporting the crash without one.
+const CHILD_EXIT_STATUS_GRACE_MS = 250
 
 const AUTO_CONTINUE_PROMPT =
   "Continue the task from where you stopped. Do not summarize; keep working until the requested task is complete, you need clarification, or you hit a real blocker."
@@ -942,7 +959,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private toFinishReason(
-    reason: "stop" | "tool-calls" = "stop",
+    reason: "stop" | "tool-calls" | "error" = "stop",
   ): LanguageModelV3FinishReason {
     return {
       unified: reason,
@@ -1852,7 +1869,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       sessionId?: string
       costUsd?: number
       durationMs?: number
+      durationApiMs?: number
+      numTurns?: number
       usage?: ClaudeStreamMessage["usage"]
+      modelUsage?: ClaudeStreamMessage["modelUsage"]
+      permissionDenials?: ClaudeStreamMessage["permission_denials"]
     } = {}
     const toolCalls: Array<{ id: string; name: string; args: unknown }> = []
     // Streaming tool_use entries keyed by content-block index. We accumulate
@@ -1908,6 +1929,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               setClaudeSessionId(sk, msg.session_id)
             }
             reportFastModeState(msg, fastMode)
+            reportSystemInit(msg, {
+              ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey,
+            })
+          }
+
+          if (msg.type === "rate_limit_event") {
+            reportRateLimitEvent(msg)
+            return
           }
 
           if (
@@ -2055,8 +2084,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               sessionId: msg.session_id,
               costUsd: msg.total_cost_usd,
               durationMs: msg.duration_ms,
+              durationApiMs: msg.duration_api_ms,
+              numTurns: msg.num_turns,
               usage: msg.usage,
+              modelUsage: msg.modelUsage,
+              permissionDenials: msg.permission_denials?.map((denial) => ({
+                tool_name: denial.tool_name,
+                tool_use_id: denial.tool_use_id,
+              })),
             }
+            log.info("conversation result", {
+              sessionId: msg.session_id,
+              isError: msg.is_error,
+              subtype: msg.subtype,
+              ...turnStatsLogPayload(extractTurnStats(msg)),
+            })
             cleanup()
             resolve({
               ...resultMeta,
@@ -2257,6 +2299,45 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // knows the opencode session id, can find it and ask it early
     // (btw-command.ts).
     const asideTransportRef = { cliPath, interactive: !!useInteractive }
+
+    // `/claude-code-doctor` is answered here, by the plugin, with no CLI
+    // inference at all: everything in the report is already in this process.
+    // Same shape as the aside branch below, and the exchange is stripped from
+    // rebuilt transcripts the same way a `/btw` pair is.
+    const doctor =
+      !compactionMode && scope !== "no-tools" ? parseDoctorCommand(options.prompt) : null
+    if (doctor) {
+      const doctorOptions = {
+        cliPath,
+        interactive: !!useInteractive,
+        turnStats: this.config.turnStats === true,
+      }
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+        async start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          try {
+            const text = await buildDoctorReport(doctorOptions)
+            const id = generateId()
+            controller.enqueue({ type: "text-start", id })
+            controller.enqueue({ type: "text-delta", id, delta: text })
+            controller.enqueue({ type: "text-end", id })
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason("stop"),
+              usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+              providerMetadata: {
+                "claude-code": { path: "doctor", synthetic: true, usageUnavailable: true },
+              },
+            })
+          } catch (error) {
+            controller.enqueue({ type: "error", error })
+          } finally {
+            controller.close()
+          }
+        },
+      })
+      return { stream, request: { body: { text: `/${DOCTOR_COMMAND}` } } }
+    }
 
     const aside = !compactionMode && scope !== "no-tools" ? parseSideQuestion(options.prompt) : null
     if (aside) {
@@ -3065,8 +3146,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             sessionId?: string
             costUsd?: number
             durationMs?: number
+            durationApiMs?: number
+            numTurns?: number
             usage?: ClaudeStreamMessage["usage"]
+            modelUsage?: ClaudeStreamMessage["modelUsage"]
+            permissionDenials?: ClaudeStreamMessage["permission_denials"]
           } = {}
+
+          // Subtype of a failing `result`, so the finish below reports the
+          // turn as an error instead of a clean stop.
+          let resultFailure: string | undefined
 
         // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
         // bash calls in one assistant message) end up in a single
@@ -3331,11 +3420,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           controller.enqueue({
             type: "finish",
-            finishReason: toFinishReason("stop"),
+            finishReason: resultFailure
+              ? { unified: "error" as const, raw: resultFailure }
+              : toFinishReason("stop"),
             usage: toUsage(msg.usage),
             providerMetadata: {
               "claude-code": {
                 ...resultMeta,
+                ...(resultFailure ? { resultSubtype: resultFailure } : {}),
                 ...(compactionMode
                   ? { compactionModel: effectiveModelId }
                   : {}),
@@ -3419,6 +3511,31 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 })
               }
               reportFastModeState(msg, fastMode)
+              reportSystemInit(msg, {
+                ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+              })
+            }
+
+            // The CLI compacted its own context. Nothing else tells the user
+            // that everything before this point is now a summary.
+            if (msg.type === "system" && msg.subtype === "compact_boundary") {
+              const note = reportCompactBoundary(msg)
+              if (note) {
+                controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: note })
+                endTextBlock()
+              }
+            }
+
+            // A rejection is why the turn is about to fail. Put it in the
+            // transcript so the reason does not live only in a log file that
+            // is off by default.
+            if (msg.type === "rate_limit_event") {
+              const note = reportRateLimitEvent(msg)
+              if (note) {
+                controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: note })
+                endTextBlock()
+              }
+              return
             }
 
             // content_block_start
@@ -4012,6 +4129,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
                   const toolCall = toolCallsById.get(block.tool_use_id)
                   if (toolCall) {
+                    // A CLI-executed tool that failed carries `is_error`. The
+                    // AI SDK turns a `tool-result` with `isError` into a
+                    // `tool-error` part, which is what makes opencode render
+                    // the row as failed; without the flag every failed CLI
+                    // tool was forwarded as a success whose output happened
+                    // to be an error message.
+                    const isError = block.is_error === true
                     controller.enqueue({
                       type: "tool-result",
                       toolCallId: block.tool_use_id,
@@ -4019,14 +4143,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       result: {
                         output: resultText,
                         title: toolCall.name,
-                        metadata: {},
+                        metadata: isError ? { error: true } : {},
                       },
+                      ...(isError ? { isError: true } : {}),
                       providerExecuted: true,
                     } as any)
                     noteToolActivity()
                     log.info("tool result emitted", {
                       toolUseId: block.tool_use_id,
                       name: toolCall.name,
+                      isError,
                     })
                     toolCallsById.delete(block.tool_use_id)
                   }
@@ -4065,19 +4191,61 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 })
               }
 
+              // A non-`success` subtype is a failed turn. Name it in the
+              // transcript and finish as an error, rather than letting it be
+              // recorded as an ordinary reply with the subtype only in a
+              // debug log line.
+              const failure = describeResultFailure(msg)
+              if (failure) {
+                resultFailure = msg.subtype
+                controller.enqueue({
+                  type: "text-delta",
+                  id: startTextBlock(),
+                  delta: formatResultFailureNote(failure),
+                })
+                log.warn(failure, { sessionKey: sk, subtype: msg.subtype })
+              }
+
+              const turnStats = extractTurnStats(msg)
               resultMeta = {
                 sessionId: msg.session_id,
                 costUsd: msg.total_cost_usd,
                 durationMs: msg.duration_ms,
+                durationApiMs: msg.duration_api_ms,
+                numTurns: msg.num_turns,
                 usage: msg.usage,
+                modelUsage: msg.modelUsage,
+                // Names and ids only: a denial's `tool_input` can be a whole
+                // file write payload and has no business in metadata.
+                permissionDenials: msg.permission_denials?.map((denial) => ({
+                  tool_name: denial.tool_name,
+                  tool_use_id: denial.tool_use_id,
+                })),
               }
 
+              // Logged whatever `turnStats` is set to: the footer is a
+              // display preference, the numbers are diagnostics.
               log.info("conversation result", {
                 sessionId: msg.session_id,
-                durationMs: msg.duration_ms,
                 numTurns: msg.num_turns,
                 isError: msg.is_error,
+                subtype: msg.subtype,
+                ...turnStatsLogPayload(turnStats),
               })
+
+              // Never on a compaction turn (the footer would be appended to
+              // what opencode stores as the summary) and never on a failed
+              // one (the error is the thing to read, not the bill).
+              if (self.config.turnStats && !compactionMode && !msg.is_error && !failure) {
+                const footer = formatTurnStatsBlock(turnStats)
+                if (footer) {
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: startTextBlock(),
+                    delta: footer,
+                  })
+                }
+              }
 
               turnCompleted = true
 
@@ -4147,25 +4315,78 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             )
             drainBuffer.length = 0
           }
+          // A close without a terminal `result` means the child died mid-turn.
+          // Reporting that as `stop` with empty usage made a crashed CLI look
+          // like a short but successful answer. An abort is not a crash: the
+          // operator asked for it, and the CLI may exit before its interrupt
+          // result lands.
+          const crashed = !turnCompleted && !autoContinueState.aborted
           controllerClosed = true
           cleanupTurn()
           endTextBlock()
-          controller.enqueue({
-            type: "finish",
-            finishReason: toFinishReason("stop"),
-            usage: toUsage(),
-            providerMetadata: {
-              "claude-code": {
-                ...resultMeta,
-                ...(compactionMode
-                  ? { compactionModel: effectiveModelId }
-                  : {}),
+
+          const finishClose = (
+            exitCode: number | null,
+            signal: NodeJS.Signals | null,
+          ) => {
+            if (crashed) {
+              log.warn("claude process closed without a result", {
+                sessionKey: sk,
+                exitCode,
+                signal,
+                stderrBytes: activeProcess?.lastStderr?.length ?? 0,
+              })
+              controller.enqueue({
+                type: "error",
+                error: new Error(
+                  describeChildCrash(exitCode, signal, activeProcess?.lastStderr),
+                ),
+              })
+            }
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason(crashed ? "error" : "stop"),
+              usage: toUsage(),
+              providerMetadata: {
+                "claude-code": {
+                  ...resultMeta,
+                  ...(compactionMode
+                    ? { compactionModel: effectiveModelId }
+                    : {}),
+                },
               },
-            },
-          })
-          try {
-            controller.close()
-          } catch {}
+            })
+            try {
+              controller.close()
+            } catch {}
+          }
+
+          // stdout usually reaches EOF a tick before the child's `exit` event,
+          // so the status that explains the crash is not known yet here. The
+          // turn is over either way; wait briefly for it rather than report a
+          // bare "closed its output". Bounded, and only on the crash path.
+          if (crashed && proc.exitCode === null && proc.signalCode === null) {
+            let reported = false
+            const report = (
+              exitCode: number | null,
+              signal: NodeJS.Signals | null,
+            ) => {
+              if (reported) return
+              reported = true
+              clearTimeout(exitGrace)
+              proc.off("exit", onExit)
+              finishClose(exitCode, signal)
+            }
+            const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+              report(code, signal)
+            const exitGrace = setTimeout(
+              () => report(proc.exitCode, proc.signalCode),
+              CHILD_EXIT_STATUS_GRACE_MS,
+            )
+            proc.once("exit", onExit)
+            return
+          }
+          finishClose(proc.exitCode, proc.signalCode)
         }
 
         // Centralised per-turn teardown. Every exit path funnels through here

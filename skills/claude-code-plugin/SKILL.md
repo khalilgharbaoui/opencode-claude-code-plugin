@@ -101,6 +101,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `compactionModel` | string | `"claude-haiku-4-5"` | `/compact` uses a fresh short-lived headless process without the usual bridge/proxy/skill wiring. Nonblank `CLAUDE_CODE_COMPACTION_MODEL` wins. This is inference and can be billed. |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from headless/interactive spawn env, allowing stored auth to be used. Does not log in, change the parent env, or guarantee subscription billing if other CLI/cloud auth is configured. Warns at startup when either nonempty variable is present, regardless of the flag. |
 | `idleProcessTimeoutMs` | number | unset | Kill a conversation's idle `claude` worker this many ms after a finished turn. The session id is kept, so the next message resumes transparently. `0` or unset keeps workers until LRU eviction (16 processes). Values above `2147483647` are ignored. Not applied to the interactive transport. |
+| `turnStats` | boolean | `false` | Append one `▌ **stats:**` line to each finished turn: cost, wall duration, CLI turn count, and input/output/cache-read/cache-write tokens, taken from the CLI's own `result`. Never on a compaction turn or a turn that ended in error. Its own text part, stripped from transcripts rebuilt for the CLI, so the model never sees it. The same numbers are logged at INFO regardless, and `modelUsage` plus `permission_denials` always reach `providerMetadata`. Reported cost is the CLI's figure, not a billing guarantee. |
 | `bridgeOpencodeSkills` | boolean | `false` | Opt-in user skill staging for ordinary headless streams, as `opencode-skills:<name>`. Requires the CLI's `--help` to advertise `--plugin-dir`; otherwise no-op. Adds prompt overhead and exposes skill instructions to Claude. Bundled skill staging does not require this opt-in, but still requires flag support and successful discovery/staging. |
 | `interactive` | boolean | unset (headless) | Experimental PTY transport; explicit boolean wins over `CLAUDE_CODE_INTERACTIVE_TRANSPORT`. Needs `Bun.Terminal`; otherwise headless fallback. Compaction stays headless. Does not wire the headless proxy server/skill bridge/disallowed-tools controls; no equivalent opencode permission guarantee or `/btw`. Never enable to bypass a billing/access restriction. |
 | `interactiveBypass` | boolean | `false` | Deprecated no-op. The TUI asks for a manual safety confirmation on `bypassPermissions`, so the plugin never passes it. |
@@ -398,6 +399,25 @@ the correct `127.0.0.1:<port>` Host, no Origin and JSON Content-Type should get 
 `200` on a confirmed proxy endpoint is unsafe; restart/upgrade. Other status codes
 alone do not prove it patched. Never call `tools/call` or obtain the bearer to probe.
 
+`/claude-code-doctor` prints the same fields as the startup block plus live runtime
+state, in the chat, with no model inference and at zero tokens: plugin/opencode/CLI
+versions, cwd and its resolution tier, providers, accounts, `proxyTools`, disk MCP
+servers, transport, whether an `ANTHROPIC_API_KEY` is present (never its value), the
+live `claude` processes (opencode session, model, pid, in flight, age, effort), pending
+proxy calls with their deadlines, and one unauthenticated `initialize` against each
+proxy URL (`401, good`; anything else is flagged unsafe). Prefer it over asking for
+`plugin.log` for a first look. It carries no bearer token, no key value and no system
+prompt. A user-defined `claude-code-doctor` command is never overwritten. The name has
+no space in it: opencode would read the second word as an argument.
+
+Claude Code stream events the plugin now surfaces without debug logging: a rate-limit
+rejection, a context compaction the CLI did on its own, a `result` subtype other than
+`success` (which now finishes the turn as an error, not a clean stop), and a failed
+CLI-executed tool (forwarded with the error flag, so the row renders as failed). A
+failed MCP server at session start and an `apiKeySource` that means API-key billing
+each warn once per process. None of these are actions the plugin may take on the user's
+behalf; enabling paid usage or changing auth still needs approval.
+
 `/btw <question>` needs an existing headless Claude conversation and CLI 2.1.258+.
 It asks through the side channel and keeps the answer in the conversation (inline
 when possible); it is excluded from Claude's normal turn history. It is still
@@ -426,6 +446,13 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | `⚙ invalid` rows for `todowrite` inside a subagent | Subagent lacks `permission.todowrite: "allow"` | Grant it on the agent definition with approval |
 | Other `⚙ invalid` or `⚙ unknown` tool rows | A Claude tool the plugin does not map for this version | Note plugin version, CLI version and the tool name; upgrade or report |
 | `AGENTS.md` appears twice in Claude's system prompt | Plugin older than 0.16.0 | Upgrade |
+| "What does the plugin actually think is going on?" | Startup diagnostics go to a log that is off by default | Run `/claude-code-doctor` in the session; paste that instead of the log |
+| A turn ended with no answer and nothing said why | The CLI's `result` carried a failure subtype, or a rate limit was rejected | Both are now written into the transcript as `▌` lines; read the subtype or the limit reason there |
+| A CLI tool row looks successful but its output is an error | Plugin older than this release forwarded `is_error` results as successes | Upgrade; failed CLI tools now render as failed |
+| Claude "forgot" the earlier part of a long conversation | Claude Code compacted its own context | Look for the `▌ **context compacted:**` note in the transcript |
+| Wanting the per-turn cost in the chat | Not shown by default | Set `turnStats: true` and restart opencode |
+| Turn ends with an error naming an exit code or signal and a stderr tail | The `claude` child died mid-turn without emitting its terminal `result` | Read the quoted stderr; that is the CLI's own reason. Older builds reported this as a normal stop, so a truncated answer looked finished |
+| An answer is cut off with no error, in a window with many open chats | Plugin older than this fix: LRU eviction could kill a process mid-turn | Upgrade. Eviction now takes the oldest idle process and skips the round when all 16 are busy |
 
 ## Do not
 

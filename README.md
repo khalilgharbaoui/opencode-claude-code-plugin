@@ -306,6 +306,7 @@ model: claude-code-work/claude-opus-5@work
 | `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The session id is preserved for `--resume`; a new turn cancels the timer. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set to `0` to retain workers until LRU eviction. Interactive transport is excluded. Contributed by [@bernardofortes](https://github.com/bernardofortes). |
 | `bridgeOpencodeSkills` | boolean | `false` | Expose your opencode skills to Claude's native `Skill` tool. See [Skill bridge](#skill-bridge). Written by [@broskees](https://github.com/broskees). |
 | `logging` | object | all defaults | The plugin's own logger, four independent fields: `file` (boolean, default `false`), `dir` (string, default `~/.local/share/opencode-claude-code/`), `mode` (`"silent"` \| `"debug"`, default `"silent"`) and `level` (`"debug"` \| `"info"` \| `"notice"` \| `"warn"` \| `"error"`, default `"info"`). Goes under `provider.claude-code.options` like every other row here. See [Logging](#logging). |
+| `turnStats` | boolean | `false` | Append a one-line cost / duration / cache footer to each finished turn. See [Per-turn stats](#per-turn-stats). |
 | `interactive` | boolean | `false` | **Experimental.** Drive the interactive `claude` TUI (subscription billing) instead of headless `--print`. Requires opencode running under Bun with PTY support; silently falls back to headless otherwise. The tool proxy, `permissionMode` and `/btw` are all unavailable on it, so read [What it does not support](#what-it-does-not-support) before enabling. Env: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`. |
 | `interactiveBypass` | boolean | `false` | Deprecated/no-op with `interactive`: Claude Code's TUI shows a manual safety confirmation for `bypassPermissions`, so the plugin intentionally does not pass it. |
 | `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With `interactive`: built-in tools pre-allowed without prompting (replaces the default list). MCP server wildcards (`mcp__<server>__*`) are always added from the bridged config. |
@@ -612,6 +613,50 @@ Notes:
 
 Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
 
+## Plugin health with /claude-code-doctor
+
+```text
+/claude-code-doctor
+```
+
+Prints, in the chat, what the plugin currently thinks is happening. The plugin answers it itself: no model is called, nothing is billed, and the reply reports 0 tokens. It is the thing to paste into a bug report.
+
+It carries the startup-diagnostics fields (plugin version, opencode version, `claude` path and version, the working directory and which resolution tier picked it, providers, accounts, `proxyTools`, the on-disk MCP servers, transport, whether an `ANTHROPIC_API_KEY` is present) plus the live runtime state the startup block cannot know:
+
+- every live `claude` child, by opencode session id and model, with its pid, whether a turn is in flight, how long it has been up, and the effort it was spawned at,
+- every pending proxy call, with the tool, the call id, how long it has waited, and its deadline,
+- each proxy server's URL with one unauthenticated `initialize` posted to it: `401, good` is the patched behaviour, and anything else is flagged unsafe with the fix (restart every opencode window, since a window opened before 0.13.2 keeps serving an open port). See [Proxy endpoint security](#proxy-endpoint-security).
+
+Nothing secret goes in it: not the proxy bearer token, not the value of `ANTHROPIC_API_KEY`, not the system prompt, not a pending call's arguments. A `claude-code-doctor` command you defined yourself is never overwritten. The name has no space in it because opencode reads everything after the first space as the command's arguments. The whole exchange is kept out of any transcript replayed to the CLI, like a `/btw` pair.
+
+## Per-turn stats
+
+Off by default. With `turnStats: true`:
+
+```text
+▌ **stats:** $0.0123 · 4.2 s · 2 CLI turns · in 1.2k · out 812 · cache read 45.1k · cache write 2.0k
+```
+
+One line at the end of a finished turn, from the numbers the CLI already reports on its `result`. Notes:
+
+- Never on a `/compact` turn (the footer would be appended to what opencode stores as the summary) and never on a turn that ended in error, where the error is the thing to read.
+- It is its own text part led by `▌ **stats:**`, and the plugin strips it again if the conversation is ever replayed into a fresh Claude Code process. The model never reads its own accounting.
+- Token counts are the turn's totals, which is what matches the cost. They are deliberately not the same numbers opencode's context gauge shows, which use the last tool-use iteration so the window is not inflated.
+- The cost is what the CLI reported for the turn, not a billing guarantee.
+
+The same numbers are logged at INFO whatever this option is set to, and `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `usage`, `modelUsage` and `permission_denials` always reach `providerMetadata` (denials by tool name and id only, never their inputs).
+
+## Things the CLI says that are no longer silent
+
+Four Claude Code stream events used to reach nothing but a debug log:
+
+- **A rate-limit rejection.** When the CLI reports `status: "rejected"` (or a rejected extra-usage state), the turn now carries a `▌ **rate limit:**` line naming the window, the reason extra usage is unavailable, when it resets, and the four things that can be done about it. Warned once per identity per process. See [Billing](#billing-change-june-15-2026-agent-sdk-credit).
+- **A context compaction Claude Code did on its own.** A `▌ **context compacted:**` note says so, with the before and after token counts, so an answer that suddenly forgets the start of the conversation has a visible cause.
+- **A `result` whose subtype is not `success`** (`error_max_turns`, `error_during_execution`, …). The subtype is named in the transcript and the turn finishes as an error instead of an ordinary reply.
+- **A CLI-executed tool that failed.** Its result is forwarded with the AI SDK's error flag, so opencode renders the row as failed rather than as a success whose output happens to be an error message.
+
+At session start the plugin also warns once per process for each MCP server Claude Code could not connect (its tools are simply absent otherwise) and once when the CLI's own `apiKeySource` says an API key is in effect, which is the field that tells you pay-as-you-go billing is happening. See [`ignoreAnthropicApiKey`](#options-reference).
+
 ## Configuration skill
 
 The package includes a `claude-code-plugin` skill so your agent can configure it without asking you to navigate all its options. Ask, for example:
@@ -711,7 +756,8 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 - **Resumed chat after restart** → in-memory state is gone; a new process spawns and the conversation history is summarized and prepended.
 - **Abort (Esc / Ctrl+C)** → the plugin sends the Claude CLI a stream-json `interrupt` control request, so the CLI actually stops generating and running tools instead of finishing the abandoned turn on your bill. The process stays alive for the next message in that chat. If a turn is somehow still running when the next one starts, it is interrupted first (5 s cap). Contributed by [@broskees](https://github.com/broskees).
 - **Idle timeout** → when `idleProcessTimeoutMs` is configured, a completed headless turn arms an eviction timer; reuse cancels it, and eviction preserves the session id for `--resume`.
-- **Cap**: 16 active processes, LRU eviction.
+- **Cap**: 16 active processes, LRU eviction. A process that is mid-turn is never the victim: eviction takes the oldest **idle** one, and when every process is busy it evicts nothing and warns instead, so a running answer is never truncated to make room.
+- **Crash** → if the CLI dies mid-turn (no terminal `result` line), the turn ends with a visible error naming the exit code or signal and the last stderr the CLI wrote, not a silent `stop` that reads as a short but finished answer. An abort you asked for is not reported this way.
 
 ---
 
@@ -963,6 +1009,10 @@ Reading it:
 - **`opencode`** is read from the running opencode binary (`--version`), since
   opencode still does not hand its version to plugins. It reads `unknown` when
   opencode is run from source rather than as the packaged binary.
+
+This block is logged once, to a file that is off by default. For the same
+fields plus live process and proxy state, without enabling logging, run
+[`/claude-code-doctor`](#plugin-health-with-claude-code-doctor) in the session.
 
 ### Default behavior (no config, no env)
 
