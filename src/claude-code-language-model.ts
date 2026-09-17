@@ -4478,7 +4478,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     if (outer.session_id) setClaudeSessionId(sk, outer.session_id)
                     if (msg.is_error && msg.result) text = msg.result
                   }
-                  if (text) controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: text })
+                  if (text) controller.enqueue({ type: "text-delta", id: currentTextId ?? startTextBlock(), delta: text })
                 } catch { /* Ignore incomplete or malformed buffered lines. */ }
               }
             }
