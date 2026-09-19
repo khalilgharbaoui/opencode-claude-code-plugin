@@ -1311,6 +1311,106 @@ export function resolveDisallowedTools(options: {
   return out
 }
 
+/** The shape of one `client.tool.list()` entry this resolver needs. */
+export interface OpencodeToolListEntry {
+  id: string
+  description?: string
+  parameters?: unknown
+}
+
+/**
+ * Build proxy defs for the opencode tools named in `proxyOpencodeTools`.
+ *
+ * `resolvedProxyMcpTools` only forwards a tool whose id matches an enabled
+ * MCP server (`<server>` or `<server>_<tool>`), so a tool another opencode
+ * plugin declares directly matches nothing and is dropped. opencode-dcp's
+ * `compress` is the case that motivated this: it is in opencode's registry,
+ * dcp tells the model "you MUST use the `compress` tool now", and under this
+ * provider the model was never offered it. This is the explicit allowlist
+ * that forwards such a tool. It is deliberately never automatic: these run
+ * inside opencode with the caller's permissions, so which ones cross over is
+ * the operator's decision.
+ *
+ * A name already held by another proxy def wins, and the forwarded entry is
+ * dropped with a warning. That is not arbitrary: `ensureProxyServer`
+ * registers interceptors by name and an intercepted call is answered
+ * in-process, so a forwarded def sharing a name with an intercepted one
+ * (`compress` again) could never reach opencode at all. Dropping it loudly
+ * is the difference between documented precedence and a silent shadow.
+ */
+export function resolveProxyOpencodeToolDefs(options: {
+  requested?: readonly string[]
+  items?: readonly OpencodeToolListEntry[]
+  taken?: ReadonlySet<string>
+}): ProxyToolDef[] {
+  const requested = options.requested ?? []
+  if (requested.length === 0) return []
+
+  const items = options.items
+  if (!items) {
+    log.warn(
+      "proxyOpencodeTools is set but opencode's tool registry did not answer;" +
+        " forwarding nothing this spawn",
+      { requested: requested.map(String) },
+    )
+    return []
+  }
+
+  const byLowerId = new Map<string, OpencodeToolListEntry>()
+  for (const item of items) {
+    const key = item.id.toLowerCase()
+    if (!byLowerId.has(key)) byLowerId.set(key, item)
+  }
+
+  const taken = options.taken ?? new Set<string>()
+  const out: ProxyToolDef[] = []
+  const seen = new Set<string>()
+  const unknown: string[] = []
+  const collided: string[] = []
+
+  for (const raw of requested) {
+    const name = String(raw).trim()
+    if (!name) continue
+    const item = byLowerId.get(name.toLowerCase())
+    if (!item) {
+      unknown.push(name)
+      continue
+    }
+    if (taken.has(item.id)) {
+      collided.push(item.id)
+      continue
+    }
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    out.push({
+      name: item.id,
+      description: typeof item.description === "string" ? item.description : "",
+      inputSchema:
+        item.parameters && typeof item.parameters === "object"
+          ? (item.parameters as Record<string, unknown>)
+          : { type: "object", properties: {} },
+    })
+  }
+
+  // Same reasoning as the `proxyTools` typo warning: an unrecognised name is
+  // simply not forwarded, and silence looks from the outside like the option
+  // was ignored.
+  if (unknown.length > 0) {
+    log.warn("ignoring unknown proxyOpencodeTools entries", {
+      unknown,
+      known: [...byLowerId.values()].map((item) => item.id).join(", "),
+    })
+  }
+  if (collided.length > 0) {
+    log.warn(
+      "proxyOpencodeTools entry dropped: a proxy tool already holds that name," +
+        " and it keeps it",
+      { collided },
+    )
+  }
+  return out
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []

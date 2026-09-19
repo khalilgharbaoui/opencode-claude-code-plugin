@@ -13,6 +13,7 @@ import {
   compactConversationHistory,
   filterSideQuestionHistory,
   getClaudeUserMessage,
+  shouldStripContextReminders,
 } from "./src/message-builder.js"
 
 const p = (msgs: any[]) => msgs as any
@@ -498,4 +499,117 @@ test("the fresh-session history keeps tool inputs and result bodies", () => {
   assert.match(history!, /We decided X because of Y\./, "the result body survives, not just a count")
   assert.match(history!, /\[tool_use:task\(/, "and the call that produced it is named with its input")
   assert.doesNotMatch(history!, /Called 1 tool\(s\)/, "the lossy placeholder is gone")
+})
+
+// --- dcp context reminders -------------------------------------------------
+//
+// opencode-dcp anchors `<dcp-system-reminder>` blocks into message text, so
+// each one is re-sent with every message that carries it. The loudest orders
+// the model to call `compress`, which under this provider only exists when
+// the operator forwards it. Stripping is opt-in and must switch itself off
+// the moment the reminder becomes satisfiable.
+
+const DCP_NUDGE = `<dcp-system-reminder>
+CRITICAL WARNING: MAX CONTEXT LIMIT REACHED
+
+You MUST use the \`compress\` tool now. Do not continue normal exploration until compression is handled.
+</dcp-system-reminder>`
+
+function nudgedPrompt(): any {
+  return p([
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "explain the broker" },
+        // dcp appends its own message marker after a block, which is why the
+        // strip cannot be anchored to the end of a part.
+        { type: "text", text: `${DCP_NUDGE}\n<dcp-message-id>msg_1</dcp-message-id>` },
+      ],
+    },
+  ])
+}
+
+test("dcp reminders survive by default", () => {
+  const out = JSON.parse(getClaudeUserMessage(nudgedPrompt()))
+  const text = out.message.content.map((b: any) => b.text ?? "").join("\n")
+  assert.match(text, /MAX CONTEXT LIMIT REACHED/, "an upgrade must change nothing")
+})
+
+test("stripContextReminders removes the block and keeps everything else", () => {
+  const out = JSON.parse(
+    getClaudeUserMessage(nudgedPrompt(), false, { stripContextReminders: true }),
+  )
+  const text = out.message.content.map((b: any) => b.text ?? "").join("\n")
+  assert.doesNotMatch(text, /MAX CONTEXT LIMIT REACHED/)
+  assert.doesNotMatch(text, /dcp-system-reminder/)
+  assert.match(text, /explain the broker/, "the operator's own message is untouched")
+  assert.match(text, /<dcp-message-id>msg_1<\/dcp-message-id>/, "trailing metadata survives")
+})
+
+test("the strip leaves opencode's own <system-reminder> blocks alone", () => {
+  const prompt = p([
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "do the thing" },
+        { type: "text", text: "<system-reminder>opencode says stay in plan mode</system-reminder>" },
+      ],
+    },
+  ])
+  const out = JSON.parse(
+    getClaudeUserMessage(prompt, false, { stripContextReminders: true }),
+  )
+  const text = out.message.content.map((b: any) => b.text ?? "").join("\n")
+  assert.match(
+    text,
+    /stay in plan mode/,
+    "those are opencode's instructions to the model, not an unsatisfiable order",
+  )
+})
+
+test("a message whose only text was a reminder does not take the empty sentinel path", () => {
+  const prompt = p([
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+    { role: "assistant", content: [{ type: "text", text: "answered" }] },
+    { role: "user", content: [{ type: "text", text: DCP_NUDGE }] },
+  ])
+  const out = JSON.parse(
+    getClaudeUserMessage(prompt, false, { stripContextReminders: true }),
+  )
+  assert.doesNotMatch(JSON.stringify(out), /MAX CONTEXT LIMIT REACHED/)
+  assert.ok(Array.isArray(out.message.content), "still a well-formed user message")
+})
+
+test("the fresh-session rebuild strips them too, where they all replay at once", () => {
+  const prompt = p([
+    { role: "user", content: [{ type: "text", text: `old turn\n${DCP_NUDGE}` }] },
+    { role: "assistant", content: [{ type: "text", text: `sure\n${DCP_NUDGE}` }] },
+    { role: "user", content: [{ type: "text", text: "current question" }] },
+  ])
+  const out = getClaudeUserMessage(prompt, true, { stripContextReminders: true })
+  assert.match(out, /old turn/, "the history itself is still rebuilt")
+  assert.doesNotMatch(out, /MAX CONTEXT LIMIT REACHED/)
+})
+
+test("stripping switches itself off as soon as compress is reachable", () => {
+  assert.equal(shouldStripContextReminders({ enabled: true }), true)
+  assert.equal(
+    shouldStripContextReminders({ enabled: false }),
+    false,
+    "default off",
+  )
+  assert.equal(
+    shouldStripContextReminders({ enabled: true, proxyTools: ["Task", "Compress"] }),
+    false,
+    "the plugin's own compress makes the reminder satisfiable",
+  )
+  assert.equal(
+    shouldStripContextReminders({ enabled: true, proxyOpencodeTools: ["compress"] }),
+    false,
+    "and so does forwarding opencode's",
+  )
+  assert.equal(
+    shouldStripContextReminders({ enabled: true, proxyTools: ["Task", "Bash"] }),
+    true,
+  )
 })

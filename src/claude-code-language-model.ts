@@ -16,7 +16,10 @@ import type {
 } from "./types.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
-import { getClaudeUserMessage } from "./message-builder.js"
+import {
+  getClaudeUserMessage,
+  shouldStripContextReminders,
+} from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
 import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
@@ -45,6 +48,7 @@ import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
   fetchOpencodeToolList,
+  type OpencodeToolListItem,
   resolveSpawnCwdForSession,
 } from "./runtime-status.js"
 import {
@@ -83,6 +87,7 @@ import { detectCliVersion } from "./cli-version.js"
 import {
   createProxyMcpServer,
   resolveDisallowedTools,
+  resolveProxyOpencodeToolDefs,
   DEFAULT_PROXY_TOOLS,
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
@@ -263,6 +268,11 @@ interface LiveToolInfo {
   taskDescription: string | undefined
   questionDescription: string | undefined
   hasQuestion: boolean
+  /**
+   * The raw registry entries behind the fields above, so `proxyOpencodeTools`
+   * can be resolved from the same single fetch rather than a second one.
+   */
+  items?: OpencodeToolListItem[]
 }
 
 interface AutoContinueState {
@@ -743,6 +753,23 @@ You are running via the Claude Code CLI (not a direct API call). This affects co
 - DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
 
 /**
+ * Used when opencode's own `compress` tool is forwarded through the proxy
+ * (`proxyOpencodeTools: ["compress"]`) instead of the plugin's in-process
+ * one. The two shrink different windows and the difference has to be said
+ * out loud: opencode's rewrites opencode's transcript, so the live Claude
+ * Code session keeps everything it already had. A model told otherwise
+ * would assume detail it can still see had been discarded.
+ */
+const CLAUDE_CLI_OPENCODE_COMPRESS_NOTE = `## Runtime environment: Claude Code CLI
+
+You are running via the Claude Code CLI (not a direct API call). This affects context management:
+
+- To compress context, call \`mcp__opencode_proxy__compress\`. Use that exact full name. It runs opencode's own \`compress\` tool, which is what a "MAX CONTEXT LIMIT REACHED" reminder is asking you to do.
+- It compresses opencode's stored conversation, NOT this Claude Code session. Your current session keeps the context it already has, so do not assume earlier detail is gone after the call.
+- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
+- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
+
+/**
  * Extract text content from all `system`-role messages in the prompt.
  * Standard API providers forward these as the `system` parameter; for
  * Claude CLI, the only equivalent path is --append-system-prompt-file.
@@ -773,8 +800,10 @@ function extractSystemMessages(
 }
 
 export interface AppendedSystemPromptOptions {
-  /** True when `compress` is in the resolved proxy list for this spawn. */
+  /** True when the plugin's own `compress` def is in the proxy list. */
   compressEnabled?: boolean
+  /** True when opencode's `compress` tool is forwarded through the proxy. */
+  opencodeCompressEnabled?: boolean
   /** Summary from a previous `compress` call, if this key has one. */
   compressionSummary?: string
 }
@@ -792,8 +821,15 @@ export function buildAppendedSystemPrompt(
       `## Summary of earlier work (context was compressed)\n\n${options.compressionSummary.trim()}`,
     )
   }
+  // The plugin's own compress wins when both are somehow live, matching the
+  // def-level precedence in resolveProxyOpencodeToolDefs: it is the one that
+  // holds the name, so it is the one the model would reach.
   parts.push(
-    options.compressEnabled ? CLAUDE_CLI_COMPRESS_NOTE : CLAUDE_CLI_CONTEXT_NOTE,
+    options.compressEnabled
+      ? CLAUDE_CLI_COMPRESS_NOTE
+      : options.opencodeCompressEnabled
+        ? CLAUDE_CLI_OPENCODE_COMPRESS_NOTE
+        : CLAUDE_CLI_CONTEXT_NOTE,
   )
   for (const s of extraSystemContent) {
     if (s.trim()) parts.push(s.trim())
@@ -1146,7 +1182,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       taskDescription: items?.find((item) => item.id === "task")?.description,
       questionDescription: question?.description,
       hasQuestion: !!question,
+      items,
     }
+  }
+
+  /**
+   * Whether dcp-style context reminders should be stripped from this turn's
+   * messages. Config-only and synchronous, so it can be answered before the
+   * spawn block resolves anything: `userMsg` is built well ahead of it.
+   */
+  private stripContextRemindersEnabled(): boolean {
+    return shouldStripContextReminders({
+      enabled: this.config.stripContextReminders,
+      proxyTools: this.config.proxyTools,
+      proxyOpencodeTools: this.config.proxyOpencodeTools,
+    })
   }
 
   /** Share one lazy registry request within a turn without making it stale. */
@@ -1195,10 +1245,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private async ensureProxyServer(
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
+    // Whether the `compress` in `tools` is the PLUGIN's def rather than
+    // opencode's forwarded one. Keying the interceptor on the name alone
+    // would answer a forwarded `compress` in-process and opencode would
+    // never see the call: the same name, the wrong tool, silently. The
+    // caller knows which list the def came from, so it decides.
+    interceptCompress: boolean,
   ): Promise<ProxyMcpServer> {
     const timeoutOverrides = this.config.proxyToolTimeoutMs
     const interceptors = new Map<string, ProxyToolInterceptor>()
-    if (tools.some((t) => t.name === "compress")) {
+    if (interceptCompress && tools.some((t) => t.name === "compress")) {
       interceptors.set("compress", (input) => {
         const summary = typeof input.summary === "string" ? input.summary.trim() : ""
         if (!summary) {
@@ -1800,6 +1856,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // rendered as text rather than an orphaned `tool_result` (issue #29).
       getClaudeUserMessage(options.prompt, includeHistoryContext, {
         cliToolCallIds: new Set<string>(),
+        stripContextReminders: this.stripContextRemindersEnabled(),
       })
 
     // doGenerate always spawns a fresh process, never reuse session ID.
@@ -2508,6 +2565,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       getClaudeUserMessage(options.prompt, includeHistoryContext, {
         compactionMode,
         cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
+        stripContextReminders: this.stripContextRemindersEnabled(),
       })
     const resolvedProxy = compactionMode ? null : this.resolvedProxyTools()
     const loadLiveToolInfo = this.createLiveToolInfoLoader()
@@ -2759,8 +2817,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               resolvedProxy?.some((t) => t.name === "task") ?? false
             const questionProxyEnabled =
               resolvedProxy?.some((t) => t.name === "question") ?? false
+            // `proxyOpencodeTools` reads its defs out of the same registry
+            // snapshot, so it joins the condition instead of fetching again.
+            const opencodeToolsRequested =
+              (self.config.proxyOpencodeTools?.length ?? 0) > 0
+            log.debug("opencode tool forwarding gate", {
+              requested: self.config.proxyOpencodeTools ?? null,
+              opencodeToolsRequested,
+            })
             const liveToolInfo =
-              taskProxyEnabled || questionProxyEnabled
+              taskProxyEnabled || questionProxyEnabled || opencodeToolsRequested
                 ? await loadLiveToolInfo()
                 : {
                     resolved: false,
@@ -2816,15 +2882,46 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // on an opencode build that lacks the `question` registry
             // entry), and spinning up an MCP server with zero tools is
             // wasteful and wrong shape.
+            // Opencode tools that belong to no MCP server are invisible to
+            // resolvedProxyMcpTools, so an explicitly named one is resolved
+            // here. It goes into the same combined list, which means the same
+            // broker path, and therefore the same abort / orphan-sweep /
+            // session-delete / child-exit release as every other proxy call.
+            // Last in `taken`, so a static def or an MCP tool keeps a
+            // contested name (`compress`) and this one is dropped with a
+            // warning rather than shadowing it.
+            const opencodeToolDefs = resolveProxyOpencodeToolDefs({
+              requested: self.config.proxyOpencodeTools,
+              items: liveToolInfo.items,
+              taken: new Set(
+                [...(enrichedProxy ?? []), ...(proxyMcpTools ?? [])].map(
+                  (t) => t.name,
+                ),
+              ),
+            })
+            if (opencodeToolDefs.length > 0) {
+              log.info("forwarding opencode tools through the proxy", {
+                tools: opencodeToolDefs.map((t) => t.name),
+              })
+            }
+
             const combinedList = [
               ...(enrichedProxy ?? []),
               ...(proxyMcpTools ?? []),
+              ...opencodeToolDefs,
             ]
             const combinedProxyTools: ProxyToolDef[] | null =
               combinedList.length > 0 ? combinedList : null
 
+            const pluginCompressEnabled =
+              enrichedProxy?.some((t) => t.name === "compress") ?? false
+
             if (!proxyServer && combinedProxyTools) {
-              proxyServer = await self.ensureProxyServer(combinedProxyTools, sk)
+              proxyServer = await self.ensureProxyServer(
+                combinedProxyTools,
+                sk,
+                pluginCompressEnabled,
+              )
             }
 
             // Whether the question proxy actually survived the version
@@ -2866,8 +2963,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     ...(questionProxyActive ? [QUESTION_PROXY_HINT] : []),
                   ],
                   {
-                    compressEnabled:
-                      enrichedProxy?.some((t) => t.name === "compress") ?? false,
+                    compressEnabled: pluginCompressEnabled,
+                    opencodeCompressEnabled: opencodeToolDefs.some(
+                      (t) => t.name === "compress",
+                    ),
                     compressionSummary: getCompressionSummary(sk),
                   },
                 )

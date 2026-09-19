@@ -14,7 +14,9 @@ import { readFileSync, unlinkSync } from "node:fs"
 import {
   createProxyMcpServer,
   DEFAULT_PROXY_TOOLS,
+  resolveProxyOpencodeToolDefs,
   type ProxyMcpServer,
+  type ProxyToolDef,
   type ProxyToolCall,
   type ProxyToolInterceptor,
 } from "./src/proxy-mcp.js"
@@ -242,4 +244,158 @@ test("a blank summary is not injected", () => {
     }),
   )
   assert.doesNotMatch(content, /context was compressed/)
+})
+
+// --- forwarding opencode's own tools (`proxyOpencodeTools`) -----------------
+//
+// opencode-dcp declares a `compress` tool directly rather than through an MCP
+// server, so `resolvedProxyMcpTools` (which matches `<server>` /
+// `<server>_<tool>`) never forwards it and the model could not obey dcp's
+// "you MUST use the `compress` tool now" reminder. These cover the allowlist
+// and, most importantly, what happens when both compress tools want the name.
+
+/** A stand-in for what `client.tool.list()` returns on opencode 1.18.31. */
+const REGISTRY = [
+  { id: "bash", description: "run a command", parameters: { type: "object" } },
+  {
+    id: "compress",
+    description: "compress opencode's conversation",
+    parameters: {
+      type: "object",
+      properties: { instructions: { type: "string" } },
+      required: ["instructions"],
+    },
+  },
+]
+
+test("proxyOpencodeTools forwards a named opencode tool with its own schema", () => {
+  const defs = resolveProxyOpencodeToolDefs({
+    requested: ["compress"],
+    items: REGISTRY,
+  })
+
+  assert.deepEqual(
+    defs.map((d) => d.name),
+    ["compress"],
+  )
+  assert.equal(defs[0].description, "compress opencode's conversation")
+  assert.deepEqual(defs[0].inputSchema.required, ["instructions"])
+})
+
+test("proxyOpencodeTools is off by default and matches names case-insensitively", () => {
+  assert.deepEqual(resolveProxyOpencodeToolDefs({ items: REGISTRY }), [])
+  assert.deepEqual(resolveProxyOpencodeToolDefs({ requested: [], items: REGISTRY }), [])
+
+  const defs = resolveProxyOpencodeToolDefs({
+    requested: ["Compress"],
+    items: REGISTRY,
+  })
+  assert.deepEqual(
+    defs.map((d) => d.name),
+    ["compress"],
+    "the emitted name is opencode's id, whatever case the operator wrote",
+  )
+})
+
+test("an unknown name is skipped, and an unreachable registry forwards nothing", () => {
+  assert.deepEqual(
+    resolveProxyOpencodeToolDefs({ requested: ["nope"], items: REGISTRY }),
+    [],
+  )
+  // Registry silence must not be read as "the tool is gone": nothing is
+  // forwarded, and the spawn carries on with its static defs.
+  assert.deepEqual(
+    resolveProxyOpencodeToolDefs({ requested: ["compress"], items: undefined }),
+    [],
+  )
+})
+
+test("the name collision resolves to the plugin's own compress, not opencode's", () => {
+  // Both want the MCP name `compress`. The plugin's def is an interceptor:
+  // ensureProxyServer answers it in-process, so a forwarded def sharing the
+  // name could never reach opencode at all. It is dropped instead of
+  // shadowing, and the operator is told.
+  const pluginCompress = DEFAULT_PROXY_TOOLS.find((t) => t.name === "compress")
+  assert.ok(pluginCompress)
+
+  const defs = resolveProxyOpencodeToolDefs({
+    requested: ["compress"],
+    items: REGISTRY,
+    taken: new Set([pluginCompress.name]),
+  })
+  assert.deepEqual(defs, [], "the forwarded def loses the contested name")
+
+  // Nothing else in the list is affected by the collision.
+  const alongside = resolveProxyOpencodeToolDefs({
+    requested: ["compress", "bash"],
+    items: REGISTRY,
+    taken: new Set(["compress"]),
+  })
+  assert.deepEqual(
+    alongside.map((d) => d.name),
+    ["bash"],
+  )
+})
+
+test("a forwarded compress is NOT answered by the plugin's interceptor", async () => {
+  // The second half of the collision, and the one a def-level check cannot
+  // see: with only opencode's `compress` forwarded there is no plugin def to
+  // collide with, so an interceptor keyed on the name alone would still
+  // answer it in-process and opencode would never run the tool. Registering
+  // the interceptor is therefore the caller's decision, not the name's.
+  const forwardedOnly: ProxyToolDef[] = [
+    { name: "compress", description: "opencode's own", inputSchema: { type: "object" } },
+  ]
+  const queued: string[] = []
+
+  // interceptCompress === false is what the spawn path passes when the
+  // plugin's own def is absent: no interceptors at all.
+  const srv = await createProxyMcpServer(forwardedOnly, undefined, new Map())
+  srv.calls.on("call", (call: ProxyToolCall) => {
+    queued.push(call.toolName)
+    call.resolve({ kind: "text", text: "opencode ran it" })
+  })
+  try {
+    const res = await post(srv, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "compress", arguments: { topic: "t" } },
+    })
+    assert.deepEqual(queued, ["compress"], "it must reach opencode through the broker")
+    const text = JSON.stringify(res.json)
+    assert.match(text, /opencode ran it/)
+    assert.doesNotMatch(
+      text,
+      /Summary stored/,
+      "the in-process reset reply would mean the wrong compress answered",
+    )
+  } finally {
+    await srv.close()
+  }
+})
+
+test("the runtime note describes whichever compress is actually reachable", () => {
+  const forwarded = readPrompt(
+    buildAppendedSystemPrompt("/tmp", false, [], {
+      opencodeCompressEnabled: true,
+    }),
+  )
+  assert.match(forwarded, /mcp__opencode_proxy__compress/)
+  assert.match(
+    forwarded,
+    /compresses opencode's stored conversation, NOT this Claude Code session/,
+    "the two compress different windows and the model must not confuse them",
+  )
+
+  // When both are somehow live the plugin's own def holds the name, so the
+  // note must describe the session reset, matching the def-level precedence.
+  const both = readPrompt(
+    buildAppendedSystemPrompt("/tmp", false, [], {
+      compressEnabled: true,
+      opencodeCompressEnabled: true,
+    }),
+  )
+  assert.match(both, /The reset happens at the start of your NEXT turn/)
+  assert.doesNotMatch(both, /NOT this Claude Code session/)
 })

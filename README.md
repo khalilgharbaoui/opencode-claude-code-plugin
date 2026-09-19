@@ -298,6 +298,8 @@ model: claude-code-work/claude-opus-5@work
 | `strictMcpConfig` | boolean | `false` | Pass `--strict-mcp-config` so Claude loads **only** the configured servers and ignores `~/.claude/settings.json`. |
 | `hotReloadMcp` | boolean | `true` | With MCP bridging on, compare the merged MCP config and runtime status at the start of each turn and respawn the `claude` process when they drifted, so a server you just enabled or disabled becomes visible without restarting opencode or opening a new chat. Eviction waits for pending proxy calls, never happening mid tool-call, and the session id is preserved for `--resume`. Set `false` to keep a cached subprocess until the chat is reset. It does not reload other provider options and does not watch the contents of files named in `mcpConfig`. |
 | `proxyOpencodeMcpTools` | boolean | `true` | Route the MCP tools discovered from opencode through the in-process `opencode_proxy` server instead of bridging them straight into Claude's `--mcp-config`. With both layers pointed at the same server, direct bridging executes every call twice, once in Claude's own MCP child process and once in opencode; proxying keeps opencode as the single execution site while preserving its permission prompts and tool rows. Falls back to direct bridging when discovery is unavailable, so do not treat it as an exactly-once guarantee for write-capable tools. |
+| `proxyOpencodeTools` | string[] | `[]` | Forward named opencode tools through the proxy by their registry id, for tools another opencode plugin declares directly and that therefore belong to no MCP server (opencode-dcp's `compress`). Explicit allowlist; a forwarded tool runs inside opencode with the calling agent's permissions. A name already held by a proxy def is dropped with a warning rather than taking it over. See [Forwarding opencode's own tools](#forwarding-opencode-s-own-tools). |
+| `stripContextReminders` | boolean | `false` | Remove opencode-dcp's `<dcp-system-reminder>` blocks from message text when no `compress` tool is proxied, so an order the model cannot follow stops being re-sent with every message that carries it. Inert as soon as `compress` is reachable. See [Trimming unsatisfiable context reminders](#trimming-unsatisfiable-context-reminders). |
 | `webSearch` | `"claude"` \| `"disabled"` \| `<tool>` | `"claude"` | Routing for Claude's built-in `WebSearch`. See [WebSearch routing](#websearch-routing). |
 | `multiStepContinuation` | boolean | `true` | Append a system-prompt hint nudging Claude to chain tool calls within one turn instead of pausing between subtasks. Each opencode turn boundary requires the user to manually press "continue", so for multi-step tasks this reduces friction. Set `false` to disable. |
 | `autoContinueIncompleteTurns` | boolean \| `"smart"` | `"smart"` | Smartly continue incomplete Claude CLI results inside the same opencode turn. Reduces manual "continue" presses when Claude ends after reasoning/tool activity without a useful final answer. Set `false` to disable. |
@@ -490,7 +492,7 @@ It is the one proxy tool opencode never sees. The call is answered inside the pl
 
 Without it, the appended system prompt tells the model that `compress` is unavailable and to ignore instructions that ask for it, which is the right answer when nothing implements it.
 
-The store, the interceptor and the two prompt variants are covered by tests, but the full "model calls compress, the next turn really is a fresh process carrying only the summary" round-trip has not been verified against a live CLI. Treat it as working-but-unproven and check the plugin log the first time you rely on it.
+The round trip is verified live (Claude Code 2.1.263, opencode 1.18.31, haiku): the model called `mcp__opencode_proxy__compress` with a build identifier in its summary, the plugin logged `compress stored summary; session resets next turn`, the next turn logged `compress reset: dropped claude process and session id` and spawned a second `claude`, and that fresh process answered with the identifier it could only have read from the summary in its system prompt.
 
 Only those seven values are actually proxied; anything else you put in `proxyTools` is ignored. Proxying `Edit` also disables `MultiEdit` — opencode has no batched-edit equivalent, so Claude is forced to fan out into single `Edit` calls that each flow through the permission UI. The `"Question"` proxy is version-gated on opencode's built-in `question` tool: on builds that lack the registry entry the def is silently dropped (a forwarded call would otherwise render as `⚙ invalid`), so add it only on opencode versions that ship the `question` tool.
 
@@ -499,6 +501,45 @@ Without `"Task"` in `proxyTools`, Claude's built-in `Agent` tool stays enabled a
 ```json
 "options": { "proxyTools": [] }
 ```
+
+### Forwarding opencode's own tools
+
+`proxyTools` names the tools this plugin ships defs for, and MCP-backed opencode tools are routed automatically ([`proxyOpencodeMcpTools`](#options-reference)). Neither covers a tool that **another opencode plugin declares directly**: it belongs to no MCP server, so the automatic match (`<server>` or `<server>_<tool>`) skips it and the model is never offered it. opencode-dcp's `compress` is the case that matters in practice, because DCP then injects "MAX CONTEXT LIMIT REACHED ... You MUST use the `compress` tool now" reminders that the model has no way to act on.
+
+`proxyOpencodeTools` is the explicit allowlist. Empty by default:
+
+```json
+"options": {
+  "proxyTools": ["Bash", "Edit", "Write", "WebFetch", "Task"],
+  "proxyOpencodeTools": ["compress"]
+}
+```
+
+Names are opencode's tool ids as `client.tool.list()` reports them, matched case-insensitively. An unknown name is skipped with a warning rather than failing the spawn. Forwarded tools use the same broker as every other proxy tool, so [how a proxied call ends](#how-a-proxied-call-ends) applies to them unchanged: abort, orphan sweep, session deletion and child exit all release them.
+
+This is deliberately not automatic. A forwarded tool executes inside opencode with the calling agent's permissions, so which ones cross over is your decision, not the plugin's.
+
+**The `compress` name collision.** Two different tools want it: DCP's, which rewrites opencode's transcript, and [this plugin's](#context-compression), which resets the Claude Code session. They compress different windows, and after a DCP compress the live `claude` process still holds its full context until something restarts it. If you enable both, the plugin's own tool keeps the name and the forwarded one is dropped with a warning in the log:
+
+```
+WARN: proxyOpencodeTools entry dropped: a proxy tool already holds that name, and it keeps it {"collided":["compress"]}
+```
+
+Pick one. The appended system prompt describes whichever is actually reachable, so the model is told the right semantics either way.
+
+Verified live on Claude Code 2.1.263 and opencode 1.18.31 with DCP loaded: the plugin logged `forwarding opencode tools through the proxy {"tools":["compress"]}`, started the proxy with `tools: ["bash","compress"]`, received `proxy-mcp tool call received {"toolName":"compress"}`, queued it through the normal broker, and DCP really ran, returning `Compressed 3 messages into [Compressed conversation section]`. One wrinkle worth knowing: DCP's compress rewrites opencode's message history mid-turn, which makes opencode abort the provider stream at that tool boundary. The pending call is released normally and the result still reaches the model on the next step as text, so the turn completes, but you will see one `abort between proxy tool boundaries` line in the log each time.
+
+### Trimming unsatisfiable context reminders
+
+DCP anchors its nudges into message text as `<dcp-system-reminder>` blocks, so each one is re-sent with every message that carries it. If no `compress` tool is reachable they are an order the model cannot follow, and the plugin already tells it to ignore them. `stripContextReminders: true` stops paying for them too:
+
+```json
+"options": { "stripContextReminders": true }
+```
+
+Off by default. It removes those blocks from user and assistant text before the transcript reaches the CLI, including the fresh-session rebuild, where every anchored reminder would otherwise replay at once. It leaves opencode's own `<system-reminder>` blocks alone: those are opencode's instructions to the model, not an unsatisfiable order.
+
+It switches itself off whenever `compress` is named in `proxyTools` or `proxyOpencodeTools`, since the reminder is then something the model can act on. The check is on configuration, so a name that is configured but missing from opencode's registry still counts as reachable and nothing is stripped, which errs toward keeping the reminder.
 
 ### Subagent todos
 
@@ -1053,10 +1094,17 @@ Partial support since v0.5.1. DCP runs in a useful degraded mode: its automatic 
 | `experimental.chat.system.transform` (context-limit nudges, iteration reminders) | ✅ Works in headless | Headless spawns forward system-role content via `--append-system-prompt-file`. Interactive mode intentionally omits opencode's forwarded system prompt and keeps only this plugin's CLI/AGENTS/continuation prompt. |
 | `/dcp compress`, `/dcp sweep`, `/dcp manual`, `/dcp context`, `/dcp stats` slash commands | ✅ Works | Handled by opencode's `command.execute.before` hook, not the model. |
 | Automatic `deduplication` + `purgeErrors` strategies | ✅ Works | Message-transform only, no model tool calls. |
-| DCP's own autonomous `compress` / `distill` / `prune` tool calls | ❌ Not supported | DCP registers those as opencode-native tools. Claude CLI only ever sees its own built-ins and MCP-bridged servers, so the model never sees them. |
+| DCP's own autonomous `compress` / `distill` / `prune` tool calls | ⚠️ Opt-in | DCP registers those as opencode-native tools rather than through an MCP server, so the automatic MCP routing never saw them. Name one in [`proxyOpencodeTools`](#forwarding-opencode-s-own-tools) and it is forwarded: `proxyOpencodeTools: ["compress"]` makes `mcp__opencode_proxy__compress` run DCP's real tool. |
 | Model-driven compression through this plugin's `compress` proxy | ⚠️ Opt-in | Add `"Compress"` to `proxyTools` and the plugin exposes `mcp__opencode_proxy__compress`, which gives the model a working way to compress its own context. It is not DCP's tool and does not use DCP's strategies. See [Context compression](#context-compression). |
+| DCP's `<dcp-system-reminder>` context-limit nudges when no compress tool is reachable | ⚠️ Opt-in strip | Those reminders are anchored into messages, so each one is re-sent with every message that carries it. If you run without either compress route, `stripContextReminders: true` removes them. It turns itself off as soon as a `compress` tool is proxied. |
 
-So autonomous compression is available, just not DCP's implementation of it. Two routes: add `"Compress"` to `proxyTools` so the model can compress its own context through this plugin, or leave it off and trigger DCP manually with `/dcp compress` whenever you would have wanted the model to call it. With `"Compress"` absent, the plugin's appended system prompt tells Claude that no such tool exists and to ignore instructions asking for it, which is the correct answer in that case.
+So autonomous compression is available, and DCP's own implementation is now one of the options. Three routes, all opt-in:
+
+- `proxyOpencodeTools: ["compress"]` forwards **DCP's** tool, which compresses opencode's transcript using DCP's strategies.
+- `proxyTools: [..., "Compress"]` exposes **this plugin's** tool, which resets the Claude Code session and carries a summary into the fresh one.
+- Neither, and trigger DCP by hand with `/dcp compress`.
+
+The two compress different windows, so pick deliberately rather than enabling both; [Forwarding opencode's own tools](#forwarding-opencode-s-own-tools) explains what happens if you do. With neither enabled, the plugin's appended system prompt tells Claude that no such tool exists and to ignore instructions asking for it, which is the correct answer in that case.
 
 ---
 

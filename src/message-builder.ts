@@ -67,6 +67,90 @@ export function filterSideQuestionHistory(prompt: Prompt): Prompt {
   )
 }
 
+/**
+ * opencode-dcp anchors its nudges into message text as
+ * `<dcp-system-reminder>` blocks (its `lib/messages/inject/utils.ts` appends
+ * one to an existing text part, or splices in a synthetic part), and the
+ * loudest of them orders the model to "use the `compress` tool now". Under
+ * this provider that tool is only reachable when the operator forwards it,
+ * so otherwise the block is an order that cannot be obeyed, carried by every
+ * message it is anchored to.
+ *
+ * Blocks are removed wherever they sit rather than by matching a whole part,
+ * because dcp appends its own `<dcp-message-id>` marker after one and an
+ * end-anchored check would miss it. That is the same trap the `/btw`
+ * reminder strip hit in production.
+ */
+const DCP_REMINDER_BLOCK =
+  /<dcp-system-reminder\b[^>]*>[\s\S]*?<\/dcp-system-reminder>/gi
+
+/** Remove every dcp reminder block from one piece of text. */
+export function stripContextReminderBlocks(text: string): string {
+  if (!text.includes("<dcp-system-reminder")) return text
+  return text.replace(DCP_REMINDER_BLOCK, "").replace(/\n{3,}/g, "\n\n").trim()
+}
+
+/**
+ * Whether this turn should strip those blocks: the operator opted in AND no
+ * `compress` tool is being proxied. When compress IS proxied the reminder is
+ * satisfiable and must survive, or the model is told to compress by nothing
+ * and holds a tool it never learns it needs.
+ *
+ * Resolved from configuration alone so it is available before the spawn
+ * block decides anything. A name that is configured but missing from
+ * opencode's registry therefore counts as callable and nothing is stripped,
+ * which is the conservative direction: the cost is a reminder that stays.
+ */
+export function shouldStripContextReminders(options: {
+  enabled?: boolean
+  proxyTools?: readonly string[]
+  proxyOpencodeTools?: readonly string[]
+}): boolean {
+  if (options.enabled !== true) return false
+  const namesCompress = (list?: readonly string[]): boolean =>
+    (list ?? []).some((name) => String(name).trim().toLowerCase() === "compress")
+  return !namesCompress(options.proxyTools) && !namesCompress(options.proxyOpencodeTools)
+}
+
+/**
+ * Strip dcp reminder blocks from every user and assistant text part.
+ *
+ * Emptied parts are kept as empty strings rather than dropped: a nudge is
+ * sometimes a message's only text part, and removing the part outright could
+ * leave a user message with no content at all, which takes the empty-content
+ * sentinel path in `getClaudeUserMessage`. Every consumer here already skips
+ * a falsy `text`.
+ */
+export function stripContextReminders(prompt: Prompt): {
+  prompt: Prompt
+  removed: number
+} {
+  let removed = 0
+  const countIn = (text: string): number =>
+    (text.match(DCP_REMINDER_BLOCK) ?? []).length
+
+  const out = prompt.map((message) => {
+    if (message.role !== "user" && message.role !== "assistant") return message
+
+    // AI SDK v3 always delivers user/assistant content as a part array, so
+    // there is no string form to handle here.
+    if (!Array.isArray(message.content)) return message
+
+    let touched = false
+    const parts = (message.content as any[]).map((part) => {
+      if (!part || part.type !== "text" || typeof part.text !== "string") return part
+      const hits = countIn(part.text)
+      if (hits === 0) return part
+      removed += hits
+      touched = true
+      return { ...part, text: stripContextReminderBlocks(part.text) }
+    })
+    return touched ? ({ ...message, content: parts } as typeof message) : message
+  })
+
+  return removed > 0 ? { prompt: out, removed } : { prompt, removed: 0 }
+}
+
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -369,11 +453,28 @@ function buildCompactionHistory(prompt: Prompt): string | null {
 export function getClaudeUserMessage(
   prompt: Prompt,
   includeHistoryContext: boolean = false,
-  opts: { compactionMode?: boolean; cliToolCallIds?: ReadonlySet<string> } = {},
+  opts: {
+    compactionMode?: boolean
+    cliToolCallIds?: ReadonlySet<string>
+    stripContextReminders?: boolean
+  } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
   const cliToolCallIds = opts.cliToolCallIds
   const content: any[] = []
+
+  // Done once here, at the top, so every path below (the current message,
+  // the fresh-session rebuild and the /compact transcript) sees the cleaned
+  // text without each needing its own flag.
+  if (opts.stripContextReminders) {
+    const stripped = stripContextReminders(prompt)
+    if (stripped.removed > 0) {
+      log.info("stripped unsatisfiable context reminders", {
+        blocks: stripped.removed,
+      })
+      prompt = stripped.prompt
+    }
+  }
 
   /**
    * A `tool_result` block is only meaningful to a resumed CLI session when

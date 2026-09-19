@@ -28,6 +28,8 @@ export interface ClaudeCodeConfig {
   controlRequestToolBehaviors?: Record<string, ControlRequestBehavior>
   controlRequestDenyMessage?: string
   proxyTools?: string[]
+  proxyOpencodeTools?: string[]
+  stripContextReminders?: boolean
   extraDisallowedTools?: string[]
   proxyToolTimeoutMs?: Record<string, number>
   /**
@@ -169,6 +171,47 @@ export interface ClaudeCodeProviderSettings {
     * entry, in which case the deny/markdown fallback applies.
     */
   proxyTools?: string[]
+
+  /**
+   * opencode tools to forward through the proxy by name, on top of the
+   * built-in `proxyTools` defs. Empty by default.
+   *
+   * MCP-backed opencode tools are already routed automatically (see
+   * `proxyOpencodeMcpTools`), but that match is `<server>` or
+   * `<server>_<tool>`, so a tool another opencode plugin declares directly
+   * belongs to no server and is never offered to Claude. opencode-dcp's
+   * `compress` is the motivating case: dcp injects "MAX CONTEXT LIMIT
+   * REACHED ... You MUST use the `compress` tool now" reminders that the
+   * model could not act on, because the tool was never in its list.
+   *
+   * Names are opencode's tool ids as `client.tool.list()` reports them
+   * (matched case-insensitively): `["compress"]`. An unknown name is
+   * skipped with a warning. This is an explicit allowlist and never
+   * automatic: a forwarded tool executes inside opencode with the calling
+   * agent's permissions.
+   *
+   * A name already held by a proxy def is NOT taken over. Listing
+   * `"compress"` here while `proxyTools` also contains `"Compress"` leaves
+   * the plugin's own in-process compress in charge and drops the forwarded
+   * one with a warning, because the two do different things: the plugin's
+   * resets the Claude Code session, opencode's compresses opencode's
+   * transcript. Pick one.
+   */
+  proxyOpencodeTools?: string[]
+
+  /**
+   * Remove `<dcp-system-reminder>` blocks from message text when no
+   * `compress` tool is being proxied. Off by default.
+   *
+   * opencode-dcp anchors those reminders into messages, so they are re-sent
+   * with every message that carries one. When compress is not reachable
+   * they are an instruction the model cannot follow, and the plugin already
+   * tells it to ignore them in the appended system prompt. Turning this on
+   * stops paying for them as well. It is inert whenever `compress` is
+   * proxied (via either `proxyTools` or `proxyOpencodeTools`), since the
+   * reminder is then something the model can actually act on.
+   */
+  stripContextReminders?: boolean
 
   /**
    * Extra Claude Code built-ins to switch off with `--disallowedTools`,
