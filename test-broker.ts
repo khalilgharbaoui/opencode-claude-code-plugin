@@ -20,8 +20,10 @@ import {
   isPendingProxyCallChannelClosed,
   markPendingProxyCallEmitted,
   snapshotPendingProxyCalls,
+  PROXY_STALL_WARNING_MS,
   type PendingProxyCall,
 } from "./src/proxy-broker.js"
+import { configureLogger, _resetLoggerForTests } from "./src/logger.js"
 import { PROXY_NO_DEADLINE_MS, type ProxyToolCall, type ProxyToolResult } from "./src/proxy-mcp.js"
 
 type CallHandle = {
@@ -334,4 +336,97 @@ test("isPendingProxyCallChannelClosed treats a call without a channel as open", 
   const pending = queuePendingProxyCall("sess-no-channel", handle.call)
   assert.equal(isPendingProxyCallChannelClosed(pending), false)
   resolvePendingProxyCallById(handle.id, { kind: "text", text: "ok" })
+})
+
+// --- stall warning for calls with no deadline -----------------------------
+
+/** Like test-cli-args.ts's helper, but it spans awaits. */
+async function captureLogsAsync(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (line: unknown) => {
+    lines.push(String(line))
+  }
+  try {
+    _resetLoggerForTests()
+    configureLogger({ mode: "debug", level: "debug" })
+    await fn()
+  } finally {
+    console.error = original
+    _resetLoggerForTests()
+  }
+  return lines
+}
+
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+function stallLines(lines: string[]): string[] {
+  return lines.filter((line) => line.includes("proxy call still waiting"))
+}
+
+test("a call with no deadline warns repeatedly while it waits", async () => {
+  const handle = makeCall("task")
+  const lines = await captureLogsAsync(async () => {
+    const pending = queuePendingProxyCall("sess-stall", handle.call, undefined, 15)
+    assert.equal(pending.deadlineMs, PROXY_NO_DEADLINE_MS, "task has no deadline")
+    await pause(55)
+  })
+  const warnings = stallLines(lines)
+  assert.ok(warnings.length >= 2, `expected repeats, got ${warnings.length}`)
+  assert.match(warnings[0]!, /WARN/)
+  assert.match(warnings[0]!, new RegExp(handle.id))
+  assert.match(warnings[0]!, /"toolName":"task"/)
+  assert.match(warnings[0]!, /waitedMs/)
+  rejectAllPendingProxyCallsForSession("sess-stall", new Error("cleanup"))
+})
+
+test("resolving a call stops its stall warnings", async () => {
+  const handle = makeCall("task")
+  const lines = await captureLogsAsync(async () => {
+    queuePendingProxyCall("sess-stall-stop", handle.call, undefined, 15)
+    await pause(25)
+    resolvePendingProxyCallById(handle.id, { kind: "text", text: "done" })
+    await pause(60)
+  })
+  // One heartbeat before the result, none after: the interval was cleared
+  // rather than left running against a deleted entry.
+  assert.equal(stallLines(lines).length, 1, stallLines(lines).join("\n"))
+  assert.equal(getPendingProxyCalls("sess-stall-stop").length, 0)
+})
+
+test("rejecting a call stops its stall warnings", async () => {
+  const handle = makeCall("task_batch")
+  const lines = await captureLogsAsync(async () => {
+    queuePendingProxyCall("sess-stall-reject", handle.call, undefined, 15)
+    await pause(25)
+    rejectPendingProxyCallById(handle.id, new Error("aborted"))
+    await pause(60)
+  })
+  assert.equal(stallLines(lines).length, 1, stallLines(lines).join("\n"))
+  await handle.promise.catch(() => undefined)
+})
+
+test("a call that has a deadline is never armed, since the deadline reports it", async () => {
+  const handle = makeCall("bash", { command: "sleep 1" })
+  const lines = await captureLogsAsync(async () => {
+    const pending = queuePendingProxyCall("sess-stall-deadline", handle.call, undefined, 15)
+    assert.ok(pending.deadlineMs > PROXY_NO_DEADLINE_MS, "bash has a deadline")
+    await pause(55)
+  })
+  assert.deepEqual(stallLines(lines), [])
+  rejectAllPendingProxyCallsForSession("sess-stall-deadline", new Error("cleanup"))
+})
+
+test("stallWarningMs of 0 arms nothing", async () => {
+  const handle = makeCall("task")
+  const lines = await captureLogsAsync(async () => {
+    queuePendingProxyCall("sess-stall-off", handle.call, undefined, 0)
+    await pause(40)
+  })
+  assert.deepEqual(stallLines(lines), [])
+  rejectAllPendingProxyCallsForSession("sess-stall-off", new Error("cleanup"))
+})
+
+test("the shipped threshold is 5 minutes", () => {
+  assert.equal(PROXY_STALL_WARNING_MS, 5 * 60_000)
 })

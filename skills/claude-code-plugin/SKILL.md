@@ -279,7 +279,12 @@ inactivity watchdogs (for a process that is alive but silent, which emits nothin
 listen to; a CLI parked in a proxied call is exempt), and the connection keepalives
 (SSE comments or JSON whitespace every 15 s, so the CLI's HTTP client does not give up
 on a long call; they never extend a deadline). Do not present a raised deadline as the
-fix for a long subagent; the default already waits for it.
+fix for a long subagent; the default already waits for it. A deadline-free call is not
+silent while it waits: it logs `proxy call still waiting, no deadline` at WARN after
+five minutes and every five minutes after, with tool, call id and elapsed time. That
+line is a status report, never a failure; it does not end the call and a call with a
+deadline never emits it. Use it, or `/claude-code-doctor`, to tell a working subagent
+from a wedged one before suggesting any timeout change.
 
 ### Let Claude load the user's opencode skills
 

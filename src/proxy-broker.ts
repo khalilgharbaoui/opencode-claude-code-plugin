@@ -34,8 +34,31 @@ type InternalPending = PendingProxyCall & {
   deadlineMs: number
   /** Absent when the call has no deadline. */
   timer: ReturnType<typeof setTimeout> | null
+  /** Stall heartbeat; only armed for calls that have no deadline. */
+  stallTimer: ReturnType<typeof setInterval> | null
   resolve(result: ProxyToolResult): void
   reject(error: Error): void
+}
+
+/**
+ * How long a call with NO deadline may wait before the broker starts saying
+ * so, and how often it repeats afterwards.
+ *
+ * `task` and `task_batch` have had no deadline since v0.20.0, which is right:
+ * every way a call can end is an event the plugin observes, so a wall clock
+ * could only ever kill a subagent that was still working. The cost is that a
+ * genuinely wedged subagent is now silent forever, with nothing to notice it
+ * but the operator. This is the missing half: it never ends a call, it only
+ * reports one. Deliberately long, because a real subagent routinely runs
+ * minutes and a warning on healthy work is noise. Deadline-bearing calls are
+ * not armed at all: their deadline already reports them.
+ */
+export const PROXY_STALL_WARNING_MS = 5 * 60_000
+
+/** Both timers a pending call can hold. Every removal site must use this. */
+function clearPendingTimers(pending: InternalPending): void {
+  if (pending.timer) clearTimeout(pending.timer)
+  if (pending.stallTimer) clearInterval(pending.stallTimer)
 }
 
 /** One pending call, flattened for `/claude-code-doctor`. */
@@ -91,13 +114,15 @@ export function queuePendingProxyCall(
   sessionKey: string,
   call: ProxyToolCall,
   timeoutOverrides?: Record<string, number>,
+  /** Test seam, same shape as `createProxyMcpServer`'s `keepaliveMs`. */
+  stallWarningMs: number = PROXY_STALL_WARNING_MS,
 ): PendingProxyCall {
   // Defensive: if this exact callId is somehow already pending (UUID
   // collision or retry storm), replace it cleanly so we never leak two
   // entries for the same id.
   const previous = pendingByCallId.get(call.id)
   if (previous) {
-    if (previous.timer) clearTimeout(previous.timer)
+    clearPendingTimers(previous)
     previous.reject(
       new Error(`Replaced pending proxy call ${call.id} with a fresh one`),
     )
@@ -121,6 +146,7 @@ export function queuePendingProxyCall(
           if (!current) return
           pendingByCallId.delete(call.id)
           indexRemove(current.sessionKey, call.id)
+          clearPendingTimers(current)
           current.reject(buildProxyTimeoutError(call.toolName, deadlineMs))
           // v0.4.13: demoted from warn to notice. AFK-permission-pending
           // sessions can stack many of these; demoting keeps the UI quiet on
@@ -134,6 +160,29 @@ export function queuePendingProxyCall(
         }, deadlineMs)
       : null
 
+  // A call with no deadline has nothing that will ever report it, so it gets
+  // a heartbeat instead. WARN on purpose: only warn and error are always on
+  // stderr (see `src/logger.ts`), and a NOTICE nobody sees outside debug mode
+  // would defeat the point of the line existing at all.
+  const stallTimer =
+    deadlineMs === PROXY_NO_DEADLINE_MS && stallWarningMs > 0
+      ? setInterval(() => {
+          const current = pendingByCallId.get(call.id)
+          if (!current) return
+          log.warn("proxy call still waiting, no deadline", {
+            sessionKey: current.sessionKey,
+            toolCallId: current.toolCallId,
+            toolName: current.toolName,
+            waitedMs: Date.now() - current.createdAt,
+            emitted: current.emitted === true,
+            channelClosed: current.channel?.closed === true,
+            note: "nothing will time this out; it ends when opencode returns a result, you abort, you send another message, or the claude process goes",
+          })
+        }, stallWarningMs)
+      : null
+  // Never hold opencode's process open for a heartbeat.
+  stallTimer?.unref?.()
+
   const pending: InternalPending = {
     sessionKey,
     toolCallId: call.id,
@@ -143,6 +192,7 @@ export function queuePendingProxyCall(
     createdAt: Date.now(),
     deadlineMs,
     timer,
+    stallTimer,
     resolve: call.resolve,
     reject: call.reject,
   }
@@ -211,7 +261,7 @@ export function resolvePendingProxyCallById(
   if (!pending) return false
   pendingByCallId.delete(toolCallId)
   indexRemove(pending.sessionKey, toolCallId)
-  if (pending.timer) clearTimeout(pending.timer)
+  clearPendingTimers(pending)
   pending.resolve(result)
   log.info("resolved pending proxy call", {
     sessionKey: pending.sessionKey,
@@ -229,7 +279,7 @@ export function rejectPendingProxyCallById(
   if (!pending) return false
   pendingByCallId.delete(toolCallId)
   indexRemove(pending.sessionKey, toolCallId)
-  if (pending.timer) clearTimeout(pending.timer)
+  clearPendingTimers(pending)
   pending.reject(error)
   // Rejection is the broker's cleanup mechanism — fires on timeouts, orphans,
   // stream closes, etc. None are user-actionable. File-log them at NOTICE so
