@@ -351,16 +351,28 @@ export interface ClaudeCodeProviderSettings {
   /**
    * Route opencode MCP server tools through the in-process `opencode_proxy`
    * MCP server instead of bridging them directly into Claude CLI's
-   * `--mcp-config`. With both layers configured for the same MCP server,
-   * direct bridging causes each tool invocation to execute twice — once by
-   * Claude CLI's own MCP child process and once by opencode. Routing through
-   * the proxy keeps a single execution site (opencode) while preserving the
-   * tool-call/result surface in opencode's UI and its permission prompts.
+   * `--mcp-config`. Routing through the proxy keeps a single execution site
+   * (opencode), so the call is permission-prompted and rendered as an
+   * opencode tool call instead of running inside Claude CLI's own MCP child.
    *
-   * Defaults to `true`. Set to `false` to restore the prior direct-bridge
-   * behavior (Claude CLI executes MCP tools itself; opencode also re-executes
-   * — accept the duplication if you need Claude to invoke the tool without
-   * an opencode round-trip).
+   * Defaults to `false`, and that is a change of default rather than of
+   * behaviour. It used to default to `true` while routing nothing at all:
+   * discovery read `client.tool.list()`, which enumerates opencode's tool
+   * registry (built-ins plus plugin-declared tools) and has never contained
+   * an MCP tool, so no def was ever built. Discovery now reads the model tool
+   * set opencode passes the provider, which is where MCP tools actually live,
+   * so the option works. Leaving it on by default would then have silently
+   * moved every existing user's MCP traffic off the direct bridge that is
+   * carrying it today, so switching over is the operator's call.
+   *
+   * Two things to know before enabling it:
+   *
+   * - It only affects the servers this plugin bridges. If the same server is
+   *   also registered in Claude Code's own config, Claude reaches it directly
+   *   and the proxy is bypassed. Pair this with `strictMcpConfig: true` so
+   *   Claude sees only the config this plugin writes.
+   * - A routed call executes inside opencode with the calling agent's
+   *   permissions, the same trade `proxyOpencodeTools` makes.
    */
   proxyOpencodeMcpTools?: boolean
 

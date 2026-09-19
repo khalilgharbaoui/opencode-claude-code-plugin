@@ -1411,6 +1411,102 @@ export function resolveProxyOpencodeToolDefs(options: {
   return out
 }
 
+/** One entry of the AI SDK `tools` array opencode hands `doStream`. */
+export interface ModelToolEntry {
+  type?: string
+  name?: string
+  description?: string
+  inputSchema?: unknown
+}
+
+/** What `resolveMcpProxyToolDefs` found, split by the two things callers need. */
+export interface McpProxyToolResolution {
+  /** One def per MCP tool that will be served from the proxy instead. */
+  defs: ProxyToolDef[]
+  /** Only the servers a def was actually built for. */
+  coveredServers: Set<string>
+}
+
+/**
+ * Build proxy defs for opencode's MCP-backed tools out of the tool array
+ * opencode already passes to `doStream`.
+ *
+ * The discovery source matters, and it is the whole reason this function
+ * exists. The obvious source, `client.tool.list()` behind
+ * `/experimental/tool`, enumerates opencode's `ToolRegistry` only: built-ins
+ * plus plugin-declared tools. MCP tools are not in that registry on 1.18.31,
+ * they are merged into the model's tool set afterwards, so a registry-based
+ * match finds nothing however the prefix rule is written. The AI SDK `tools`
+ * argument is downstream of that merge, so it is the one place a provider
+ * plugin can see them at all.
+ *
+ * Matching is still by enabled-server prefix, longest name first so
+ * `slack_intl_*` resolves to `slack_intl` and not `slack`. That is
+ * deliberately narrow: everything else in the array is a built-in or another
+ * plugin's tool, and forwarding those wholesale is what the explicit
+ * `proxyOpencodeTools` allowlist is for.
+ */
+export function resolveMcpProxyToolDefs(options: {
+  serverNames: readonly string[]
+  tools?: readonly ModelToolEntry[]
+  taken?: ReadonlySet<string>
+}): McpProxyToolResolution {
+  const empty: McpProxyToolResolution = { defs: [], coveredServers: new Set() }
+  const serverNames = options.serverNames ?? []
+  if (serverNames.length === 0) return empty
+
+  const tools = options.tools
+  if (!tools || tools.length === 0) return empty
+
+  const serversByLengthDesc = [...serverNames].sort((a, b) => b.length - a.length)
+  const taken = options.taken ?? new Set<string>()
+  const defs: ProxyToolDef[] = []
+  const coveredServers = new Set<string>()
+  const seen = new Set<string>()
+  const collided: string[] = []
+
+  for (const tool of tools) {
+    // opencode only ever puts plain function tools in this array; a
+    // provider-defined entry has no opencode executor behind it, so
+    // forwarding one would produce a call nothing can answer.
+    if (tool?.type !== undefined && tool.type !== "function") continue
+    const name = typeof tool?.name === "string" ? tool.name.trim() : ""
+    if (!name) continue
+
+    const matchedServer = serversByLengthDesc.find(
+      (server) => name === server || name.startsWith(`${server}_`),
+    )
+    if (!matchedServer) continue
+    if (seen.has(name)) continue
+    if (taken.has(name)) {
+      collided.push(name)
+      continue
+    }
+    seen.add(name)
+    coveredServers.add(matchedServer)
+    defs.push({
+      name,
+      description: typeof tool.description === "string" ? tool.description : "",
+      inputSchema:
+        tool.inputSchema && typeof tool.inputSchema === "object"
+          ? (tool.inputSchema as Record<string, unknown>)
+          : { type: "object", properties: {} },
+    })
+  }
+
+  if (collided.length > 0) {
+    // WARN, not NOTICE: only warn and error are alwaysStderr in src/logger.ts,
+    // and a shadowed MCP tool silently stops being routed through opencode,
+    // which is exactly the class of surprise this lane exists to end.
+    log.warn(
+      "MCP tool not routed through the proxy: another proxy tool already holds" +
+        " that name, and it keeps it",
+      { collided },
+    )
+  }
+  return { defs, coveredServers }
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []

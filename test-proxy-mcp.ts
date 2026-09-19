@@ -19,6 +19,7 @@ import {
   resolveProxyClientCeilingMs,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
+  resolveMcpProxyToolDefs,
   formatTaskBatchResults,
   taskBatchChildToolCallId,
   taskBatchInputError,
@@ -1219,4 +1220,129 @@ test("formatTaskBatchResults labels every child in order and never drops a gap",
   assert.match(text, /## task 1 of 3: first \(general\)\n\[error\] boom/)
   assert.match(text, /## task 2 of 3: second \(general\)\n\[missing\] opencode returned no result/)
   assert.match(text, /## task 3 of 3: third \(general\)\n\[error\] gamma/)
+})
+
+// --- resolveMcpProxyToolDefs -------------------------------------------
+//
+// Discovery source regression. These pin the fix for the option that
+// defaulted to true and routed nothing: opencode's tool registry
+// (`client.tool.list()` / `GET /experimental/tool`) enumerates built-ins
+// plus plugin-declared tools only, so an MCP-shaped id is never in it. The
+// AI SDK `tools` array opencode hands `doStream` is downstream of the merge
+// that adds MCP tools, so it is the only place a provider plugin sees them.
+// Measured live on opencode 1.18.31: registry 14 ids, none MCP; the same
+// server's model tool set carried 14 `codebase-memory-mcp_*` entries.
+
+const modelTool = (name: string, extra: Record<string, unknown> = {}) => ({
+  type: "function" as const,
+  name,
+  description: `desc for ${name}`,
+  inputSchema: { type: "object", properties: { q: { type: "string" } } },
+  ...extra,
+})
+
+test("MCP tools are discovered from the model tool set, not the registry", () => {
+  const { defs, coveredServers } = resolveMcpProxyToolDefs({
+    serverNames: ["codebase-memory-mcp", "figma"],
+    tools: [
+      // The built-ins opencode's registry route does return. None of these
+      // may be forwarded: that is what `proxyOpencodeTools` is for.
+      modelTool("bash"),
+      modelTool("read"),
+      modelTool("task"),
+      modelTool("compress"),
+      modelTool("codebase-memory-mcp_list_projects"),
+      modelTool("codebase-memory-mcp_search_graph"),
+      modelTool("figma_get_metadata"),
+    ],
+  })
+  assert.deepEqual(
+    defs.map((def) => def.name),
+    [
+      "codebase-memory-mcp_list_projects",
+      "codebase-memory-mcp_search_graph",
+      "figma_get_metadata",
+    ],
+  )
+  assert.deepEqual([...coveredServers].sort(), ["codebase-memory-mcp", "figma"])
+  // The schema travels, so Claude sees the real argument shape.
+  assert.deepEqual(defs[0].inputSchema, {
+    type: "object",
+    properties: { q: { type: "string" } },
+  })
+  assert.equal(defs[0].description, "desc for codebase-memory-mcp_list_projects")
+})
+
+test("a registry-shaped tool list yields nothing, which is the bug being fixed", () => {
+  // Verbatim the 14 ids `GET /experimental/tool/ids` returned on 1.18.31
+  // while five MCP servers were connected.
+  const registryIds = [
+    "invalid", "question", "bash", "read", "glob", "grep", "edit", "write",
+    "task", "webfetch", "todowrite", "websearch", "skill", "apply_patch",
+  ]
+  const { defs, coveredServers } = resolveMcpProxyToolDefs({
+    serverNames: ["figma", "codebase-memory-mcp", "obsidian"],
+    tools: registryIds.map((id) => modelTool(id)),
+  })
+  assert.deepEqual(defs, [])
+  assert.equal(coveredServers.size, 0)
+})
+
+test("the longest server name wins, so a prefix server cannot steal its tools", () => {
+  const { defs, coveredServers } = resolveMcpProxyToolDefs({
+    serverNames: ["slack", "slack_intl"],
+    tools: [modelTool("slack_intl_send"), modelTool("slack_send")],
+  })
+  assert.deepEqual(defs.map((def) => def.name), ["slack_intl_send", "slack_send"])
+  assert.deepEqual([...coveredServers].sort(), ["slack", "slack_intl"])
+})
+
+test("coveredServers names only matched servers, so an unmatched one is not stranded", () => {
+  // The caller excludes coveredServers from `--mcp-config`. Excluding an
+  // enabled server with no def would drop it from the direct bridge without
+  // putting it on the proxy, leaving it reachable by neither route.
+  const { defs, coveredServers } = resolveMcpProxyToolDefs({
+    serverNames: ["figma", "obsidian"],
+    tools: [modelTool("figma_get_metadata")],
+  })
+  assert.deepEqual(defs.map((def) => def.name), ["figma_get_metadata"])
+  assert.deepEqual([...coveredServers], ["figma"])
+  assert.equal(coveredServers.has("obsidian"), false)
+})
+
+test("an empty or absent model tool set resolves to nothing", () => {
+  assert.deepEqual(resolveMcpProxyToolDefs({ serverNames: ["figma"] }).defs, [])
+  assert.deepEqual(
+    resolveMcpProxyToolDefs({ serverNames: ["figma"], tools: [] }).defs,
+    [],
+  )
+  assert.deepEqual(
+    resolveMcpProxyToolDefs({ serverNames: [], tools: [modelTool("figma_x")] }).defs,
+    [],
+  )
+})
+
+test("a name another proxy def already holds is dropped, not duplicated", () => {
+  const { defs, coveredServers } = resolveMcpProxyToolDefs({
+    serverNames: ["figma"],
+    tools: [modelTool("figma_get_metadata"), modelTool("figma_use")],
+    taken: new Set(["figma_use"]),
+  })
+  assert.deepEqual(defs.map((def) => def.name), ["figma_get_metadata"])
+  assert.deepEqual([...coveredServers], ["figma"])
+})
+
+test("non-function and unnamed entries are skipped", () => {
+  const { defs } = resolveMcpProxyToolDefs({
+    serverNames: ["figma"],
+    tools: [
+      { type: "provider", name: "figma_native" } as any,
+      { type: "function", name: "   " } as any,
+      { type: "function" } as any,
+      modelTool("figma_ok"),
+      // A duplicate name must not produce two defs of the same tool.
+      modelTool("figma_ok"),
+    ],
+  })
+  assert.deepEqual(defs.map((def) => def.name), ["figma_ok"])
 })

@@ -88,6 +88,7 @@ import {
   createProxyMcpServer,
   resolveDisallowedTools,
   resolveProxyOpencodeToolDefs,
+  resolveMcpProxyToolDefs,
   DEFAULT_PROXY_TOOLS,
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
@@ -97,6 +98,8 @@ import {
   taskBatchTasks,
   taskBatchChildToolCallId,
   formatTaskBatchResults,
+  type McpProxyToolResolution,
+  type ModelToolEntry,
   type ProxyMcpServer,
   type ProxyToolCall,
   type ProxyToolDef,
@@ -1103,53 +1106,56 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   /**
-   * Resolve ProxyToolDef[] for opencode's MCP-bridged tools so they go
+   * Resolve ProxyToolDef[] for opencode's MCP-backed tools so they go
    * through the in-process proxy instead of being bridged into Claude CLI's
-   * `--mcp-config`. Direct bridging causes double execution because both
-   * Claude CLI's own MCP child and opencode hold their own connection to
-   * the same server; routing through the proxy keeps a single execution
-   * site (opencode). Returns null when the feature is disabled, the SDK
-   * client is unavailable, or no MCP servers are configured.
+   * `--mcp-config`. Routing through the proxy keeps a single execution site
+   * (opencode), so the call is permission-prompted and rendered as an
+   * opencode tool call.
+   *
+   * Opt-in (`proxyOpencodeMcpTools: true`) and off by default. It used to
+   * default to true while finding nothing, because it discovered tools via
+   * `client.tool.list()`, which enumerates opencode's `ToolRegistry` and not
+   * the MCP tools merged into the model's tool set afterwards. Discovery now
+   * reads that merged set, the `tools` array opencode passes `doStream`, so
+   * the option does what it says. Turning it on by default at the same time
+   * would have silently moved every existing user's MCP traffic off the
+   * working direct bridge, so the default went to false instead: today's
+   * behaviour is preserved exactly and crossing over is the operator's call.
+   *
+   * Returns null when the feature is off or nothing matched, which leaves
+   * every server on the direct bridge.
    */
-  private async resolvedProxyMcpTools(
+  private resolvedProxyMcpTools(
     allEnabledServerNames: string[],
-  ): Promise<ProxyToolDef[] | null> {
-    if (this.config.proxyOpencodeMcpTools === false) return null
+    modelTools: readonly ModelToolEntry[] | undefined,
+    taken?: ReadonlySet<string>,
+  ): McpProxyToolResolution | null {
+    if (this.config.proxyOpencodeMcpTools !== true) return null
     if (this.config.bridgeOpencodeMcp === false) return null
     if (allEnabledServerNames.length === 0) return null
 
-    const items = await fetchOpencodeToolList(
-      this.config.provider,
-      this.modelId,
-      this.config.cwd,
-    )
-    if (!items || items.length === 0) return null
-
-    // opencode names MCP tools `<server>_<originalToolName>`. Match the
-    // longest server name prefix first so e.g. `slack_intl_*` resolves to
-    // server `slack_intl` not `slack`.
-    const serversByLengthDesc = [...allEnabledServerNames].sort(
-      (a, b) => b.length - a.length,
-    )
-    const out: ProxyToolDef[] = []
-    const seen = new Set<string>()
-    for (const item of items) {
-      const matchedServer = serversByLengthDesc.find(
-        (name) => item.id === name || item.id.startsWith(`${name}_`),
+    const resolution = resolveMcpProxyToolDefs({
+      serverNames: allEnabledServerNames,
+      tools: modelTools,
+      taken,
+    })
+    if (resolution.defs.length === 0) {
+      // WARN, not NOTICE: only warn and error are alwaysStderr in
+      // src/logger.ts, so a NOTICE would be invisible to the very operator
+      // who opted in and is entitled to know their MCP calls are still
+      // going direct, and so still are not permission-prompted by opencode.
+      log.warn(
+        "proxyOpencodeMcpTools is on but no MCP tool was found in opencode's" +
+          " tool set; those servers stay on the direct bridge this spawn",
+        { servers: allEnabledServerNames, modelTools: modelTools?.length ?? 0 },
       )
-      if (!matchedServer) continue
-      if (seen.has(item.id)) continue
-      seen.add(item.id)
-      out.push({
-        name: item.id,
-        description: item.description ?? "",
-        inputSchema:
-          item.parameters && typeof item.parameters === "object"
-            ? item.parameters
-            : { type: "object", properties: {} },
-      })
+      return null
     }
-    return out.length > 0 ? out : null
+    log.debug("routing opencode MCP tools through the proxy", {
+      servers: [...resolution.coveredServers],
+      tools: resolution.defs.map((def) => def.name),
+    })
+    return resolution
   }
 
   /**
@@ -1763,7 +1769,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     if (
       scope === "tools" &&
       (this.resolvedProxyTools() ||
-        (this.config.proxyOpencodeMcpTools !== false &&
+        (this.config.proxyOpencodeMcpTools === true &&
           this.config.bridgeOpencodeMcp !== false))
     ) {
       return this.doGenerateViaStream(options)
@@ -2798,11 +2804,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // MCP-bridged tool). If discovery returns nothing or the SDK
             // is unreachable, this is null and we fall back to direct
             // bridging.
-            const proxyMcpTools = await self.resolvedProxyMcpTools(
+            const mcpResolution = self.resolvedProxyMcpTools(
               discovery.allEnabledServerNames,
+              options.tools as readonly ModelToolEntry[] | undefined,
+              new Set((resolvedProxy ?? []).map((def) => def.name)),
             )
-            const excludeServers: ReadonlySet<string> | undefined = proxyMcpTools
-              ? new Set(discovery.allEnabledServerNames)
+            const proxyMcpTools = mcpResolution?.defs ?? null
+            // Exclude only the servers a def was actually built for. Excluding
+            // every enabled server, as this did while the resolution was always
+            // null, would strand a server whose tools were not in the model's
+            // tool set: dropped from `--mcp-config` and absent from the proxy,
+            // so reachable by neither route.
+            const excludeServers: ReadonlySet<string> | undefined = mcpResolution
+              ? mcpResolution.coveredServers
               : undefined
 
             // Overlay opencode's live tool info onto the static proxy defs.
