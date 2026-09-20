@@ -18,6 +18,18 @@ export interface ClaudeCodeConfig {
   cwd?: string
   account?: string
   configDir?: string
+  /**
+   * Every account the provider expansion produced, so a limited account can
+   * offer the others. Set by `providerConfig`, not by the user.
+   */
+  failoverAccounts?: string[]
+  /**
+   * The CLI path BEFORE the per-account wrapper substitution, so a failover
+   * can build another account's wrapper on top of the same binary. Set by
+   * `providerConfig`, not by the user.
+   */
+  baseCliPath?: string
+  accountFailover?: AccountFailoverMode
   providerID?: string
   skipPermissions?: boolean
   permissionMode?: PermissionMode
@@ -87,6 +99,14 @@ export interface LoggingConfig {
 
 export type WebSearchRouting = "claude" | "disabled" | (string & {})
 
+/**
+ * What happens when the account a conversation runs on is out of usage.
+ * `"ask"` (default) shows the operator a form listing the other configured
+ * accounts and applies the pick inside the same turn; `"off"` keeps today's
+ * behaviour, where the turn ends with the rate-limit error.
+ */
+export type AccountFailoverMode = "ask" | "off"
+
 export interface ClaudeCodeProviderSettings {
   cliPath?: string
   /** Drive interactive claude (subscription) instead of headless --print. */
@@ -105,6 +125,21 @@ export interface ClaudeCodeProviderSettings {
   account?: string
   configDir?: string
   accounts?: string[]
+  /**
+   * Every account the provider expansion produced. Written by the config
+   * hook; setting it by hand only limits what a limited account may offer.
+   */
+  failoverAccounts?: string[]
+  /** The CLI path before the per-account wrapper substitution. */
+  baseCliPath?: string
+  /**
+   * When this account is out of usage, show the operator a form listing the
+   * other configured accounts and continue the task on the pick, inside the
+   * same opencode turn. `"ask"` by default, which only does anything when
+   * more than one account is configured. `"off"` keeps the plain rate-limit
+   * error. See README "Account failover".
+   */
+  accountFailover?: AccountFailoverMode
   /**
    * Model that subagents run on when their own definition pins nothing.
    * Unset means no implicit override at all, so an agent keeps inheriting the

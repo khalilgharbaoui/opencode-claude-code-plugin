@@ -197,6 +197,34 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login
 
 The account model IDs are internally suffixed, for example `claude-sonnet-4-6@work`, so long-lived Claude subprocess sessions do not collide across accounts. The generated wrapper strips the suffix before calling `claude --model`.
 
+#### Account failover
+
+With more than one account configured, an account running out of usage mid-task no longer just ends the turn. The plugin asks, using opencode's own `question` form:
+
+```text
+Account limit
+The Claude account "work" is out of usage in the five_hour window, which resets at
+2026-09-20T18:00:00.000Z. Continue this task on another configured account?
+Leaving this unanswered waits, at no cost.
+
+  personal   Run on "personal" until 2026-09-20T18:00:00.000Z. …
+  default    Run on "default" until 2026-09-20T18:00:00.000Z. …
+  stop       End this turn now and leave the account as it is.
+```
+
+Pick an account and the task continues on it **inside the same opencode turn**, with no new message from you. This is on by default because the pick is the consent: nothing moves until you choose, and leaving the form open costs nothing.
+
+What a pick does, in full:
+
+- **It is sticky for the limited account, not for the session.** A usage limit belongs to the account, so one pick governs every session running on `work`, and subagents follow their parent for free. It lasts until the limit's reset time, or until opencode restarts when the CLI did not report one. Child sessions never show the form themselves.
+- **The conversation is replayed, not resumed.** Claude transcripts live under each account's own `CLAUDE_CONFIG_DIR`, so `--resume` cannot cross accounts. The plugin starts a fresh Claude session on the target and replays the thread from opencode's history, then tells it to carry on. That costs input tokens on the new account, and anything the CLI held but opencode did not is gone.
+- **Per-profile MCP servers do not come along.** A server configured only in the limited account's Claude profile is simply absent on the target.
+- **`stop`, dismissing the form, or any answer that is not one of the offered accounts** ends the turn exactly the way the rate-limit error ends it today.
+
+Only two things open the form: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
+
+Not available on the [interactive transport](#interactive-transport-experimental) (no proxy server, TUI stdin) or on compaction turns. Set `"accountFailover": "off"` to keep the plain error.
+
 ### Subagents: your account, their model
 
 opencode's agent config cannot express "inherit the account, choose the model". A subagent that omits `model` inherits the invoking agent's whole model string; one that pins `model` inherits neither half, so pinning Opus also pins whichever account was written into it. This plugin closes that gap, because it is the piece that knows the account is the *provider* while the model is only a `--model` flag.
@@ -282,6 +310,7 @@ model: claude-code-work/claude-opus-5@work
 |---|---|---|---|
 | `cliPath` | string | `"claude"` | Path to the `claude` executable (a binary, not a shell command with flags). opencode's config hook seeds this with `"claude"`, so under opencode this default always applies; `CLAUDE_CLI_PATH` is only consulted when `createClaudeCode()` is called directly and the option is absent. Account providers wrap it with a generated script; never point it at one of those yourself. |
 | `accounts` | string[] | – | **Optional.** Most setups need no accounts at all: with this unset you get a single `Claude Code (Default)` provider on your normal `~/.claude` login. Supply names only to run several Claude logins side by side; `default` stays implicit, so `["work", "personal"]` gives you `Claude Code (Default)`, `Claude Code (Work)` and `Claude Code (Personal)`. See [Multiple Claude Code accounts](#multiple-claude-code-accounts). |
+| `accountFailover` | `"ask"` \| `"off"` | `"ask"` | When this account runs out of usage mid-task, show a form listing the other configured accounts and continue on the one you pick, inside the same turn. Only ever fires when more than one account is configured, so a single-account setup is unaffected. `"off"` keeps the plain rate-limit error. See [Account failover](#account-failover). |
 | `cwd` | string | see description | Working directory for the spawned CLI. Resolved **lazily per request**, first match winning: this explicit value, then the opencode session's own `directory` (so `opencode serve` and the web UI spawn in the right project even though one server handles many), then `process.cwd()` when it is a real directory, then the project directory captured at plugin init (this rescues macOS GUI launches, where `process.cwd()` is `/`), and finally `process.cwd()` regardless. [Startup diagnostics](#startup-diagnostics) reports which tier won. Session tier contributed by [@galvani](https://github.com/galvani). |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. It is still passed when `proxyTools` is set: proxied calls go through opencode's permission system regardless, but unproxied CLI built-ins do not. The one case where the flag is dropped is `permissionMode: "plan"`, because the CLI lets the skip flag override plan mode outright. See [Plan mode](#plan-mode). |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to headless `claude --permission-mode`. `"plan"` also suppresses `--dangerously-skip-permissions` (see the row above). Not version-gated, so check that your installed CLI accepts the value. The [interactive transport](#interactive-transport-experimental) does not forward it. |

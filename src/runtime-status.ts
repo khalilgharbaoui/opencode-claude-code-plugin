@@ -161,6 +161,39 @@ export async function fetchSessionDirectory(
 }
 
 /**
+ * The id of the session that spawned this one, or undefined when it is a
+ * top-level session (or the lookup is unavailable). Read off the same
+ * `GET /session/{id}` response `fetchSessionDirectory` uses, kept separate
+ * because the two are needed at different points in a turn.
+ *
+ * Account failover is the only caller: a subagent must never be shown the
+ * switch form. It follows its parent's account for free, because the override
+ * is scoped to the account rather than the session.
+ */
+export async function fetchSessionParentId(
+  sessionID: string,
+): Promise<string | undefined> {
+  if (!sessionID || sessionID === "default") return undefined
+  const client = opencodeClient
+  if (!client?.session?.get) return undefined
+  try {
+    const res = await client.session.get({ path: { id: sessionID } })
+    const data = (res as { data?: unknown }).data
+    if (!data || typeof data !== "object") return undefined
+    const parentID = (data as { parentID?: unknown }).parentID
+    return typeof parentID === "string" && parentID.length > 0
+      ? parentID
+      : undefined
+  } catch (err) {
+    log.warn("failed to fetch opencode session parent", {
+      sessionID,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return undefined
+  }
+}
+
+/**
  * Snapshot opencode's current MCP runtime status so the bridge can overlay
  * UI-toggled state on top of disk config. Returns `undefined` on any
  * failure (no client captured, status call rejected, malformed response)

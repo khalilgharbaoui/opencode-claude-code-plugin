@@ -53,22 +53,30 @@
 
 ## Backlog
 
+## Deferred decisions
+
+- 2026-09-20: The maintainer chose "later" for adding the Appical MCP project block
+  to `Appical.IaC`, `Cl-nica-Aurora---Player-team`, `Manager-toolkit`,
+  `NOW-player-web` and `workshop-sep-2026`.
+- 2026-09-20: The maintainer chose "later" for choosing a Slack authentication
+  strategy. The current global server can still pay a 30-second 1Password unlock
+  timeout on startup.
+- 2026-09-20: The maintainer chose "later" for completing opencode's separate,
+  global Linear OAuth authentication.
+
 ## Open from you
 
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-09-20: five Appical repos have no `opencode.json` and so do not opt into the
-  `linear` / `sentry` / `aikido` project block that `webapp` and its seven worktrees
-  carry: `Appical.IaC`, `Cl-nica-Aurora---Player-team`, `Manager-toolkit`,
-  `NOW-player-web`, `workshop-sep-2026`. The file is tracked in git in `webapp`, so
-  adding one commits a config into a shared repo. Do it (likely one small PR each),
-  or leave those repos without linear?
-- 2026-09-20: `slack` fails everywhere with `Operation timed out after 30000ms`,
-  which is `op run` waiting on a 1Password unlock, and that stall is paid on every
-  opencode start in every project. Three fixes offered: unlock 1Password before
-  launching, switch the entry to a service-account token so `op run` never prompts,
-  or turn it off globally and opt in per project the way linear does. Which?
-- 2026-09-20: `linear` reads `needs_auth` even inside Appical repos. opencode's
-  OAuth is separate from Claude's and is global once done, not per repo. Maintainer
-  action, not a code change.
+No pending questions.
+
+## In progress
+
+- 2026-09-20: two lanes dispatched after the maintainer said `go` to every recommendation.
+  Lane 1, account failover: on whenever more than one account is configured; a synthetic
+  `question` tool-call on a recognised limit rejection; the pick applies inside the same
+  opencode turn; sticky for the limited account until its reset time; subagents follow
+  the parent's pick and never ask; a dismissed form ends the turn as the rate-limit error
+  does today. Lane 2, small cleanup: stale plan-mode comment, visible result-fallback
+  timeout, bounded serve-mode maps, silent-turn nudge.

@@ -1,4 +1,8 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
+import {
+  FAILOVER_MARKER,
+  stripAccountFailoverParts,
+} from "./account-failover.js"
 import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
 import {
   COMPACT_BOUNDARY_MARKER,
@@ -31,6 +35,7 @@ const PLUGIN_NOTE_MARKERS = [
   RESULT_ERROR_MARKER,
   DOCTOR_MARKER,
   STREAM_TIMEOUT_MARKER,
+  FAILOVER_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {
@@ -54,6 +59,10 @@ function stripPluginNotes(content: unknown): unknown {
  * rebuild paths.
  */
 export function filterSideQuestionHistory(prompt: Prompt): Prompt {
+  // The account-failover form is a synthetic `question` call Claude never
+  // issued, answered by a `tool-result` it never saw. It has to come out
+  // before anything is replayed, which is on the switch turn by definition.
+  prompt = stripAccountFailoverParts(prompt)
   let pluginCommand = false
   const kept = prompt.filter((message) => {
     if (message.role === "user") {

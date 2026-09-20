@@ -14,7 +14,14 @@ const OPENCODE_QUESTION_RESULT_SUFFIX =
 
 const KEY_SEPARATOR = "\u0000"
 
-export interface ExitPlanModeQuestionCall {
+/**
+ * A synthetic call to opencode's native `question` tool, emitted so the turn
+ * ends on `tool-calls` and the operator's answer arrives on the next
+ * `doStream` as a `tool-result` with the same id. Shared with the account
+ * failover form (`src/account-failover.ts`), which uses the identical
+ * mechanism for a different question.
+ */
+export interface QuestionToolCall {
   toolCallId: string
   toolName: typeof QUESTION_TOOL_NAME
   input: {
@@ -28,6 +35,8 @@ export interface ExitPlanModeQuestionCall {
   }
   text: string
 }
+
+export type ExitPlanModeQuestionCall = QuestionToolCall
 
 /**
  * Whether to bridge `ExitPlanMode` into opencode's native `question` tool
@@ -136,7 +145,12 @@ function tryParseJson(text: string): unknown {
   }
 }
 
-function unwrapToolOutput(part: any): unknown {
+/**
+ * Pull the operator's answer out of whatever shape opencode wrapped the
+ * `question` tool result in. Exported because the account failover form reads
+ * the same results through the same tool; a second copy of this would drift.
+ */
+export function unwrapToolOutput(part: any): unknown {
   const output = part?.output ?? part?.result
   if (typeof output === "string") return tryParseJson(output)
   if (!output || typeof output !== "object") return output
@@ -180,7 +194,8 @@ function unwrapOpencodeQuestionResult(value: string): string {
   return value
 }
 
-function collectAnswerStrings(value: unknown): string[] {
+/** Flatten an unwrapped `question` result into the answer strings it holds. */
+export function collectAnswerStrings(value: unknown): string[] {
   if (typeof value === "string") return [unwrapOpencodeQuestionResult(value)]
   if (Array.isArray(value)) return value.flatMap(collectAnswerStrings)
   if (!value || typeof value !== "object") return []

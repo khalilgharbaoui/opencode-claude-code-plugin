@@ -181,6 +181,9 @@ export function createClaudeCode(
       cwd: settings.cwd,
       account: settings.account,
       configDir: settings.configDir,
+      failoverAccounts: settings.failoverAccounts,
+      baseCliPath: settings.baseCliPath ?? cliPath,
+      accountFailover: settings.accountFailover ?? "ask",
       providerID: settings.providerID,
       skipPermissions: settings.skipPermissions ?? true,
       permissionMode: settings.permissionMode,
@@ -361,6 +364,10 @@ async function providerConfig(
     options: {
       ...mergedOptions,
       ...runtime,
+      // The pre-wrapper binary, kept because `runtime` replaces `cliPath`
+      // with the account's wrapper and a failover has to build ANOTHER
+      // account's wrapper on top of the same base (src/account-failover.ts).
+      baseCliPath: cliPath,
     },
     // models is intentionally omitted: both callers overwrite it with
     // configModelsForProvider(), which emits the flat config schema
@@ -418,6 +425,10 @@ async function expandAccountProviders(config: {
           {
             ...seedOptions,
             account,
+            // The resolved list, so this account's language model can offer
+            // the others when it runs out of usage. `accounts` itself stays
+            // stripped by cleanProviderOptions.
+            failoverAccounts: accounts,
           },
           accountDisplayName(account),
         )),

@@ -12,6 +12,7 @@ import {
 } from "./proxy-broker.js"
 import { clearLedger } from "./todo-ledger.js"
 import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mode-question.js"
+import { clearAccountFailoverQuestions } from "./account-failover.js"
 import { clearCompression } from "./compression-store.js"
 import {
   cliHygieneEnv,
@@ -40,6 +41,14 @@ export interface ActiveProcess {
   effort?: ReasoningEffort
   /** When the child was spawned, so `/claude-code-doctor` can report its age. */
   startedAt?: number
+  /**
+   * The binary this child was spawned with. Account failover compares it
+   * against the path the current turn resolves to: a difference means the
+   * conversation has moved to another account, and the process plus its
+   * Claude session id have to go because a transcript cannot resume across
+   * accounts. Absent on the interactive shim, which never fails over.
+   */
+  cliPath?: string
   cliArgs?: string[]
   // Retain resolved calls until continuation settles, including late channel closure.
   pendingProxyCompletions?: Map<string, {
@@ -658,6 +667,7 @@ export function setClaudeSessionId(key: string, sessionId: string): void {
 
 export function deleteClaudeSessionId(key: string): void {
   clearExitPlanModeQuestions(key)
+  clearAccountFailoverQuestions(key)
   const claudeSessionId = claudeSessions.get(key)
   if (claudeSessionId) clearLedger(claudeSessionId)
   claudeSessions.delete(key)
@@ -738,6 +748,7 @@ export function spawnClaudeProcess(
     systemPromptFile,
     effort,
     startedAt: Date.now(),
+    cliPath,
     cliArgs: [...cliArgs],
     unattendedLines: [],
     unattendedDropped: 0,
