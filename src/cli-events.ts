@@ -98,10 +98,15 @@ export function parseRateLimitEvent(msg: ClaudeStreamMessage): RateLimitInfo | n
   }
 }
 
-/** The CLI sends unix seconds; tolerate milliseconds rather than print 1970. */
+/** The CLI sends unix seconds; tolerate milliseconds rather than mean 1970. */
+export function resetsAtToMs(resetsAt: number | undefined): number | undefined {
+  if (resetsAt === undefined || !Number.isFinite(resetsAt)) return undefined
+  return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt
+}
+
 export function formatResetsAt(resetsAt: number | undefined): string | undefined {
-  if (resetsAt === undefined) return undefined
-  const ms = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt
+  const ms = resetsAtToMs(resetsAt)
+  if (ms === undefined) return undefined
   const date = new Date(ms)
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }

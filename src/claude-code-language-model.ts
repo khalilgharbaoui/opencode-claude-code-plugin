@@ -26,10 +26,27 @@ import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } fro
 import {
   describeResultFailure,
   formatResultFailureNote,
+  isRateLimitRejected,
+  parseRateLimitEvent,
   reportCompactBoundary,
   reportRateLimitEvent,
   reportSystemInit,
 } from "./cli-events.js"
+import { DEFAULT_ACCOUNT, normalizeAccountName } from "./accounts.js"
+import {
+  buildFailoverContinuationPrompt,
+  consumeAccountFailoverAnswer,
+  createAccountFailoverQuestionCall,
+  failoverCandidates,
+  failoverUntil,
+  formatFailoverNote,
+  formatFailoverStopNote,
+  isAccountFailoverQuestionActive,
+  isAccountLimitError,
+  resolveFailoverSpawn,
+  setAccountOverride,
+  type FailoverSpawn,
+} from "./account-failover.js"
 import { DOCTOR_COMMAND, buildDoctorReport, parseDoctorCommand } from "./doctor.js"
 import {
   extractTurnStats,
@@ -43,11 +60,13 @@ import {
   consumeExitPlanModeQuestionResult,
   createExitPlanModeQuestionCall,
   isPlanModeQuestionActive,
+  type QuestionToolCall,
 } from "./plan-mode-question.js"
 import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
   fetchOpencodeToolList,
+  fetchSessionParentId,
   type OpencodeToolListItem,
   resolveSpawnCwdForSession,
 } from "./runtime-status.js"
@@ -1865,12 +1884,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         stripContextReminders: this.stripContextRemindersEnabled(),
       })
 
+    // The same account override doStream applies, with no dialog of its own:
+    // a title or no-tools call must not ask anything, but it must follow the
+    // account the conversation was moved to, or it bills the limited one.
+    const failover = await resolveFailoverSpawn({
+      account: this.config.account ?? DEFAULT_ACCOUNT,
+      baseCliPath: this.config.baseCliPath ?? this.config.cliPath,
+      cliPath: this.config.cliPath,
+      modelId: effectiveModelId,
+    })
+    const cliPath = failover.cliPath
+
     // doGenerate always spawns a fresh process, never reuse session ID.
     // Pre-fetch opencode's MCP runtime status so the bridge overlays
     // UI-toggled state on top of disk config.
     const [runtimeStatus, cliVersion, planModeQuestionActive] = await Promise.all([
       getRuntimeMcpStatus(),
-      detectCliVersion(this.config.cliPath),
+      detectCliVersion(cliPath),
       this.resolvePlanModeQuestion(compactionMode),
     ])
     const systemPromptFile = buildAppendedSystemPrompt(
@@ -1881,13 +1911,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // An existing summary still carries: it is this key's prior context.
       { compressEnabled: false, compressionSummary: getCompressionSummary(sk) },
     )
-    const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
+    const { model: spawnModelId, fast: fastMode } = parseModelId(failover.modelId)
     // The same skill bridge as doStream's spawn: Claude's Skill tool is the
     // only way a Claude-routed turn can load an opencode skill, on this path
     // as much as on the streaming one.
     const skillPluginDirs = await resolveSkillPluginDirs({
       cwd,
-      cliPath: this.config.cliPath,
+      cliPath,
       enabled: this.config.bridgeOpencodeSkills === true,
     })
     const cliArgs = buildCliArgs({
@@ -1918,7 +1948,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const { spawn } = await import("node:child_process")
     const { createInterface } = await import("node:readline")
 
-    const proc = spawn(this.config.cliPath, cliArgs, {
+    const proc = spawn(cliPath, cliArgs, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: claudeSpawnEnv({
@@ -2314,7 +2344,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
-    const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
@@ -2328,12 +2357,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           this.getOpencodeAgent(options.providerOptions),
           this.modelId,
         )
-    // `effectiveModelId` stays intact for session keys, logs, and metadata;
-    // only the name handed to the CLI gets the `-fast` marker stripped.
-    // Session keys keeping it is deliberate: fast and standard must not share
-    // a claude process, both because the spawn flags differ and because
-    // switching speed invalidates the prompt cache anyway.
-    const { model: spawnModelId, fast: fastMode } = parseModelId(effectiveModelId)
     // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
@@ -2367,6 +2390,30 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const interactiveBypassRequested =
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
+
+    // Account failover. When a previous turn hit this account's usage limit
+    // and the operator picked another account, every turn from then on spawns
+    // that account's wrapper instead, until the limit's reset time. The
+    // override is keyed on the ACCOUNT, so it covers every session running on
+    // it, subagents included. Resolved here, before anything reads `cliPath`.
+    //
+    // Excluded for the interactive transport, which drives a TUI over a PTY
+    // with no proxy server: nothing in that path can show the form or replay
+    // the conversation, so it keeps the plain rate-limit error.
+    const sourceAccount = normalizeAccountName(
+      this.config.account ?? DEFAULT_ACCOUNT,
+    )
+    const baseCliPath = this.config.baseCliPath ?? this.config.cliPath
+    let failover: FailoverSpawn =
+      useInteractive || compactionMode
+        ? { cliPath: this.config.cliPath, modelId: effectiveModelId, failedOver: false }
+        : await resolveFailoverSpawn({
+            account: sourceAccount,
+            baseCliPath,
+            cliPath: this.config.cliPath,
+            modelId: effectiveModelId,
+          })
+    let cliPath = failover.cliPath
 
     // Tagged onto the process each turn so the /btw command hook, which only
     // knows the opencode session id, can find it and ask it early
@@ -2546,10 +2593,118 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       clearCompression(sk)
     }
 
+    // The operator's answer to a failover form this session asked on an
+    // earlier turn. Consumed before the session/process state below is read,
+    // because a switch changes which account those belong to.
+    const failoverAnswer =
+      compactionMode || useInteractive
+        ? null
+        : consumeAccountFailoverAnswer(sk, options.prompt as any)
+
+    if (failoverAnswer?.kind === "stop") {
+      // Dismissed, answered `stop`, or answered with something that is not
+      // one of the offered accounts. End the turn the way the rate-limit
+      // error ends it today: no CLI inference, nothing spawned.
+      log.warn("account failover declined; ending the turn", {
+        sessionKey: sk,
+        account: sourceAccount,
+        reason: failoverAnswer.reason,
+      })
+      const note = formatFailoverStopNote(failoverAnswer.reason)
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          const id = generateId()
+          controller.enqueue({ type: "text-start", id } as any)
+          controller.enqueue({ type: "text-delta", id, delta: note })
+          controller.enqueue({ type: "text-end", id })
+          controller.enqueue({
+            type: "error",
+            error: new Error(
+              `Claude account "${sourceAccount}" is out of usage and no other account was picked.`,
+            ),
+          })
+          controller.enqueue({
+            type: "finish",
+            finishReason: { unified: "error" as const, raw: "account_limit" },
+            usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+            providerMetadata: {
+              "claude-code": {
+                path: "account-failover-stop",
+                synthetic: true,
+                usageUnavailable: true,
+              },
+            },
+          })
+          controller.close()
+        },
+      })
+      return { stream, request: { body: { text: "" } } }
+    }
+
+    // The pick applies from this turn on, so re-resolve before the spawn
+    // reads anything: this turn is the one that continues the task.
+    let failoverNote: string | null = null
+    if (failoverAnswer?.kind === "switch") {
+      setAccountOverride(
+        failoverAnswer.sourceAccount,
+        failoverAnswer.target,
+        failoverUntil(failoverAnswer.resetsAt),
+      )
+      failover = await resolveFailoverSpawn({
+        account: sourceAccount,
+        baseCliPath,
+        cliPath: this.config.cliPath,
+        modelId: effectiveModelId,
+      })
+      cliPath = failover.cliPath
+      asideTransportRef.cliPath = cliPath
+      failoverNote = formatFailoverNote({
+        sourceAccount: failoverAnswer.sourceAccount,
+        target: failoverAnswer.target,
+        resetsAt: failoverAnswer.resetsAt,
+      })
+    }
+
+    // A live process belongs to the account it was spawned with, and its
+    // Claude transcript lives under that account's config dir, so neither can
+    // follow the conversation across a switch. Dropping both here (before
+    // `includeHistoryContext` is computed) is what turns the switch into a
+    // fresh session with the thread replayed, and it is equally what switches
+    // back once the override expires. The `?.cliPath &&` guard keeps the
+    // interactive shim, which carries no path, out of it.
+    const processForAccount = getActiveProcess(sk)
+    if (
+      !compactionMode &&
+      !useInteractive &&
+      processForAccount?.cliPath &&
+      processForAccount.cliPath !== cliPath
+    ) {
+      log.notice("claude process belongs to another account; starting fresh", {
+        sessionKey: sk,
+        was: processForAccount.cliPath,
+        now: cliPath,
+        failedOver: failover.failedOver,
+      })
+      deleteActiveProcess(sk)
+      deleteClaudeSessionId(sk)
+    }
+
     const hasExistingSession = !!getClaudeSessionId(sk)
     const hasActiveProcess = !!getActiveProcess(sk)
-    const includeHistoryContext =
+    let includeHistoryContext =
       !hasExistingSession && !hasActiveProcess && hasPriorConversation
+    // A fresh session on the other account holds none of this conversation,
+    // so the replay is not optional on a switch the way it is on a normal turn.
+    if (failoverAnswer?.kind === "switch" && hasPriorConversation) {
+      includeHistoryContext = true
+    }
+
+    // `effectiveModelId` stays intact for session keys, logs, and metadata;
+    // only the name handed to the CLI gets the `-fast` marker stripped, and
+    // (on a failover) the `@account` suffix the other account's wrapper would
+    // not recognise.
+    const { model: spawnModelId, fast: fastMode } = parseModelId(failover.modelId)
 
     const exitPlanModeQuestionResult = compactionMode
       ? null
@@ -2566,9 +2721,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const previousPendingProxyCalls = compactionMode
       ? []
       : getPendingProxyCalls(sk)
+    // On a switch the dialog comes out of the transcript and a short note
+    // telling the fresh session to carry on goes in as the current message.
+    const effectivePrompt =
+      failoverAnswer?.kind === "switch"
+        ? buildFailoverContinuationPrompt(options.prompt, failoverAnswer.target)
+        : options.prompt
     const userMsg =
       exitPlanModeQuestionResult ??
-      getClaudeUserMessage(options.prompt, includeHistoryContext, {
+      getClaudeUserMessage(effectivePrompt, includeHistoryContext, {
         compactionMode,
         cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
         stripContextReminders: this.stripContextRemindersEnabled(),
@@ -2603,8 +2764,34 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // which optional flags it supports without crashing older binaries.
     const [runtimeStatus, cliVersion] = await Promise.all([
       compactionMode ? Promise.resolve(undefined) : getRuntimeMcpStatus(),
-      detectCliVersion(this.config.cliPath),
+      detectCliVersion(cliPath),
     ])
+
+    // Whether a usage limit on this account should end the turn with the
+    // switch form. Resolved here, in the prologue, for the same reason the
+    // plan-mode gate is: the `result` branch that needs the answer runs in a
+    // synchronous line handler. The candidate check comes first so a
+    // single-account install never pays for the two lookups behind it.
+    const failoverAccounts = failoverCandidates(
+      this.config.failoverAccounts,
+      sourceAccount,
+    )
+    const failoverAskActive =
+      failoverAccounts.length > 0 &&
+      this.config.accountFailover !== "off" &&
+      !compactionMode &&
+      !useInteractive &&
+      isAccountFailoverQuestionActive({
+        configured: this.config.accountFailover,
+        candidates: failoverAccounts,
+        opencodeHasQuestion: (await loadLiveToolInfo()).hasQuestion,
+        compactionMode,
+        interactive: !!useInteractive,
+        // A subagent follows its parent's account for free, because the
+        // override is account-scoped. Asking it would put a form in a session
+        // the operator is usually not even looking at.
+        childSession: !!(await fetchSessionParentId(affinity)),
+      })
 
     log.info("doStream starting", {
       cwd,
@@ -3071,6 +3258,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
+          // Its own text part, led by FAILOVER_MARKER, so a later transcript
+          // rebuild strips it exactly: it was never Claude's output.
+          if (failoverNote) {
+            controller.enqueue({
+              type: "text-delta",
+              id: startTextBlock(),
+              delta: failoverNote,
+            })
+            endTextBlock()
+          }
+
           const reasoningIds = new Map<number, string>()
           const reasoningStarted = new Map<number, boolean>()
           let hadThinkingTextFromStream = false
@@ -3294,6 +3492,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // turn as an error instead of a clean stop.
           let resultFailure: string | undefined
 
+          // Set only by a REJECTED rate-limit event or by one of the two
+          // known account-limit error texts, never by a generic failure: a
+          // transient error must not open a form that moves the billing.
+          let accountLimitHit: { resetsAt?: number; window?: string } | null = null
+
         // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
         // bash calls in one assistant message) end up in a single
         // tool-calls finish event. Without this, the broker would reject
@@ -3360,9 +3563,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           } catch {}
         }
 
-        const finishWithExitPlanQuestion = (
-          call: ReturnType<typeof createExitPlanModeQuestionCall>,
-        ) => {
+        /**
+         * End the turn on a synthetic call to opencode's native `question`
+         * tool. opencode runs the tool, and the operator's answer arrives on
+         * the NEXT doStream as a `tool-result` carrying this same id, which
+         * is what keeps the whole exchange inside one opencode turn. Shared
+         * by the plan-mode approval bridge and the account-failover form.
+         */
+        const finishWithQuestionCall = (call: QuestionToolCall) => {
           if (controllerClosed) return
           endTextBlock()
           controller.enqueue({
@@ -3489,6 +3697,31 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
 
           activeProcess?.pendingProxyCompletions?.clear()
+
+          // This account is out of usage. Rather than finish as an error the
+          // operator can only act on by editing config, end the turn on a
+          // form listing the other configured accounts. Leaving it unanswered
+          // waits and costs nothing; every answer that is not one of those
+          // accounts comes back as a `stop` and ends the turn as before.
+          if (accountLimitHit && failoverAskActive) {
+            const call = createAccountFailoverQuestionCall(sk, {
+              sourceAccount,
+              candidates: failoverAccounts,
+              resetsAt: accountLimitHit.resetsAt,
+              window: accountLimitHit.window,
+            })
+            log.warn(
+              `Claude account "${sourceAccount}" is out of usage; asking which account to continue on.`,
+              {
+                sessionKey: sk,
+                candidates: failoverAccounts,
+                toolCallId: call.toolCallId,
+                resetsAt: accountLimitHit.resetsAt ?? null,
+              },
+            )
+            finishWithQuestionCall(call)
+            return
+          }
 
           const autoDecision = shouldAutoContinueIncompleteTurn(
             autoContinueState,
@@ -3670,6 +3903,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // transcript so the reason does not live only in a log file that
             // is off by default.
             if (msg.type === "rate_limit_event") {
+              // Parsed separately from the reporter, which dedupes per
+              // process and returns null on a repeat: the second rejection in
+              // a session is still a rejection this turn has to act on.
+              const info = parseRateLimitEvent(msg)
+              if (info && isRateLimitRejected(info)) {
+                accountLimitHit = {
+                  resetsAt: info.resetsAt ?? info.overageResetsAt,
+                  window: info.rateLimitType,
+                }
+              }
               const note = reportRateLimitEvent(msg)
               if (note) {
                 controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: note })
@@ -3890,7 +4133,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       id: planId,
                       delta: questionCall.text,
                     })
-                    finishWithExitPlanQuestion(questionCall)
+                    finishWithQuestionCall(questionCall)
                     return
                   }
 
@@ -4118,7 +4361,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                         id: planId,
                         delta: questionCall.text,
                       })
-                      finishWithExitPlanQuestion(questionCall)
+                      finishWithQuestionCall(questionCall)
                       return
                     }
 
@@ -4329,6 +4572,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   id: errId,
                   delta: msg.result,
                 })
+              }
+
+              // The other half of the limit signal: some rejections only ever
+              // reach us as the error text of the terminal result.
+              if (
+                !accountLimitHit &&
+                msg.is_error &&
+                isAccountLimitError({
+                  resultText: typeof msg.result === "string" ? msg.result : null,
+                })
+              ) {
+                accountLimitHit = {}
               }
 
               // A non-`success` subtype is a failed turn. Name it in the
