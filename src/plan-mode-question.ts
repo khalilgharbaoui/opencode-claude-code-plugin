@@ -33,13 +33,16 @@ export interface ExitPlanModeQuestionCall {
  * Whether to bridge `ExitPlanMode` into opencode's native `question` tool
  * this turn.
  *
- * Opt-in (`planModeQuestion`) because opencode's question form does not
- * currently render (anomalyco/opencode#36604), so an enabled bridge hangs the
- * turn until the operator interrupts, where the text path still works.
- * Gated on the live registry because emitting a `question` tool-call on a
- * build without that entry renders `⚙ invalid` and wedges the turn just the
- * same. Never bridged during compaction: that turn is text-only and its
- * answer would have nowhere to go.
+ * Opt-in (`planModeQuestion`) because the bridge is dormant on the headless
+ * transport: `--print` offers the model no `ExitPlanMode` tool at all
+ * (measured on CLI 2.1.258), so there is nothing to key on and the model asks
+ * for approval in prose instead. opencode's question form itself is fine; the
+ * older claim here that it never rendered (anomalyco/opencode#36604) was
+ * retracted on 2026-09-06, and both the native form and the `question` proxy
+ * were verified round-tripping. Gated on the live registry because emitting a
+ * `question` tool-call on a build without that entry renders `⚙ invalid` and
+ * wedges the turn. Never bridged during compaction: that turn is text-only and
+ * its answer would have nowhere to go.
  */
 export function isPlanModeQuestionActive(input: {
   configured: boolean | undefined
