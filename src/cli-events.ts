@@ -422,3 +422,24 @@ export function describeResultFailure(msg: ClaudeStreamMessage): string | null {
 export function formatResultFailureNote(message: string): string {
   return `\n${RESULT_ERROR_MARKER} ${message}\n`
 }
+
+// ---------------------------------------------------------------------------
+// stdout silence after content
+// ---------------------------------------------------------------------------
+
+export const STREAM_TIMEOUT_MARKER = "▌ **stream timeout:**"
+
+/**
+ * The inactivity watchdog in `doStream` closes a turn whose CLI produced
+ * output and then stopped talking without sending a `result`. That decision
+ * was log-only, so the operator saw a reply that simply stopped mid-thought
+ * with nothing saying why. This is the note that says it.
+ */
+export function formatStreamTimeoutNote(silenceMs: number): string {
+  const seconds = Math.max(1, Math.round(silenceMs / 1000))
+  return (
+    `\n${STREAM_TIMEOUT_MARKER} The Claude Code CLI produced output and then went ` +
+    `silent for ${seconds}s without finishing the turn, so it was closed without a ` +
+    "result. The answer above may be incomplete.\n"
+  )
+}

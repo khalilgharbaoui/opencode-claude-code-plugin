@@ -144,6 +144,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `CLAUDE_CODE_INTERACTIVE_TRANSPORT` | Fallback when `interactive` is absent: `1` enables; empty/`0`/`false`/`no`/`off` disable (case-insensitive). Explicit `interactive: false` wins. |
 | `CLAUDE_CODE_INTERACTIVE_BYPASS` | Deprecated no-op, like `interactiveBypass`. |
 | `CLAUDE_CODE_START_WATCHDOG_MS` | Positive integer ms before a headless start or proxy-result continuation is considered silent; default 90000 for missing/invalid/nonpositive values. First expiry respawns, second errors. Bookkeeping-only output is not progress. Keep within timer range; do not lower for routine config checks. |
+| `CLAUDE_CODE_RESULT_FALLBACK_MS` | Positive integer ms of stdout silence, after the CLI has produced output, before the turn is closed with no `result`; default 60000 for missing/invalid/nonpositive values. The close is announced in the reply as a `▌ **stream timeout:**` note, which is stripped from any rebuilt transcript. An aborted turn gets no note. |
 | `OPENCODE_CLAUDE_CODE_LOG_FILE` | Overrides `logging.file`: trimmed `0/false/no/off` are false; any other nonempty value is true; empty falls back to config. Prefer `1` or `0`. |
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | Overrides `logging.dir`. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | Overrides `logging.level`. Invalid values fall through to config. |

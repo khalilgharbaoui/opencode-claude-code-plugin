@@ -200,6 +200,7 @@ These rules supersede the older lifetime-cache and process-cleanup wording in th
 - Per-turn cost/cache stats (`extractTurnStats`, `formatTurnStatsLine`, the `turnStats` default, the transcript strip): `test-turn-stats.ts`.
 - CLI stream-event parsers and their once-per-process dedup (`parseRateLimitEvent`, `describeRateLimit`, `parseSystemInit`, `apiKeySourceWarning`, `parseCompactBoundary`, `describeResultFailure`): `test-cli-events.ts`.
 - The same events as opencode sees them, through a fake CLI and a real `doStream` (failed `tool_result` carrying `isError`, failing result subtype finishing as an error, footer gated on `turnStats`, rate-limit and compaction notes): `test-cli-events-stream.ts`.
+- The wire-inactivity watchdog's visible note (`formatStreamTimeoutNote`, `CLAUDE_CODE_RESULT_FALLBACK_MS`, its own text part, the transcript strip), through a fake CLI that produces output and then never sends a `result`: `test-result-fallback.ts`.
 - `/claude-code-doctor` (report formatter against a fixed report, command-registration guard, `checkProxyAuth`, transcript strip, `describeSessionKey`): `test-doctor.ts`.
 
 ## Roadmap

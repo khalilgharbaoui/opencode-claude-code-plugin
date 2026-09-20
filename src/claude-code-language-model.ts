@@ -26,6 +26,7 @@ import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } fro
 import {
   describeResultFailure,
   formatResultFailureNote,
+  formatStreamTimeoutNote,
   reportCompactBoundary,
   reportRateLimitEvent,
   reportSystemInit,
@@ -3118,7 +3119,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // previous design armed this on every text content_block_stop,
           // which killed legitimate mid-turn think pauses (most visibly
           // with sonnet between text-end and the next tool_use_start).
-          const startResultFallback = (delayMs = 60_000) => {
+          // Tunable for reproduces and for the regression test, the same seam
+          // CLAUDE_CODE_START_WATCHDOG_MS gives the start watchdog below.
+          const RESULT_FALLBACK_MS = (() => {
+            const env = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
+            const parsed = env ? Number.parseInt(env, 10) : NaN
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000
+          })()
+          const startResultFallback = (delayMs = RESULT_FALLBACK_MS) => {
             clearFallbackTimer()
             if ((!hasReceivedContent && !hasReceivedProgress) || controllerClosed) return
             resultFallbackTimer = setTimeout(() => {
@@ -3126,6 +3134,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               log.warn("result fallback timer fired — closing stream without result event", {
                 delayMs,
               })
+              // Closing on a log line alone left the operator with a reply that
+              // just stopped. An abort is exempt: they asked for it, and the
+              // short grace period there is not a silent CLI.
+              if (!autoContinueState.aborted) {
+                controller.enqueue({
+                  type: "text-delta",
+                  id: startTextBlock(),
+                  delta: formatStreamTimeoutNote(delayMs),
+                })
+                endTextBlock()
+              }
               closeHandler()
             }, delayMs)
           }
