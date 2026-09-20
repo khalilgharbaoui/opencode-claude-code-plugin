@@ -605,8 +605,55 @@ export function getClaudeSessionId(key: string): string | undefined {
   return claudeSessions.get(key)
 }
 
+/**
+ * A Claude session id outlives its process on purpose, so nothing in the
+ * ordinary lifecycle ever removes one: under a long-lived `opencode serve`
+ * that hops projects and models this map only grows, and each entry pins a
+ * todo ledger with it. The cap is the same shape as
+ * `MAX_COMPRESSION_ENTRIES`, and it is generous because the cost of getting
+ * it wrong is a conversation that silently restarts.
+ */
+export const MAX_CLAUDE_SESSION_ENTRIES = 64
+
+/**
+ * A key with a live process, a proxied call still in the air or an unanswered
+ * plan-mode question is doing work that the id is part of; dropping it would
+ * strand that work on a session the next turn no longer resumes. Read from
+ * the map directly rather than through `getActiveProcess`: that one refreshes
+ * LRU order and cancels idle timers, which a scan must not do.
+ */
+function claudeSessionIsBusy(key: string): boolean {
+  if (activeProcesses.has(key)) return true
+  return getPendingProxyCalls(key).length > 0 || hasExitPlanModeQuestions(key)
+}
+
+/**
+ * Shed the least recently used idle sessions. When every key is busy this
+ * evicts nothing and the map runs over the cap for a while, the same rule
+ * `evictIfNeeded` follows: exceeding a cap briefly is cheaper than cutting a
+ * conversation that is still running.
+ */
+function capClaudeSessions(): void {
+  for (const key of [...claudeSessions.keys()]) {
+    if (claudeSessions.size <= MAX_CLAUDE_SESSION_ENTRIES) return
+    if (claudeSessionIsBusy(key)) continue
+    log.info("claude session cap reached; releasing an idle session", {
+      sessionKey: key,
+      size: claudeSessions.size,
+      cap: MAX_CLAUDE_SESSION_ENTRIES,
+    })
+    // Through the central release so the todo ledger and any pending
+    // plan-mode question go with it rather than outliving the id.
+    deleteClaudeSessionId(key)
+  }
+}
+
 export function setClaudeSessionId(key: string, sessionId: string): void {
+  // Re-inserting moves the key to the back, so the cap sheds the conversation
+  // that has been quiet longest rather than the one that started first.
+  claudeSessions.delete(key)
   claudeSessions.set(key, sessionId)
+  capClaudeSessions()
 }
 
 export function deleteClaudeSessionId(key: string): void {

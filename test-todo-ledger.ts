@@ -7,6 +7,7 @@ import {
   applyTaskUpdate,
   clearLedger,
   getLedger,
+  MAX_LEDGER_SESSIONS,
 } from "./src/todo-ledger.js"
 
 test("empty ledger for new sessionId", () => {
@@ -165,5 +166,23 @@ test("stale pendingCreates are pruned on next applyTaskCreateToolUse", async () 
     assert.deepEqual(freshList, [{ id: "2", content: "Fresh", status: "pending" }])
   } finally {
     Date.now = realNow
+  }
+})
+
+test("the ledger map is capped, dropping the oldest session first", () => {
+  _resetAllLedgersForTests()
+  const total = MAX_LEDGER_SESSIONS + 10
+  for (let i = 0; i < total; i++) {
+    applyTaskCreateToolUse(`cap-${i}`, "tu-1", { subject: `Task ${i}` })
+    applyTaskCreateToolResult(`cap-${i}`, "tu-1", `Task #${i + 1} created`)
+  }
+
+  // The first ten are gone; the rest are all still there, so the cap sheds
+  // in insertion order rather than clearing the map.
+  for (let i = 0; i < 10; i++) {
+    assert.deepEqual(getLedger(`cap-${i}`), [], `cap-${i} should have been evicted`)
+  }
+  for (let i = 10; i < total; i++) {
+    assert.equal(getLedger(`cap-${i}`).length, 1, `cap-${i} should have survived`)
   }
 })

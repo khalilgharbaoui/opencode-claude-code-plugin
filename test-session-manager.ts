@@ -18,6 +18,7 @@ import {
   isIdleProcessEvictionScheduled,
   killAllActiveProcesses,
   MAX_ACTIVE_PROCESSES,
+  MAX_CLAUDE_SESSION_ENTRIES,
   resolveIdleProcessTimeoutMs,
   retainStderr,
   scheduleIdleProcessEviction,
@@ -32,6 +33,11 @@ import {
   type ActiveProcess,
 } from "./src/session-manager.js"
 import { getPendingProxyCalls, queuePendingProxyCall } from "./src/proxy-broker.js"
+import {
+  applyTaskCreateToolResult,
+  applyTaskCreateToolUse,
+  getLedger,
+} from "./src/todo-ledger.js"
 import {
   createProxyMcpServer,
   DEFAULT_PROXY_TOOLS,
@@ -655,5 +661,57 @@ test("a child that dies keeps its stderr for the crash report", async () => {
   } finally {
     deleteActiveProcess(key)
     deleteClaudeSessionId(key)
+  }
+})
+
+test("the claude session store is capped, and eviction takes the ledger with it", () => {
+  const total = MAX_CLAUDE_SESSION_ENTRIES + 10
+  const keys = Array.from({ length: total }, (_, i) => `cap-session-${i}`)
+
+  // The first key's ledger must go when the id does: an orphaned ledger is
+  // exactly the leak the cap exists to stop.
+  applyTaskCreateToolUse("cap-claude-0", "tu-1", { subject: "Write tests" })
+  applyTaskCreateToolResult("cap-claude-0", "tu-1", "Task #1 created")
+  assert.equal(getLedger("cap-claude-0").length, 1)
+
+  try {
+    for (const [index, key] of keys.entries()) {
+      setClaudeSessionId(key, `cap-claude-${index}`)
+    }
+
+    // Oldest first. Earlier tests may leave their own idle keys ahead of
+    // these, which only evicts more of the early ones, never the recent ones.
+    assert.equal(getClaudeSessionId(keys[0]), undefined)
+    assert.equal(getClaudeSessionId(keys[5]), undefined)
+    assert.deepEqual(getLedger("cap-claude-0"), [])
+    for (const key of keys.slice(-20)) {
+      assert.ok(getClaudeSessionId(key), `${key} should have survived the cap`)
+    }
+  } finally {
+    for (const key of keys) deleteClaudeSessionId(key)
+  }
+})
+
+test("the claude session cap never takes a key that still has a process", () => {
+  const busyKey = "cap-session-busy"
+  const { activeProcess } = fakeActiveProcess({ exitOn: "SIGTERM", delayMs: 0 })
+  setActiveProcess(busyKey, activeProcess)
+  setClaudeSessionId(busyKey, "cap-claude-busy")
+
+  const keys = Array.from(
+    { length: MAX_CLAUDE_SESSION_ENTRIES + 10 },
+    (_, i) => `cap-session-after-${i}`,
+  )
+  try {
+    for (const [index, key] of keys.entries()) {
+      setClaudeSessionId(key, `cap-claude-after-${index}`)
+    }
+    // It is the oldest key in the map and would be the first to go on age
+    // alone; the busy check is the only thing keeping it.
+    assert.equal(getClaudeSessionId(busyKey), "cap-claude-busy")
+  } finally {
+    for (const key of keys) deleteClaudeSessionId(key)
+    deleteActiveProcess(busyKey)
+    deleteClaudeSessionId(busyKey)
   }
 })

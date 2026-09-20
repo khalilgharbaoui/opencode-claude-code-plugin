@@ -21,6 +21,14 @@ interface SessionLedger {
 const ledgers = new Map<string, SessionLedger>()
 
 const PENDING_CREATE_TTL_MS = 60_000
+/**
+ * A ledger is normally released with its Claude session id, but a session
+ * that is never deleted (a long-lived `opencode serve` hopping projects, a
+ * CLI session whose id the plugin never sees again) leaves one behind. Same
+ * insertion-order cap as the compression store; a todo list belonging to a
+ * session that old is not going to be written to opencode again.
+ */
+export const MAX_LEDGER_SESSIONS = 64
 const TASK_CREATED_PATTERN = /Task\s*#?\s*(\d+)\s+created/i
 const VALID_STATUSES: ReadonlySet<TodoStatus> = new Set(["pending", "in_progress", "completed"])
 
@@ -29,8 +37,18 @@ function getOrCreate(sessionId: string): SessionLedger {
   if (!ledger) {
     ledger = { todos: new Map(), pendingCreates: new Map() }
     ledgers.set(sessionId, ledger)
+    capLedgers()
   }
   return ledger
+}
+
+function capLedgers(): void {
+  while (ledgers.size > MAX_LEDGER_SESSIONS) {
+    const oldest = ledgers.keys().next()
+    if (oldest.done) break
+    ledgers.delete(oldest.value)
+    log.info("todo ledger evicted oldest session", { sessionId: oldest.value })
+  }
 }
 
 function prunePending(ledger: SessionLedger): void {
