@@ -14,6 +14,51 @@ export interface CliVersion {
 const cache = new Map<string, Promise<CliVersion | null>>()
 
 /**
+ * Env vars set on every `claude` child so the binary we detected stays the
+ * binary we run.
+ *
+ * `detectCliVersion` resolves once per cliPath and caches that answer for the
+ * life of the opencode process, and several flags are gated on it:
+ * `--thinking-display summarized`, `--plugin-dir`, and fast mode via
+ * `--settings`. If the CLI autoupdates underneath a long-running opencode the
+ * cached version stops describing the binary actually being spawned, so a gated
+ * flag can be passed to a CLI that rejects it or withheld from one that
+ * supports it. A binary swapped mid-session is a plain correctness hazard
+ * besides.
+ *
+ * Both names were read out of the Claude Code 2.1.263 bundle rather than
+ * assumed (`rg -a` over the Mach-O, the technique AGENTS.md records for the CLI
+ * stream events). `DISABLE_AUTOUPDATER` is read as an update blocker, and
+ * `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` both suppresses non-essential
+ * network traffic and counts as a second, independent update blocker.
+ * Anthropic's own runner sets `DISABLE_AUTOUPDATER: "1"` on the children it
+ * spawns, which is the same use we are putting it to here.
+ */
+export const CLI_HYGIENE_ENV_VARS = [
+  "DISABLE_AUTOUPDATER",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+] as const
+
+/**
+ * The hygiene vars that are missing from `inherited`, each set to "1".
+ *
+ * Only ever fills a gap: a var the user exported themselves is left exactly as
+ * they set it, including an empty string, which both vars read as off. That is
+ * the same rule the thinking vars follow in `claudeSpawnEnv`, and it is the
+ * escape hatch for anyone who deliberately wants the autoupdater, so this needs
+ * no provider option of its own.
+ */
+export function cliHygieneEnv(
+  inherited: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const filled: Record<string, string> = {}
+  for (const name of CLI_HYGIENE_ENV_VARS) {
+    if (inherited[name] === undefined) filled[name] = "1"
+  }
+  return filled
+}
+
+/**
  * Run `claude --version` once per cliPath and parse the leading semver.
  * Returns null on any failure (binary missing, unparseable output, etc.)
  * so callers can fall back to the most conservative flag set.

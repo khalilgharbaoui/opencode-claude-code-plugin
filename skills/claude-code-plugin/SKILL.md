@@ -151,6 +151,8 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the one-time removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
 | `ANTHROPIC_API_KEY` | CLI API authentication input, stripped when `ignoreAnthropicApiKey` is true; otherwise may change billing away from stored subscription auth. Never display it. |
 | `ANTHROPIC_AUTH_TOKEN` | CLI auth-token input; same strip/warning rule. Never display it. |
+| `DISABLE_AUTOUPDATER` | Set to `1` on every spawned `claude`, and only when the user has not set it. Keeps the CLI from updating mid-session, which would invalidate the cached version that gates `--thinking-display summarized`, `--plugin-dir` and fast mode. Not a provider option: a user-set value (including `0`, meaning keep updating) is never overwritten, which is the intended escape hatch. Tell a user who wants CLI autoupdates to export `DISABLE_AUTOUPDATER=0`, not to look for a config key. |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Set to `1` on every spawned `claude` under the same never-overwrite rule. Suppresses non-essential CLI network traffic and independently blocks auto-update. An empty string counts as user-set and is left alone; the CLI reads it as off. |
 | `OPENCODE_CONFIG` | Explicit config file, also read by the disk MCP bridge before project layers. |
 | `OPENCODE_CONFIG_DIR` | Additional `.opencode`-style config/skill root. The plugin's direct agent-file fallback does not use it; agents must reach the config hook or a supported agent directory. |
 | `OPENCODE_WORKTREE` | Overrides the disk MCP bridge's project walk-up boundary. |

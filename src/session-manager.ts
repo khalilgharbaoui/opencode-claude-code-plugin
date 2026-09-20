@@ -14,6 +14,7 @@ import { clearLedger } from "./todo-ledger.js"
 import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mode-question.js"
 import { clearCompression } from "./compression-store.js"
 import {
+  cliHygieneEnv,
   cliSupportsFastMode,
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
@@ -227,6 +228,10 @@ export function claudeSpawnEnv(opts?: {
   const env: Record<string, string | undefined> = {
     ...process.env,
     TERM: "xterm-256color",
+    // Pin the child to the binary whose version we detected, and keep it off
+    // non-essential network calls. Fills gaps only, so an explicit shell value
+    // survives: see `cliHygieneEnv` for why the version has to hold still.
+    ...cliHygieneEnv(),
   }
 
   // Effort travels as CLAUDE_CODE_EFFORT_LEVEL, which the CLI treats as the
