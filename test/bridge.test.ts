@@ -640,3 +640,211 @@ test("runtime overlay: missing entry leaves disk value untouched", async () => {
     assert.equal(written.mcpServers.gh.command, "gh-mcp")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Bearer token injection (mcp-auth.json integration)
+// ---------------------------------------------------------------------------
+
+const FAR_FUTURE_EXPIRES = new Date("2099-01-01T00:00:00Z").getTime() / 1000
+
+function writeMcpAuth(stateDir: string, data: unknown): void {
+  fs.mkdirSync(stateDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(stateDir, "mcp-auth.json"),
+    JSON.stringify(data),
+    { mode: 0o600 },
+  )
+}
+
+test("bearer injection: Authorization header injected for matched remote server", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const MCP_URL = "https://mcp.example.com/mcp"
+    const TOKEN = "tok_test_abc"
+
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "my-server": { type: "remote", url: MCP_URL },
+      },
+    })
+    writeMcpAuth(path.join(xdgRoot, "opencode-state"), {
+      "my-server": {
+        tokens: { accessToken: TOKEN, expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+    const result = bridgeOpencodeMcp(repo, undefined, undefined, "v1", path.join(xdgRoot, "opencode-state"))
+    assert.ok(result, "expected a bridged config")
+    const written = JSON.parse(fs.readFileSync(result.path, "utf8")) as {
+      mcpServers: Record<string, any>
+    }
+    assert.equal(
+      written.mcpServers["my-server"].headers?.Authorization,
+      `Bearer ${TOKEN}`,
+    )
+  })
+})
+
+test("bearer injection: no injection when auth file is absent", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const MCP_URL = "https://mcp.example.com/mcp"
+
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "my-server": { type: "remote", url: MCP_URL },
+      },
+    })
+    // No mcp-auth.json written.
+    const stateDir = path.join(xdgRoot, "opencode-state-empty")
+    fs.mkdirSync(stateDir, { recursive: true })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+    const result = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+    assert.ok(result)
+    const written = JSON.parse(fs.readFileSync(result.path, "utf8")) as {
+      mcpServers: Record<string, any>
+    }
+    assert.ok(
+      !written.mcpServers["my-server"].headers?.Authorization,
+      "should have no Authorization header",
+    )
+  })
+})
+
+test("bearer injection: local (stdio) servers are never injected", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "local-tool": { type: "local", command: ["my-mcp-server"] },
+      },
+    })
+    const stateDir = path.join(xdgRoot, "opencode-state")
+    writeMcpAuth(stateDir, {
+      // Even if a matching entry somehow exists, stdio servers are not touched.
+      "local-tool": {
+        tokens: { accessToken: "tok_should_not_appear" },
+        serverUrl: "stdio://local-tool",
+      },
+    })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+    const result = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+    assert.ok(result)
+    const written = JSON.parse(fs.readFileSync(result.path, "utf8")) as {
+      mcpServers: Record<string, any>
+    }
+    assert.ok(
+      !written.mcpServers["local-tool"].headers,
+      "local server must have no headers",
+    )
+  })
+})
+
+test("bearer injection: existing Authorization header is not overridden", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const MCP_URL = "https://mcp.example.com/mcp"
+    const EXISTING_AUTH = "Bearer already_configured"
+
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "my-server": {
+          type: "remote",
+          url: MCP_URL,
+          headers: { Authorization: EXISTING_AUTH },
+        },
+      },
+    })
+    const stateDir = path.join(xdgRoot, "opencode-state")
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok_should_not_win", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+    const result = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+    assert.ok(result)
+    const written = JSON.parse(fs.readFileSync(result.path, "utf8")) as {
+      mcpServers: Record<string, any>
+    }
+    assert.equal(
+      written.mcpServers["my-server"].headers?.Authorization,
+      EXISTING_AUTH,
+    )
+  })
+})
+
+test("bearer injection: expired token excludes server from bridge entirely", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const MCP_URL = "https://mcp.example.com/mcp"
+    const IN_THE_PAST = new Date("2000-01-01T00:00:00Z").getTime() / 1000
+
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "my-server": { type: "remote", url: MCP_URL },
+        "local-tool": { type: "local", command: ["my-mcp-server"] },
+      },
+    })
+    const stateDir = path.join(xdgRoot, "opencode-state")
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok_expired", expiresAt: IN_THE_PAST },
+        serverUrl: MCP_URL,
+      },
+    })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+    const result = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+    // local-tool is still bridged, but my-server must be excluded
+    assert.ok(result, "expected a result (local-tool is still present)")
+    const written = JSON.parse(fs.readFileSync(result.path, "utf8")) as {
+      mcpServers: Record<string, any>
+    }
+    assert.ok(!written.mcpServers["my-server"], "expired-token server must be excluded")
+    assert.ok(written.mcpServers["local-tool"], "local server must still be present")
+  })
+})
+
+test("bearer injection: hash changes when token rotates (freshness key)", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const MCP_URL = "https://mcp.example.com/mcp"
+
+    writeJson(path.join(xdgRoot, "opencode", "opencode.json"), {
+      mcp: {
+        "my-server": { type: "remote", url: MCP_URL },
+      },
+    })
+
+    const repo = path.join(xdgRoot, "proj")
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+
+    // First token
+    const stateDir = path.join(xdgRoot, "opencode-state")
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok_v1" },
+        serverUrl: MCP_URL,
+      },
+    })
+    const result1 = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+
+    // Rotate the token
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok_v2" },
+        serverUrl: MCP_URL,
+      },
+    })
+    const result2 = bridgeOpencodeMcp(repo, undefined, undefined, "v1", stateDir)
+
+    assert.ok(result1 && result2)
+    assert.notEqual(result1.hash, result2.hash, "hash must change on token rotation")
+  })
+})

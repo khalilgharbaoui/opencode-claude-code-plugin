@@ -9,6 +9,12 @@ import {
 } from "jsonc-parser"
 import { log } from "./logger.js"
 import { pluginTmpDir } from "./tmp.js"
+import {
+  selectBearerToken,
+  buildFreshnessKey,
+  injectBearerHeaders,
+  type McpAuthEntry,
+} from "./mcp-auth.js"
 
 /**
  * Bridge opencode's MCP config into a Claude CLI `--mcp-config` file.
@@ -315,9 +321,47 @@ function substituteEnvPlaceholders(
   return out
 }
 
+/**
+ * Default opencode state directory. On Linux/macOS this is
+ * `~/.local/share/opencode`; XDG_DATA_HOME is respected when set.
+ */
+function defaultOpencodeStateDir(): string {
+  const xdg =
+    process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share")
+  return path.join(xdg, "opencode")
+}
+
+/**
+ * Read `<stateDir>/mcp-auth.json` and return its parsed contents.
+ *
+ * Returns an empty object on any error (missing file, bad JSON, etc.) so the
+ * caller always gets a safe value and degrades to no-injection.
+ *
+ * Secret hygiene: the raw contents are never logged.
+ */
+function loadMcpAuth(stateDir: string): Record<string, McpAuthEntry> {
+  const file = path.join(stateDir, "mcp-auth.json")
+  try {
+    const raw = fs.readFileSync(file, "utf8")
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      log.warn("mcp-auth.json has unexpected shape, skipping bearer injection", {
+        file,
+      })
+      return {}
+    }
+    return parsed as Record<string, McpAuthEntry>
+  } catch {
+    // File absent or unreadable — normal when no OAuth server has been
+    // configured; degrade silently.
+    return {}
+  }
+}
+
 function translateServer(
   name: string,
   spec: Record<string, unknown>,
+  authEntries?: Record<string, McpAuthEntry>,
 ): Record<string, unknown> | null {
   if (spec.enabled === false) return null
 
@@ -346,7 +390,7 @@ function translateServer(
       log.warn("skipping remote MCP server with no url", { name })
       return null
     }
-    const out: Record<string, unknown> = {
+    let out: Record<string, unknown> = {
       type: "http",
       url: spec.url,
     }
@@ -354,6 +398,29 @@ function translateServer(
       out.headers = substituteEnvPlaceholders(
         spec.headers as Record<string, unknown>,
       )
+    }
+    // If auth entries are available and this server's URL has an OAuth entry,
+    // it requires a bearer token. If a valid (non-expired) token exists,
+    // inject it. If the entry exists but the token is absent or expired,
+    // exclude the server entirely — an unauthenticated request to an
+    // OAuth-required server produces a fatal MCP error that blocks the whole
+    // CLI session, which is worse than the server being temporarily absent.
+    if (authEntries) {
+      const requiresAuth = Object.values(authEntries).some(
+        (e) => e.serverUrl === spec.url,
+      )
+      if (requiresAuth) {
+        const token = selectBearerToken(authEntries, spec.url)
+        if (!token) {
+          log.warn(
+            "skipping OAuth-required remote MCP server: no valid token (expired or missing)",
+            { name },
+          )
+          return null
+        }
+        out = injectBearerHeaders(out, token)
+        log.info("injected bearer token for remote MCP server", { name })
+      }
     }
     return out
   }
@@ -501,18 +568,27 @@ export const MCP_PENDING_STATUS = "pending"
  * translate each server to Claude CLI format, write a scratch file, and
  * return its path + a stable hash. Returns null when no enabled MCP servers
  * remain after the merge + overlay.
+ *
+ * @param stateDir  Override the opencode state directory (`~/.local/share/opencode`
+ *                  by default) where `mcp-auth.json` is read from. Exposed for
+ *                  testing; production callers should omit it.
  */
 export function bridgeOpencodeMcp(
   cwd: string,
   runtimeStatus?: RuntimeMcpStatus,
   excludeServers?: ReadonlySet<string>,
   hostApi: McpHostApi = "v1",
+  stateDir?: string,
 ): BridgedMcp | null {
+  const resolvedStateDir = stateDir ?? defaultOpencodeStateDir()
   const {
     servers: merged,
     enabledServerNames: allEnabledServerNames,
     hash,
-  } = mergeOpencodeMcp(cwd, runtimeStatus, hostApi)
+  } = mergeOpencodeMcp(cwd, runtimeStatus, hostApi, resolvedStateDir)
+
+  // Load auth entries once; translateServer will use them for remote servers.
+  const authEntries = loadMcpAuth(resolvedStateDir)
 
   // Translate every still-enabled server, skipping any caller has asked us
   // to exclude (because they're being routed through the proxy instead).
@@ -521,7 +597,7 @@ export function bridgeOpencodeMcp(
   for (const [name, spec] of Object.entries(merged)) {
     if (!spec || typeof spec !== "object") continue
     if (excludeServers?.has(name)) continue
-    const translated = translateServer(name, spec as Record<string, unknown>)
+    const translated = translateServer(name, spec as Record<string, unknown>, authEntries)
     if (translated) {
       servers[name] = translated
       bridgedServerNames.push(name)
@@ -611,11 +687,16 @@ export function loadMergedOpencodeConfig(cwd: string, hostApi: McpHostApi = "v1"
  * `bridgeOpencodeMcp` so read-only callers (startup diagnostics) can inspect
  * what would be bridged without translating servers or writing a scratch
  * config file.
+ *
+ * When `stateDir` is provided, bearer-token freshness keys from
+ * `mcp-auth.json` are folded into the hash so token rotation forces a
+ * process respawn even when the on-disk opencode config is unchanged.
  */
 export function mergeOpencodeMcp(
   cwd: string,
   runtimeStatus?: RuntimeMcpStatus,
   hostApi: McpHostApi = "v1",
+  stateDir?: string,
 ): MergedMcp {
   let merged: Record<string, OpencodeServer> = {}
   for (const layer of opencodeConfigLayers(cwd, hostApi)) {
@@ -660,12 +741,31 @@ export function mergeOpencodeMcp(
 
   // Hash the pre-exclusion merged block so the hot-reload detector picks up
   // upstream config changes even when every server is excluded.
+  //
+  // Also fold in bearer-token freshness keys: the access token lives in
+  // mcp-auth.json (not in opencode.json), so a token rotation leaves the
+  // config hash unchanged → no respawn → stale token would be passed to the
+  // CLI. The freshness key is a one-way digest of the token (never the token
+  // itself), keyed per server so an unrelated rotation doesn't bust the hash.
   const mergedBody = JSON.stringify({ mcpServers: merged }, null, 2)
-  const hash = crypto
-    .createHash("sha256")
-    .update(mergedBody)
-    .digest("hex")
-    .slice(0, 12)
+  const hasher = crypto.createHash("sha256").update(mergedBody)
+
+  if (stateDir) {
+    const authEntries = loadMcpAuth(stateDir)
+    for (const [name, spec] of Object.entries(merged)) {
+      if (!spec || typeof spec !== "object") continue
+      const s = spec as Record<string, unknown>
+      if (s.type !== "remote" || typeof s.url !== "string") continue
+      const entry = Object.values(authEntries).find(
+        (e) => e.serverUrl === s.url && e.tokens?.accessToken,
+      )
+      if (!entry?.tokens?.accessToken) continue
+      const fk = buildFreshnessKey(entry.tokens.accessToken, entry.tokens.expiresAt)
+      hasher.update(`\x00bearer:${name}:${fk}`)
+    }
+  }
+
+  const hash = hasher.digest("hex").slice(0, 12)
 
   return { servers: merged, enabledServerNames, hash }
 }
