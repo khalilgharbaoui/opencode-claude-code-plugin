@@ -179,6 +179,50 @@ export function registerBundledSkillPath(config: {
   return true
 }
 
+/** opencode 2's `Skill.Info`, the fields it requires. */
+export interface BundledSkillInfo {
+  id: string
+  name: string
+  description?: string
+  path: string
+  content: string
+}
+
+/**
+ * The bundled skills in opencode 2's `Skill.Info` shape. V2 has no config
+ * hook to add a `skills.paths` entry to, so the V2 entrypoint registers them
+ * through `skill.transform` instead. Parsed the way V2's own skill-file loader
+ * does (`@opencode/core@2.0.11`): `name` and `description` from the
+ * frontmatter, `content` is the markdown body after it, `path` is the file.
+ */
+export function readBundledSkillInfos(): BundledSkillInfo[] {
+  return discoverBundledSkills().flatMap((skill) => {
+    const file = path.join(skill.dir, "SKILL.md")
+    let text: string
+    try {
+      text = fs.readFileSync(file, "utf8")
+    } catch {
+      return []
+    }
+    const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text)
+    const frontmatter = match?.[1] ?? ""
+    const field = (key: string): string | undefined => {
+      const line = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(frontmatter)?.[1]?.trim()
+      return line ? line.replace(/^(["'])(.*)\1$/, "$2") : undefined
+    }
+    const description = field("description")
+    return [
+      {
+        id: skill.name,
+        name: field("name") ?? skill.name,
+        ...(description ? { description } : {}),
+        path: file,
+        content: match ? text.slice(match[0].length) : text,
+      },
+    ]
+  })
+}
+
 /** Link a skill dir into the staging tree, falling back to a copy. */
 function linkSkill(source: string, target: string): void {
   try {

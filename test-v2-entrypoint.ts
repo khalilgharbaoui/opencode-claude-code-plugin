@@ -403,3 +403,27 @@ test("setup subscribes to events and stops listening on cleanup", async () => {
   await cleanup()
   assert.equal(signal!.aborted, true)
 })
+
+test("setup registers the bundled skill unless opencode already has one of that id", async () => {
+  const setup = createV2Setup({
+    createProvider: () => ({ languageModel: () => ({}) as any }),
+    defaultProxyTools: PROXY_TOOLS,
+    loadConfig: () => ({}),
+  })
+  const run = async (existing: string[]) => {
+    const { ctx } = fakeContext()
+    const added: any[] = []
+    ctx.skill = {
+      transform: async (callback: (editor: any) => void) => {
+        callback({ get: (id: string) => (existing.includes(id) ? {} : undefined), add: (skill: any) => added.push(skill) })
+        return { dispose: async () => undefined }
+      },
+    }
+    await setup(ctx)
+    return added
+  }
+  const fresh = await run([])
+  assert.deepEqual(fresh.map((skill) => skill.id), ["claude-code-plugin"])
+  assert.equal(typeof fresh[0].content, "string")
+  assert.deepEqual(await run(["claude-code-plugin"]), [])
+})

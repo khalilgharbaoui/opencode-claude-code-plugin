@@ -163,6 +163,14 @@ export interface V2Context {
   readonly event?: {
     subscribe(options?: { signal?: AbortSignal }): AsyncIterable<V2Event>
   }
+  readonly skill?: {
+    transform(
+      callback: (editor: {
+        get(id: string): unknown
+        add(skill: { id: string; name: string; description?: string; path: string; content: string }): void
+      }) => void,
+    ): Promise<V2Registration>
+  }
 }
 
 /** What `setup` may return: a cleanup run when opencode unloads the plugin. */

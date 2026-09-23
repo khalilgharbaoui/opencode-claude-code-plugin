@@ -33,6 +33,7 @@ import {
   deleteActiveProcessesForSession,
   ensureProcessExitCleanup,
 } from "./session-manager.js"
+import { readBundledSkillInfos } from "./skill-bridge.js"
 import { logStartupDiagnostics } from "./startup-diagnostics.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 
@@ -494,6 +495,25 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
             description: BTW_COMMAND_DESCRIPTION,
             execute: (input) => send(input, "btw", "queue"),
           })
+        }),
+      )
+    }
+
+    // The bundled `claude-code-plugin` skill, listed by opencode for every
+    // provider. V1 adds its directory to the config's `skills.paths`; V2 has no
+    // config hook, so it is registered directly. A skill of the same id that
+    // opencode already found (the operator's own copy) is left alone.
+    const bundledSkills = readBundledSkillInfos()
+    if (typeof ctx.skill?.transform === "function" && bundledSkills.length > 0) {
+      registrations.push(
+        await ctx.skill.transform((editor) => {
+          const added: string[] = []
+          for (const skill of bundledSkills) {
+            if (editor.get(skill.id)) continue
+            editor.add(skill)
+            added.push(skill.id)
+          }
+          log.debug("v2 bundled skills registered", { added })
         }),
       )
     }
