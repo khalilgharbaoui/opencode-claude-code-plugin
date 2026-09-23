@@ -360,3 +360,61 @@ test("a CLI self-compaction is announced in the transcript", async () => {
   assert.match(body, /▌ \*\*context compacted:\*\* Claude Code compacted its own context on its own/)
   assert.match(body, /180,000 tokens to 40,000/)
 })
+
+test("a conversation reset is announced and forgets the old conversation's blocks", async () => {
+  // The sequence `/clear` produced on Claude Code 2.1.280 (2026-09-23): a
+  // `conversation_reset` naming the OLD session, then a fresh `system/init`
+  // under a new one. The tool block left open before it is the hazard: block
+  // indices restart, so the new conversation's first block is index 0 again.
+  const parts = await streamParts([
+    init,
+    assistantToolUse("toolu_orphan", "Read"),
+    {
+      type: "conversation_reset",
+      new_conversation_id: "conv-after-clear",
+      uuid: "reset-uuid",
+      session_id: "fake-session",
+    },
+    { ...init, session_id: "fresh-session" },
+    {
+      type: "stream_event",
+      session_id: "fresh-session",
+      event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    },
+    {
+      type: "stream_event",
+      session_id: "fresh-session",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "fresh start" } },
+    },
+    blockStop(0),
+    endTurn,
+    { ...successResult, session_id: "fresh-session", result: "fresh start" },
+  ])
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.match(body, /▌ \*\*claude code reset:\*\* Claude Code cleared its conversation/)
+  assert.match(body, /fresh start/)
+  assert.equal(
+    parts.some((part) => part.type === "tool-call" && part.toolCallId === "toolu_orphan"),
+    false,
+    "the old conversation's open tool block must not come back as a tool call",
+  )
+})
+
+test("a reset frame without a conversation id is ignored, as the CLI ignores it", async () => {
+  const parts = await streamParts([
+    init,
+    { type: "conversation_reset", uuid: "reset-uuid", session_id: "fake-session" },
+    text("still here"),
+    endTurn,
+    successResult,
+  ])
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.doesNotMatch(body, /claude code reset/)
+  assert.match(body, /still here/)
+})

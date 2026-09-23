@@ -34,6 +34,7 @@ import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-
 
 import plugin, { createClaudeCode, extractDeletedSessionId } from "./src/index.js"
 import {
+  _setProxyDeadlineRecheckMs,
   createProxyMcpServer,
   DEFAULT_PROXY_TOOLS,
   SERVER_CLOSED_MESSAGE,
@@ -41,6 +42,7 @@ import {
   type ProxyToolCall,
 } from "./src/proxy-mcp.js"
 import { getPendingProxyCalls, onPendingProxyCall, queuePendingProxyCall } from "./src/proxy-broker.js"
+import { setOpencodeClient } from "./src/runtime-status.js"
 import {
   deleteActiveProcess,
   deleteActiveProcessAndWait,
@@ -371,10 +373,18 @@ type Ctx = {
   server: () => ProxyMcpServer
 }
 
-async function withParkedTaskCli(mode: Parameters<typeof parkedTaskCli>[0], run: (ctx: Ctx) => Promise<void>) {
+async function withParkedTaskCli(
+  mode: Parameters<typeof parkedTaskCli>[0],
+  run: (ctx: Ctx) => Promise<void>,
+  // The affinity these turns run under. `default` is the no-affinity
+  // fallback, so a test that needs opencode's session status must name a
+  // real session and send it as the `x-session-affinity` header.
+  session = "default",
+  settings: Record<string, unknown> = {},
+) {
   const fake = parkedTaskCli(mode)
   const modelId = `claude-test-lifecycle-${mode}`
-  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::${session}::context=["claude-code",null]`)
   let captured: ProxyMcpServer | undefined
   try {
     const model = createClaudeCode({
@@ -384,6 +394,7 @@ async function withParkedTaskCli(mode: Parameters<typeof parkedTaskCli>[0], run:
       proxyOpencodeMcpTools: false,
       proxyTools: ["Task"],
       autoContinueIncompleteTurns: false,
+      ...settings,
     }).languageModel(modelId)
     await run({
       model,
@@ -484,6 +495,90 @@ test("an abort while opencode is running the tool, with the stream already close
   const second = await collect((await model.doStream(nextUserTurn())).stream)
   assert.ok(textOf(second).includes("second answer"), textOf(second))
 }))
+
+/** A real opencode session id, so the status lookup is actually consulted. */
+const BUSY_SESSION = "ses_busy_boundary"
+
+test("an abort at a tool boundary while opencode is still running the turn keeps the call", {
+  timeout: 15_000,
+}, () => withParkedTaskCli("park", async (ctx) => {
+  const { model, sk, events } = ctx
+  // opencode 1.18.32 aborts the provider signal of every step that ends in
+  // tool calls, about a second after the finish, while it runs the tool.
+  // Measured on 2026-09-23: 348 of 938 proxied calls, and every call in a
+  // plugin-only config. Releasing there rejected calls that were working and
+  // told the model the user had refused. The session is still busy then, and
+  // idle only when the operator really stopped the turn.
+  setOpencodeClient({
+    session: { status: async () => ({ data: { [BUSY_SESSION]: { type: "running" } } }) },
+  })
+  try {
+    const abort = new AbortController()
+    const first = await collect(
+      (await model.doStream({
+        ...firstTurn(),
+        abortSignal: abort.signal,
+        headers: { "x-session-affinity": BUSY_SESSION },
+      } as any)).stream,
+    )
+    assert.equal((first.find((part) => part.type === "finish") as any)?.finishReason.unified, "tool-calls")
+    assert.equal(getPendingProxyCalls(sk).length, 1)
+
+    abort.abort()
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
+    assert.equal(getPendingProxyCalls(sk).length, 1, "the call opencode is running must survive")
+    assert.equal(ctx.server().pendingCallIds().length, 1, "and its HTTP request with it")
+    assert.equal(
+      events().some((event) => event.type === "interrupt"),
+      false,
+      "the CLI must not be interrupted while its tool call is still being served",
+    )
+  } finally {
+    setOpencodeClient(null)
+  }
+}, BUSY_SESSION))
+
+const PROMPT_SESSION = "ses_permission_prompt"
+
+test("a call past its deadline waits while opencode is still serving it, then ends", {
+  timeout: 15_000,
+}, () => withParkedTaskCli("park", async (ctx) => {
+  const { model, sk } = ctx
+  // Measured 2026-09-23: three `bash` calls waited 24, 34 and 10.5 minutes on
+  // opencode's permission prompt and each was rejected at its 10-minute
+  // deadline; the approval then arrived as a late result that cancelled
+  // Claude's next call. opencode reports the session busy while a prompt is
+  // open (measured on 1.18.32), so the deadline must not end the call then.
+  let state: "running" | "idle" = "running"
+  setOpencodeClient({
+    session: {
+      status: async () => ({ data: state === "idle" ? {} : { [PROMPT_SESSION]: { type: state } } }),
+    },
+  })
+  _setProxyDeadlineRecheckMs(100)
+  try {
+    const first = await collect(
+      (await model.doStream({
+        ...firstTurn(),
+        headers: { "x-session-affinity": PROMPT_SESSION },
+      } as any)).stream,
+    )
+    assert.equal((first.find((part) => part.type === "finish") as any)?.finishReason.unified, "tool-calls")
+    assert.equal(getPendingProxyCalls(sk).length, 1)
+
+    // Four times the 200 ms deadline, with a recheck every 100 ms.
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    assert.equal(getPendingProxyCalls(sk).length, 1, "a call opencode is still serving must survive its deadline")
+    assert.equal(ctx.server().pendingCallIds().length, 1, "on the HTTP side too")
+
+    // The operator is gone and the turn stopped: the deadline applies again.
+    state = "idle"
+    await assertReleased(ctx, /timed out after 200ms/)
+  } finally {
+    setOpencodeClient(null)
+    _setProxyDeadlineRecheckMs(null)
+  }
+}, PROMPT_SESSION, { proxyToolTimeoutMs: { task: 200 } }))
 
 test("a CLI that dies mid-call ends the turn as an error and releases the call on both sides", {
   timeout: 15_000,

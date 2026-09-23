@@ -29,7 +29,10 @@ import { ensureAccountRuntime } from "./src/accounts.js"
 import {
   ACCOUNT_FAILOVER_TOOL_CALL_PREFIX,
   FAILOVER_MARKER,
+  ACCOUNT_BLOCK_MARKER,
   _resetAccountOverrides,
+  accountBlockKind,
+  loginCommandFor,
   buildFailoverContinuationPrompt,
   clearAccountOverride,
   consumeAccountFailoverAnswer,
@@ -47,7 +50,7 @@ import {
 } from "./src/account-failover.js"
 import { _resetRateLimitReports, _resetSystemInitReports } from "./src/cli-events.js"
 import { createClaudeCode } from "./src/index.js"
-import { filterSideQuestionHistory } from "./src/message-builder.js"
+import { filterSideQuestionHistory, getClaudeUserMessage } from "./src/message-builder.js"
 import { setOpencodeClient } from "./src/runtime-status.js"
 import { deleteActiveProcess, sessionKey } from "./src/session-manager.js"
 
@@ -367,6 +370,122 @@ test("stop, a dismissal and unrecognised text all end the turn", () => {
   }
 })
 
+/**
+ * The sentence opencode's `question` tool actually returns, as read out of
+ * the 1.18.32 binary. Every failover pick arrived in this shape; the tests
+ * above feed bare labels, which is how the form shipped unable to switch.
+ */
+function opencodeAnswer(question: string, ...answers: string[]): string {
+  const value = answers.length > 0 ? answers.join(", ") : "Unanswered"
+  return `User has answered your questions: "${question}"="${value}". You can now continue with the user's answers in mind.`
+}
+
+test("opencode's own answer sentence switches, although the question has quotes", () => {
+  const call = createAccountFailoverQuestionCall("sk-real", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+    resetsAt: 1_790_170_000,
+  })
+  const question = call.input.questions[0].question
+  // The failover question quotes the account, which is what defeats a naive split.
+  assert.match(question, /"appical"/)
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-real",
+      answer(call.toolCallId, { type: "text", value: opencodeAnswer(question, "default") }) as any,
+    ),
+    { kind: "switch", target: "default", sourceAccount: "appical", resetsAt: 1_790_170_000 },
+  )
+
+  // `stop`, a blank answer and a dismissal in their real shapes.
+  const stopCall = createAccountFailoverQuestionCall("sk-real-stop", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+  })
+  const stopQuestion = stopCall.input.questions[0].question
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-real-stop",
+      answer(stopCall.toolCallId, { type: "text", value: opencodeAnswer(stopQuestion, "stop") }) as any,
+    ),
+    { kind: "stop", reason: "the operator chose to stop" },
+  )
+  const blankCall = createAccountFailoverQuestionCall("sk-real-blank", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-real-blank",
+      answer(blankCall.toolCallId, {
+        type: "text",
+        value: opencodeAnswer(blankCall.input.questions[0].question),
+      }) as any,
+    ),
+    { kind: "stop", reason: "no answer" },
+  )
+  const dismissCall = createAccountFailoverQuestionCall("sk-real-dismiss", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-real-dismiss",
+      answer(dismissCall.toolCallId, {
+        type: "error-text",
+        value: "The user dismissed this question",
+      }) as any,
+    ),
+    { kind: "stop", reason: "The user dismissed this question" },
+  )
+})
+
+test("an answer to a form asked before an opencode restart still switches", () => {
+  // No createAccountFailoverQuestionCall here: the process that asked is gone.
+  const toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}fromlastrun`
+  const question =
+    'The Claude account "appical" is out of usage in the 5-hour window. Continue this task on another configured account? Leaving this unanswered waits, at no cost.'
+  const prompt = [
+    { role: "user", content: [{ type: "text", text: "build the thing" }] },
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", toolCallId, toolName: "question", input: {} }],
+    },
+    ...answer(toolCallId, { type: "text", value: opencodeAnswer(question, "default") }),
+  ] as any
+  const fallback = { sourceAccount: "appical", candidates: ["default"] }
+  assert.deepEqual(consumeAccountFailoverAnswer("sk-restarted", prompt, fallback), {
+    kind: "switch",
+    target: "default",
+    sourceAccount: "appical",
+    resetsAt: undefined,
+  })
+  // An old answer further up is history, not this turn's answer.
+  const later = [...prompt, { role: "user", content: [{ type: "text", text: "next" }] }] as any
+  assert.equal(consumeAccountFailoverAnswer("sk-restarted", later, fallback), null)
+  // A single-account install offers nothing to fall back to.
+  assert.equal(
+    consumeAccountFailoverAnswer("sk-restarted", prompt, { sourceAccount: "appical", candidates: [] }),
+    null,
+  )
+})
+
+test("the form never reaches Claude as a stray tool result on the next turn", () => {
+  const toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}staleform`
+  const prompt = [
+    { role: "user", content: [{ type: "text", text: "build the thing" }] },
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", toolCallId, toolName: "question", input: {} }],
+    },
+    ...answer(toolCallId, { type: "error-text", value: "The user dismissed this question" }),
+    { role: "user", content: [{ type: "text", text: "try again please" }] },
+  ] as any
+  const envelope = getClaudeUserMessage(prompt, false, { cliToolCallIds: new Set() })
+  assert.doesNotMatch(envelope, /opencode_tool_result|dismissed this question/)
+  assert.match(envelope, /try again please/)
+})
+
 test("a tool-result for another call is not a failover answer", () => {
   createAccountFailoverQuestionCall("sk-c", {
     sourceAccount: "default",
@@ -531,6 +650,76 @@ const FAILOVER_LINES = [
   },
 ]
 
+// The steady state of an org with extra usage disabled, measured on CLI
+// 2.1.280: the request is served, and the event still says overage is
+// rejected. This must never look like a limit.
+const SERVED_WITH_OVERAGE_REJECTED_LINES = [
+  { type: "system", subtype: "init", session_id: "limited-session", tools: [] },
+  {
+    type: "rate_limit_event",
+    session_id: "limited-session",
+    rate_limit_info: {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      resetsAt: 4102444800,
+      isUsingOverage: false,
+      overageStatus: "rejected",
+      overageDisabledReason: "org_level_disabled",
+    },
+  },
+  {
+    type: "stream_event",
+    session_id: "limited-session",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "served anyway" } },
+  },
+  {
+    type: "stream_event",
+    session_id: "limited-session",
+    event: { type: "message_delta", delta: { stop_reason: "end_turn" } },
+  },
+  {
+    type: "result",
+    subtype: "success",
+    session_id: "limited-session",
+    is_error: false,
+    result: "served anyway",
+    duration_ms: 10,
+    num_turns: 1,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  },
+]
+const overageOnly = process.env.FAKE_CLI_OVERAGE_ONLY === "1"
+
+// What the CLI printed for every turn once the appical login expired on
+// 2026-09-23: its own synthetic reply, tagged with the \`error\` kind, then a
+// failed result. The text is the CLI's, the kind is from its 2.1.280 schema.
+const AUTH_TEXT = "Failed to authenticate: OAuth session expired and could not be refreshed"
+const AUTH_EXPIRED_LINES = [
+  { type: "system", subtype: "init", session_id: "limited-session", tools: [] },
+  {
+    type: "assistant",
+    session_id: "limited-session",
+    parent_tool_use_id: null,
+    error: "authentication_failed",
+    message: {
+      role: "assistant",
+      model: "<synthetic>",
+      stop_reason: "stop_sequence",
+      content: [{ type: "text", text: AUTH_TEXT }],
+    },
+  },
+  {
+    type: "result",
+    subtype: "success",
+    session_id: "limited-session",
+    is_error: true,
+    result: AUTH_TEXT,
+    duration_ms: 40,
+    num_turns: 1,
+  },
+]
+const authExpired = process.env.FAKE_CLI_AUTH_EXPIRED === "1"
+
 const rl = readline.createInterface({ input: process.stdin })
 let answered = false
 rl.on("line", (line) => {
@@ -544,7 +733,10 @@ rl.on("line", (line) => {
       stdin: line,
     }) + "\\n",
   )
-  for (const l of (limited ? LIMITED_LINES : FAILOVER_LINES)) {
+  const lines = limited
+    ? (authExpired ? AUTH_EXPIRED_LINES : overageOnly ? SERVED_WITH_OVERAGE_REJECTED_LINES : LIMITED_LINES)
+    : FAILOVER_LINES
+  for (const l of lines) {
     process.stdout.write(JSON.stringify(l) + "\\n")
   }
 })
@@ -573,7 +765,10 @@ setOpencodeClient({
 
 const MODEL_ID = "claude-test-failover@appical"
 
-async function buildFailoverModel(fake: ReturnType<typeof createFakeCli>) {
+async function buildFailoverModel(
+  fake: ReturnType<typeof createFakeCli>,
+  failoverAccounts: string[] = ["default", "appical"],
+) {
   // The limited account is reached through its own wrapper, exactly as a real
   // account provider reaches it; `default` is the failover target and has no
   // wrapper at all.
@@ -583,7 +778,7 @@ async function buildFailoverModel(fake: ReturnType<typeof createFakeCli>) {
     baseCliPath: fake.cliPath,
     configDir: runtime.configDir,
     account: "appical",
-    failoverAccounts: ["default", "appical"],
+    failoverAccounts,
     cwd: fake.cwd,
     bridgeOpencodeMcp: false,
     proxyOpencodeMcpTools: false,
@@ -664,6 +859,126 @@ test("a usage limit ends the turn on a question listing the other account", asyn
   }
 })
 
+test("an expired login names the account and the login command, and offers the switch", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  process.env.FAKE_CLI_AUTH_EXPIRED = "1"
+  try {
+    const model = await buildFailoverModel(fake)
+    const parts = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+    const body = textOf(parts)
+    assert.match(body, /▌ \*\*claude account:\*\* the Claude account "appical" is not logged in/)
+    assert.match(body, /CLAUDE_CONFIG_DIR=\S*\.claude-appical claude auth login/)
+    assert.match(body, /Or pick another account below/)
+
+    const call = parts.find((part) => part.type === "tool-call")
+    assert.ok(call, "another configured account is offered")
+    const question = JSON.parse(call.input).questions[0]
+    assert.match(question.question, /"appical" is not logged in/)
+    assert.doesNotMatch(question.question, /out of usage/)
+    assert.deepEqual(question.options.map((option: any) => option.label), ["default", "stop"])
+    assert.equal(parts.find((part) => part.type === "finish").finishReason.unified, "tool-calls")
+  } finally {
+    delete process.env.FAKE_CLI_AUTH_EXPIRED
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("an expired login with no other account still says what to run", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  process.env.FAKE_CLI_AUTH_EXPIRED = "1"
+  try {
+    const model = await buildFailoverModel(fake, ["appical"])
+    const parts = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+    const body = textOf(parts)
+    assert.match(body, /claude auth login`, then resend your message\.\n/)
+    assert.doesNotMatch(body, /pick another account/)
+    assert.equal(parts.some((part) => part.type === "tool-call"), false)
+    assert.equal(parts.find((part) => part.type === "finish").finishReason.unified, "error")
+  } finally {
+    delete process.env.FAKE_CLI_AUTH_EXPIRED
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("account blocks come from the CLI's error kind, and the login command names the account", () => {
+  assert.equal(accountBlockKind({ type: "assistant", error: "authentication_failed" }), "authentication_failed")
+  assert.equal(accountBlockKind({ type: "assistant", error: "billing_error" }), "billing_error")
+  // Request-level failures would fail on any account, so they open nothing.
+  assert.equal(accountBlockKind({ type: "assistant", error: "server_error" }), null)
+  assert.equal(accountBlockKind({ type: "assistant", error: "rate_limit" }), null)
+  assert.equal(accountBlockKind({ type: "assistant", error: "toString" }), null)
+  assert.equal(accountBlockKind({ type: "result", error: "authentication_failed" }), null)
+  assert.equal(accountBlockKind({ type: "assistant" }), null)
+
+  assert.equal(loginCommandFor(undefined), "claude auth login")
+  assert.equal(
+    loginCommandFor("/Users/me/.claude-work", "/Users/me"),
+    "CLAUDE_CONFIG_DIR=~/.claude-work claude auth login",
+  )
+  assert.equal(
+    loginCommandFor("/srv/claude-work", "/Users/me"),
+    "CLAUDE_CONFIG_DIR=/srv/claude-work claude auth login",
+  )
+  // The note is stripped from rebuilt transcripts like every other `▌` note.
+  assert.ok(ACCOUNT_BLOCK_MARKER.startsWith("▌"))
+})
+
+test("a served turn whose limit event only rejects overage keeps its answer and asks nothing", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  process.env.FAKE_CLI_OVERAGE_ONLY = "1"
+  try {
+    const model = await buildFailoverModel(fake)
+    const parts = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+
+    assert.equal(
+      parts.some((part) => part.type === "tool-call"),
+      false,
+      "a served turn must not end on the failover form",
+    )
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "stop")
+    const body = textOf(parts)
+    assert.match(body, /served anyway/)
+    assert.doesNotMatch(body, /rate limit/)
+  } finally {
+    delete process.env.FAKE_CLI_OVERAGE_ONLY
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
 test("answering with the other account continues the task on it, replayed", async () => {
   _resetAccountOverrides()
   _resetRateLimitReports()
@@ -704,7 +1019,10 @@ test("answering with the other account continues the task on it, replayed", asyn
                 type: "tool-result",
                 toolCallId: call.toolCallId,
                 toolName: "question",
-                output: { type: "text", value: "default" },
+                output: {
+                  type: "text",
+                  value: opencodeAnswer(JSON.parse(call.input).questions[0].question, "default"),
+                },
               },
             ],
           },
@@ -797,7 +1115,10 @@ test("answering stop ends the turn as an error and spawns nothing", async () => 
                 type: "tool-result",
                 toolCallId: call.toolCallId,
                 toolName: "question",
-                output: { type: "text", value: "stop" },
+                output: {
+                  type: "text",
+                  value: opencodeAnswer(JSON.parse(call.input).questions[0].question, "stop"),
+                },
               },
             ],
           },

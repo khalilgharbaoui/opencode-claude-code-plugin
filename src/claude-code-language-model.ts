@@ -15,6 +15,7 @@ import type {
   ReasoningEffort,
 } from "./types.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
+import { createHostToolPartTranslator, translateStreamForHost } from "./host-tools.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
@@ -30,6 +31,7 @@ import {
   isRateLimitRejected,
   parseRateLimitEvent,
   reportCompactBoundary,
+  reportConversationReset,
   reportRateLimitEvent,
   reportSystemInit,
 } from "./cli-events.js"
@@ -39,17 +41,21 @@ import {
   normalizeAccountName,
 } from "./accounts.js"
 import {
+  accountBlockKind,
   buildFailoverContinuationPrompt,
   consumeAccountFailoverAnswer,
   createAccountFailoverQuestionCall,
+  describeAccountBlock,
   failoverCandidates,
   failoverUntil,
+  formatAccountBlockNote,
   formatFailoverNote,
   formatFailoverStopNote,
   isAccountFailoverQuestionActive,
   isAccountLimitError,
   resolveFailoverSpawn,
   setAccountOverride,
+  type AccountBlockKind,
   type FailoverSpawn,
 } from "./account-failover.js"
 import { DOCTOR_COMMAND, buildDoctorReport, parseDoctorCommand } from "./doctor.js"
@@ -74,6 +80,8 @@ import {
   fetchSessionParentId,
   type OpencodeToolListItem,
   resolveSpawnCwdForSession,
+  fetchSessionRunState,
+  settleSessionRunState,
 } from "./runtime-status.js"
 import {
   getActiveProcess,
@@ -98,6 +106,7 @@ import {
   sessionKey,
   effortSessionKey,
   invalidateOtherEffortSessions,
+  describeSessionKey,
 } from "./session-manager.js"
 import { spawnInteractiveProcess } from "./claude-session-wrapper.js"
 import {
@@ -122,6 +131,7 @@ import {
   taskBatchTasks,
   taskBatchChildToolCallId,
   formatTaskBatchResults,
+  setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
   type ProxyMcpServer,
@@ -131,6 +141,7 @@ import {
   type ProxyToolResult,
 } from "./proxy-mcp.js"
 import {
+  findPendingProxyCall,
   getPendingProxyCalls,
   isPendingProxyCallChannelClosed,
   markPendingProxyCallEmitted,
@@ -146,6 +157,23 @@ import { unlink } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { dirname, join } from "node:path"
+
+/**
+ * Whether opencode is still serving a proxied call whose deadline just passed.
+ * Only a call opencode was actually handed (`emitted`), in a session opencode
+ * positively reports `busy`, is kept: that is a permission prompt still open
+ * or the tool itself still running. Anything else, including `unknown` (no
+ * SDK client, no status route, the no-affinity `default` session), ends at
+ * the deadline exactly as before.
+ */
+export async function isProxyCallStillServed(callId: string): Promise<boolean> {
+  const pending = findPendingProxyCall(callId)
+  if (!pending || pending.emitted !== true) return false
+  const session = describeSessionKey(pending.sessionKey).session
+  return (await fetchSessionRunState(session)) === "busy"
+}
+
+setProxyDeadlineGuard(({ callId }) => isProxyCallStillServed(callId))
 
 /**
  * Default model used for opencode `/compact`. Haiku 4.5 is fast
@@ -214,6 +242,51 @@ export function resolveSessionAffinity(
     if (typeof sid === "string" && sid.length > 0) return sid
   }
   return "default"
+}
+
+/**
+ * The opencode agent this call runs for, which is how compaction and title
+ * calls are told apart from ordinary turns.
+ *
+ *   1. `opencodeAgent` in providerOptions, written by V1's `chat.params`
+ *      hook. Checked first so opencode 1.x behaves exactly as it always has.
+ *   2. The `x-opencode-agent` request header, written by the V2 entrypoint's
+ *      `model.request` hook (src/v2.ts), which can set headers but not
+ *      provider options.
+ */
+export function resolveOpencodeAgent(
+  headers: Record<string, string | undefined> | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+  providerKey: string,
+): string | undefined {
+  if (providerOptions) {
+    const bag =
+      (providerOptions as any)[providerKey] ??
+      (providerOptions as any)["claude-code"]
+    const agent = bag?.opencodeAgent
+    if (typeof agent === "string") return agent
+  }
+  if (headers) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "x-opencode-agent") {
+        const value = headers[key]
+        if (typeof value === "string" && value.length > 0) return value
+      }
+    }
+  }
+  return undefined
+}
+
+/** An `AbortSignal.reason` as loggable text: its name and message, or its type. */
+export function describeAbortReason(reason: unknown): string {
+  if (reason === undefined) return "undefined"
+  if (reason instanceof Error) return `${reason.name}: ${reason.message}`
+  if (typeof reason === "string") return reason
+  try {
+    return JSON.stringify(reason) ?? typeof reason
+  } catch {
+    return typeof reason
+  }
 }
 
 /**
@@ -928,7 +1001,7 @@ export function _resetFastModeWarnings(): void {
  *
  * Fast mode fails soft: an ineligible account or a rate-limit cooldown drops
  * back to standard speed with no error. That silence is the problem worth
- * solving here: the fast model ids advertise 10x pricing in opencode's picker,
+ * solving here: the fast model ids advertise fast pricing in opencode's picker,
  * so a downgrade the user cannot see means the picker is lying about cost for
  * every subsequent turn.
  *
@@ -959,7 +1032,7 @@ export function reportFastModeState(
   const reason = msg.fast_mode_disabled_reason
   if (state === "cooldown") {
     log.notice(
-      "fast mode is in cooldown after a rate limit; this turn runs at standard speed and is billed at standard Opus rates, not the 10x shown in the model picker.",
+      "fast mode is in cooldown after a rate limit; this turn runs at standard speed and is billed at standard Opus rates, not the fast price shown in the model picker.",
       { state, reason: reason ?? null },
     )
     return
@@ -969,7 +1042,7 @@ export function reportFastModeState(
   const explanation = reason ? FAST_MODE_REASONS[reason] : undefined
   const message = `fast mode was requested but is off${
     explanation ? `: ${explanation}` : reason ? ` (${reason})` : ""
-  }. Turns run at standard speed and are billed at standard Opus rates, not the 10x shown in the model picker. Switch to the non-fast model id to make the picker's price accurate.`
+  }. Turns run at standard speed and are billed at standard Opus rates, not the fast price shown in the model picker. Switch to the non-fast model id to make the picker's price accurate.`
 
   if (warnedFastModeReasons.has(key)) {
     log.debug(message, { state, reason: reason ?? null })
@@ -1029,6 +1102,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       unified: reason,
       raw: reason,
     }
+  }
+
+  /**
+   * Whether this call only names the session, which gets the synthetic stub
+   * rather than a `claude` spawn. opencode 1.x sends a title request with no
+   * tools, and that is the whole test there. opencode 2 sends its tool set
+   * along with it (measured on 2.0.11: `scope: "tools"`, agent `title`), so
+   * every new V2 session paid for a second `claude` process just to title
+   * itself; for a V2 model the request kind, carried as the `title` agent,
+   * decides instead.
+   */
+  private isTitleRequest(
+    scope: "tools" | "no-tools",
+    options: LanguageModelV3CallOptions,
+  ): boolean {
+    if (scope === "no-tools") return true
+    return this.config.hostApi === "v2" && this.getOpencodeAgent(options) === "title"
   }
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
@@ -1577,22 +1667,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return valid.includes(effort) ? effort : undefined
   }
 
-  private getOpencodeAgent(
-    providerOptions?: LanguageModelV3CallOptions["providerOptions"],
-  ): string | undefined {
-    if (!providerOptions) return undefined
-    const ownKey = this.config.provider
-    const bag =
-      (providerOptions as any)[ownKey] ??
-      (providerOptions as any)["claude-code"]
-    const agent = bag?.opencodeAgent
-    return typeof agent === "string" ? agent : undefined
+  private getOpencodeAgent(options: LanguageModelV3CallOptions): string | undefined {
+    return resolveOpencodeAgent(
+      (options as any)?.headers as Record<string, string | undefined> | undefined,
+      options.providerOptions as Record<string, unknown> | undefined,
+      this.config.provider,
+    )
   }
 
   private isCompactionCall(
     options: LanguageModelV3CallOptions,
   ): boolean {
-    return this.getOpencodeAgent(options.providerOptions) === "compaction"
+    return this.getOpencodeAgent(options) === "compaction"
   }
 
   /**
@@ -1776,6 +1862,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   async doGenerate(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+    const result = await this.doGenerateForHost(options)
+    if (this.config.hostApi !== "v2") return result
+    const translate = createHostToolPartTranslator("v2")
+    return {
+      ...result,
+      content: result.content.flatMap((part) => {
+        const next = translate(part as any)
+        return next ? [next as unknown as LanguageModelV3Content] : []
+      }),
+    }
+  }
+
+  private async doGenerateForHost(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
     if (!this.isCompactionCall(options) && this.requestScope(options as any) !== "no-tools" && parseSideQuestion(options.prompt)) {
       return this.doGenerateViaStream(options)
     }
@@ -1787,18 +1888,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // (see agent-models.ts). The session key must carry the effective model or
     // an overridden agent shares a claude process with its caller.
     const effectiveModelId = resolveAgentModel(
-      this.getOpencodeAgent(options.providerOptions),
+      this.getOpencodeAgent(options),
       this.modelId,
     )
     const reasoningEffort = resolveAgentEffort(
-      this.getOpencodeAgent(options.providerOptions),
+      this.getOpencodeAgent(options),
       this.getReasoningEffort(options.providerOptions),
     ) as ReasoningEffort | undefined
     // Keep effort invalidation inside one agent/provider, even when callers
     // share a model and opencode session (for example switching agents).
     const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
     )
     const sk = effortSessionKey(baseKey, reasoningEffort)
 
@@ -1826,10 +1927,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return this.doGenerateViaStream(options)
     }
 
-    if (scope === "no-tools") {
+    if (this.isTitleRequest(scope, options)) {
       log.info("doGenerate no-tools title stub", {
         compactionMode,
-        opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+        opencodeAgent: this.getOpencodeAgent(options),
         providerOptionsKeys: options.providerOptions
           ? Object.keys(options.providerOptions)
           : [],
@@ -2365,7 +2466,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
   }
 
+  /**
+   * Tool parts leave in opencode 1.x's vocabulary; on opencode 2.x they are
+   * renamed at this one edge (src/host-tools.ts). On V1 the stream is
+   * returned untouched.
+   */
   async doStream(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    const result = await this.doStreamForHost(options)
+    return {
+      ...result,
+      stream: translateStreamForHost(result.stream as any, this.config.hostApi ?? "v1") as any,
+    }
+  }
+
+  private async doStreamForHost(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
@@ -2379,19 +2495,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const effectiveModelId = compactionMode
       ? this.resolveCompactionModel()
       : resolveAgentModel(
-          this.getOpencodeAgent(options.providerOptions),
+          this.getOpencodeAgent(options),
           this.modelId,
         )
     // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
       : (resolveAgentEffort(
-          this.getOpencodeAgent(options.providerOptions),
+          this.getOpencodeAgent(options),
           this.getReasoningEffort(options.providerOptions),
         ) as ReasoningEffort | undefined)
     const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
     )
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
@@ -2537,10 +2653,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return { stream, request: { body: { text: aside.question } } }
     }
 
-    if (scope === "no-tools" && !compactionMode) {
+    if (this.isTitleRequest(scope, options) && !compactionMode) {
       log.info("doStream no-tools title stub", {
         compactionMode,
-        opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+        opencodeAgent: this.getOpencodeAgent(options),
         providerOptionsKeys: options.providerOptions
           ? Object.keys(options.providerOptions)
           : [],
@@ -2624,7 +2740,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const failoverAnswer =
       compactionMode || useInteractive
         ? null
-        : consumeAccountFailoverAnswer(sk, options.prompt as any)
+        : consumeAccountFailoverAnswer(sk, options.prompt as any, {
+            sourceAccount,
+            candidates: failoverCandidates(this.config.failoverAccounts, sourceAccount),
+          })
 
     if (failoverAnswer?.kind === "stop") {
       // Dismissed, answered `stop`, or answered with something that is not
@@ -2828,7 +2947,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       proxyTools: resolvedProxy?.map((t) => t.name) ?? null,
       compactionMode,
       scope,
-      opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+      opencodeAgent: this.getOpencodeAgent(options),
       providerOptionsKeys: options.providerOptions
         ? Object.keys(options.providerOptions)
         : [],
@@ -3541,6 +3660,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // known account-limit error texts, never by a generic failure: a
           // transient error must not open a form that moves the billing.
           let accountLimitHit: { resetsAt?: number; window?: string } | null = null
+          // The account itself cannot serve (an expired login, a billing
+          // problem), from the `error` kind on the CLI's own failure reply.
+          let accountBlock: AccountBlockKind | null = null
 
         // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
         // bash calls in one assistant message) end up in a single
@@ -3748,20 +3870,26 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // form listing the other configured accounts. Leaving it unanswered
           // waits and costs nothing; every answer that is not one of those
           // accounts comes back as a `stop` and ends the turn as before.
-          if (accountLimitHit && failoverAskActive) {
+          // Only a turn that failed: a limit event on a turn that was served
+          // is information, and replacing its answer with this form would
+          // throw the answer away.
+          if ((accountLimitHit || accountBlock) && failoverAskActive && msg.is_error === true) {
             const call = createAccountFailoverQuestionCall(sk, {
               sourceAccount,
               candidates: failoverAccounts,
-              resetsAt: accountLimitHit.resetsAt,
-              window: accountLimitHit.window,
+              resetsAt: accountLimitHit?.resetsAt,
+              window: accountLimitHit?.window,
+              reason: accountLimitHit || !accountBlock ? undefined : describeAccountBlock(accountBlock),
             })
             log.warn(
-              `Claude account "${sourceAccount}" is out of usage; asking which account to continue on.`,
+              `Claude account "${sourceAccount}" ${
+                accountLimitHit || !accountBlock ? "is out of usage" : `cannot serve (${accountBlock})`
+              }; asking which account to continue on.`,
               {
                 sessionKey: sk,
                 candidates: failoverAccounts,
                 toolCallId: call.toolCallId,
-                resetsAt: accountLimitHit.resetsAt ?? null,
+                resetsAt: accountLimitHit?.resetsAt ?? null,
               },
             )
             finishWithQuestionCall(call)
@@ -3943,6 +4071,29 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 endTextBlock()
               }
             }
+
+            // Claude Code started a new conversation (`/clear`, plan-mode
+            // exit). Content-block indices restart with it, so nothing keyed
+            // by index may survive: a stale `toolCallMap` entry re-emits a
+            // finished tool call on the new conversation's first block, the
+            // failure fixed on 2026-09-06. The Claude session id needs nothing
+            // here; the `system/init` that follows carries the new one.
+            if (msg.type === "conversation_reset") {
+              const note = reportConversationReset(msg)
+              if (note) {
+                toolCallMap.clear()
+                reasoningIds.clear()
+                reasoningStarted.clear()
+                textBlockIndices.clear()
+                controller.enqueue({ type: "text-delta", id: startTextBlock(), delta: note })
+                endTextBlock()
+              }
+              return
+            }
+
+            // Not returned from: the reply's own text still renders below.
+            const block = accountBlockKind(msg)
+            if (block) accountBlock = block
 
             // A rejection is why the turn is about to fail. Put it in the
             // transcript so the reason does not live only in a log file that
@@ -4631,6 +4782,33 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 accountLimitHit = {}
               }
 
+              // Say which account and what to run. Without this the only
+              // thing on screen was the CLI's "Failed to authenticate: OAuth
+              // session expired", which names neither.
+              if (accountBlock && msg.is_error) {
+                // The CLI labels this result `success` with `is_error: true`,
+                // so nothing else marks the turn failed; without this it
+                // finished as an ordinary `stop` with the error as its answer.
+                resultFailure ??= accountBlock
+                const offeringSwitch = failoverAskActive
+                controller.enqueue({
+                  type: "text-delta",
+                  id: startTextBlock(),
+                  delta: formatAccountBlockNote({
+                    kind: accountBlock,
+                    account: sourceAccount,
+                    configDir: self.config.configDir,
+                    offeringSwitch,
+                  }),
+                })
+                endTextBlock()
+                log.warn(`Claude account "${sourceAccount}" cannot serve requests`, {
+                  sessionKey: sk,
+                  kind: accountBlock,
+                  offeringSwitch,
+                })
+              }
+
               // A non-`success` subtype is a failed turn. Name it in the
               // transcript and finish as an error, rather than letting it be
               // recorded as an ordinary reply with the subtype only in a
@@ -5001,23 +5179,54 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           options.abortSignal.addEventListener("abort", () => {
             autoContinueState.aborted = true
             if (turnCompleted || controllerClosed) {
-              // This stream already ended on a proxy tool boundary and
-              // opencode was running the tool when the operator aborted.
-              // The CLI is parked in that call and nobody else will answer
-              // it; but only while no later turn has attached to the
-              // process, since that turn's calls are its own.
+              // This stream already ended on a proxy tool boundary. An abort
+              // here is NOT necessarily the operator: opencode 1.18.32 aborts
+              // the signal of every step that ends in tool calls, about a
+              // second after the finish, while it runs the tool (measured:
+              // 348 of 938 proxied calls on 2026-09-23, and every call in a
+              // plugin-only scratch config). Releasing on that rejected calls
+              // that were working, told Claude "the user doesn't want to
+              // proceed", and pushed each result into the next turn as text.
+              // The abort reason is the same `AbortError` either way, so
+              // opencode's session status decides: still busy means it is
+              // running the tool, idle means the operator stopped the turn.
+              // Unknown keeps the call, which at worst leaves a real abort
+              // waiting for the next message, as it did before release-on-
+              // abort existed.
+              const stoppedProcess = activeProcess
               if (
-                activeProcess &&
-                activeProcess.lineEmitter.listenerCount("line") === 0 &&
+                stoppedProcess &&
+                stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
                 getPendingProxyCalls(sk).length > 0
               ) {
-                log.info("abort between proxy tool boundaries; releasing pending calls", { sk })
-                void interruptTurn(activeProcess).then((idle) => {
-                  log.info("interrupt sent for aborted turn", { sk, idle })
+                const reason = describeAbortReason(options.abortSignal?.reason)
+                void settleSessionRunState(affinity).then((stopped) => {
+                  // Re-checked after the wait: a later turn that attached in
+                  // the meantime owns these calls now.
+                  const stillParked =
+                    stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
+                    getPendingProxyCalls(sk).length > 0
+                  // Only a positive `busy` keeps the call. `unknown` (no SDK
+                  // client, no status route, a failed read) releases exactly
+                  // as it did before this check existed, so a build that
+                  // cannot ask is never left worse off.
+                  if (stopped === "busy" || !stillParked) {
+                    log.debug("abort at a tool boundary while opencode is still running the turn; keeping pending calls", {
+                      sk,
+                      session: stopped,
+                      stillParked,
+                      reason,
+                    })
+                    return
+                  }
+                  log.info("abort between proxy tool boundaries; releasing pending calls", { sk, reason })
+                  void interruptTurn(stoppedProcess).then((idle) => {
+                    log.info("interrupt sent for aborted turn", { sk, idle })
+                  })
+                  releaseAbandonedProxyCalls(
+                    "Provider stream was aborted while opencode was running its proxy tool calls",
+                  )
                 })
-                releaseAbandonedProxyCalls(
-                  "Provider stream was aborted while opencode was running its proxy tool calls",
-                )
               }
               return
             }

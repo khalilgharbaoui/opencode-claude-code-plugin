@@ -80,11 +80,37 @@ In your `opencode.json`, point at the local build with a `file://` URL:
 
 CI installs and builds on **Node 24** (`.github/workflows/publish.yml`), which is the only version this package is built against. `package.json` declares no `engines` range, so older Node versions are untested rather than deliberately unsupported. opencode itself may run under Bun; the [interactive transport](#interactive-transport-experimental) requires that.
 
+### opencode 2
+
+The same package runs on opencode 1.x and 2.x, and nothing changes for 1.x. The same config works too: opencode 2's native key is `plugins`, but it still reads the 1.x `plugin` key shown above, so an existing install needs no edit. A config used only by opencode 2 can spell it natively:
+
+```json
+{
+  "plugins": ["@khalilgharbaoui/opencode-claude-code-plugin"]
+}
+```
+
+Your existing `provider.claude-code.options` block keeps working, because opencode 2 still reads 1.x config files. Its native spelling is `provider.claude-code.settings`, and plugin-level settings such as `accounts` may also go in the plugin entry itself: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
+
+For a local checkout, point opencode 2 at the **`dist` directory**, not the repository root. It loads `<dir>/server` or `<dir>/index` from a directory and never reads `package.json#main`:
+
+```json
+{
+  "plugins": ["/absolute/path/to/opencode-claude-code-plugin/dist"]
+}
+```
+
+Verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxied tools running through opencode 2's own `shell`, `edit`, `write`, `webfetch` and `subagent` tools and their permission rules, Claude's own tools rendered in the transcript, subagent dispatch with the agent list, reasoning variants, compaction, account providers, `/claude-code-doctor`, `/btw`, and the bundled configuration skill. Differences from 1.x:
+
+- **`/btw` is answered after the running turn**, not inside it. opencode 2's plugin API has no session-status route, which is what 1.x uses to write the answer into a turn that is still running. The aside is queued, so it can never swallow the turn's own continuation.
+- **No todo panel.** opencode 2 has no `todowrite` tool, so Claude's task list is not mirrored into one.
+- **Account failover and the plan-mode form** use opencode 2's `question` tool, which takes the same input as 1.x. Both are covered by offline tests only on 2.x, since neither can be triggered on demand.
+
 ---
 
 ## Models
 
-The plugin auto-registers the following, and they appear in the model picker with no extra config: Haiku 4.5, Sonnet 4.5/4.6/5, Opus 4.5/4.6/4.7/4.8/5 (plus two fast-mode Opus entries), Fable 5/5.1 and Mythos 5/5.1, each except Haiku carrying `low` / `medium` / `high` / `xhigh` / `max` reasoning variants.
+The plugin auto-registers the following, and they appear in the model picker with no extra config: Haiku 4.5, Sonnet 4.5/4.6/5, Opus 4.5/4.6/4.7/4.8/5/5.5 (plus three fast-mode Opus entries), Fable 5/5.1 and Mythos 5/5.1, each except Haiku carrying `low` / `medium` / `high` / `xhigh` / `max` reasoning variants.
 
 | ID | Display name | Context | Output | Reasoning variants | Price × |
 |---|---|---|---|---|---|
@@ -99,6 +125,8 @@ The plugin auto-registers the following, and they appear in the model picker wit
 | `claude-opus-4-8-fast` | Claude Opus 4.8 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-opus-5` | Claude Opus 5 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-5-fast` | Claude Opus 5 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
+| `claude-opus-5-5` | Claude Opus 5.5 | 1M | 128,000 | low/medium/high/xhigh/max | 4× |
+| `claude-opus-5-5-fast` | Claude Opus 5.5 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 8× |
 | `claude-fable-5` | Claude Fable 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-fable-5-1` | Claude Fable 5.1 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-mythos-5` | Claude Mythos 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
@@ -108,15 +136,17 @@ The plugin auto-registers the following, and they appear in the model picker wit
 
 Capabilities for every model: text + image input, text output, tool use, attachments. No temperature control, no PDF/audio/video, no interleaved streaming.
 
-**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus $5/$25 = 5×, Fable/Mythos 5 and 5.1 / Opus fast mode $10/$50 = 10×). So **Fable/Mythos 5 and 5.1, and fast-mode Opus, all cost 2× standard Opus 5**. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
+**Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku $1/$5 = 1×, Sonnet $3/$15 = 3×, Opus 5.5 $4/$20 = 4×, Opus $5/$25 = 5×, Opus 5.5 fast mode $8/$40 = 8×, Fable/Mythos 5 and 5.1 / Opus 5 and 4.8 fast mode $10/$50 = 10×). So **Fable/Mythos 5 and 5.1, and fast-mode Opus 5 and 4.8, all cost 2× standard Opus 5**, and fast mode is 2× the standard price on every Opus that offers it. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
 
 Fable 5.1 and Mythos 5.1 keep the same $10/M input and $50/M output rates as 5.0, but cache reads cost $0.25/M instead of $1/M. Their cache-write rate remains $12.50/M.
 
-The model ID is passed straight through to `claude --model`, so anything Claude Code accepts works. The two `-fast` IDs are the one exception, described below.
+Opus 5.5 is priced below the Opus line at $4/M input and $20/M output, with cache writes at $5/M and cache reads at $0.20/M (0.05× input rather than the usual 0.1×). It needs **Claude Code 2.1.280 or newer**: the API rejects it from an older CLI with a 400 naming that floor, which shows up as a failed turn.
+
+The model ID is passed straight through to `claude --model`, so anything Claude Code accepts works. The three `-fast` IDs are the one exception, described below.
 
 ### Fast mode
 
-`claude-opus-5-fast` and `claude-opus-4-8-fast` run the same models at up to 2.5× the output tokens per second, at 2× the price ($10/M input, $50/M output, the 10× column). Pick them in the model selector like any other model.
+`claude-opus-5-5-fast`, `claude-opus-5-fast` and `claude-opus-4-8-fast` run the same models at up to 2.5× the output tokens per second, at 2× the price ($8/M input, $40/M output for Opus 5.5, the 8× column; $10/M input, $50/M output for Opus 5 and 4.8, the 10× column). Pick them in the model selector like any other model.
 
 The `-fast` suffix is this plugin's own marker, not a model name Anthropic serves. The plugin strips it and spawns `claude --model claude-opus-5 --settings '{"fastMode":true}'`, because that settings layer is the only way to opt a headless (`--print`) session into fast mode: there is no `--fast` flag, and the old `claude-opus-4-6-fast` style model names are retired. Requires Claude Code 2.1.220+; below that the plugin skips the opt-in and you get standard speed.
 
@@ -220,6 +250,7 @@ What a pick does, in full:
 - **The conversation is replayed, not resumed.** Claude transcripts live under each account's own `CLAUDE_CONFIG_DIR`, so `--resume` cannot cross accounts. The plugin starts a fresh Claude session on the target and replays the thread from opencode's history, then tells it to carry on. That costs input tokens on the new account, and anything the CLI held but opencode did not is gone.
 - **Per-profile MCP servers do not come along.** A server configured only in the limited account's Claude profile is simply absent on the target.
 - **`stop`, dismissing the form, or any answer that is not one of the offered accounts** ends the turn exactly the way the rate-limit error ends it today.
+- **An account that cannot serve at all gets the same form.** When Claude Code reports that an account's login expired (`authentication_failed`), or that it is on hold, unverified or has a billing problem, the plugin writes a note naming the account and what to do, and offers the switch if another account is configured. For an expired login the note gives the exact command, for example `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`. The switch lasts until opencode restarts, so restart after logging in again to move back. With a single account you get the note alone.
 
 Only two things open the form: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
 
@@ -648,7 +679,9 @@ The same events are also what let a legitimately long call complete, which is th
 
 ### Per-tool proxy timeouts
 
-Deadlines still exist, as an explicit backstop rather than the mechanism that decides when a call is over. If a tool with one has not been resolved within that many milliseconds, the call is rejected and Claude receives a timeout error. Resolved per tool, most-specific layer winning:
+Deadlines still exist, as an explicit backstop rather than the mechanism that decides when a call is over. If a tool with one has not been resolved within that many milliseconds, the call is rejected and Claude receives a timeout error.
+
+A deadline does not count time opencode is still spending on the call. When it passes, the plugin asks opencode whether the session is still busy. If it is (a permission prompt waiting for your answer, or the tool itself still running), the call keeps waiting and is checked again every minute. The deadline only applies once opencode is idle, or when opencode cannot be asked. Before this, answering a permission prompt after ten minutes meant Claude had already been told the command timed out. Your late approval then cancelled Claude's next action, which it reported as you rejecting it. Resolved per tool, most-specific layer winning:
 
 1. flat default — 10 min (matches Claude CLI's own Bash ceiling)
 2. per-tool default: **`task` / `task_batch`: none**, **`question`: 30 min**, everything else: 10 min
@@ -746,6 +779,7 @@ Four Claude Code stream events used to reach nothing but a debug log:
 
 - **A rate-limit rejection.** When the CLI reports `status: "rejected"` (or a rejected extra-usage state), the turn now carries a `▌ **rate limit:**` line naming the window, the reason extra usage is unavailable, when it resets, and the four things that can be done about it. Warned once per identity per process. See [Billing](#billing-change-june-15-2026-agent-sdk-credit).
 - **A context compaction Claude Code did on its own.** A `▌ **context compacted:**` note says so, with the before and after token counts, so an answer that suddenly forgets the start of the conversation has a visible cause.
+- **A conversation Claude Code cleared.** Sending `/clear` as a message, or a plan-mode exit that clears context, makes Claude Code start a fresh conversation while opencode still shows the old messages. A `▌ **claude code reset:**` note says so. The plugin deliberately does not replay the earlier messages, since that would undo the clear. Start a new opencode session if you want the two to match.
 - **A `result` whose subtype is not `success`** (`error_max_turns`, `error_during_execution`, …). The subtype is named in the transcript and the turn finishes as an error instead of an ordinary reply.
 - **A CLI-executed tool that failed.** Its result is forwarded with the AI SDK's error flag, so opencode renders the row as failed rather than as a success whose output happens to be an error message.
 
@@ -1239,7 +1273,7 @@ This plugin absorbs work from its forks directly, cherry-picked with the origina
 | [@galvani](https://github.com/galvani) (Jan Kozak) | Per-session working directory for `opencode serve`, so one server spawns each project's `claude` in the right place. Also found the stale `toolCallMap` re-emission three months before it was fixed here. | `9e02ce4`, `2238ed0` |
 | [@HeikoAtGitHub](https://github.com/HeikoAtGitHub) | Stopped sending `AGENTS.md` to the model twice (opencode already forwards it). Independently diagnosed the 5-minute proxy wall. | `25260a4`, `42f426d` |
 | [@bernardofortes](https://github.com/bernardofortes) (Bernardo Fortes) | `idleProcessTimeoutMs`, idle eviction of retained `claude` workers. | `a5f723a` |
-| [@broskees](https://github.com/broskees) (Joseph Roberts) | Task proxy default-on (PR #18), the abort `interrupt` so Esc really stops the CLI, the skill bridge, `task_batch` for concurrent subagents (and the measurement that the CLI serialises MCP calls), the undici 300 s diagnosis of the proxy wall, and the lifecycle release of proxied calls that made the `task` deadline unnecessary (PR #36). | PR #18, `68ed142`, PR #36 |
+| [@broskees](https://github.com/broskees) (Joseph Roberts) | Task proxy default-on (PR #18), the abort `interrupt` so Esc really stops the CLI, the skill bridge, `task_batch` for concurrent subagents (and the measurement that the CLI serialises MCP calls), the undici 300 s diagnosis of the proxy wall, the lifecycle release of proxied calls that made the `task` deadline unnecessary (PR #36), and Claude Opus 5.5 with its fast-mode entry (PR #43). | PR #18, `68ed142`, PR #36, PR #43 |
 | [@jknlsn](https://github.com/jknlsn) (Jake Nelson) | Per-tool proxy timeouts, subagent dispatch steering, the question proxy, the start watchdog respawn. | `84f3db9`, `94980a6`, `47501d0`, `ffefc24` |
 | [@CollieIsCute](https://github.com/CollieIsCute) (Collie Tsai) | The plan-mode approval bridge. | `8c5b583` |
 | [@flupkede](https://github.com/flupkede) | The compress proxy tool design and the AI-SDK v4 image-part fix. | `4ac319f`, `60a6e9a` |

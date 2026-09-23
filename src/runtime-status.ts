@@ -23,6 +23,8 @@ type OpencodeClient = {
       path: { id: string }
       query?: { directory?: string }
     }) => Promise<{ data?: unknown; error?: unknown }>
+    /** `GET /session/status`: sessions missing from the map are idle. */
+    status?: () => Promise<{ data?: unknown; error?: unknown }>
   }
 }
 
@@ -190,6 +192,63 @@ export async function fetchSessionParentId(
       error: err instanceof Error ? err.message : String(err),
     })
     return undefined
+  }
+}
+
+export type SessionRunState = "busy" | "idle" | "unknown"
+
+/**
+ * Whether opencode still considers this session to be running a turn.
+ * `unknown` when there is no client or the route is missing, which every
+ * caller must treat as "do not act": a wrong guess here is worse than no
+ * answer.
+ */
+export async function fetchSessionRunState(
+  sessionID: string,
+): Promise<SessionRunState> {
+  if (!sessionID || sessionID === "default") return "unknown"
+  const status = opencodeClient?.session?.status
+  if (!status) return "unknown"
+  try {
+    const res = await status.call(opencodeClient!.session)
+    const data = (res as { data?: unknown }).data
+    if (!data || typeof data !== "object") return "unknown"
+    const entry = (data as Record<string, unknown>)[sessionID]
+    if (!entry || typeof entry !== "object") return "idle"
+    const type = (entry as { type?: unknown }).type
+    return type === "idle" ? "idle" : "busy"
+  } catch (err) {
+    log.debug("failed to read opencode session status", {
+      sessionID,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return "unknown"
+  }
+}
+
+/**
+ * The session's run state, given a moment to settle. opencode 1.18.32 aborts
+ * the provider signal of every step that ends in tool calls, roughly a second
+ * after the finish, while it runs the tool; that looks exactly like an
+ * operator abort at the signal. The session stays busy through the tool run
+ * and goes idle when the turn really stops, so one `busy` reading inside the
+ * window is enough to tell them apart, and the poll exists because an abort
+ * can arrive before opencode has updated the map.
+ */
+export async function settleSessionRunState(
+  sessionID: string,
+  options: { pollMs?: number; windowMs?: number } = {},
+): Promise<SessionRunState> {
+  const pollMs = options.pollMs ?? 150
+  const windowMs = options.windowMs ?? 1_500
+  const started = Date.now()
+  let last: SessionRunState = "unknown"
+  for (;;) {
+    const state = await fetchSessionRunState(sessionID)
+    if (state === "busy") return "busy"
+    if (state !== "unknown") last = state
+    if (Date.now() - started >= windowMs) return last
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }
 

@@ -1,3 +1,4 @@
+import { homedir } from "node:os"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import {
   DEFAULT_ACCOUNT,
@@ -84,6 +85,72 @@ export const ACCOUNT_LIMIT_PATTERNS: RegExp[] = [
   /third-party apps now draw from your extra usage/i,
   /you[’'`]?ve hit your individual spend limit/i,
 ]
+
+/** Leading text of the `▌` note naming an account that cannot serve requests. */
+export const ACCOUNT_BLOCK_MARKER = "▌ **claude account:**"
+
+/**
+ * The CLI's failure kinds that belong to the ACCOUNT rather than to this
+ * request, each with what the operator can do about it. Read off the
+ * `error` enum on the assistant message in Claude Code 2.1.280's own schema;
+ * `rate_limit` is left out because the limit path above already covers it,
+ * and the request-level kinds (`invalid_request`, `server_error`, ...) are
+ * left out because another account would fail the same way.
+ *
+ * `authentication_failed` is the one measured in production: on 2026-09-23
+ * the `appical` login expired, every turn on it failed in about 40 ms, and all
+ * the operator saw was the CLI's own reply "Failed to authenticate: OAuth
+ * session expired and could not be refreshed", with no hint of which account
+ * or what to run.
+ */
+const ACCOUNT_BLOCKS = {
+  authentication_failed: { what: "is not logged in (its login expired or was revoked)", login: true },
+  oauth_org_not_allowed: { what: "belongs to an organization that does not allow this login", login: false },
+  account_on_hold: { what: "is on hold", login: false },
+  verification_required: { what: "needs to be verified at claude.ai", login: false },
+  billing_error: { what: "has a billing problem", login: false },
+} as const
+
+export type AccountBlockKind = keyof typeof ACCOUNT_BLOCKS
+
+/** The account-level failure an assistant message reports, if any. */
+export function accountBlockKind(msg: { type?: string; error?: unknown }): AccountBlockKind | null {
+  if (msg.type !== "assistant" || typeof msg.error !== "string") return null
+  return Object.prototype.hasOwnProperty.call(ACCOUNT_BLOCKS, msg.error)
+    ? (msg.error as AccountBlockKind)
+    : null
+}
+
+/** What the switch form says about the account, in place of "out of usage". */
+export function describeAccountBlock(kind: AccountBlockKind): string {
+  return ACCOUNT_BLOCKS[kind].what
+}
+
+/**
+ * The command that logs this account in again. An account provider is only a
+ * `CLAUDE_CONFIG_DIR` (the wrapper script sets nothing else), so naming the
+ * directory is the whole instruction, and it works without the wrapper.
+ */
+export function loginCommandFor(configDir: string | undefined, home = homedir()): string {
+  if (!configDir) return "claude auth login"
+  const shown = configDir === home || configDir.startsWith(`${home}/`) ? `~${configDir.slice(home.length)}` : configDir
+  return `CLAUDE_CONFIG_DIR=${shown} claude auth login`
+}
+
+export function formatAccountBlockNote(input: {
+  kind: AccountBlockKind
+  account: string
+  configDir?: string
+  offeringSwitch: boolean
+}): string {
+  const block = ACCOUNT_BLOCKS[input.kind]
+  const account = normalizeAccountName(input.account || DEFAULT_ACCOUNT)
+  const fix = block.login
+    ? `Log in again with \`${loginCommandFor(input.configDir)}\`, then resend your message.`
+    : "Check the account at claude.ai, then resend your message."
+  const then = input.offeringSwitch ? " Or pick another account below." : ""
+  return `\n${ACCOUNT_BLOCK_MARKER} the Claude account "${account}" ${block.what}. ${fix}${then}\n`
+}
 
 export function isAccountLimitError(input: {
   rateLimit?: RateLimitInfo | null
@@ -294,6 +361,8 @@ interface PendingFailoverQuestion {
   sourceAccount: string
   candidates: string[]
   resetsAt?: number
+  /** The question as asked, needed to read opencode's answer sentence. */
+  question?: string
 }
 
 const pendingQuestions = new Map<string, PendingFailoverQuestion>()
@@ -325,6 +394,11 @@ export function createAccountFailoverQuestionCall(
     candidates: readonly string[]
     resetsAt?: number
     window?: string
+    /**
+     * Why the account cannot serve, when it is not a usage limit
+     * (`describeAccountBlock`). Replaces "is out of usage" in the question.
+     */
+    reason?: string
   },
   toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}${Math.random()
     .toString(36)
@@ -335,18 +409,21 @@ export function createAccountFailoverQuestionCall(
   const resets = describeReset(input.resetsAt)
   const until = resets ?? "opencode restarts"
 
+  const question = input.reason
+    ? `The Claude account "${source}" ${input.reason}. Continue this task on another configured account? Leaving this unanswered waits, at no cost.`
+    : [
+        `The Claude account "${source}" is out of usage`,
+        input.window ? ` in ${input.window}` : "",
+        resets ? `, which resets at ${resets}` : "",
+        ". Continue this task on another configured account? Leaving this unanswered waits, at no cost.",
+      ].join("")
+
   pendingQuestions.set(pendingKey(sessionKey, toolCallId), {
     sourceAccount: source,
     candidates: [...candidates],
     resetsAt: input.resetsAt,
+    question,
   })
-
-  const question = [
-    `The Claude account "${source}" is out of usage`,
-    input.window ? ` in ${input.window}` : "",
-    resets ? `, which resets at ${resets}` : "",
-    ". Continue this task on another configured account? Leaving this unanswered waits, at no cost.",
-  ].join("")
 
   return {
     toolCallId,
@@ -398,8 +475,14 @@ function classify(
       reason: String((output as { reason?: unknown }).reason ?? "question rejected"),
     }
   }
+  // A dismissed form reaches the model as a failed tool call ("The user
+  // dismissed this question"), not as an answer that happens to be unknown.
+  const outputType = part?.output?.type
+  if (outputType === "error-text" || outputType === "error-json") {
+    return { kind: "stop", reason: String(output ?? "the form was dismissed") }
+  }
 
-  const answers = collectAnswerStrings(output)
+  const answers = collectAnswerStrings(output, pending.question)
     .map((answer) => answer.trim())
     .filter(Boolean)
   if (answers.length === 0) return { kind: "stop", reason: "no answer" }
@@ -429,6 +512,14 @@ function classify(
 export function consumeAccountFailoverAnswer(
   sessionKey: string,
   prompt: Array<{ role: string; content?: unknown }>,
+  /**
+   * The form this model would offer now, for an answer whose form was asked
+   * by an earlier opencode process. The pending entry lives in memory, so a
+   * restart between the form and the answer lost it and the pick was replayed
+   * to Claude as stray text (measured 2026-09-23). Only the newest message is
+   * read with it, so an old answer further up the history never fires again.
+   */
+  fallback?: { sourceAccount: string; candidates: readonly string[] },
 ): AccountFailoverAnswer | null {
   for (let i = prompt.length - 1; i >= 0; i--) {
     const msg = prompt[i]
@@ -444,6 +535,25 @@ export function consumeAccountFailoverAnswer(
 
       pendingQuestions.delete(key)
       return classify(pending, part)
+    }
+  }
+
+  const last = prompt[prompt.length - 1]
+  if (fallback && fallback.candidates.length > 0 && Array.isArray(last?.content)) {
+    const orphan = (last.content as any[]).find(
+      (part) =>
+        part?.type === "tool-result" &&
+        typeof part.toolCallId === "string" &&
+        part.toolCallId.startsWith(ACCOUNT_FAILOVER_TOOL_CALL_PREFIX),
+    )
+    if (orphan) {
+      return classify(
+        {
+          sourceAccount: normalizeAccountName(fallback.sourceAccount || DEFAULT_ACCOUNT),
+          candidates: fallback.candidates.map((c) => normalizeAccountName(c)),
+        },
+        orphan,
+      )
     }
   }
   return null

@@ -1,11 +1,13 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import {
+  ACCOUNT_BLOCK_MARKER,
   FAILOVER_MARKER,
   stripAccountFailoverParts,
 } from "./account-failover.js"
 import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
 import {
   COMPACT_BOUNDARY_MARKER,
+  CONVERSATION_RESET_MARKER,
   RATE_LIMIT_MARKER,
   RESULT_ERROR_MARKER,
   STREAM_TIMEOUT_MARKER,
@@ -31,11 +33,13 @@ const PLUGIN_NOTE_MARKERS = [
   ...LEGACY_INLINE_ASIDE_MARKERS,
   TURN_STATS_MARKER,
   COMPACT_BOUNDARY_MARKER,
+  CONVERSATION_RESET_MARKER,
   RATE_LIMIT_MARKER,
   RESULT_ERROR_MARKER,
   DOCTOR_MARKER,
   STREAM_TIMEOUT_MARKER,
   FAILOVER_MARKER,
+  ACCOUNT_BLOCK_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {
@@ -473,6 +477,13 @@ export function getClaudeUserMessage(
   const compactionMode = opts.compactionMode === true
   const cliToolCallIds = opts.cliToolCallIds
   const content: any[] = []
+
+  // The account-failover form is the plugin's own dialog: Claude never issued
+  // that call and never saw its answer. The transcript rebuilds stripped it
+  // already; the current message did not, so on the turn after a form the
+  // answer reached Claude as a stray `<opencode_tool_result>` ("The user
+  // dismissed this question"), measured 2026-09-23.
+  prompt = stripAccountFailoverParts(prompt)
 
   // Done once here, at the top, so every path below (the current message,
   // the fresh-session rebuild and the /compact transcript) sees the cleaned

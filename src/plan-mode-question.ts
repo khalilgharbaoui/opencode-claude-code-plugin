@@ -7,10 +7,11 @@ const REJECTED_EXIT_PLAN_MODE_PREFIX =
   "The user doesn't want to proceed with this tool use. The tool use was rejected. To tell you how to proceed, the user said:"
 
 const PLAN_MODE_APPROVAL_QUESTION = "Do you want to proceed with this plan?"
-const OPENCODE_QUESTION_RESULT_PREFIX =
-  `User has answered your questions: "${PLAN_MODE_APPROVAL_QUESTION}"="`
+const OPENCODE_QUESTION_RESULT_PREFIX = "User has answered your questions: "
 const OPENCODE_QUESTION_RESULT_SUFFIX =
-  `". You can now continue with the user's answers in mind.`
+  ". You can now continue with the user's answers in mind."
+/** What opencode writes for a question the operator left blank. */
+const OPENCODE_UNANSWERED = "Unanswered"
 
 const KEY_SEPARATOR = "\u0000"
 
@@ -181,30 +182,58 @@ export function unwrapToolOutput(part: any): unknown {
   }
 }
 
-function unwrapOpencodeQuestionResult(value: string): string {
+/**
+ * opencode's `question` tool does not return the answers, it returns one
+ * sentence: `User has answered your questions: "<question>"="<answer>". You
+ * can now continue with the user's answers in mind.` (read out of the 1.18.32
+ * binary; several answers to one question are joined with ", ", and a blank
+ * one is written as `Unanswered`). The question is ours, so it is matched
+ * whole: the account-failover question carries quotes of its own, and a split
+ * on quotes cuts the answer in the wrong place. This used to recognise the
+ * plan-approval question only, so every failover pick arrived as the whole
+ * sentence and was refused as unrecognised. Without a known question, the last
+ * `"="` is the split, which is right for any single-question form.
+ */
+function unwrapOpencodeQuestionResult(value: string, question?: string): string {
   if (
-    value.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) &&
-    value.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
+    !value.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
+    !value.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
   ) {
-    return value.slice(
-      OPENCODE_QUESTION_RESULT_PREFIX.length,
-      -OPENCODE_QUESTION_RESULT_SUFFIX.length,
-    )
+    return value
   }
-  return value
+  const body = value.slice(
+    OPENCODE_QUESTION_RESULT_PREFIX.length,
+    value.length - OPENCODE_QUESTION_RESULT_SUFFIX.length,
+  )
+  if (!body.startsWith('"') || !body.endsWith('"')) return value
+
+  let answer: string | undefined
+  const head = question === undefined ? undefined : `"${question}"="`
+  if (head && body.startsWith(head) && body.length > head.length) {
+    answer = body.slice(head.length, -1)
+  } else {
+    const split = body.lastIndexOf('"="')
+    if (split > 0) answer = body.slice(split + 3, -1)
+  }
+  if (answer === undefined) return value
+  return answer === OPENCODE_UNANSWERED ? "" : answer
 }
 
-/** Flatten an unwrapped `question` result into the answer strings it holds. */
-export function collectAnswerStrings(value: unknown): string[] {
-  if (typeof value === "string") return [unwrapOpencodeQuestionResult(value)]
-  if (Array.isArray(value)) return value.flatMap(collectAnswerStrings)
+/**
+ * Flatten an unwrapped `question` result into the answer strings it holds.
+ * `question` is the text the form asked, when the caller knows it; see
+ * `unwrapOpencodeQuestionResult` for why it matters.
+ */
+export function collectAnswerStrings(value: unknown, question?: string): string[] {
+  if (typeof value === "string") return [unwrapOpencodeQuestionResult(value, question)]
+  if (Array.isArray(value)) return value.flatMap((item) => collectAnswerStrings(item, question))
   if (!value || typeof value !== "object") return []
 
   const obj = value as Record<string, unknown>
   if (obj.denied === true) return [String(obj.reason ?? "question rejected")]
 
   for (const key of ["answers", "answer", "selected", "selection", "value"]) {
-    if (key in obj) return collectAnswerStrings(obj[key])
+    if (key in obj) return collectAnswerStrings(obj[key], question)
   }
 
   return []
@@ -212,7 +241,7 @@ export function collectAnswerStrings(value: unknown): string[] {
 
 function classifyQuestionResult(part: any): { approved: boolean; feedback: string } {
   const output = unwrapToolOutput(part)
-  const answers = collectAnswerStrings(output)
+  const answers = collectAnswerStrings(output, PLAN_MODE_APPROVAL_QUESTION)
     .map((answer) => answer.trim())
     .filter(Boolean)
 

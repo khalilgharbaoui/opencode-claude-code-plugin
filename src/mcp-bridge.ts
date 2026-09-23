@@ -469,27 +469,24 @@ export function bridgeOpencodeMcp(
 }
 
 /**
- * Merge opencode's MCP config layers (global → `OPENCODE_CONFIG` → project
- * walk-up → `.opencode/` siblings), apply the opencode runtime-status
- * overlay, and hash the result. Split out of `bridgeOpencodeMcp` so
- * read-only callers (startup diagnostics) can inspect what would be bridged
- * without translating servers or writing a scratch config file.
+ * Every opencode config layer that lives on disk, lowest precedence first:
+ * global → `OPENCODE_CONFIG` → project walk-up → `.opencode/` siblings. The
+ * order is the whole contract, so the MCP bridge and anything else reading
+ * opencode's config (the V2 entrypoint's `accounts` lookup) share it rather
+ * than each walking the layers themselves.
  */
-export function mergeOpencodeMcp(
-  cwd: string,
-  runtimeStatus?: RuntimeMcpStatus,
-): MergedMcp {
+export function opencodeConfigLayers(cwd: string): Record<string, unknown>[] {
   const worktree = detectWorktree(cwd)
+  const layers: Record<string, unknown>[] = []
 
   // Layer 1: global merged
-  let merged: Record<string, OpencodeServer> = {}
-  merged = mergeMcp(merged, extractMcpBlock(loadGlobalConfig()))
+  layers.push(loadGlobalConfig())
 
   // Layer 2: OPENCODE_CONFIG (single file, applied before project walk-up)
   const explicitConfig = process.env.OPENCODE_CONFIG
   if (explicitConfig && fileExists(explicitConfig)) {
     const parsed = readAndParse(explicitConfig)
-    if (parsed) merged = mergeMcp(merged, extractMcpBlock(parsed))
+    if (parsed) layers.push(parsed)
   }
 
   // Layer 3: project walk-up — opencode.json[c] in each dir from cwd to
@@ -512,7 +509,7 @@ export function mergeOpencodeMcp(
     }
   }
   for (const dir of projectDirs.slice().reverse()) {
-    merged = mergeMcp(merged, extractMcpBlock(loadProjectFilesInDir(dir)))
+    layers.push(loadProjectFilesInDir(dir))
   }
 
   // Layer 4: `.opencode/` siblings — project walk-up then home-dir then
@@ -521,7 +518,33 @@ export function mergeOpencodeMcp(
   // parent-most `.opencode/` overrides cwd-most. This is upstream's
   // behavior, surprising though it is.
   for (const dir of dotOpencodeDirs(cwd, worktree)) {
-    merged = mergeMcp(merged, extractMcpBlock(loadProjectFilesInDir(dir)))
+    layers.push(loadProjectFilesInDir(dir))
+  }
+
+  return layers
+}
+
+/** The on-disk opencode config, every layer deep-merged in precedence order. */
+export function loadMergedOpencodeConfig(cwd: string): Record<string, unknown> {
+  let merged: Record<string, unknown> = {}
+  for (const layer of opencodeConfigLayers(cwd)) merged = deepMerge(merged, layer)
+  return merged
+}
+
+/**
+ * Merge opencode's MCP config layers (see `opencodeConfigLayers`), apply the
+ * opencode runtime-status overlay, and hash the result. Split out of
+ * `bridgeOpencodeMcp` so read-only callers (startup diagnostics) can inspect
+ * what would be bridged without translating servers or writing a scratch
+ * config file.
+ */
+export function mergeOpencodeMcp(
+  cwd: string,
+  runtimeStatus?: RuntimeMcpStatus,
+): MergedMcp {
+  let merged: Record<string, OpencodeServer> = {}
+  for (const layer of opencodeConfigLayers(cwd)) {
+    merged = mergeMcp(merged, extractMcpBlock(layer))
   }
 
   // Layer 5: opencode runtime overlay. opencode's `/mcps` UI toggle calls

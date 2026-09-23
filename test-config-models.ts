@@ -168,14 +168,48 @@ test("configModelsForProvider registers the fast Opus entries at fast pricing", 
   }
 })
 
+// Opus 5.5 is the first Opus priced below the $5/$25 line: $4/M in, $20/M out,
+// cache reads $0.20/M (0.05x input, not the usual 0.1x) and cache writes $5/M.
+// Its fast mode is exactly double across the board. Both tables are the ones
+// Claude Code 2.1.280 bakes in for the model (`tier_4_20_cache_read_0_20` and
+// the fast-mode `{8, 40, 10, 0.4}` entry), so neither is an inference.
+test("configModelsForProvider registers Opus 5.5 and its fast entry at published pricing", () => {
+  const models = configModelsForProvider({}, "claude-code")
+
+  const opus = models["claude-opus-5-5"] as Record<string, unknown>
+  assert.ok(opus, "claude-opus-5-5 should be present")
+  assert.equal(opus.name, "Claude Opus 5.5 (4×)")
+  assert.equal(opus.family, "opus")
+  assert.equal(opus.release_date, "2026-09-22")
+  assert.equal(opus.reasoning, true)
+  assert.deepEqual(opus.limit, { context: 1_000_000, output: 128_000 })
+  assert.deepEqual(opus.cost, { input: 4, output: 20, cache_read: 0.2, cache_write: 5 })
+  assert.ok("max" in (opus.variants as Record<string, unknown>))
+
+  const fast = models["claude-opus-5-5-fast"] as Record<string, unknown>
+  assert.ok(fast, "claude-opus-5-5-fast should be present")
+  assert.equal(fast.name, "Claude Opus 5.5 Fast (8×)")
+  assert.equal(fast.family, "opus")
+  assert.equal(fast.release_date, "2026-09-22")
+  assert.equal(fast.reasoning, true)
+  assert.deepEqual(fast.limit, { context: 1_000_000, output: 128_000 })
+  assert.deepEqual(fast.cost, { input: 8, output: 40, cache_read: 0.4, cache_write: 10 })
+  assert.ok("max" in (fast.variants as Record<string, unknown>))
+})
+
 test("configModelsForProvider registers fast entries only for fast-capable models", () => {
   const models = configModelsForProvider({}, "claude-code")
   const fastIds = Object.keys(models).filter((id) => id.endsWith("-fast"))
 
   // The CLI gates fast mode on the model name containing `opus-4-8` or
-  // `opus-5`. Anything else would render a 10x price tag on a model that
-  // silently runs at standard speed.
-  assert.deepEqual(fastIds.sort(), ["claude-opus-4-8-fast", "claude-opus-5-fast"])
+  // `opus-5` (which `claude-opus-5-5` satisfies too; 2.1.280's catalog also
+  // lists `fast_mode` for it outright). Anything else would render a fast
+  // price tag on a model that silently runs at standard speed.
+  assert.deepEqual(fastIds.sort(), [
+    "claude-opus-4-8-fast",
+    "claude-opus-5-5-fast",
+    "claude-opus-5-fast",
+  ])
 })
 
 test("fast model ids survive the per-account suffix expansion", () => {
@@ -213,6 +247,7 @@ test("configModelsForProvider reports the published context and output limits", 
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-opus-5",
+    "claude-opus-5-5",
     "claude-fable-5",
     "claude-fable-5-1",
     "claude-mythos-5",

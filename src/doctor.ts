@@ -38,6 +38,9 @@ import {
 
 export const DOCTOR_COMMAND = "claude-code-doctor"
 
+export const DOCTOR_COMMAND_DESCRIPTION =
+  "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls"
+
 /** Leading marker of the report block, so `message-builder` can strip it. */
 export const DOCTOR_MARKER = "▌ **claude-code doctor**"
 

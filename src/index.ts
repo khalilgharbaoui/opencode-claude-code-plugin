@@ -26,9 +26,13 @@ import {
   setDefaultSubagentModel,
 } from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
-import { DOCTOR_COMMAND } from "./doctor.js"
+import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
 import { configureLogger, log } from "./logger.js"
-import { handleBtwCommand, type BtwSdkClient } from "./btw-command.js"
+import {
+  BTW_COMMAND_DESCRIPTION,
+  handleBtwCommand,
+  type BtwSdkClient,
+} from "./btw-command.js"
 import { registerBundledSkillPath } from "./skill-bridge.js"
 import {
   deleteActiveProcessesForSession,
@@ -46,6 +50,8 @@ import {
   pickOpencodeVersion,
   type DiagnosticsProviderEntry,
 } from "./startup-diagnostics.js"
+import { loadMergedOpencodeConfig } from "./mcp-bridge.js"
+import { createV2Setup } from "./v2.js"
 
 export interface ClaudeCodeProvider {
   specificationVersion: "v3"
@@ -92,7 +98,7 @@ export function registerSideQuestionCommand(config: OpenCodeConfig): boolean {
   if (config.command.btw) return false
   config.command.btw = {
     template: "/btw $ARGUMENTS",
-    description: "Ask a side question in the live Claude Code session without changing its context",
+    description: BTW_COMMAND_DESCRIPTION,
   }
   return true
 }
@@ -112,7 +118,7 @@ export function registerDoctorCommand(config: OpenCodeConfig): boolean {
   if (config.command[DOCTOR_COMMAND]) return false
   config.command[DOCTOR_COMMAND] = {
     template: `/${DOCTOR_COMMAND} $ARGUMENTS`,
-    description: "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls",
+    description: DOCTOR_COMMAND_DESCRIPTION,
   }
   return true
 }
@@ -178,6 +184,7 @@ export function createClaudeCode(
     return new ClaudeCodeLanguageModel(modelId, {
       provider: providerName,
       cliPath,
+      hostApi: settings.hostApi,
       cwd: settings.cwd,
       account: settings.account,
       configDir: settings.configDir,
@@ -469,7 +476,7 @@ async function expandAccountProviders(config: {
  * an agent this plugin never heard of is simply absent from the registry,
  * which is what keeps opencode's built-ins out of the override path.
  */
-async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
+export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
   const options = config.provider?.[PROVIDER_ID]?.options
   const configured = options?.defaultSubagentModel
   setDefaultSubagentModel(
@@ -650,9 +657,18 @@ const server: OpenCodePlugin = async (input) => {
   }
 }
 
+// One package, both opencode majors: 1.x calls `server()`, 2.x calls
+// `setup(ctx)`. This is the documented dual shape from opencode's V1 migration
+// guide, and V1 has accepted an object entrypoint since 1.18.29. See V2.md.
 export default {
   id: "@khalilgharbaoui/opencode-claude-code-plugin",
   server,
+  setup: createV2Setup({
+    createProvider: createClaudeCode,
+    defaultProxyTools: DEFAULT_PROXY_TOOL_NAMES,
+    loadConfig: loadMergedOpencodeConfig,
+    buildAgentRegistry: (config) => buildAgentRegistry(config as OpenCodeConfig),
+  }),
 }
 
 // ---------------------------------------------------------------------------

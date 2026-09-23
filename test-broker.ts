@@ -26,7 +26,14 @@ import {
   type PendingProxyCall,
 } from "./src/proxy-broker.js"
 import { configureLogger, _resetLoggerForTests } from "./src/logger.js"
-import { PROXY_NO_DEADLINE_MS, type ProxyToolCall, type ProxyToolResult } from "./src/proxy-mcp.js"
+import {
+  _setProxyDeadlineRecheckMs,
+  armProxyDeadline,
+  PROXY_NO_DEADLINE_MS,
+  setProxyDeadlineGuard,
+  type ProxyToolCall,
+  type ProxyToolResult,
+} from "./src/proxy-mcp.js"
 
 type CallHandle = {
   id: string
@@ -501,4 +508,96 @@ test("a call with no deadline gets the heartbeat, never this notice", async () =
 test("the shipped notice point is 60 percent, with a one minute floor", () => {
   assert.equal(PROXY_DEADLINE_WARNING_FRACTION, 0.6)
   assert.equal(PROXY_DEADLINE_WARNING_MIN_MS, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// Deadline guard: a call opencode is still serving outlives its deadline
+// ---------------------------------------------------------------------------
+
+test("a deadline defers to the guard while opencode is still serving the call", async () => {
+  const sk = `sk-guard-${Date.now()}`
+  let serving = true
+  let asked = 0
+  setProxyDeadlineGuard(async () => {
+    asked++
+    return serving
+  })
+  _setProxyDeadlineRecheckMs(30)
+  try {
+    const a = makeCall("bash")
+    queuePendingProxyCall(sk, a.call, { bash: 40 })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    assert.equal(a.rejected, false, "a permission prompt still open must not end the call")
+    assert.equal(getPendingProxyCalls(sk).length, 1)
+    assert.ok(asked >= 3, `re-asked while it waits (asked ${asked} times)`)
+
+    serving = false
+    await assert.rejects(a.promise, /timed out after 40ms/)
+    assert.equal(getPendingProxyCalls(sk).length, 0)
+  } finally {
+    setProxyDeadlineGuard(null)
+    _setProxyDeadlineRecheckMs(null)
+  }
+})
+
+test("a result arriving while a deadline is extended resolves and stops the rechecks", async () => {
+  const sk = `sk-guard-resolve-${Date.now()}`
+  let asked = 0
+  setProxyDeadlineGuard(async () => {
+    asked++
+    return true
+  })
+  _setProxyDeadlineRecheckMs(20)
+  try {
+    const a = makeCall("bash")
+    queuePendingProxyCall(sk, a.call, { bash: 20 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(resolvePendingProxyCallById(a.id, { content: [{ type: "text", text: "ok" }] } as any), true)
+    await a.promise
+    const after = asked
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(asked, after, "no recheck runs for a call that is gone")
+  } finally {
+    setProxyDeadlineGuard(null)
+    _setProxyDeadlineRecheckMs(null)
+  }
+})
+
+test("a guard that throws ends the call at its deadline, as with no guard", async () => {
+  const sk = `sk-guard-throws-${Date.now()}`
+  setProxyDeadlineGuard(async () => {
+    throw new Error("status route down")
+  })
+  try {
+    const a = makeCall("bash")
+    queuePendingProxyCall(sk, a.call, { bash: 30 })
+    await assert.rejects(a.promise, /timed out after 30ms/)
+  } finally {
+    setProxyDeadlineGuard(null)
+  }
+})
+
+test("a cancelled deadline never asks and never expires", async () => {
+  let asked = 0
+  let expired = false
+  setProxyDeadlineGuard(async () => {
+    asked++
+    return false
+  })
+  try {
+    const deadline = armProxyDeadline({
+      callId: "c-cancel",
+      toolName: "bash",
+      deadlineMs: 20,
+      onExpire: () => {
+        expired = true
+      },
+    })
+    deadline.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    assert.equal(asked, 0)
+    assert.equal(expired, false)
+  } finally {
+    setProxyDeadlineGuard(null)
+  }
 })

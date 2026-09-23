@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events"
 import {
+  armProxyDeadline,
   buildProxyTimeoutError,
   PROXY_NO_DEADLINE_MS,
   resolveProxyCallTimeoutMs,
   type ProxyCallChannel,
+  type ProxyDeadline,
   type ProxyToolCall,
   type ProxyToolResult,
 } from "./proxy-mcp.js"
@@ -33,7 +35,7 @@ type InternalPending = PendingProxyCall & {
   /** `PROXY_NO_DEADLINE_MS` (0) when the call has no deadline. */
   deadlineMs: number
   /** Absent when the call has no deadline. */
-  timer: ReturnType<typeof setTimeout> | null
+  timer: ProxyDeadline | null
   /** Stall heartbeat; only armed for calls that have no deadline. */
   stallTimer: ReturnType<typeof setInterval> | null
   /** One-shot "this is going to run out" notice; deadline-bearing calls only. */
@@ -78,7 +80,7 @@ export const PROXY_DEADLINE_WARNING_MIN_MS = 60_000
 
 /** Every timer a pending call can hold. Each removal site must use this. */
 function clearPendingTimers(pending: InternalPending): void {
-  if (pending.timer) clearTimeout(pending.timer)
+  pending.timer?.cancel()
   if (pending.stallTimer) clearInterval(pending.stallTimer)
   if (pending.deadlineWarnTimer) clearTimeout(pending.deadlineWarnTimer)
 }
@@ -163,25 +165,31 @@ export function queuePendingProxyCall(
   // Same rule as the proxy-mcp handler: a call with no deadline gets no timer
   // (a zero-delay timer would fire on the next tick). It stays pending until
   // a result, an abort, the next turn's orphan sweep, or its process going.
+  // A permission prompt still open in opencode extends the deadline instead of
+  // ending the call (`ProxyDeadlineGuard` in proxy-mcp.ts): the time an
+  // operator spends answering it is not the tool being slow.
   const timer =
     deadlineMs > PROXY_NO_DEADLINE_MS
-      ? setTimeout(() => {
-          const current = pendingByCallId.get(call.id)
-          if (!current) return
-          pendingByCallId.delete(call.id)
-          indexRemove(current.sessionKey, call.id)
-          clearPendingTimers(current)
-          current.reject(buildProxyTimeoutError(call.toolName, deadlineMs))
-          // v0.4.13: demoted from warn to notice. AFK-permission-pending
-          // sessions can stack many of these; demoting keeps the UI quiet on
-          // return while preserving the audit trail in plugin.log.
-          log.notice("timed out pending proxy call", {
-            sessionKey: current.sessionKey,
-            toolCallId: call.id,
-            toolName: call.toolName,
-            deadlineMs,
-          })
-        }, deadlineMs)
+      ? armProxyDeadline({
+          callId: call.id,
+          toolName: call.toolName,
+          deadlineMs,
+          logExtension: true,
+          onExpire: () => {
+            const current = pendingByCallId.get(call.id)
+            if (!current) return
+            pendingByCallId.delete(call.id)
+            indexRemove(current.sessionKey, call.id)
+            clearPendingTimers(current)
+            current.reject(buildProxyTimeoutError(call.toolName, deadlineMs))
+            log.notice("timed out pending proxy call", {
+              sessionKey: current.sessionKey,
+              toolCallId: call.id,
+              toolName: call.toolName,
+              deadlineMs,
+            })
+          },
+        })
       : null
 
   // A call with no deadline has nothing that will ever report it, so it gets
@@ -226,7 +234,7 @@ export function queuePendingProxyCall(
             remainingMs: Math.max(0, deadlineMs - waitedMs),
             emitted: current.emitted === true,
             channelClosed: current.channel?.closed === true,
-            note: "it will be rejected when the deadline passes; raise this tool's proxyToolTimeoutMs if the work is legitimately this long",
+            note: "it will be rejected when the deadline passes unless opencode is still serving it (a permission prompt is waiting); raise this tool's proxyToolTimeoutMs if the work is legitimately this long",
           })
         }, warnAtMs)
       : null
@@ -268,6 +276,11 @@ export function isPendingProxyCallChannelClosed(
   call: PendingProxyCall,
 ): boolean {
   return call.channel?.closed === true
+}
+
+/** One pending call by id, for the deadline guard, which knows only the id. */
+export function findPendingProxyCall(toolCallId: string): PendingProxyCall | undefined {
+  return pendingByCallId.get(toolCallId)
 }
 
 export function getPendingProxyCalls(sessionKey: string): PendingProxyCall[] {

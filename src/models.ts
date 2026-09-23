@@ -31,8 +31,8 @@ function defineModel(opts: {
   releaseDate: string
   // List-price multiplier relative to Haiku (the cheapest model). Derived
   // exactly from published per-token pricing: input AND output ratios both come
-  // out to haiku 1, sonnet 3, opus 5, fable/mythos 10. Rendered as an
-  // `(N×)` suffix so it surfaces in opencode's model picker, which has no
+  // out to haiku 1, sonnet 3, opus 5 (opus 5.5: 4), fable/mythos 10. Rendered
+  // as an `(N×)` suffix so it surfaces in opencode's model picker, which has no
   // dedicated multiplier field.
   // Display-only: model resolution keys off `id`.
   multiplier: number
@@ -95,6 +95,16 @@ const fable51Cost = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 }
 // `fableCost` so a future divergence in either tier stays a one-line change.
 // Verified against Claude Code 2.1.245, 2026-08-30.
 const opusFastCost = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
+// Opus 5.5 is the first Opus priced below the $5/$25 line: $4/M in, $20/M
+// out. Cache writes keep the 1.25x input ratio ($5/M) but cache reads are
+// $0.20/M, 0.05x input rather than the usual 0.1x, so this cannot be derived
+// from `opusCost` by scaling. Fast mode is exactly double across the board
+// ($8/M in, $40/M out, cache read 0.4, cache write 10). Both tables are the
+// ones Claude Code bakes in for the model (`tier_4_20_cache_read_0_20` and
+// its dedicated fast-mode entry), matching the 2026-09-22 announcement.
+// Verified against Claude Code 2.1.280, 2026-09-22.
+const opus55Cost = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }
+const opus55FastCost = { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 }
 
 /**
  * Convert an OpenCodeModel to the flat config schema that OpenCode's
@@ -232,10 +242,12 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   // `--settings {"fastMode":true}` on the spawn. Retired `-fast` model strings
   // (`claude-opus-4-6-fast`) are a different thing and are not registered here.
   //
-  // Only Opus 4.8 and Opus 5 qualify: the CLI gates fast mode on the resolved
-  // model name containing `opus-4-8` or `opus-5`, so registering a fast entry
-  // for any other model would produce a picker option that silently runs at
-  // standard speed while displaying the 10x price.
+  // Only Opus 4.8, Opus 5 and Opus 5.5 qualify: the CLI gates fast mode on
+  // the resolved model name containing `opus-4-8` or `opus-5` (which
+  // `claude-opus-5-5` satisfies too, and 2.1.280's model catalog lists
+  // `fast_mode` for it outright), so registering a fast entry for any other
+  // model would produce a picker option that silently runs at standard speed
+  // while displaying the fast price.
   "claude-opus-4-8-fast": defineModel({
     id: "claude-opus-4-8-fast",
     name: "Claude Opus 4.8 Fast",
@@ -268,6 +280,33 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     cost: opusFastCost,
     multiplier: 10,
     releaseDate: "2026-07-24",
+  }),
+  // Opus 5.5 needs Claude Code 2.1.280+: the API rejects it from an older CLI
+  // with a 400 naming that floor, which the plugin surfaces as a turn error.
+  // Thinking cannot be switched off for it (the CLI's catalog marks it
+  // `rejects_disabled_thinking`); the plugin never asks for that, so nothing
+  // here has to special-case it.
+  "claude-opus-5-5": defineModel({
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    family: "opus",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: opus55Cost,
+    multiplier: 4,
+    releaseDate: "2026-09-22",
+  }),
+  "claude-opus-5-5-fast": defineModel({
+    id: "claude-opus-5-5-fast",
+    name: "Claude Opus 5.5 Fast",
+    family: "opus",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: opus55FastCost,
+    multiplier: 8,
+    releaseDate: "2026-09-22",
   }),
   "claude-fable-5": defineModel({
     id: "claude-fable-5",

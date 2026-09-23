@@ -116,6 +116,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `logging` | object | see below | File and TUI logging policy. |
 | `name` | string | unset | Low-level `createClaudeCode()` provider identity fallback after `providerID`, not the opencode display-name setting. Display name lives at `provider.<id>.name`; account expansion supplies its own label. Leave this option unset. |
 | `providerID` | string | derived | Config hook writes the actual provider id (`claude-code` or `claude-code-work`). Do not override manually. |
+| `hostApi` | `"v1"` \| `"v2"` | derived | Which opencode major created the model, which decides the tool names its stream uses (`bash` on 1.x, `shell` on 2.x). Set only by the opencode 2 entrypoint. Do not set it: forcing `"v2"` under opencode 1.x makes every proxied tool call fail as an unavailable tool. |
 | `account` | string | unset/derived | Account expansion supplies this to generate its runtime wrapper. Prefer `accounts` over hand-wiring it. |
 | `configDir` | string | unset/derived | Generated account directory, also used for interactive env/transcript lookup. Not a standalone headless auth switch: headless account selection comes from the wrapper's env. Do not hand-wire it. |
 
@@ -177,6 +178,19 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 
 Everything else is optional. Models appear in the picker without extra config.
 
+### opencode 2
+
+Same package, same config. 2.x's native key is `plugins` (plural), but it still reads 1.x's `plugin` key, so an existing install needs no edit:
+
+```json
+{ "plugins": ["@khalilgharbaoui/opencode-claude-code-plugin"] }
+```
+
+- Check the major first with `opencode --version`. `plugin` works on both majors (measured: 2.0.11 loaded a plugin listed under `plugin`); `plugins` is read by 2.x only.
+- `provider.claude-code.options` still works on 2.x; `provider.claude-code.settings` is the native spelling and wins where both are set. `accounts` may also sit in the plugin entry's own `options`.
+- A local checkout is loaded by pointing `plugins` at its **`dist`** directory, never the repository root.
+- Known 2.x differences: `/btw` is answered after the running turn rather than inside it, and there is no todo panel (2.x has no `todowrite` tool). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
+
 ### Two accounts
 
 ```json
@@ -219,8 +233,16 @@ Tell the user what a pick actually does before recommending one:
 - `stop`, dismissing the form, or answering with anything that is not one of the offered
   accounts ends the turn exactly as the rate-limit error does today. The limit is
   unchanged either way; failover moves the work, it does not create usage.
-- Only a rejected `rate_limit_event` or one of the two known account-limit error texts
-  opens the form. A generic 4xx, a timeout or a bad flag never does.
+- Only a rejected `rate_limit_event`, one of the two known account-limit error texts, or
+  an account-level failure the CLI reports on its own error reply opens the form. The
+  account-level kinds are `authentication_failed`, `oauth_org_not_allowed`,
+  `account_on_hold`, `verification_required` and `billing_error`. A generic 4xx, a
+  timeout or a bad flag never does.
+- An expired login also writes a `▌ **claude account:**` note naming the account and the
+  command to fix it: `claude auth login` for the default account, or
+  `CLAUDE_CONFIG_DIR=<that account's config dir> claude auth login` for a named one. When
+  a user reports "Failed to authenticate: OAuth session expired", that command is the
+  fix; a switch made from that form lasts until opencode restarts.
 - Not available on the interactive transport or on compaction turns.
 
 `{ "accountFailover": "off" }` keeps the plain rate-limit error.
@@ -330,8 +352,9 @@ Names below become `mcp__opencode_proxy__<name>`; input config is case-insensiti
 A proxied call is held open until an event ends it, and the plugin listens to the
 `claude` process, the stream and the control protocol for those events rather than
 inferring failure from elapsed time: opencode's result resolves the call; an abort
-interrupts the CLI and rejects the turn's pending calls, even when it lands while
-opencode is running the tool; the next user message rejects what the previous turn left pending
+interrupts the CLI and rejects the turn's pending calls, unless opencode still reports
+the session busy (opencode 1.18 aborts the signal of every tool step while it runs the
+tool, so busy means the call is being served, not refused); the next user message rejects what the previous turn left pending
 and tells the CLI; the process exiting, the chat being deleted, or opencode exiting
 rejects the rest. That is why `task` and `task_batch` carry no default deadline and a
 subagent runs to completion. Three timers remain and are distinct from that: the
@@ -339,7 +362,11 @@ optional per-tool deadlines above (a backstop the user chooses), the start and
 inactivity watchdogs (for a process that is alive but silent, which emits nothing to
 listen to; a CLI parked in a proxied call is exempt), and the connection keepalives
 (SSE comments or JSON whitespace every 15 s, so the CLI's HTTP client does not give up
-on a long call; they never extend a deadline). Do not present a raised deadline as the
+on a long call; they never extend a deadline). A deadline that passes while opencode
+still reports the session busy (a permission prompt the user has not answered, or the
+tool still running) does not end the call: it logs `proxy call past its deadline, but
+opencode is still serving it; waiting` at WARN once and is rechecked every minute. So an
+unanswered permission prompt is not a reason to raise `proxyToolTimeoutMs`. Do not present a raised deadline as the
 fix for a long subagent; the default already waits for it. A deadline-free call is not
 silent while it waits: it logs `proxy call still waiting, no deadline` at WARN after
 five minutes and every five minutes after, with tool, call id and elapsed time. That
@@ -437,12 +464,14 @@ No manual skill copy/update is needed. Do not publish or release as part of conf
 Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 `claude-sonnet-5`, `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-7`,
 `claude-opus-4-8`, `claude-opus-4-8-fast`, `claude-opus-5`, `claude-opus-5-fast`,
-`claude-fable-5`, `claude-fable-5-1`, `claude-mythos-5`, `claude-mythos-5-1`.
+`claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`, `claude-fable-5-1`,
+`claude-mythos-5`, `claude-mythos-5-1`.
 
 ### Variants and costs
 
 - Display names end in a `(N×)` list-price multiplier relative to Haiku: 1× haiku,
-  3× sonnet, 5× opus, 10× fable, mythos and fast-mode opus. It is display only.
+  3× sonnet, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5, 10× fable, mythos
+  and fast-mode opus 5 / 4.8. It is display only.
 - Every model except Haiku has reasoning variants `low`, `medium`, `high`, `xhigh`,
   `max`, picked in opencode's model selector. A variant becomes
   `CLAUDE_CODE_EFFORT_LEVEL` on the spawned CLI unless an agent effort wins. For direct
@@ -491,7 +520,9 @@ Useful log lines to search for (redact payloads): `spawning new claude process`,
 `evicting idle claude process`, `fast mode` warnings.
 
 Version requirements: Claude Code CLI 2.1.142+ recommended (thinking summaries),
-2.1.220+ for fast mode, 2.1.258+ for `/btw`. Check with `claude --version`.
+2.1.220+ for fast mode, 2.1.258+ for `/btw`, 2.1.280+ for `claude-opus-5-5` (the
+API rejects it from an older CLI with a 400 naming that floor). Check with
+`claude --version`.
 
 Only if a proxy security check is specifically requested: identify the exact local
 proxy port first, not every opencode listener. An unauthenticated `initialize` with
@@ -552,6 +583,7 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | A turn ended with no answer and nothing said why | The CLI's `result` carried a failure subtype, or a rate limit was rejected | Both are now written into the transcript as `▌` lines; read the subtype or the limit reason there |
 | A CLI tool row looks successful but its output is an error | Plugin older than this release forwarded `is_error` results as successes | Upgrade; failed CLI tools now render as failed |
 | Claude "forgot" the earlier part of a long conversation | Claude Code compacted its own context | Look for the `▌ **context compacted:**` note in the transcript |
+| Claude forgot the whole conversation at once | Claude Code cleared it (`/clear` sent as a message, or a plan-mode exit that clears context) | Look for the `▌ **claude code reset:**` note. The plugin does not replay history there on purpose; a new opencode session gets a clean slate |
 | Wanting the per-turn cost in the chat | Not shown by default | Set `turnStats: true` and restart opencode |
 | Turn ends with an error naming an exit code or signal and a stderr tail | The `claude` child died mid-turn without emitting its terminal `result` | Read the quoted stderr; that is the CLI's own reason. Older builds reported this as a normal stop, so a truncated answer looked finished |
 | An answer is cut off with no error, in a window with many open chats | Plugin older than this fix: LRU eviction could kill a process mid-turn | Upgrade. Eviction now takes the oldest idle process and skips the round when all 8 are busy; the 30-minute idle timer spares a busy worker too |

@@ -248,6 +248,105 @@ export function resolveProxyClientCeilingMs(
 }
 
 /**
+ * Asked when a call's deadline passes. `true` means opencode is still serving
+ * the call, so it keeps waiting and is asked about again later.
+ *
+ * The deadline counted time the operator spent on opencode's permission
+ * prompt, and that is where nearly every deadline went: measured 2026-09-23,
+ * three proxied `bash` calls sat on an `external_directory` prompt for 24, 34
+ * and 10.5 minutes (opencode's own part timings) and each was rejected at 10.
+ * Claude then moved on to a new call, and the approval, once given, arrived as
+ * a late result that the next turn's orphan sweep read as a new message: the
+ * new call was cancelled and Claude was told the user had refused it. opencode
+ * reports the session `busy` for as long as a prompt is open (measured on
+ * 1.18.32), which is the signal the language model's guard reads.
+ *
+ * Registered by the language model; with no guard every deadline is final, as
+ * it always was, so a bare proxy server and the offline tests are unchanged.
+ */
+export type ProxyDeadlineGuard = (call: { callId: string; toolName: string }) => Promise<boolean>
+
+let proxyDeadlineGuard: ProxyDeadlineGuard | null = null
+
+export function setProxyDeadlineGuard(guard: ProxyDeadlineGuard | null): void {
+  proxyDeadlineGuard = guard
+}
+
+/** How often a call kept past its deadline is looked at again. */
+export const PROXY_DEADLINE_RECHECK_MS = 60_000
+
+let deadlineRecheckMs = PROXY_DEADLINE_RECHECK_MS
+
+/** Test seam: `null` restores the default. */
+export function _setProxyDeadlineRecheckMs(ms: number | null): void {
+  deadlineRecheckMs = ms ?? PROXY_DEADLINE_RECHECK_MS
+}
+
+export interface ProxyDeadline {
+  cancel(): void
+}
+
+/**
+ * One call's deadline, shared by the HTTP handler and the broker so the two
+ * layers make the same decision. `onExpire` runs only once the guard says
+ * opencode is no longer serving the call (or there is no guard). A guard that
+ * throws counts as "not serving", so a failed lookup can only end a call the
+ * way it always ended, never hold one open.
+ */
+export function armProxyDeadline(opts: {
+  callId: string
+  toolName: string
+  deadlineMs: number
+  onExpire: () => void
+  /** Only one layer logs the extension, so a call does not report twice. */
+  logExtension?: boolean
+  /** Test seam. */
+  recheckMs?: number
+}): ProxyDeadline {
+  let cancelled = false
+  let extended = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const check = async (): Promise<void> => {
+    timer = null
+    if (cancelled) return
+    let keep = false
+    const guard = proxyDeadlineGuard
+    if (guard) {
+      try {
+        keep = await guard({ callId: opts.callId, toolName: opts.toolName })
+      } catch {
+        keep = false
+      }
+    }
+    if (cancelled) return
+    if (keep) {
+      if (!extended && opts.logExtension) {
+        log.warn("proxy call past its deadline, but opencode is still serving it; waiting", {
+          callId: opts.callId,
+          toolName: opts.toolName,
+          deadlineMs: opts.deadlineMs,
+          note: "usually a permission prompt in opencode; the call ends when it is answered, you abort, or the claude process goes",
+        })
+      }
+      extended = true
+      timer = setTimeout(() => void check(), opts.recheckMs ?? deadlineRecheckMs)
+      return
+    }
+    opts.onExpire()
+  }
+
+  timer = setTimeout(() => void check(), opts.deadlineMs)
+  return {
+    cancel() {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      timer = null
+    },
+  }
+}
+
+/**
  * Build the timeout error surfaced to Claude. Keeps the substrings
  * `"timed out after"` and `"waiting for opencode to resolve"` that the
  * proxy-mcp catch block classifies as expected cleanup (notice, not warn).
@@ -1044,7 +1143,7 @@ export async function createProxyMcpServer(
           })
         })
 
-        let timer: ReturnType<typeof setTimeout> | null = null
+        let timer: ProxyDeadline | null = null
         const result = await new Promise<ProxyToolResult>(
           (resolve, reject) => {
             const entry: ProxyToolCall = {
@@ -1065,25 +1164,28 @@ export async function createProxyMcpServer(
             // reject the call on the next tick. The broker applies the same
             // rule to the same resolved value, so the two layers agree.
             if (deadlineMs > PROXY_NO_DEADLINE_MS) {
-              timer = setTimeout(() => {
-                if (!pending.has(callId)) return
-                pending.delete(callId)
-                // v0.4.13: demoted from warn to notice. Timeouts are usually
-                // permission-pending while the user is AFK — surfacing each as
-                // a yellow UI bubble produces a wall of noise on return. The
-                // file log still captures the event for diagnostics.
-                log.notice("proxy-mcp tool call timed out", {
-                  callId,
-                  toolName,
-                  deadlineMs,
-                })
-                reject(buildProxyTimeoutError(toolName, deadlineMs))
-              }, deadlineMs)
+              // A permission prompt still open in opencode extends it; see
+              // `ProxyDeadlineGuard`. The broker logs that, not this layer.
+              timer = armProxyDeadline({
+                callId,
+                toolName,
+                deadlineMs,
+                onExpire: () => {
+                  if (!pending.has(callId)) return
+                  pending.delete(callId)
+                  log.notice("proxy-mcp tool call timed out", {
+                    callId,
+                    toolName,
+                    deadlineMs,
+                  })
+                  reject(buildProxyTimeoutError(toolName, deadlineMs))
+                },
+              })
             }
             calls.emit("call", entry)
           },
         ).finally(() => {
-          if (timer) clearTimeout(timer)
+          timer?.cancel()
           pending.delete(callId)
         })
 

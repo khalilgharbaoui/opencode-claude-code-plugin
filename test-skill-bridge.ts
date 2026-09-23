@@ -11,6 +11,7 @@ import {
   declaredSkillName,
   discoverBundledSkills,
   discoverNativeClaudeSkills,
+  readBundledSkillInfos,
   discoverOpencodeSkills,
   dropNativelyLoadedSkills,
   registerBundledSkillPath,
@@ -715,4 +716,16 @@ test("buildCliArgs omits --plugin-dir when there is nothing to bridge", () => {
     })
     assert.ok(!args.includes("--plugin-dir"))
   }
+})
+
+test("the bundled skill reads as opencode 2's Skill.Info, body without frontmatter", () => {
+  const [skill, ...rest] = readBundledSkillInfos()
+  assert.equal(rest.length, 0)
+  assert.equal(skill.id, "claude-code-plugin")
+  assert.equal(skill.name, "claude-code-plugin")
+  assert.match(skill.description ?? "", /opencode-claude-code-plugin/)
+  assert.ok(skill.path.endsWith(path.join("claude-code-plugin", "SKILL.md")))
+  assert.ok(skill.content.length > 1000, "the body must be the whole reference")
+  assert.equal(skill.content.startsWith("---"), false, "the frontmatter is not part of the content")
+  assert.doesNotMatch(skill.content.slice(0, 200), /^description:/m)
 })

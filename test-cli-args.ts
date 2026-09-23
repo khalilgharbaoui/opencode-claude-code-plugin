@@ -235,6 +235,10 @@ test("parseModelId strips the fast marker and keeps the account suffix", () => {
     model: "claude-opus-4-8",
     fast: true,
   })
+  assert.deepEqual(parseModelId("claude-opus-5-5-fast"), {
+    model: "claude-opus-5-5",
+    fast: true,
+  })
   assert.deepEqual(parseModelId("claude-opus-5-fast@work"), {
     model: "claude-opus-5@work",
     fast: true,
@@ -244,6 +248,10 @@ test("parseModelId strips the fast marker and keeps the account suffix", () => {
 test("parseModelId leaves standard model ids untouched", () => {
   assert.deepEqual(parseModelId("claude-opus-5"), {
     model: "claude-opus-5",
+    fast: false,
+  })
+  assert.deepEqual(parseModelId("claude-opus-5-5"), {
+    model: "claude-opus-5-5",
     fast: false,
   })
   assert.deepEqual(parseModelId("claude-opus-5@work"), {

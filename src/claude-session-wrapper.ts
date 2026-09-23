@@ -12,7 +12,7 @@ export interface InteractiveSpawnOptions {
   /** Claude config root used for JSONL transcripts. */
   configDir?: string
   model?: string
-  /** Request Claude Code's fast mode (Opus 4.8 / Opus 5 only). Folded into
+  /** Request Claude Code's fast mode (Opus 4.8 / 5 / 5.5 only). Folded into
    *  the single `--settings` payload alongside `permissions`. */
   fastMode?: boolean
   /** Bridged Claude `--mcp-config` file paths (from effectiveMcpConfig). */
