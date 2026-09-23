@@ -46,6 +46,8 @@ import {
   pickOpencodeVersion,
   type DiagnosticsProviderEntry,
 } from "./startup-diagnostics.js"
+import { loadMergedOpencodeConfig } from "./mcp-bridge.js"
+import { createV2Setup } from "./v2.js"
 
 export interface ClaudeCodeProvider {
   specificationVersion: "v3"
@@ -649,9 +651,17 @@ const server: OpenCodePlugin = async (input) => {
   }
 }
 
+// One package, both opencode majors: 1.x calls `server()`, 2.x calls
+// `setup(ctx)`. This is the documented dual shape from opencode's V1 migration
+// guide, and V1 has accepted an object entrypoint since 1.18.29. See V2.md.
 export default {
   id: "@khalilgharbaoui/opencode-claude-code-plugin",
   server,
+  setup: createV2Setup({
+    createProvider: createClaudeCode,
+    defaultProxyTools: DEFAULT_PROXY_TOOL_NAMES,
+    loadConfig: loadMergedOpencodeConfig,
+  }),
 }
 
 // ---------------------------------------------------------------------------

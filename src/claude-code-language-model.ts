@@ -213,6 +213,39 @@ export function resolveSessionAffinity(
 }
 
 /**
+ * The opencode agent this call runs for, which is how compaction and title
+ * calls are told apart from ordinary turns.
+ *
+ *   1. `opencodeAgent` in providerOptions, written by V1's `chat.params`
+ *      hook. Checked first so opencode 1.x behaves exactly as it always has.
+ *   2. The `x-opencode-agent` request header, written by the V2 entrypoint's
+ *      `model.request` hook (src/v2.ts), which can set headers but not
+ *      provider options.
+ */
+export function resolveOpencodeAgent(
+  headers: Record<string, string | undefined> | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+  providerKey: string,
+): string | undefined {
+  if (providerOptions) {
+    const bag =
+      (providerOptions as any)[providerKey] ??
+      (providerOptions as any)["claude-code"]
+    const agent = bag?.opencodeAgent
+    if (typeof agent === "string") return agent
+  }
+  if (headers) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "x-opencode-agent") {
+        const value = headers[key]
+        if (typeof value === "string" && value.length > 0) return value
+      }
+    }
+  }
+  return undefined
+}
+
+/**
  * Stream delta types we handle explicitly. `signature_delta` is listed as
  * known-and-silent: it carries encrypted thinking-block signatures that
  * are opaque to clients (the server uses them to reconstitute thinking
@@ -1554,22 +1587,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return valid.includes(effort) ? effort : undefined
   }
 
-  private getOpencodeAgent(
-    providerOptions?: LanguageModelV3CallOptions["providerOptions"],
-  ): string | undefined {
-    if (!providerOptions) return undefined
-    const ownKey = this.config.provider
-    const bag =
-      (providerOptions as any)[ownKey] ??
-      (providerOptions as any)["claude-code"]
-    const agent = bag?.opencodeAgent
-    return typeof agent === "string" ? agent : undefined
+  private getOpencodeAgent(options: LanguageModelV3CallOptions): string | undefined {
+    return resolveOpencodeAgent(
+      (options as any)?.headers as Record<string, string | undefined> | undefined,
+      options.providerOptions as Record<string, unknown> | undefined,
+      this.config.provider,
+    )
   }
 
   private isCompactionCall(
     options: LanguageModelV3CallOptions,
   ): boolean {
-    return this.getOpencodeAgent(options.providerOptions) === "compaction"
+    return this.getOpencodeAgent(options) === "compaction"
   }
 
   /**
@@ -1764,18 +1793,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // (see agent-models.ts). The session key must carry the effective model or
     // an overridden agent shares a claude process with its caller.
     const effectiveModelId = resolveAgentModel(
-      this.getOpencodeAgent(options.providerOptions),
+      this.getOpencodeAgent(options),
       this.modelId,
     )
     const reasoningEffort = resolveAgentEffort(
-      this.getOpencodeAgent(options.providerOptions),
+      this.getOpencodeAgent(options),
       this.getReasoningEffort(options.providerOptions),
     ) as ReasoningEffort | undefined
     // Keep effort invalidation inside one agent/provider, even when callers
     // share a model and opencode session (for example switching agents).
     const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
     )
     const sk = effortSessionKey(baseKey, reasoningEffort)
 
@@ -1806,7 +1835,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     if (scope === "no-tools") {
       log.info("doGenerate no-tools title stub", {
         compactionMode,
-        opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+        opencodeAgent: this.getOpencodeAgent(options),
         providerOptionsKeys: options.providerOptions
           ? Object.keys(options.providerOptions)
           : [],
@@ -2355,19 +2384,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const effectiveModelId = compactionMode
       ? this.resolveCompactionModel()
       : resolveAgentModel(
-          this.getOpencodeAgent(options.providerOptions),
+          this.getOpencodeAgent(options),
           this.modelId,
         )
     // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
       : (resolveAgentEffort(
-          this.getOpencodeAgent(options.providerOptions),
+          this.getOpencodeAgent(options),
           this.getReasoningEffort(options.providerOptions),
         ) as ReasoningEffort | undefined)
     const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options.providerOptions) ?? null])}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
     )
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
@@ -2516,7 +2545,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     if (scope === "no-tools" && !compactionMode) {
       log.info("doStream no-tools title stub", {
         compactionMode,
-        opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+        opencodeAgent: this.getOpencodeAgent(options),
         providerOptionsKeys: options.providerOptions
           ? Object.keys(options.providerOptions)
           : [],
@@ -2804,7 +2833,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       proxyTools: resolvedProxy?.map((t) => t.name) ?? null,
       compactionMode,
       scope,
-      opencodeAgent: this.getOpencodeAgent(options.providerOptions),
+      opencodeAgent: this.getOpencodeAgent(options),
       providerOptionsKeys: options.providerOptions
         ? Object.keys(options.providerOptions)
         : [],

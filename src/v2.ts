@@ -1,0 +1,350 @@
+import type { LanguageModelV3 } from "@ai-sdk/provider"
+import {
+  BASE_PROVIDER_ID,
+  accountDisplayName,
+  accountModelSuffix,
+  accountProviderId,
+  ensureAccountRuntime,
+  resolveAccounts,
+} from "./accounts.js"
+import { log } from "./logger.js"
+import { defaultModels } from "./models.js"
+import type { OpenCodeModel } from "./opencode-types.js"
+import type {
+  V2Cleanup,
+  V2Context,
+  V2ModelInfo,
+  V2ProviderInfo,
+  V2Registration,
+  V2RequestKind,
+} from "./opencode-v2-types.js"
+import { isUsableDirectory, setOpencodeProjectDirectory } from "./runtime-status.js"
+import { ensureProcessExitCleanup } from "./session-manager.js"
+import { logStartupDiagnostics } from "./startup-diagnostics.js"
+import type { ClaudeCodeProviderSettings } from "./types.js"
+
+/**
+ * opencode 2.x entrypoint. V1 calls the default export's `server()`, V2 calls
+ * its `setup(ctx)`; the two never run in the same process, and nothing here
+ * translates one API into the other.
+ *
+ * The provider is split across two V2 surfaces where V1 had one hook:
+ * `provider.transform` publishes the metadata (providers and models) and the
+ * `aisdk` `sdk` hook hands opencode the object that builds the language model.
+ * opencode never imports `package` itself: `AISDK.language` only checks that it
+ * carries the `aisdk:` prefix and then asks the `sdk` hooks for the SDK, which
+ * is how its own bundled providers work too. So the name below is a label, not
+ * something that has to resolve.
+ */
+export const V2_PLUGIN_PACKAGE = "aisdk:@khalilgharbaoui/opencode-claude-code-plugin"
+
+/** The same header opencode 1.x sets itself, so the language model needs no V2 branch to read it. */
+export const SESSION_AFFINITY_HEADER = "x-session-affinity"
+
+/**
+ * V1 tags the opencode agent into `providerOptions` from `chat.params`. V2's
+ * `model.request` hook can only set headers, so the agent travels as one.
+ */
+export const OPENCODE_AGENT_HEADER = "x-opencode-agent"
+
+// Keys the plugin itself consumes. They configure the provider set, not a
+// language model, so they are never passed to `createClaudeCode`.
+const PLUGIN_ONLY_SETTINGS = ["accounts", "defaultSubagentModel"]
+
+// Keys opencode adds to the SDK options on its own (`prepareOptions` in the
+// V2 aisdk runtime). None of them means anything to the Claude CLI.
+const OPENCODE_SDK_OPTION_KEYS = ["fetch", "headers", "body", "name"]
+
+export function isClaudeCodeProviderId(providerID: string | undefined): boolean {
+  if (typeof providerID !== "string") return false
+  return providerID === BASE_PROVIDER_ID || providerID.startsWith(`${BASE_PROVIDER_ID}-`)
+}
+
+/**
+ * The agent name the language model keys its special paths on. V2 tells the
+ * request kind apart from the agent, so a compaction or title call arrives with
+ * the session's ordinary agent; map the kind back onto the names V1 used, which
+ * are what `isCompactionCall` and the title stub already test for.
+ */
+export function agentForRequest(kind: V2RequestKind, agent: string): string {
+  if (kind === "compaction") return "compaction"
+  if (kind === "title") return "title"
+  return agent
+}
+
+function releasedAt(date: string | undefined): number {
+  const ms = date ? Date.parse(date) : Number.NaN
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function modalities(flags: Record<string, boolean | undefined>): string[] {
+  return Object.entries(flags)
+    .filter(([, enabled]) => enabled === true)
+    .map(([name]) => name)
+}
+
+/** One registry entry in V2's `Model.Info` shape. */
+export function toV2Model(
+  model: OpenCodeModel,
+  providerID: string,
+  modelId: string,
+): V2ModelInfo {
+  return {
+    id: modelId,
+    modelID: modelId,
+    providerID,
+    name: model.name,
+    family: model.family,
+    capabilities: {
+      tools: model.capabilities.toolcall,
+      input: modalities(model.capabilities.input),
+      output: modalities(model.capabilities.output),
+    },
+    variants: Object.entries(model.variants ?? {}).map(([id, settings]) => ({
+      id,
+      settings: { ...settings },
+    })),
+    time: { released: releasedAt(model.release_date) },
+    cost: [
+      {
+        input: model.cost.input,
+        output: model.cost.output,
+        cache: { read: model.cost.cache.read, write: model.cost.cache.write },
+      },
+    ],
+    status: model.status ?? "active",
+    enabled: true,
+    limit: { context: model.limit.context, output: model.limit.output },
+    package: V2_PLUGIN_PACKAGE,
+  }
+}
+
+export function v2ModelsForProvider(providerID: string, modelSuffix?: string): V2ModelInfo[] {
+  return Object.entries(defaultModels).map(([id, model]) =>
+    toV2Model(model, providerID, modelSuffix ? `${id}@${modelSuffix}` : id),
+  )
+}
+
+export interface V2ProviderPlan {
+  info: V2ProviderInfo
+  models: V2ModelInfo[]
+}
+
+function stripPluginOnly(settings: Record<string, unknown> | undefined): Record<string, unknown> {
+  const result = { ...(settings ?? {}) }
+  for (const key of PLUGIN_ONLY_SETTINGS) delete result[key]
+  return result
+}
+
+/**
+ * The providers to publish, from the `claude-code` settings the operator
+ * configured. Mirrors V1's config hook: no `accounts` means one `claude-code`
+ * provider, and a list means one `claude-code-<account>` provider per entry
+ * with the seed removed. The account wrapper script is not built here because
+ * provider transforms are synchronous; `resolveSdkSettings` builds it when the
+ * model is first asked for.
+ */
+export function planV2Providers(
+  seedSettings: Record<string, unknown> | undefined,
+  defaultProxyTools: readonly string[],
+): V2ProviderPlan[] {
+  const base: Record<string, unknown> = {
+    cliPath: "claude",
+    proxyTools: [...defaultProxyTools],
+    ...stripPluginOnly(seedSettings),
+  }
+  const accounts = resolveAccounts(seedSettings?.accounts)
+
+  if (!accounts) {
+    return [
+      {
+        info: {
+          id: BASE_PROVIDER_ID,
+          name: "Claude Code",
+          activation: "enabled",
+          package: V2_PLUGIN_PACKAGE,
+          settings: { ...base, providerID: BASE_PROVIDER_ID },
+        },
+        models: v2ModelsForProvider(BASE_PROVIDER_ID),
+      },
+    ]
+  }
+
+  return accounts.map((account) => {
+    const providerID = accountProviderId(account)
+    return {
+      info: {
+        id: providerID,
+        name: accountDisplayName(account),
+        activation: "enabled",
+        package: V2_PLUGIN_PACKAGE,
+        settings: {
+          ...base,
+          account,
+          // The resolved list, so this account's language model can offer the
+          // others when it runs out of usage (src/account-failover.ts).
+          failoverAccounts: accounts,
+          providerID,
+          // Kept separately because the wrapper replaces `cliPath`, and a
+          // failover builds another account's wrapper on the same base.
+          baseCliPath: String(base.cliPath ?? "claude"),
+        },
+      },
+      models: v2ModelsForProvider(providerID, accountModelSuffix(account)),
+    }
+  })
+}
+
+/**
+ * The settings `createClaudeCode` is called with. The planned provider
+ * settings win over what opencode hands the hook, because opencode's copy has
+ * its own transport keys mixed in; an account provider's wrapper is built here,
+ * once per SDK, since it writes a script to disk.
+ */
+export async function resolveSdkSettings(
+  providerID: string,
+  planned: Record<string, unknown> | undefined,
+  eventOptions: Record<string, unknown>,
+): Promise<ClaudeCodeProviderSettings> {
+  const fromEvent = { ...eventOptions }
+  for (const key of OPENCODE_SDK_OPTION_KEYS) delete fromEvent[key]
+  const merged: Record<string, unknown> = {
+    ...stripPluginOnly(fromEvent),
+    ...(planned ?? {}),
+    providerID,
+  }
+
+  const account = typeof merged.account === "string" ? merged.account : undefined
+  if (account) {
+    const base = String(merged.baseCliPath ?? merged.cliPath ?? "claude")
+    const runtime = await ensureAccountRuntime(account, base)
+    Object.assign(merged, runtime, { baseCliPath: base })
+  }
+
+  return merged as ClaudeCodeProviderSettings
+}
+
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+/**
+ * The `claude-code` settings the operator configured, as the provider set is
+ * planned. This cannot come from the provider editor: opencode 2 applies the
+ * config file's provider block through its own `opencode.config.provider`
+ * plugin, after plugin transforms, so config overrides plugin defaults and a
+ * plugin never sees it (measured on 2.0.11: `accounts` was absent from the
+ * seed record). So it is read from the same on-disk layers opencode reads.
+ *
+ * Both config shapes are accepted, because V2 promises to keep reading V1
+ * files: V1's `options` and V2's `settings`, the latter winning. The V2-native
+ * home for plugin-level settings, the plugin's own `options` in the `plugins`
+ * array, wins over both.
+ */
+export function configuredSeedSettings(
+  config: Record<string, unknown>,
+  pluginOptions: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const provider = plainObject(plainObject(config.provider)?.[BASE_PROVIDER_ID])
+  return {
+    ...(plainObject(provider?.options) ?? {}),
+    ...(plainObject(provider?.settings) ?? {}),
+    ...(pluginOptions ?? {}),
+  }
+}
+
+export interface V2SetupDeps {
+  /** `createClaudeCode`, passed in so this module never imports the entrypoint. */
+  createProvider: (settings: ClaudeCodeProviderSettings) => {
+    languageModel(modelId: string): LanguageModelV3
+  }
+  defaultProxyTools: readonly string[]
+  /** The merged on-disk opencode config for a directory (`loadMergedOpencodeConfig`). */
+  loadConfig: (directory: string) => Record<string, unknown>
+}
+
+export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2Cleanup> {
+  return async (ctx) => {
+    ensureProcessExitCleanup()
+    const directory = ctx.location?.directory
+    setOpencodeProjectDirectory(isUsableDirectory(directory) ? directory : undefined)
+
+    const planned = new Map<string, Record<string, unknown>>()
+    const registrations: V2Registration[] = []
+
+    registrations.push(
+      await ctx.provider.transform((editor) => {
+        const seed = editor.get(BASE_PROVIDER_ID)
+        // Whatever the editor already holds is plugin-level (ours from an
+        // earlier pass, or another plugin's); the operator's config wins.
+        const seedSettings = {
+          ...(seed?.provider.settings ?? {}),
+          ...configuredSeedSettings(
+            deps.loadConfig(directory ?? process.cwd()),
+            plainObject(ctx.options),
+          ),
+        }
+        const plans = planV2Providers(seedSettings, deps.defaultProxyTools)
+        planned.clear()
+
+        for (const plan of plans) {
+          planned.set(plan.info.id, plan.info.settings ?? {})
+          if (editor.get(plan.info.id)) {
+            editor.update(plan.info.id, (provider) => {
+              provider.name = plan.info.name
+              provider.activation = plan.info.activation
+              provider.package = plan.info.package
+              provider.settings = plan.info.settings
+            })
+            editor.models.set(plan.info.id, plan.models)
+          } else {
+            editor.add({ info: plan.info, models: plan.models })
+          }
+        }
+
+        // An account expansion replaces the seed, exactly as V1 deletes it.
+        if (seed && !plans.some((plan) => plan.info.id === BASE_PROVIDER_ID)) {
+          editor.remove(BASE_PROVIDER_ID)
+        }
+
+        logStartupDiagnostics(
+          Object.fromEntries(
+            plans.map((plan) => [plan.info.id, { name: plan.info.name, options: plan.info.settings }]),
+          ),
+          ctx.app?.version,
+        )
+      }),
+    )
+
+    registrations.push(
+      await ctx.aisdk.hook("sdk", async (event) => {
+        const providerID = event.model.providerID
+        if (!isClaudeCodeProviderId(providerID)) return
+        const settings = await resolveSdkSettings(providerID, planned.get(providerID), event.options)
+        event.sdk = deps.createProvider(settings)
+        log.debug("v2 sdk created", { providerID, cliPath: settings.cliPath })
+      }),
+    )
+
+    registrations.push(
+      await ctx.session.hook("model.request", (event) => {
+        if (!isClaudeCodeProviderId(event.model.providerID)) return
+        event.headers[SESSION_AFFINITY_HEADER] = event.sessionID
+        event.headers[OPENCODE_AGENT_HEADER] = agentForRequest(event.kind, event.agent)
+      }),
+    )
+
+    log.info("claude-code plugin set up for opencode 2", {
+      opencode: ctx.app?.version,
+      directory,
+    })
+
+    return async () => {
+      for (const registration of registrations.splice(0)) {
+        await registration.dispose().catch(() => undefined)
+      }
+    }
+  }
+}
