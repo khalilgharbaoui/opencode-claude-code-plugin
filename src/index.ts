@@ -180,6 +180,7 @@ export function createClaudeCode(
     return new ClaudeCodeLanguageModel(modelId, {
       provider: providerName,
       cliPath,
+      hostApi: settings.hostApi,
       cwd: settings.cwd,
       account: settings.account,
       configDir: settings.configDir,

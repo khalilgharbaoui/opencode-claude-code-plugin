@@ -5,6 +5,14 @@ export type { LogLevel, LogMode }
 export interface ClaudeCodeConfig {
   provider: string
   cliPath: string
+  /**
+   * Which opencode major this model was created by, which decides the tool
+   * vocabulary its stream uses (src/host-tools.ts). Set only by the V2
+   * entrypoint's `sdk` hook; absent means opencode 1.x. Per model rather than
+   * per process on purpose: opencode 1.18 also calls a dual export's `setup`,
+   * so nothing process-wide may decide it.
+   */
+  hostApi?: "v1" | "v2"
   /** Drive interactive claude (subscription) instead of headless --print. */
   interactive?: boolean
   /** Deprecated/no-op with interactive: Claude Code's TUI requires manual confirmation for bypassPermissions. */
@@ -109,6 +117,8 @@ export type AccountFailoverMode = "ask" | "off"
 
 export interface ClaudeCodeProviderSettings {
   cliPath?: string
+  /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostApi`. */
+  hostApi?: "v1" | "v2"
   /** Drive interactive claude (subscription) instead of headless --print. */
   interactive?: boolean
   /** Deprecated/no-op with interactive: Claude Code's TUI requires manual confirmation for bypassPermissions. */

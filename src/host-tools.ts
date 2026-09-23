@@ -13,18 +13,13 @@
  * (`dist/tool/plugin/*.js`): each tool's registered `name` and input schema.
  */
 
+/**
+ * Which opencode major a model serves. Carried by each model's config
+ * (`ClaudeCodeConfig.hostApi`), never held process-wide: opencode 1.18 calls a
+ * dual export's `setup` too, so a global flipped there turned V1's tool calls
+ * into V2 names and V1 rejected every one (measured on 1.18.32).
+ */
 export type HostToolDialect = "v1" | "v2"
-
-let hostDialect: HostToolDialect = "v1"
-
-/** Set once by the V2 entrypoint's `setup`. V1 never calls it. */
-export function setHostToolDialect(dialect: HostToolDialect): void {
-  hostDialect = dialect
-}
-
-export function getHostToolDialect(): HostToolDialect {
-  return hostDialect
-}
 
 type Input = Record<string, unknown>
 
@@ -104,7 +99,7 @@ const V2_TOOLS: Record<string, HostTool | null> = {
 export function translateToolForHost(
   name: string,
   input: Input,
-  dialect: HostToolDialect = hostDialect,
+  dialect: HostToolDialect = "v1",
 ): { name: string; input: Input } | null {
   if (dialect !== "v2") return { name, input }
   const tool = V2_TOOLS[name]
@@ -132,7 +127,7 @@ function parseInput(raw: unknown): Input {
  * Returns `null` for a part to drop.
  */
 export function createHostToolPartTranslator(
-  dialect: HostToolDialect = hostDialect,
+  dialect: HostToolDialect = "v1",
 ): (part: StreamPart) => StreamPart | null {
   if (dialect !== "v2") return (part) => part
 
@@ -195,7 +190,7 @@ export function createHostToolPartTranslator(
 /** Applies the translator to a whole stream; the identity on V1. */
 export function translateStreamForHost<T extends StreamPart>(
   stream: ReadableStream<T>,
-  dialect: HostToolDialect = hostDialect,
+  dialect: HostToolDialect = "v1",
 ): ReadableStream<T> {
   if (dialect !== "v2") return stream
   const translate = createHostToolPartTranslator(dialect)

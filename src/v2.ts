@@ -7,7 +7,6 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
-import { setHostToolDialect } from "./host-tools.js"
 import { log } from "./logger.js"
 import { defaultModels } from "./models.js"
 import type { OpenCodeModel } from "./opencode-types.js"
@@ -215,6 +214,8 @@ export async function resolveSdkSettings(
   const merged: Record<string, unknown> = {
     ...stripPluginOnly({ ...(planned ?? {}), ...fromEvent }),
     providerID,
+    // The only place a model is told it serves opencode 2.
+    hostApi: "v2",
   }
 
   const account = typeof merged.account === "string" ? merged.account : undefined
@@ -258,6 +259,31 @@ export function configuredSeedSettings(
   }
 }
 
+/**
+ * Whether `setup` is really running inside opencode 2. opencode 1.18 calls a
+ * dual export's `setup` as well as its `server` (measured on 1.18.32), with its
+ * own smaller v2-compat context that has no `provider` or `session` domain.
+ * Registering anything there would put a second provider path next to the one
+ * `server()` already built, so a context without every domain we use, or one
+ * that names a 1.x version, gets nothing.
+ */
+export function isOpencodeV2Context(ctx: unknown): ctx is V2Context {
+  const context = plainObject(ctx)
+  if (!context) return false
+  const version = plainObject(context.app)?.version
+  if (typeof version === "string") {
+    const major = Number.parseInt(version.replace(/^v/, ""), 10)
+    if (Number.isFinite(major) && major < 2) return false
+  }
+  const hasHook = (domain: unknown, name: "transform" | "hook") =>
+    typeof plainObject(domain)?.[name] === "function"
+  return (
+    hasHook(context.provider, "transform") &&
+    hasHook(context.aisdk, "hook") &&
+    hasHook(context.session, "hook")
+  )
+}
+
 export interface V2SetupDeps {
   /** `createClaudeCode`, passed in so this module never imports the entrypoint. */
   createProvider: (settings: ClaudeCodeProviderSettings) => {
@@ -270,8 +296,12 @@ export interface V2SetupDeps {
 
 export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2Cleanup> {
   return async (ctx) => {
-    // Tool calls leave in V1's vocabulary; this is what renames them for V2.
-    setHostToolDialect("v2")
+    if (!isOpencodeV2Context(ctx)) {
+      log.debug("setup called outside opencode 2; leaving it to server()", {
+        version: (ctx as { app?: { version?: unknown } } | undefined)?.app?.version,
+      })
+      return () => undefined
+    }
     ensureProcessExitCleanup()
     const directory = ctx.location?.directory
     setOpencodeProjectDirectory(isUsableDirectory(directory) ? directory : undefined)

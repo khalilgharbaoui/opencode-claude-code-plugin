@@ -10,7 +10,6 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { accountProviderId, resolveAccounts } from "./src/accounts.js"
 import { resolveOpencodeAgent } from "./src/claude-code-language-model.js"
-import { getHostToolDialect, setHostToolDialect } from "./src/host-tools.js"
 import { defaultModels } from "./src/models.js"
 import type { V2ModelInfo, V2ProviderInfo } from "./src/opencode-v2-types.js"
 import {
@@ -20,6 +19,7 @@ import {
   agentForRequest,
   configuredSeedSettings,
   createV2Setup,
+  isOpencodeV2Context,
   planV2Providers,
   resolveSdkSettings,
   toV2Model,
@@ -199,7 +199,6 @@ test("opencode's SDK options win over the planned copy, minus its transport keys
 })
 
 test("setup publishes the provider, supplies the SDK, tags requests and cleans up", async () => {
-  const previousDialect = getHostToolDialect()
   const created: any[] = []
   const setup = createV2Setup({
     createProvider: (settings) => {
@@ -210,9 +209,8 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
     loadConfig: () => ({ provider: { "claude-code": { options: { cliPath: "/opt/claude" } } } }),
   })
   const { ctx, transforms, hooks, disposed } = fakeContext()
-  try {
+  {
     const cleanup = await setup(ctx)
-    assert.equal(getHostToolDialect(), "v2")
 
     const { editor, records } = fakeEditor()
     transforms[0](editor)
@@ -229,6 +227,8 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
     await hooks.sdk[0](event)
     assert.equal(typeof event.sdk?.languageModel, "function")
     assert.equal(created[0].cliPath, "/opt/claude")
+    // The model itself carries the vocabulary; nothing process-wide does.
+    assert.equal(created[0].hostApi, "v2")
 
     const other: any = { model: { providerID: "openai" }, package: "aisdk:@ai-sdk/openai", options: {} }
     await hooks.sdk[0](other)
@@ -255,30 +255,55 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
       "provider.transform",
       "session.model.request",
     ])
-  } finally {
-    setHostToolDialect(previousDialect)
   }
 })
 
 test("an account expansion replaces the seed provider in the editor", async () => {
-  const previousDialect = getHostToolDialect()
   const setup = createV2Setup({
     createProvider: () => ({ languageModel: () => ({}) as any }),
     defaultProxyTools: PROXY_TOOLS,
     loadConfig: () => ({ provider: { "claude-code": { options: { accounts: ["appical"] } } } }),
   })
   const { ctx, transforms } = fakeContext()
-  try {
-    await setup(ctx)
-    const { editor, records } = fakeEditor()
-    editor.add({
-      info: { id: "claude-code", name: "seed", activation: "auto", package: "" },
-      models: [],
-    })
-    transforms[0](editor)
-    assert.equal(records.has("claude-code"), false)
-    assert.ok(records.has("claude-code-appical"))
-  } finally {
-    setHostToolDialect(previousDialect)
-  }
+  await setup(ctx)
+  const { editor, records } = fakeEditor()
+  editor.add({
+    info: { id: "claude-code", name: "seed", activation: "auto", package: "" },
+    models: [],
+  })
+  transforms[0](editor)
+  assert.equal(records.has("claude-code"), false)
+  assert.ok(records.has("claude-code-appical"))
+})
+
+test("setup called by opencode 1.x registers nothing", async () => {
+  // opencode 1.18.32 calls a dual export's `setup` as well as `server`, with a
+  // smaller context of its own. The build that set a process-wide dialect here
+  // turned every V1 tool call into a V2 name, and V1 rejected them all.
+  const created: unknown[] = []
+  const setup = createV2Setup({
+    createProvider: (settings) => {
+      created.push(settings)
+      return { languageModel: () => ({}) as any }
+    },
+    defaultProxyTools: PROXY_TOOLS,
+    loadConfig: () => ({}),
+  })
+
+  const v1Shaped = { app: { version: "1.18.32" }, aisdk: { hook: async () => ({}) }, skill: {} }
+  assert.equal(isOpencodeV2Context(v1Shaped), false)
+  const cleanup = await setup(v1Shaped as any)
+  await cleanup()
+  assert.deepEqual(created, [])
+
+  // A 1.x version is refused even if every domain happens to be there.
+  const { ctx, transforms, hooks } = fakeContext()
+  ctx.app.version = "1.18.32"
+  assert.equal(isOpencodeV2Context(ctx), false)
+  await setup(ctx)
+  assert.equal(transforms.length, 0)
+  assert.deepEqual(Object.keys(hooks), [])
+
+  assert.equal(isOpencodeV2Context(fakeContext().ctx), true)
+  assert.equal(isOpencodeV2Context(undefined), false)
 })

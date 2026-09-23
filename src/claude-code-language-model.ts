@@ -15,11 +15,7 @@ import type {
   ReasoningEffort,
 } from "./types.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
-import {
-  createHostToolPartTranslator,
-  getHostToolDialect,
-  translateStreamForHost,
-} from "./host-tools.js"
+import { createHostToolPartTranslator, translateStreamForHost } from "./host-tools.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
@@ -1788,8 +1784,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
     const result = await this.doGenerateForHost(options)
-    if (getHostToolDialect() !== "v2") return result
-    const translate = createHostToolPartTranslator()
+    if (this.config.hostApi !== "v2") return result
+    const translate = createHostToolPartTranslator("v2")
     return {
       ...result,
       content: result.content.flatMap((part) => {
@@ -2399,7 +2395,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const result = await this.doStreamForHost(options)
-    return { ...result, stream: translateStreamForHost(result.stream as any) as any }
+    return {
+      ...result,
+      stream: translateStreamForHost(result.stream as any, this.config.hostApi ?? "v1") as any,
+    }
   }
 
   private async doStreamForHost(
