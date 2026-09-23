@@ -15,6 +15,11 @@ import type {
   ReasoningEffort,
 } from "./types.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
+import {
+  createHostToolPartTranslator,
+  getHostToolDialect,
+  translateStreamForHost,
+} from "./host-tools.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
@@ -1782,6 +1787,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   async doGenerate(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+    const result = await this.doGenerateForHost(options)
+    if (getHostToolDialect() !== "v2") return result
+    const translate = createHostToolPartTranslator()
+    return {
+      ...result,
+      content: result.content.flatMap((part) => {
+        const next = translate(part as any)
+        return next ? [next as unknown as LanguageModelV3Content] : []
+      }),
+    }
+  }
+
+  private async doGenerateForHost(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
     if (!this.isCompactionCall(options) && this.requestScope(options as any) !== "no-tools" && parseSideQuestion(options.prompt)) {
       return this.doGenerateViaStream(options)
     }
@@ -2370,7 +2390,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
   }
 
+  /**
+   * Tool parts leave in opencode 1.x's vocabulary; on opencode 2.x they are
+   * renamed at this one edge (src/host-tools.ts). On V1 the stream is
+   * returned untouched.
+   */
   async doStream(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    const result = await this.doStreamForHost(options)
+    return { ...result, stream: translateStreamForHost(result.stream as any) as any }
+  }
+
+  private async doStreamForHost(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []

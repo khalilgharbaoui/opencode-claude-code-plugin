@@ -7,6 +7,7 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
+import { setHostToolDialect } from "./host-tools.js"
 import { log } from "./logger.js"
 import { defaultModels } from "./models.js"
 import type { OpenCodeModel } from "./opencode-types.js"
@@ -196,10 +197,13 @@ export function planV2Providers(
 }
 
 /**
- * The settings `createClaudeCode` is called with. The planned provider
- * settings win over what opencode hands the hook, because opencode's copy has
- * its own transport keys mixed in; an account provider's wrapper is built here,
- * once per SDK, since it writes a script to disk.
+ * The settings `createClaudeCode` is called with. What opencode hands the hook
+ * wins over the planned copy: by then its config plugin has merged the
+ * operator's provider settings over ours, and model or variant settings sit on
+ * top of that. The planned copy fills what opencode's lacks, which is
+ * everything for an account provider the config never names. opencode's own
+ * transport keys are removed first. An account provider's wrapper is built
+ * here, once per SDK, since it writes a script to disk.
  */
 export async function resolveSdkSettings(
   providerID: string,
@@ -209,8 +213,7 @@ export async function resolveSdkSettings(
   const fromEvent = { ...eventOptions }
   for (const key of OPENCODE_SDK_OPTION_KEYS) delete fromEvent[key]
   const merged: Record<string, unknown> = {
-    ...stripPluginOnly(fromEvent),
-    ...(planned ?? {}),
+    ...stripPluginOnly({ ...(planned ?? {}), ...fromEvent }),
     providerID,
   }
 
@@ -267,6 +270,8 @@ export interface V2SetupDeps {
 
 export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2Cleanup> {
   return async (ctx) => {
+    // Tool calls leave in V1's vocabulary; this is what renames them for V2.
+    setHostToolDialect("v2")
     ensureProcessExitCleanup()
     const directory = ctx.location?.directory
     setOpencodeProjectDirectory(isUsableDirectory(directory) ? directory : undefined)
