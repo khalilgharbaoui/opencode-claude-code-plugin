@@ -18,7 +18,12 @@ import type {
   V2Registration,
   V2RequestKind,
 } from "./opencode-v2-types.js"
-import { isUsableDirectory, setOpencodeProjectDirectory } from "./runtime-status.js"
+import {
+  isUsableDirectory,
+  setOpencodeClient,
+  setOpencodeProjectDirectory,
+} from "./runtime-status.js"
+import { createV1ClientShim, type V2ClientContext } from "./v2-client.js"
 import { ensureProcessExitCleanup } from "./session-manager.js"
 import { logStartupDiagnostics } from "./startup-diagnostics.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
@@ -292,6 +297,14 @@ export interface V2SetupDeps {
   defaultProxyTools: readonly string[]
   /** The merged on-disk opencode config for a directory (`loadMergedOpencodeConfig`). */
   loadConfig: (directory: string) => Record<string, unknown>
+  /**
+   * V1's registry builder, reused so the same agents are eligible for
+   * `forceModel`, `defaultSubagentModel` and `reasoningEffort` on both majors:
+   * markdown agents on disk plus the config's `agent` block. Not V2's
+   * `agent.list()`, which includes opencode's built-ins; those must never be
+   * rewritten (src/agent-models.ts).
+   */
+  buildAgentRegistry?: (config: Record<string, unknown>) => Promise<void>
 }
 
 export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2Cleanup> {
@@ -303,8 +316,32 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
       return () => undefined
     }
     ensureProcessExitCleanup()
+    // The live-state calls (MCP status, tool registry, session lookups) are
+    // answered in V1's shapes, so their callers need no V2 branch.
+    setOpencodeClient(createV1ClientShim(ctx as unknown as V2ClientContext))
     const directory = ctx.location?.directory
     setOpencodeProjectDirectory(isUsableDirectory(directory) ? directory : undefined)
+
+    if (deps.buildAgentRegistry) {
+      try {
+        const config = deps.loadConfig(directory ?? process.cwd())
+        // V1's builder reads `provider.claude-code.options`; hand it the seed
+        // settings in that slot whichever config shape they came from.
+        await deps.buildAgentRegistry({
+          ...config,
+          provider: {
+            ...(plainObject(config.provider) ?? {}),
+            [BASE_PROVIDER_ID]: {
+              options: configuredSeedSettings(config, plainObject(ctx.options)),
+            },
+          },
+        })
+      } catch (err) {
+        log.warn("failed to build the agent registry for opencode 2", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
 
     const planned = new Map<string, Record<string, unknown>>()
     const registrations: V2Registration[] = []

@@ -471,7 +471,7 @@ async function expandAccountProviders(config: {
  * an agent this plugin never heard of is simply absent from the registry,
  * which is what keeps opencode's built-ins out of the override path.
  */
-async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
+export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> {
   const options = config.provider?.[PROVIDER_ID]?.options
   const configured = options?.defaultSubagentModel
   setDefaultSubagentModel(
@@ -662,6 +662,7 @@ export default {
     createProvider: createClaudeCode,
     defaultProxyTools: DEFAULT_PROXY_TOOL_NAMES,
     loadConfig: loadMergedOpencodeConfig,
+    buildAgentRegistry: (config) => buildAgentRegistry(config as OpenCodeConfig),
   }),
 }
 
