@@ -26,9 +26,13 @@ import {
   setDefaultSubagentModel,
 } from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
-import { DOCTOR_COMMAND } from "./doctor.js"
+import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
 import { configureLogger, log } from "./logger.js"
-import { handleBtwCommand, type BtwSdkClient } from "./btw-command.js"
+import {
+  BTW_COMMAND_DESCRIPTION,
+  handleBtwCommand,
+  type BtwSdkClient,
+} from "./btw-command.js"
 import { registerBundledSkillPath } from "./skill-bridge.js"
 import {
   deleteActiveProcessesForSession,
@@ -94,7 +98,7 @@ export function registerSideQuestionCommand(config: OpenCodeConfig): boolean {
   if (config.command.btw) return false
   config.command.btw = {
     template: "/btw $ARGUMENTS",
-    description: "Ask a side question in the live Claude Code session without changing its context",
+    description: BTW_COMMAND_DESCRIPTION,
   }
   return true
 }
@@ -114,7 +118,7 @@ export function registerDoctorCommand(config: OpenCodeConfig): boolean {
   if (config.command[DOCTOR_COMMAND]) return false
   config.command[DOCTOR_COMMAND] = {
     template: `/${DOCTOR_COMMAND} $ARGUMENTS`,
-    description: "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls",
+    description: DOCTOR_COMMAND_DESCRIPTION,
   }
   return true
 }

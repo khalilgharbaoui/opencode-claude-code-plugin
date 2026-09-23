@@ -102,6 +102,9 @@ export class BtwHandledError extends Error {
   }
 }
 
+export const BTW_COMMAND_DESCRIPTION =
+  "Ask a side question in the live Claude Code session without changing its context"
+
 export const BTW_NO_SESSION_MESSAGE =
   "/btw needs a live Claude Code session in this conversation. Send a normal message with a Claude Code model first, then ask again."
 

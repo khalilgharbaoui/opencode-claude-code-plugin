@@ -17,8 +17,10 @@ import {
   SESSION_AFFINITY_HEADER,
   V2_PLUGIN_PACKAGE,
   agentForRequest,
+  commandPromptText,
   configuredSeedSettings,
   createV2Setup,
+  deletedSessionIdV2,
   isOpencodeV2Context,
   planV2Providers,
   resolveSdkSettings,
@@ -306,4 +308,75 @@ test("setup called by opencode 1.x registers nothing", async () => {
 
   assert.equal(isOpencodeV2Context(fakeContext().ctx), true)
   assert.equal(isOpencodeV2Context(undefined), false)
+})
+
+test("command text matches V1's template output", () => {
+  assert.equal(commandPromptText("btw", "  what is x?  "), "/btw what is x?")
+  assert.equal(commandPromptText("claude-code-doctor", ""), "/claude-code-doctor")
+  assert.equal(commandPromptText("btw", undefined), "/btw")
+})
+
+test("a V2 session.deleted event names its session in data.sessionID", () => {
+  assert.equal(deletedSessionIdV2({ type: "session.deleted", data: { sessionID: "ses_1" } }), "ses_1")
+  assert.equal(deletedSessionIdV2({ type: "session.updated", data: { sessionID: "ses_1" } }), undefined)
+  assert.equal(deletedSessionIdV2({ type: "session.deleted", data: {} }), undefined)
+  assert.equal(deletedSessionIdV2(undefined), undefined)
+})
+
+test("setup registers /btw and the doctor, and /btw is always queued", async () => {
+  const { ctx } = fakeContext()
+  const added: any[] = []
+  const prompts: any[] = []
+  ctx.command = {
+    transform: async (callback: (editor: any) => void) => {
+      callback({ add: (definition: any) => added.push(definition) })
+      return { dispose: async () => undefined }
+    },
+  }
+  ctx.session.prompt = async (input: any) => {
+    prompts.push(input)
+    return {}
+  }
+  const setup = createV2Setup({
+    createProvider: () => ({ languageModel: () => ({}) as any }),
+    defaultProxyTools: PROXY_TOOLS,
+    loadConfig: () => ({}),
+  })
+  await setup(ctx)
+
+  assert.deepEqual(added.map((definition) => definition.name).sort(), ["btw", "claude-code-doctor"])
+  const btw = added.find((definition) => definition.name === "btw")
+  const doctor = added.find((definition) => definition.name === "claude-code-doctor")
+
+  await btw.execute({ sessionID: "ses_1", prompt: { text: "why?", files: [] }, delivery: "steer" })
+  assert.deepEqual(prompts[0], { text: "/btw why?", files: [], sessionID: "ses_1", delivery: "queue" })
+
+  await doctor.execute({ sessionID: "ses_1", prompt: { text: "" }, delivery: "steer" })
+  assert.deepEqual(prompts[1], { text: "/claude-code-doctor", sessionID: "ses_1", delivery: "steer" })
+})
+
+test("setup subscribes to events and stops listening on cleanup", async () => {
+  const { ctx } = fakeContext()
+  let signal: AbortSignal | undefined
+  ctx.event = {
+    subscribe: (options: { signal?: AbortSignal }) => {
+      signal = options.signal
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "session.deleted", data: { sessionID: "ses_gone" } }
+          await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve()))
+        },
+      }
+    },
+  }
+  const setup = createV2Setup({
+    createProvider: () => ({ languageModel: () => ({}) as any }),
+    defaultProxyTools: PROXY_TOOLS,
+    loadConfig: () => ({}),
+  })
+  const cleanup = await setup(ctx)
+  assert.ok(signal, "subscribe must be given an abort signal")
+  assert.equal(signal!.aborted, false)
+  await cleanup()
+  assert.equal(signal!.aborted, true)
 })

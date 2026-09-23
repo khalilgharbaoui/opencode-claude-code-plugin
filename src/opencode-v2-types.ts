@@ -105,6 +105,29 @@ export interface V2ModelHookOptions {
   readonly providerID?: string
 }
 
+/** `@opencode/schema/prompt-input` `Prompt`: we only rewrite `text`. */
+export type V2Prompt = { text?: string } & Record<string, unknown>
+
+export type V2Delivery = "steer" | "queue"
+
+export interface V2CommandInvocation {
+  readonly sessionID: string
+  readonly prompt: V2Prompt
+  readonly delivery: V2Delivery
+}
+
+export interface V2CommandDefinition {
+  readonly name: string
+  readonly description?: string
+  readonly execute: (input: V2CommandInvocation) => Promise<void>
+}
+
+/** `session.deleted` is the one event this plugin acts on. */
+export interface V2Event {
+  readonly type?: string
+  readonly data?: { readonly sessionID?: string } & Record<string, unknown>
+}
+
 export interface V2Context {
   readonly app: { readonly version: string }
   readonly location: { readonly directory: string }
@@ -130,6 +153,15 @@ export interface V2Context {
       callback: (event: V2ModelRequestEvent) => Promise<void> | void,
       options?: V2ModelHookOptions,
     ): Promise<V2Registration>
+    prompt?(input: V2Prompt & { sessionID: string; delivery?: V2Delivery }): Promise<unknown>
+  }
+  readonly command?: {
+    transform(
+      callback: (editor: { add(definition: V2CommandDefinition): void }) => void,
+    ): Promise<V2Registration>
+  }
+  readonly event?: {
+    subscribe(options?: { signal?: AbortSignal }): AsyncIterable<V2Event>
   }
 }
 

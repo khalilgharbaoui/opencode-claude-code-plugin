@@ -10,9 +10,14 @@ import {
 import { log } from "./logger.js"
 import { defaultModels } from "./models.js"
 import type { OpenCodeModel } from "./opencode-types.js"
+import { BTW_COMMAND_DESCRIPTION } from "./btw-command.js"
+import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
 import type {
   V2Cleanup,
+  V2CommandInvocation,
   V2Context,
+  V2Delivery,
+  V2Event,
   V2ModelInfo,
   V2ProviderInfo,
   V2Registration,
@@ -24,7 +29,10 @@ import {
   setOpencodeProjectDirectory,
 } from "./runtime-status.js"
 import { createV1ClientShim, type V2ClientContext } from "./v2-client.js"
-import { ensureProcessExitCleanup } from "./session-manager.js"
+import {
+  deleteActiveProcessesForSession,
+  ensureProcessExitCleanup,
+} from "./session-manager.js"
 import { logStartupDiagnostics } from "./startup-diagnostics.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 
@@ -289,6 +297,46 @@ export function isOpencodeV2Context(ctx: unknown): ctx is V2Context {
   )
 }
 
+/**
+ * What a command sends as the session's next message: the same text V1's
+ * config template produces (`/<name> $ARGUMENTS`), so the language model's
+ * existing `/btw` and doctor branches answer it unchanged.
+ */
+export function commandPromptText(command: string, args: string | undefined): string {
+  const rest = (args ?? "").trim()
+  return rest ? `/${command} ${rest}` : `/${command}`
+}
+
+/** The session a V2 `session.deleted` event names (`data.sessionID`). */
+export function deletedSessionIdV2(event: V2Event | undefined): string | undefined {
+  if (!event || event.type !== "session.deleted") return undefined
+  const id = event.data?.sessionID
+  return typeof id === "string" && id.length > 0 ? id : undefined
+}
+
+async function releaseDeletedSessions(
+  subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<V2Event>,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    for await (const event of subscribe({ signal })) {
+      if (signal.aborted) break
+      const sessionID = deletedSessionIdV2(event)
+      if (!sessionID) continue
+      const released = deleteActiveProcessesForSession(sessionID)
+      if (released.length > 0) {
+        log.info("released claude state for deleted session", { sessionID, released })
+      }
+    }
+  } catch (err) {
+    if (!signal.aborted) {
+      log.warn("opencode 2 event subscription ended; deleted sessions keep their claude process until idle eviction", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+}
+
 export interface V2SetupDeps {
   /** `createClaudeCode`, passed in so this module never imports the entrypoint. */
   createProvider: (settings: ClaudeCodeProviderSettings) => {
@@ -408,12 +456,62 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
       }),
     )
 
+    // `/btw` and `/claude-code-doctor`. V1 injects templates into the user's
+    // config and has to guard against clobbering a command of the same name;
+    // here they are real commands, and the config's own commands are applied
+    // after plugin transforms, so a user-defined one still wins.
+    const prompt = ctx.session.prompt
+    if (ctx.command?.transform && typeof prompt === "function") {
+      const send = (
+        input: V2CommandInvocation,
+        command: string,
+        delivery: V2Delivery,
+      ): Promise<void> =>
+        prompt
+          .call(ctx.session, {
+            ...input.prompt,
+            sessionID: input.sessionID,
+            text: commandPromptText(command, input.prompt.text),
+            delivery,
+          })
+          .then(() => undefined)
+      registrations.push(
+        await ctx.command.transform((editor) => {
+          editor.add({
+            name: DOCTOR_COMMAND,
+            description: DOCTOR_COMMAND_DESCRIPTION,
+            execute: (input) => send(input, DOCTOR_COMMAND, input.delivery),
+          })
+          // Always queued. A `/btw` steered into a running turn becomes that
+          // turn's next step, the one carrying the results of the tools opencode
+          // just ran, and answering the aside there swallows the continuation
+          // (the failure V1's hold exists to prevent). Queued, the aside branch
+          // answers it from the idle process once the turn is over. V1's
+          // answer-inside-the-running-turn needs a session-status route V2's
+          // plugin session domain does not offer.
+          editor.add({
+            name: "btw",
+            description: BTW_COMMAND_DESCRIPTION,
+            execute: (input) => send(input, "btw", "queue"),
+          })
+        }),
+      )
+    }
+
+    // Release a deleted session's `claude` child, proxy server and session id
+    // at once, as V1's `event` hook does.
+    const events = new AbortController()
+    if (typeof ctx.event?.subscribe === "function") {
+      void releaseDeletedSessions(ctx.event.subscribe.bind(ctx.event), events.signal)
+    }
+
     log.info("claude-code plugin set up for opencode 2", {
       opencode: ctx.app?.version,
       directory,
     })
 
     return async () => {
+      events.abort()
       for (const registration of registrations.splice(0)) {
         await registration.dispose().catch(() => undefined)
       }
