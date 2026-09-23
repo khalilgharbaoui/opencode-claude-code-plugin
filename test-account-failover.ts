@@ -531,6 +531,46 @@ const FAILOVER_LINES = [
   },
 ]
 
+// The steady state of an org with extra usage disabled, measured on CLI
+// 2.1.280: the request is served, and the event still says overage is
+// rejected. This must never look like a limit.
+const SERVED_WITH_OVERAGE_REJECTED_LINES = [
+  { type: "system", subtype: "init", session_id: "limited-session", tools: [] },
+  {
+    type: "rate_limit_event",
+    session_id: "limited-session",
+    rate_limit_info: {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      resetsAt: 4102444800,
+      isUsingOverage: false,
+      overageStatus: "rejected",
+      overageDisabledReason: "org_level_disabled",
+    },
+  },
+  {
+    type: "stream_event",
+    session_id: "limited-session",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "served anyway" } },
+  },
+  {
+    type: "stream_event",
+    session_id: "limited-session",
+    event: { type: "message_delta", delta: { stop_reason: "end_turn" } },
+  },
+  {
+    type: "result",
+    subtype: "success",
+    session_id: "limited-session",
+    is_error: false,
+    result: "served anyway",
+    duration_ms: 10,
+    num_turns: 1,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  },
+]
+const overageOnly = process.env.FAKE_CLI_OVERAGE_ONLY === "1"
+
 const rl = readline.createInterface({ input: process.stdin })
 let answered = false
 rl.on("line", (line) => {
@@ -544,7 +584,10 @@ rl.on("line", (line) => {
       stdin: line,
     }) + "\\n",
   )
-  for (const l of (limited ? LIMITED_LINES : FAILOVER_LINES)) {
+  const lines = limited
+    ? (overageOnly ? SERVED_WITH_OVERAGE_REJECTED_LINES : LIMITED_LINES)
+    : FAILOVER_LINES
+  for (const l of lines) {
     process.stdout.write(JSON.stringify(l) + "\\n")
   }
 })
@@ -658,6 +701,40 @@ test("a usage limit ends the turn on a question listing the other account", asyn
     assert.equal(spawns.length, 1)
     assert.match(String(spawns[0].configDir), /\.claude-appical$/)
   } finally {
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a served turn whose limit event only rejects overage keeps its answer and asks nothing", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  process.env.FAKE_CLI_OVERAGE_ONLY = "1"
+  try {
+    const model = await buildFailoverModel(fake)
+    const parts = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+
+    assert.equal(
+      parts.some((part) => part.type === "tool-call"),
+      false,
+      "a served turn must not end on the failover form",
+    )
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "stop")
+    const body = textOf(parts)
+    assert.match(body, /served anyway/)
+    assert.doesNotMatch(body, /rate limit/)
+  } finally {
+    delete process.env.FAKE_CLI_OVERAGE_ONLY
     deleteActiveProcess(sk)
     _resetAccountOverrides()
     rmSync(fake.cwd, { recursive: true, force: true })

@@ -121,8 +121,21 @@ export function rateLimitKey(info: RateLimitInfo): string {
   ].join("|")
 }
 
+/**
+ * Whether the CLI refused this request. `status` is the request's own verdict
+ * and wins whenever it is present: `overageStatus: "rejected"` on its own only
+ * says paid extra usage is unavailable, which is the normal steady state for
+ * an org with extra usage disabled. Measured on CLI 2.1.280 (2026-09-23): an
+ * event of `{status: "allowed", overageStatus: "rejected",
+ * overageDisabledReason: "org_level_disabled"}` arrived on a turn that was
+ * served and answered. Treating that as a rejection printed a false "rejected
+ * this request" line and, worse, set account failover off on a successful turn.
+ * An overage rejection still counts when no status came with it.
+ */
 export function isRateLimitRejected(info: RateLimitInfo): boolean {
-  return info.status === "rejected" || info.overageStatus === "rejected"
+  if (info.status === "rejected") return true
+  if (info.status === "allowed" || info.status === "allowed_warning") return false
+  return info.overageStatus === "rejected"
 }
 
 export interface RateLimitReport {

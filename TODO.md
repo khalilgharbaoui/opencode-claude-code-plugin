@@ -53,6 +53,16 @@
 
 ## Backlog
 
+- 2026-09-23, observed from inside a plugin-driven session: every proxied tool call
+  (`bash`, `edit`, `write`) reaches the model as rejected ("The user doesn't want to
+  proceed with this tool use", then "[Request interrupted by user for tool use]"), yet
+  the tool ran and its result arrived on the next turn as `<opencode_tool_result>` text.
+  So the broker is not matching the result to the pending call, the CLI is being
+  interrupted, and each call costs an extra turn. Seen before and after an account
+  failover switch, with opencode-dcp loaded. Start from `plugin.log` around one call:
+  `abort between proxy tool boundaries`, `interrupt sent for aborted turn`, and
+  `rendering opencode-side tool result as text`. Not investigated yet.
+
 ## Deferred decisions
 
 - 2026-09-20: The maintainer chose "later" for adding the Appical MCP project block

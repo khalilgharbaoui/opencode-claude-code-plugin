@@ -3751,7 +3751,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // form listing the other configured accounts. Leaving it unanswered
           // waits and costs nothing; every answer that is not one of those
           // accounts comes back as a `stop` and ends the turn as before.
-          if (accountLimitHit && failoverAskActive) {
+          // Only a turn that failed: a limit event on a turn that was served
+          // is information, and replacing its answer with this form would
+          // throw the answer away.
+          if (accountLimitHit && failoverAskActive && msg.is_error === true) {
             const call = createAccountFailoverQuestionCall(sk, {
               sourceAccount,
               candidates: failoverAccounts,
