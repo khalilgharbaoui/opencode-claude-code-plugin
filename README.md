@@ -335,7 +335,8 @@ model: claude-code-work/claude-opus-5@work
 | `compactionModel` | string | `"claude-haiku-4-5"` | Model used when opencode invokes `/compact`. Override per-process via the `CLAUDE_CODE_COMPACTION_MODEL` env var (env wins over config). See [Compaction](#compaction). |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from every spawned `claude` process so it authenticates with your logged-in subscription instead of pay-as-you-go API billing. The plugin warns once at startup whenever an API key is detected, regardless of this setting. See [Billing](#billing). |
 | `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The timer starts when a turn finishes, a new turn cancels it, a worker that is mid-turn when it fires is left alone and re-timed, and the session id is preserved for `--resume`. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set `0` to retain workers until LRU eviction (16 processes). Interactive transport is excluded. Contributed by [@bernardofortes](https://github.com/bernardofortes). |
-| `bridgeOpencodeSkills` | boolean | `false` | Expose your opencode skills to Claude's native `Skill` tool. Off by default because every bridged skill is also in the system prompt opencode forwards, so a large set is paid for twice per turn; the bundled configuration skill is staged either way. See [Skill bridge](#skill-bridge). Written by [@broskees](https://github.com/broskees). |
+| `bridgeOpencodeSkills` | boolean | `false` | Expose your opencode skills to Claude's native `Skill` tool, from every root opencode itself reads. Off by default because every bridged skill is also in the system prompt opencode forwards, so a large set is paid for twice per turn; the bundled configuration skill is staged either way. See [Skill bridge](#skill-bridge). Written by [@broskees](https://github.com/broskees). |
+| `bridgeSkipNativeSkills` | boolean | `true` | Leave a skill unbridged when the Claude session already loads it from `$CLAUDE_CONFIG_DIR/skills`, the project's `.claude/skills`, or an installed plugin, so one skill does not reach the model twice. Matched by resolved path, by identical `SKILL.md`, or by name. `false` bridges everything and reinstates the duplicates. See [Skills Claude already has](#skills-claude-already-has). |
 | `logging` | object | all defaults | The plugin's own logger, four independent fields: `file` (boolean, default `false`), `dir` (string, default `~/.local/share/opencode-claude-code/`), `mode` (`"silent"` \| `"debug"`, default `"silent"`) and `level` (`"debug"` \| `"info"` \| `"notice"` \| `"warn"` \| `"error"`, default `"info"`). Goes under `provider.claude-code.options` like every other row here. See [Logging](#logging). |
 | `turnStats` | boolean | `false` | Append a one-line cost / duration / cache footer to each finished turn. See [Per-turn stats](#per-turn-stats). |
 | `interactive` | boolean | `false` | **Experimental.** Drive the interactive `claude` TUI (subscription billing) instead of headless `--print`. Requires opencode running under Bun with PTY support; silently falls back to headless otherwise. The tool proxy, `permissionMode` and `/btw` are all unavailable on it, so read [What it does not support](#what-it-does-not-support) before enabling. Env: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`. |
@@ -766,7 +767,7 @@ No separate skill installation or copying is needed. It ships with each package 
 
 ## Skill bridge
 
-opencode and Claude Code use the same on-disk skill format, a `<name>/SKILL.md` whose frontmatter carries `name` and `description`, but they read from different directories. opencode looks in `.opencode/skills/` and `~/.config/opencode/skills/`; the Claude CLI looks in `~/.claude/skills/` and its own plugins. So opencode advertises your skills in the system prompt it forwards, the model calls `Skill("browser-automation")`, and Claude answers `Unknown skill`.
+opencode and Claude Code use the same on-disk skill format, a `<name>/SKILL.md` whose frontmatter carries `name` and `description`, but they read from overlapping, not identical, directories. opencode looks in `.opencode/skills/`, `~/.config/opencode/skills/`, `~/.agents/skills/` and more; the Claude CLI looks in `~/.claude/skills/`, the project's `.claude/skills/` and its own plugins. Where they differ, opencode advertises a skill in the system prompt it forwards, the model calls `Skill("browser-automation")`, and Claude answers `Unknown skill`. Where they overlap, the same skill reaches one session twice.
 
 By default the plugin discovers your opencode skills, stages a throwaway Claude Code plugin directory that links them, and passes it as `claude --plugin-dir`. They register natively, prefixed with the plugin name:
 
@@ -777,9 +778,33 @@ opencode-skills:rtk
 
 Claude can invoke them with the Skill tool or as `/opencode-skills:<name>`. `--plugin-dir` is scoped to the spawned session, so nothing is written into your `~/.claude`.
 
-Discovery order, first match wins: `.opencode/skills/` walking up from the working directory, then `~/.opencode/skills/`, then `$OPENCODE_CONFIG_DIR/skills/`, then `~/.config/opencode/skills/`. A project skill shadows a global one of the same name. If the skill set is unchanged the staged directory is reused between spawns.
+Discovery covers every root opencode itself reads, first match wins:
 
-The bridge is **off by default**: every bridged skill's name and description is also in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Set `bridgeOpencodeSkills: true` when the model tries `Skill("<name>")` for a skill opencode advertises and gets `Unknown skill`; the bundled configuration skill is staged either way. When on, the bridge applies to the headless, interactive and direct `doGenerate` spawns alike, never to compaction, and it is skipped on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
+1. Walking up from the working directory: `.opencode/skills/`, `.claude/skills/`, `.agents/skills/` at each level.
+2. `~/.opencode/skills/`.
+3. `$OPENCODE_CONFIG_DIR/skills/` and `.../skill/`.
+4. `~/.config/opencode/skills/` and `.../skill/` (or `$XDG_CONFIG_HOME`).
+5. `~/.claude/skills/` and `~/.agents/skills/`.
+
+A project skill shadows a global one of the same name, and an opencode-managed copy shadows an external one. Step 5 is opencode's own "external" scan and honours its `OPENCODE_DISABLE_EXTERNAL_SKILLS` and `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` variables. A skill is known by the `name:` its `SKILL.md` frontmatter declares, falling back to the directory name, which is what opencode advertises. If the skill set is unchanged the staged directory is reused between spawns.
+
+### Skills Claude already has
+
+Those roots overlap Claude Code's own, which reads `$CLAUDE_CONFIG_DIR/skills/` (`~/.claude/skills/` by default), the project's `.claude/skills/`, and the `skills/` folder of every installed plugin. Without care one skill reaches a single session twice, costing prompt tokens on every turn and leaving it ambiguous which copy answers.
+
+So `bridgeSkipNativeSkills` (**on by default**) leaves a skill unbridged when Claude already loads it. A skill counts as already loaded when:
+
+- it is literally the same directory, symlinks resolved;
+- its `SKILL.md` is byte-identical to a native one, wherever that one lives (this is the case for a skill installed as a Claude plugin *and* symlinked into `~/.agents/skills`);
+- a **different** skill of the same name is registered under user or project scope. Plugin skills are namespaced `<plugin>:<name>` and so never take a bridged name, only duplicate its content.
+
+Only that last case changes which copy answers `Skill("<name>")`, so it is logged at WARN naming both paths; the others are logged at INFO. Set `bridgeSkipNativeSkills: false` to bridge everything regardless and get the duplicates back.
+
+One limitation worth knowing: the plugin scan reads `installed_plugins.json` and does not check whether that plugin is actually enabled, so a skill from a disabled plugin can be treated as native. If a skill disappears, grep `plugin.log` for `skills claude code already loads` — one line names both paths and the reason.
+
+### Enabling it
+
+The bridge itself is **off by default**: every bridged skill's name and description is also in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Set `bridgeOpencodeSkills: true` when the model tries `Skill("<name>")` for a skill opencode advertises and gets `Unknown skill`; the bundled configuration skill is staged either way. When on, the bridge applies to the headless, interactive and direct `doGenerate` spawns alike, never to compaction, and it is skipped on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
 
 This bridge was written by [@broskees](https://github.com/broskees) (Joseph Roberts) on his fork and absorbed here with credit; see [Credits](#credits).
 

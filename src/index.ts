@@ -209,6 +209,7 @@ export function createClaudeCode(
       ignoreAnthropicApiKey: settings.ignoreAnthropicApiKey,
       idleProcessTimeoutMs: settings.idleProcessTimeoutMs,
       bridgeOpencodeSkills: settings.bridgeOpencodeSkills === true,
+      bridgeSkipNativeSkills: settings.bridgeSkipNativeSkills !== false,
       turnStats: settings.turnStats === true,
       interactive: settings.interactive,
       interactiveBypass: settings.interactiveBypass,

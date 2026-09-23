@@ -53,6 +53,17 @@ export function accountConfigDir(account: string): string | undefined {
   return `~/.claude-${normalized}`
 }
 
+/**
+ * Absolute `CLAUDE_CONFIG_DIR` for an account, or undefined for the default
+ * account, which leaves the CLI on its own `~/.claude`. Used where a caller
+ * needs to know what the *spawn* will read (skills, plugins) rather than to
+ * set the variable itself.
+ */
+export function accountConfigDirPath(account: string): string | undefined {
+  const dir = accountConfigDir(account)
+  return dir ? expandHome(dir) : undefined
+}
+
 export function expandHome(value: string): string {
   const home = process.env.HOME ?? process.env.USERPROFILE
 

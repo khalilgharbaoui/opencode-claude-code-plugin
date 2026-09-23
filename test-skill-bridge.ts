@@ -8,10 +8,14 @@ import {
   SKILL_PLUGIN_NAME,
   buildSkillPluginDir,
   bundledSkillsDir,
+  declaredSkillName,
   discoverBundledSkills,
+  discoverNativeClaudeSkills,
   discoverOpencodeSkills,
+  dropNativelyLoadedSkills,
   registerBundledSkillPath,
   resolveSkillPluginDirs,
+  skillRoots,
 } from "./src/skill-bridge.js"
 import {
   buildCliArgs,
@@ -36,33 +40,68 @@ function makeSkill(root: string, name: string, body = "# body\n"): void {
   )
 }
 
+interface FixturePaths {
+  /** The workspace the spawn runs in. */
+  cwd: string
+  /** `<cwd>/.opencode/skills` — opencode's own project root. */
+  projectSkills: string
+  /** `<xdg>/opencode/skills` — opencode's own global root. */
+  globalSkills: string
+  /** `<cwd>/.claude/skills` — read by opencode AND natively by Claude. */
+  projectClaudeSkills: string
+  /** `<cwd>/.agents/skills` — read by opencode only. */
+  projectAgentsSkills: string
+  /** `~/.claude/skills` — opencode's external scan, and Claude's user scope. */
+  homeClaudeSkills: string
+  /** `~/.agents/skills` — opencode's external scan, invisible to Claude. */
+  homeAgentsSkills: string
+  /** `CLAUDE_CONFIG_DIR`, i.e. `~/.claude`. */
+  claudeConfig: string
+}
+
 /** Run `fn` with a scratch tree and env isolated from the real machine. */
-async function withFixture<T>(
-  fn: (paths: { cwd: string; projectSkills: string; globalSkills: string }) => T,
-): Promise<Awaited<T>> {
+async function withFixture<T>(fn: (paths: FixturePaths) => T): Promise<Awaited<T>> {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "skill-bridge-test-"))
   const cwd = path.join(base, "workspace")
-  const projectSkills = path.join(cwd, ".opencode", "skills")
   const xdg = path.join(base, "xdg")
-  const globalSkills = path.join(xdg, "opencode", "skills")
-  fs.mkdirSync(projectSkills, { recursive: true })
-  fs.mkdirSync(globalSkills, { recursive: true })
+  const claudeConfig = path.join(base, ".claude")
+  const paths: FixturePaths = {
+    cwd,
+    projectSkills: path.join(cwd, ".opencode", "skills"),
+    globalSkills: path.join(xdg, "opencode", "skills"),
+    projectClaudeSkills: path.join(cwd, ".claude", "skills"),
+    projectAgentsSkills: path.join(cwd, ".agents", "skills"),
+    homeClaudeSkills: path.join(claudeConfig, "skills"),
+    homeAgentsSkills: path.join(base, ".agents", "skills"),
+    claudeConfig,
+  }
+  for (const [key, dir] of Object.entries(paths)) {
+    if (key !== "cwd" && key !== "claudeConfig") fs.mkdirSync(dir, { recursive: true })
+  }
 
-  const prevXdg = process.env.XDG_CONFIG_HOME
-  const prevConfigDir = process.env.OPENCODE_CONFIG_DIR
-  const prevHome = process.env.HOME
+  const saved = {
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS,
+    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS,
+    // Pinned, not merely saved: an ambient CLAUDE_CONFIG_DIR would send the
+    // native scan at the real machine's `~/.claude/skills`.
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    HOME: process.env.HOME,
+  }
   process.env.HOME = base
   process.env.XDG_CONFIG_HOME = xdg
+  process.env.CLAUDE_CONFIG_DIR = claudeConfig
   delete process.env.OPENCODE_CONFIG_DIR
+  delete process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS
+  delete process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
   try {
-    return await fn({ cwd, projectSkills, globalSkills })
+    return await fn(paths)
   } finally {
-    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
-    else process.env.XDG_CONFIG_HOME = prevXdg
-    if (prevConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
-    else process.env.OPENCODE_CONFIG_DIR = prevConfigDir
-    if (prevHome === undefined) delete process.env.HOME
-    else process.env.HOME = prevHome
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     fs.rmSync(base, { recursive: true, force: true })
   }
 }
@@ -174,6 +213,255 @@ test("staging is reused for an identical skill set and rekeyed when it changes",
 
 test("no skills means no plugin dir", () => {
   assert.equal(buildSkillPluginDir([]), null)
+})
+
+// --- opencode's real roots ---------------------------------------------------
+//
+// opencode reads `.claude/` and `.agents/` as well as its own `.opencode/`,
+// project-scoped walking up and globally from the home dir. The bridge used to
+// read only `.opencode/`, so everything a user kept in `~/.agents/skills` was
+// advertised by opencode and unreachable from a Claude turn.
+
+test("discovery covers every root opencode itself reads", async () => {
+  await withFixture(({ cwd, projectSkills, projectClaudeSkills, projectAgentsSkills, globalSkills, homeClaudeSkills, homeAgentsSkills }) => {
+    makeSkill(projectSkills, `${P}p-opencode`)
+    makeSkill(projectClaudeSkills, `${P}p-claude`)
+    makeSkill(projectAgentsSkills, `${P}p-agents`)
+    makeSkill(globalSkills, `${P}g-opencode`)
+    makeSkill(homeClaudeSkills, `${P}g-claude`)
+    makeSkill(homeAgentsSkills, `${P}g-agents`)
+
+    assert.deepEqual(
+      fixtures(discoverOpencodeSkills(cwd)).map((s) => s.name),
+      [`${P}g-agents`, `${P}g-claude`, `${P}g-opencode`, `${P}p-agents`, `${P}p-claude`, `${P}p-opencode`],
+    )
+  })
+})
+
+test("the external roots honour opencode's own kill switches", async () => {
+  await withFixture(({ cwd, homeClaudeSkills, homeAgentsSkills }) => {
+    makeSkill(homeClaudeSkills, `${P}ext-claude`)
+    makeSkill(homeAgentsSkills, `${P}ext-agents`)
+    const names = () => fixtures(discoverOpencodeSkills(cwd)).map((s) => s.name)
+    assert.deepEqual(names(), [`${P}ext-agents`, `${P}ext-claude`])
+
+    process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = "1"
+    assert.deepEqual(names(), [`${P}ext-agents`], "~/.claude is the claude-code scan")
+
+    process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS = "1"
+    assert.deepEqual(names(), [], "and this one covers both")
+  })
+})
+
+test("the home dir's own .claude and .agents arrive as global roots, not project ones", async () => {
+  await withFixture(({ cwd }) => {
+    // The walk-up passes through HOME on the way to `/`. Reaching the external
+    // roots that way would sail straight past the kill switches above.
+    process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS = "1"
+    const home = path.resolve(process.env.HOME!)
+    const roots = skillRoots(cwd)
+    assert.ok(!roots.includes(path.join(home, ".claude", "skills")), roots.join("\n"))
+    assert.ok(!roots.includes(path.join(home, ".agents", "skills")), roots.join("\n"))
+  })
+})
+
+// --- identity ----------------------------------------------------------------
+
+test("a skill is known by the name its frontmatter declares", async () => {
+  await withFixture(({ cwd, projectSkills }) => {
+    // Real case: the obsidian skill pack ships `obsidian-skills--defuddle/`
+    // whose SKILL.md declares `name: defuddle`. opencode advertises `defuddle`,
+    // so staging the basename made `Skill("defuddle")` fail.
+    const dir = path.join(projectSkills, `${P}pack--inner`)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, "SKILL.md"),
+      `---\nname: ${P}inner\ndescription: renamed\n---\n\nbody\n`,
+    )
+    const [found] = fixtures(discoverOpencodeSkills(cwd))
+    assert.equal(found!.name, `${P}inner`)
+    assert.equal(found!.dir, dir)
+
+    const staged = buildSkillPluginDir([found!])
+    assert.deepEqual(fs.readdirSync(path.join(staged!, "skills")), [`${P}inner`])
+  })
+})
+
+test("declaredSkillName refuses anything that is not one safe path segment", () => {
+  const fm = (name: string) => `---\nname: ${name}\ndescription: x\n---\n`
+  assert.equal(declaredSkillName(fm("good-name_1.2")), "good-name_1.2")
+  assert.equal(declaredSkillName(fm('"quoted"')), "quoted")
+  // A staged name becomes a directory under `skills/`; these must not.
+  for (const bad of ["../escape", "a/b", ".hidden", "-leading", ""]) {
+    assert.equal(declaredSkillName(fm(bad)), null, bad)
+  }
+  assert.equal(declaredSkillName("no frontmatter at all"), null)
+  assert.equal(declaredSkillName("---\ndescription: x\n---\n"), null)
+  // Only a top-level key counts; an indented one belongs to something else.
+  assert.equal(declaredSkillName("---\nmeta:\n  name: nested\n---\n"), null)
+})
+
+test("a skill reached through two roots is one skill, and only a real divergence warns", async () => {
+  await withFixture(({ cwd, projectSkills, globalSkills, homeAgentsSkills }) => {
+    // Byte-identical copies in two roots, plus a symlink to a third.
+    makeSkill(projectSkills, `${P}twin`, "same body\n")
+    makeSkill(globalSkills, `${P}twin`, "same body\n")
+    makeSkill(homeAgentsSkills, `${P}linked`)
+    fs.symlinkSync(
+      path.join(homeAgentsSkills, `${P}linked`),
+      path.join(projectSkills, `${P}linked`),
+      "dir",
+    )
+
+    const found = fixtures(discoverOpencodeSkills(cwd))
+    assert.deepEqual(found.map((s) => s.name), [`${P}linked`, `${P}twin`])
+    const linked = found.find((s) => s.name === `${P}linked`)!
+    assert.equal(
+      linked.realDir,
+      fs.realpathSync(path.join(homeAgentsSkills, `${P}linked`)),
+      "a symlink is the same skill as its target",
+    )
+  })
+})
+
+// --- what Claude already loads -----------------------------------------------
+
+const nativeOf = (skills: ReturnType<typeof discoverNativeClaudeSkills>) =>
+  skills.filter((s) => s.name.startsWith(P))
+
+test("native discovery finds user, project and installed-plugin skills", async () => {
+  await withFixture(({ cwd, claudeConfig, homeClaudeSkills, projectClaudeSkills }) => {
+    makeSkill(homeClaudeSkills, `${P}user`)
+    makeSkill(projectClaudeSkills, `${P}project`)
+
+    const installPath = path.join(claudeConfig, "plugins", "cache", "market", "pack", "1.0.0")
+    makeSkill(path.join(installPath, "skills"), `${P}plugin`)
+    const elsewhere = path.join(claudeConfig, "plugins", "cache", "market", "other", "1.0.0")
+    makeSkill(path.join(elsewhere, "skills"), `${P}other-project`)
+    fs.writeFileSync(
+      path.join(claudeConfig, "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "pack@market": [{ scope: "user", installPath }],
+          "other@market": [
+            { scope: "project", projectPath: path.join(cwd, "..", "somewhere-else"), installPath: elsewhere },
+          ],
+        },
+      }),
+    )
+
+    const native = nativeOf(discoverNativeClaudeSkills({ cwd }))
+    assert.deepEqual(
+      native.map((s) => [s.name, s.scope]).sort(),
+      [[`${P}plugin`, "plugin"], [`${P}project`, "project"], [`${P}user`, "user"]],
+      "a plugin installed for another project is not loaded here",
+    )
+  })
+})
+
+test("identical copies are dropped whatever Claude loads them from; a name clash warns", () => {
+  const skill = (over: Partial<{ name: string; dir: string; realDir: string; contentHash: string }>) => ({
+    name: "s",
+    dir: "/oc/s",
+    realDir: "/oc/s",
+    contentHash: "hash-a",
+    ...over,
+  })
+  const native = [
+    { ...skill({ name: "shared", dir: "/claude/shared", realDir: "/claude/shared" }), scope: "user" as const },
+    { ...skill({ name: "copied", dir: "/claude/copied", realDir: "/claude/copied", contentHash: "hash-copy" }), scope: "plugin" as const },
+    { ...skill({ name: "diverged", dir: "/claude/diverged", realDir: "/claude/diverged", contentHash: "hash-theirs" }), scope: "user" as const },
+    { ...skill({ name: "plugin-only", dir: "/claude/plugin-only", realDir: "/claude/plugin-only", contentHash: "hash-theirs" }), scope: "plugin" as const },
+  ]
+  const { bridged, skipped } = dropNativelyLoadedSkills(
+    [
+      skill({ name: "shared", dir: "/oc/shared", realDir: "/claude/shared" }),
+      skill({ name: "copied-elsewhere", dir: "/oc/copied", realDir: "/oc/copied", contentHash: "hash-copy" }),
+      skill({ name: "diverged", dir: "/oc/diverged", realDir: "/oc/diverged", contentHash: "hash-mine" }),
+      skill({ name: "plugin-only", dir: "/oc/plugin-only", realDir: "/oc/plugin-only", contentHash: "hash-mine" }),
+      skill({ name: "untouched", dir: "/oc/untouched", realDir: "/oc/untouched", contentHash: "hash-new" }),
+    ],
+    native,
+  )
+
+  assert.deepEqual(
+    bridged.map((s) => s.name),
+    ["plugin-only", "untouched"],
+    "a plugin skill answers to <plugin>:<name>, so it cannot take a bridged name",
+  )
+  assert.deepEqual(
+    skipped.map((s) => [s.skill.name, s.reason]),
+    [["shared", "same-copy"], ["copied-elsewhere", "same-content"], ["diverged", "name-taken"]],
+  )
+  assert.equal(skipped[2]!.native.dir, "/claude/diverged", "the warning has to name both sides")
+})
+
+test("no native skills at all is a pass-through, not a filter", () => {
+  const skills = [{ name: "a", dir: "/a", realDir: "/a", contentHash: "h" }]
+  const { bridged, skipped } = dropNativelyLoadedSkills(skills, [])
+  assert.equal(bridged, skills)
+  assert.deepEqual(skipped, [])
+})
+
+test("a skill Claude already loads is not bridged, and the opt-out brings it back", async () => {
+  await withFixture(async ({ cwd, claudeConfig, projectSkills, homeClaudeSkills, projectClaudeSkills }) => {
+    // Scenario 1: `~/.claude/skills` is an opencode root and Claude's user scope.
+    makeSkill(homeClaudeSkills, `${P}both`)
+    // Scenario 2: installed as a Claude plugin and copied into an opencode
+    // root under a different directory name. Byte-identical SKILL.md, so the
+    // declared name is the same and only the hash can tell they are one skill.
+    const body = `---\nname: ${P}copy\ndescription: two homes\n---\n\nidentical\n`
+    const installPath = path.join(claudeConfig, "plugins", "cache", "m", "pack", "1.0.0")
+    for (const dir of [
+      path.join(projectSkills, `${P}copy`),
+      path.join(installPath, "skills", `${P}copy-as-installed`),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, "SKILL.md"), body)
+    }
+    fs.writeFileSync(
+      path.join(claudeConfig, "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "pack@m": [{ scope: "user", installPath }] } }),
+    )
+    // Only reachable through the bridge.
+    makeSkill(projectSkills, `${P}mine`)
+    // Same name, different content: Claude's copy wins and the bridge warns.
+    makeSkill(projectClaudeSkills, `${P}clash`, "claude's\n")
+    makeSkill(projectSkills, `${P}clash`, "opencode's\n")
+
+    const cliPath = fakeCli(path.dirname(cwd), "--plugin-dir <path>")
+    const staged = async (skipNative?: boolean) => {
+      const dirs = await resolveSkillPluginDirs({ cwd, cliPath, enabled: true, skipNative })
+      return skillNames(dirs[0]!).filter((n) => n.startsWith(P))
+    }
+
+    assert.deepEqual(await staged(), [`${P}mine`])
+    assert.deepEqual(
+      await staged(false),
+      [`${P}both`, `${P}clash`, `${P}copy`, `${P}mine`],
+      "bridgeSkipNativeSkills: false keeps every duplicate",
+    )
+  })
+})
+
+test("the native scan follows the account's own CLAUDE_CONFIG_DIR", async () => {
+  await withFixture(async ({ cwd, projectSkills, homeClaudeSkills }) => {
+    makeSkill(projectSkills, `${P}acct`)
+    // The default config dir has it; an account's does not, so a spawn routed
+    // to that account still needs it bridged.
+    makeSkill(homeClaudeSkills, `${P}acct`)
+    const account = path.join(path.dirname(cwd), ".claude-other")
+    fs.mkdirSync(path.join(account, "skills"), { recursive: true })
+
+    const cliPath = fakeCli(path.dirname(cwd), "--plugin-dir <path>")
+    const staged = async (configDir?: string) => {
+      const dirs = await resolveSkillPluginDirs({ cwd, cliPath, enabled: true, configDir })
+      return skillNames(dirs[0]!).filter((n) => n.startsWith(P))
+    }
+    assert.deepEqual(await staged(), [])
+    assert.deepEqual(await staged(account), [`${P}acct`])
+  })
 })
 
 // --- the bundled skill -------------------------------------------------------
@@ -374,6 +662,12 @@ test("createClaudeCode leaves the user's skills unbridged unless asked", () => {
   assert.equal(configOf({}).bridgeOpencodeSkills, false)
   assert.equal(configOf({ bridgeOpencodeSkills: true }).bridgeOpencodeSkills, true)
   assert.equal(configOf({ bridgeOpencodeSkills: false }).bridgeOpencodeSkills, false)
+
+  // Dropping what Claude already loads is the other way round: on unless the
+  // operator asks for the duplicates back.
+  assert.equal(configOf({}).bridgeSkipNativeSkills, true)
+  assert.equal(configOf({ bridgeSkipNativeSkills: true }).bridgeSkipNativeSkills, true)
+  assert.equal(configOf({ bridgeSkipNativeSkills: false }).bridgeSkipNativeSkills, false)
 })
 
 for (const transport of ["doStream", "doGenerate"] as const) {

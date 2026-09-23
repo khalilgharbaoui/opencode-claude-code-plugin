@@ -63,6 +63,8 @@ export interface ClaudeCodeConfig {
   idleProcessTimeoutMs?: number
   /** Stage opencode skills as a `--plugin-dir` so Claude's Skill tool can run them. */
   bridgeOpencodeSkills?: boolean
+  /** Leave out the skills the Claude session already loads natively. Default true. */
+  bridgeSkipNativeSkills?: boolean
   /** Append a one-line cost / duration / cache footer to each finished turn. */
   turnStats?: boolean
   logging?: LoggingConfig
@@ -330,17 +332,42 @@ export interface ClaudeCodeProviderSettings {
    */
   idleProcessTimeoutMs?: number
   /**
-   * Expose your opencode skills (`.opencode/skills`, `~/.config/opencode/skills`)
-   * to Claude Code's native Skill tool by staging them as a session-scoped
-   * `--plugin-dir`, so a `Skill("<name>")` call for a skill opencode advertises
-   * does not fail with `Unknown skill`. Off by default: every bridged skill
-   * is also listed in the system prompt opencode forwards, so a large skill
-   * set costs prompt tokens twice per turn. When on it applies to the
-   * headless, interactive and direct `doGenerate` spawns alike; compaction
-   * never loads it, and the bundled configuration skill is staged either way.
-   * No-op on CLIs without `--plugin-dir`.
+   * Expose your opencode skills to Claude Code's native Skill tool by staging
+   * them as a session-scoped `--plugin-dir`, so a `Skill("<name>")` call for a
+   * skill opencode advertises does not fail with `Unknown skill`. Covers every
+   * root opencode itself reads: project `.opencode/`, `.claude/` and `.agents/`
+   * walking up from the workspace, the opencode config dirs, and the global
+   * `~/.claude/skills` and `~/.agents/skills` (those last two behind the same
+   * `OPENCODE_DISABLE_EXTERNAL_SKILLS` / `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`
+   * switches opencode honours).
+   *
+   * Off by default: every bridged skill is also listed in the system prompt
+   * opencode forwards, so a large skill set costs prompt tokens twice per turn.
+   * When on it applies to the headless, interactive and direct `doGenerate`
+   * spawns alike; compaction never loads it, and the bundled configuration
+   * skill is staged either way. No-op on CLIs without `--plugin-dir`.
    */
   bridgeOpencodeSkills?: boolean
+
+  /**
+   * Leave a skill unbridged when the Claude Code session already loads it:
+   * from `<CLAUDE_CONFIG_DIR>/skills` (`~/.claude/skills` by default), from the
+   * project's own `.claude/skills`, or from an installed plugin's `skills/`.
+   * On by default, because those roots overlap opencode's and the duplicate
+   * costs prompt tokens on every turn for nothing.
+   *
+   * A skill is treated as already loaded when it is literally the same
+   * directory (symlinks resolved), when its SKILL.md is byte-identical to a
+   * native one, or when a *different* skill of the same name is registered
+   * under user or project scope. That last case is the only one that changes
+   * behaviour, because `Skill("<name>")` then answers from Claude's copy
+   * rather than opencode's, so it is logged at WARN naming both paths. Plugin
+   * skills are namespaced `<plugin>:<name>` and so only ever match by content.
+   *
+   * Set `false` to bridge everything regardless, which restores the pre-0.25
+   * behaviour of advertising a shared skill twice.
+   */
+  bridgeSkipNativeSkills?: boolean
 
   /**
    * Append one compact line to the end of every finished (non-compaction,
