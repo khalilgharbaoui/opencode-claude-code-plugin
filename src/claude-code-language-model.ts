@@ -1061,6 +1061,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
   }
 
+  /**
+   * Whether this call only names the session, which gets the synthetic stub
+   * rather than a `claude` spawn. opencode 1.x sends a title request with no
+   * tools, and that is the whole test there. opencode 2 sends its tool set
+   * along with it (measured on 2.0.11: `scope: "tools"`, agent `title`), so
+   * every new V2 session paid for a second `claude` process just to title
+   * itself; for a V2 model the request kind, carried as the `title` agent,
+   * decides instead.
+   */
+  private isTitleRequest(
+    scope: "tools" | "no-tools",
+    options: LanguageModelV3CallOptions,
+  ): boolean {
+    if (scope === "no-tools") return true
+    return this.config.hostApi === "v2" && this.getOpencodeAgent(options) === "title"
+  }
+
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
     const tools = options?.tools
     if (Array.isArray(tools)) return "tools"
@@ -1848,7 +1865,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return this.doGenerateViaStream(options)
     }
 
-    if (scope === "no-tools") {
+    if (this.isTitleRequest(scope, options)) {
       log.info("doGenerate no-tools title stub", {
         compactionMode,
         opencodeAgent: this.getOpencodeAgent(options),
@@ -2573,7 +2590,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return { stream, request: { body: { text: aside.question } } }
     }
 
-    if (scope === "no-tools" && !compactionMode) {
+    if (this.isTitleRequest(scope, options) && !compactionMode) {
       log.info("doStream no-tools title stub", {
         compactionMode,
         opencodeAgent: this.getOpencodeAgent(options),

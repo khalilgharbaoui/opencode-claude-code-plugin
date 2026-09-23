@@ -10,6 +10,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { accountProviderId, resolveAccounts } from "./src/accounts.js"
 import { resolveOpencodeAgent } from "./src/claude-code-language-model.js"
+import { createClaudeCode } from "./src/index.js"
 import { defaultModels } from "./src/models.js"
 import type { V2ModelInfo, V2ProviderInfo } from "./src/opencode-v2-types.js"
 import {
@@ -308,6 +309,28 @@ test("setup called by opencode 1.x registers nothing", async () => {
 
   assert.equal(isOpencodeV2Context(fakeContext().ctx), true)
   assert.equal(isOpencodeV2Context(undefined), false)
+})
+
+test("a V2 title request gets the synthetic stub even though it carries tools", async () => {
+  // Measured on 2.0.11: the title request arrives with the whole tool set, so
+  // the V1 "no tools means title" test missed it and every new session spawned
+  // a second `claude`. The CLI path points nowhere: a spawn would fail here.
+  const model = createClaudeCode({
+    hostApi: "v2",
+    cliPath: "/nonexistent/claude",
+    bridgeOpencodeMcp: false,
+    proxyTools: [],
+  }).languageModel("claude-haiku-4-5")
+  const result = await model.doStream({
+    prompt: [{ role: "user", content: [{ type: "text", text: "Fix the login bug" }] }],
+    tools: [{ type: "function", name: "read", description: "", inputSchema: { type: "object" } }],
+    headers: { [OPENCODE_AGENT_HEADER]: "title", [SESSION_AFFINITY_HEADER]: "ses_title" },
+  } as any)
+  const parts: any[] = []
+  for await (const part of result.stream as any) parts.push(part)
+  const finish = parts.find((part) => part.type === "finish")
+  assert.equal(finish.providerMetadata?.["claude-code"]?.synthetic, true)
+  assert.ok(parts.some((part) => part.type === "text-delta" && part.delta.length > 0))
 })
 
 test("command text matches V1's template output", () => {
