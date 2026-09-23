@@ -177,6 +177,19 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 
 Everything else is optional. Models appear in the picker without extra config.
 
+### opencode 2
+
+Same package, same config. 2.x's native key is `plugins` (plural), but it still reads 1.x's `plugin` key, so an existing install needs no edit:
+
+```json
+{ "plugins": ["@khalilgharbaoui/opencode-claude-code-plugin"] }
+```
+
+- Check the major first with `opencode --version`. `plugin` works on both majors (measured: 2.0.11 loaded a plugin listed under `plugin`); `plugins` is read by 2.x only.
+- `provider.claude-code.options` still works on 2.x; `provider.claude-code.settings` is the native spelling and wins where both are set. `accounts` may also sit in the plugin entry's own `options`.
+- A local checkout is loaded by pointing `plugins` at its **`dist`** directory, never the repository root.
+- Known 2.x differences: `/btw` is answered after the running turn rather than inside it, and there is no todo panel (2.x has no `todowrite` tool). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
+
 ### Two accounts
 
 ```json

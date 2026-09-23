@@ -103,7 +103,11 @@ No pending questions.
   hook takes a `LanguageModelV3`, which is exactly what `ClaudeCodeLanguageModel`
   already is, against the same `@ai-sdk/provider` major we already depend on. Dual V1
   and V2 support from one package is officially supported and our default export is
-  already the right shape. Next step is phase 0, the six probes listed in `V2.md`.
+  already the right shape.
+  2026-09-23 update: built on branch `v2-support`, one package for both majors, with a
+  live table per feature in `V2.md` (V2 2.0.11 and V1 1.18.32 from the same `dist/`).
+  Left before release: a live check of account failover and permission prompts on V2,
+  and an npm-name install after publishing.
 
 ## Done
 
