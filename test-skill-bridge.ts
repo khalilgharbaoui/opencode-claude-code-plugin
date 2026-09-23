@@ -44,17 +44,17 @@ function makeSkill(root: string, name: string, body = "# body\n"): void {
 interface FixturePaths {
   /** The workspace the spawn runs in. */
   cwd: string
-  /** `<cwd>/.opencode/skills` — opencode's own project root. */
+  /** `<cwd>/.opencode/skills`: opencode's own project root. */
   projectSkills: string
-  /** `<xdg>/opencode/skills` — opencode's own global root. */
+  /** `<xdg>/opencode/skills`: opencode's own global root. */
   globalSkills: string
-  /** `<cwd>/.claude/skills` — read by opencode AND natively by Claude. */
+  /** `<cwd>/.claude/skills`: read by opencode AND natively by Claude. */
   projectClaudeSkills: string
-  /** `<cwd>/.agents/skills` — read by opencode only. */
+  /** `<cwd>/.agents/skills`: read by opencode only. */
   projectAgentsSkills: string
-  /** `~/.claude/skills` — opencode's external scan, and Claude's user scope. */
+  /** `~/.claude/skills`: opencode's external scan, and Claude's user scope. */
   homeClaudeSkills: string
-  /** `~/.agents/skills` — opencode's external scan, invisible to Claude. */
+  /** `~/.agents/skills`: opencode's external scan, invisible to Claude. */
   homeAgentsSkills: string
   /** `CLAUDE_CONFIG_DIR`, i.e. `~/.claude`. */
   claudeConfig: string

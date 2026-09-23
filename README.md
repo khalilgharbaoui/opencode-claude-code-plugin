@@ -834,7 +834,7 @@ So `bridgeSkipNativeSkills` (**on by default**) leaves a skill unbridged when Cl
 
 Only that last case changes which copy answers `Skill("<name>")`, so it is logged at WARN naming both paths; the others are logged at INFO. Set `bridgeSkipNativeSkills: false` to bridge everything regardless and get the duplicates back.
 
-One limitation worth knowing: the plugin scan reads `installed_plugins.json` and does not check whether that plugin is actually enabled, so a skill from a disabled plugin can be treated as native. If a skill disappears, grep `plugin.log` for `skills claude code already loads` — one line names both paths and the reason.
+One limitation worth knowing: the plugin scan reads `installed_plugins.json` and does not check whether that plugin is actually enabled, so a skill from a disabled plugin can be treated as native. If a skill disappears, grep `plugin.log` for `skills claude code already loads`: one line names both paths and the reason.
 
 ### Enabling it
 
