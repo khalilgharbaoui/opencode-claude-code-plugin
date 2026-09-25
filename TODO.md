@@ -52,6 +52,11 @@
 
 ## Dropped
 
+- Dropped 2026-09-26 at the maintainer's request ("ok do it"): branch `disable-thinking`
+  (tip `b80cf54`, a `disableThinking` provider option from 2026-05-29). It worked around a
+  CLI bug that corrupted thinking blocks across turns (API 400 "thinking or
+  redacted_thinking blocks ... cannot be modified"), last seen in August. If it returns,
+  `CLAUDE_CODE_DISABLE_THINKING=1` is the switch, and the plugin already respects it.
 - Dropped 2026-09-06 at the user's request: live observation of `idleProcessTimeoutMs: 900000`. The 15-minute eviction and subsequent resume remain unverified in the user's window; no test is planned.
 
 ## Backlog
@@ -87,10 +92,7 @@ Nothing queued here; the working backlog is the vault note
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-09-23: branch `disable-thinking` (local and on origin) holds an unmerged
-  `disableThinking` provider option from 2026-05-29. Kept during branch cleanup because
-  it is unique work. Claude Code's own `CLAUDE_CODE_DISABLE_THINKING`, which the plugin
-  already respects, may make it redundant. Keep, finish, or drop?
+No pending questions.
 
 ## Parked
 
