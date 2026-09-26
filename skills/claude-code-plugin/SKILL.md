@@ -86,7 +86,8 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. Ignored when `permissionMode` is `"plan"`, which always drops the flag. |
 | `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. `plan` is enforced: it overrides `skipPermissions: true` and the plugin drops `--dangerously-skip-permissions` for it, so claude cannot edit or run commands. Every other value governs prompting and still passes the skip flag, so `plan` is the only one that makes a run read-only. Nothing releases plan mode mid-session (no headless `ExitPlanMode`), so leaving it means a config change and an opencode restart; the plugin warns once at startup. Not forwarded by the current interactive spawn path. |
-| `controlRequestBehavior` | `allow` / `deny` | `allow` | Automatically answer CLI `can_use_tool` requests if emitted. Not an opencode permission prompt or a sandbox; bypass/pre-allowed tools may never ask. `AskUserQuestion` defaults to deny. |
+| `permissionPreset` | `"read-only"` | unset | One named posture instead of hand-combining the five options around it. Unset changes nothing. `read-only` forces `skipPermissions: false` (the CLI exits with `bypassPermissions not supported in restricted mode` if both are passed), replaces any `permissionMode` with `--restricted` (CLI 2.1.258+: no Bash, REPL or other code runners, no WebFetch, file tools confined to the working directories, bypass refused), adds `--permission-prompts none` (CLI 2.1.263+), disallows `Bash`, `Write`, `Edit`, `NotebookEdit`, `REPL`, `JavaScript` and `WebFetch` via `--disallowedTools`, drops `bash`/`write`/`edit`/`webfetch`/`task`/`task_batch` from `proxyTools`, forces `controlRequestBehavior: "deny"` and ignores `controlRequestToolBehaviors` entirely. Every override is logged at NOTICE. An unknown preset name applies nothing and WARNs rather than guessing. On a CLI below either flag gate the preset still holds through `--disallowedTools` plus the plugin's own deny, with a WARN naming what is lost. Reads (`Read`, `Grep`, `Glob`, `WebSearch`) still work; anything else that would prompt, including bridged MCP tools and the `question` proxy, is denied. |
+| `controlRequestBehavior` | `allow` / `deny` | `allow` | Automatically answer CLI `can_use_tool` requests if emitted. Forced to `deny` by `permissionPreset: "read-only"`. Not an opencode permission prompt or a sandbox; bypass/pre-allowed tools may never ask. `AskUserQuestion` defaults to deny. |
 | `controlRequestToolBehaviors` | object of tool name to `allow`/`deny` | unset | Case-insensitive per-tool override of the above (`Bash`, `Read`, `mcp__github__list_prs`). Do not allow `AskUserQuestion`: that can let headless Claude self-answer. |
 | `controlRequestDenyMessage` | string | built-in text | Override ordinary deny text. `AskUserQuestion` always uses its own stop-and-wait message. |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Case-insensitive replacement list, not additive and not a capability allowlist. Known entries expose `mcp__opencode_proxy__<name>`; omitted/unknown tools are not disabled. `Task` also brings `task_batch`; `[]` disables this list, not MCP proxying. See the proxy table for exceptions. |
@@ -310,6 +311,29 @@ only to deliberately remove a capability; omission from `proxyTools` is not deni
 The proxy's loopback endpoint has bearer, Host, Origin and Content-Type guards.
 Never weaken them, publish its token or relax the generated MCP file's `0600` mode.
 Restart all old processes after a security upgrade; changing files cannot patch them.
+
+### Make a provider read-only
+
+```json
+{ "permissionPreset": "read-only" }
+```
+
+That one line is the whole posture. Do not also set `skipPermissions`,
+`permissionMode`, `controlRequestBehavior` or `controlRequestToolBehaviors`
+alongside it: the preset replaces all four and logs each value it dropped.
+`proxyTools` is filtered rather than replaced, so a list naming `Question`
+keeps it while `Bash`, `Edit`, `Write`, `WebFetch` and `Task` go.
+
+Read-only is enforced at three layers because no single one covers the plugin:
+`--restricted` removes the CLI's own command and code-running tools, the
+`--disallowedTools` list covers CLIs older than 2.1.258, and the proxy defs are
+dropped before the MCP server is built because a proxied `bash` executes in
+opencode where no CLI flag reaches it. Anything left that would prompt is
+denied, so bridged MCP tools and the `question` proxy do not work under the
+preset; Claude's own `AskUserQuestion` still renders its stop-and-wait markdown.
+
+Pair it with a second provider entry when only some sessions should be
+read-only: `accounts` or `providerID` gives each its own model list.
 
 ### Let the model satisfy an opencode-dcp compress nudge
 

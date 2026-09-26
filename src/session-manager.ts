@@ -17,10 +17,13 @@ import { clearCompression } from "./compression-store.js"
 import {
   cliHygieneEnv,
   cliSupportsFastMode,
+  cliSupportsPermissionPrompts,
+  cliSupportsRestricted,
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
   type CliVersion,
 } from "./cli-version.js"
+import { isReadOnlyPermissionMode } from "./permission-presets.js"
 import type { ReasoningEffort } from "./types.js"
 import { dispatchSideQuestionResponse, isSideQuestionPending } from "./side-question.js"
 
@@ -992,7 +995,43 @@ export function buildCliArgs(opts: {
     args.push("--model", model)
   }
 
-  if (permissionMode) {
+  // The read-only preset arrives as an internal `permissionMode` token rather
+  // than a mode the CLI knows, because it is a capability restriction and the
+  // CLI spells that as its own flags. `--restricted` removes Bash, the REPL,
+  // the other code-running built-ins and WebFetch, confines the file tools to
+  // the working directories, and refuses bypassPermissions.
+  // `--permission-prompts none` denies anything left that would prompt
+  // without asking this plugin, which is the same answer the preset's
+  // `controlRequestBehavior: "deny"` gives on a CLI too old for the flag.
+  const readOnly = isReadOnlyPermissionMode(permissionMode)
+  if (readOnly) {
+    if (cliSupportsRestricted(cliVersion ?? null)) {
+      args.push("--restricted")
+    } else {
+      // The preset still holds: `--disallowedTools` carries the same tool
+      // names and the plugin denies every permission request itself. What is
+      // lost is the cwd confinement on reads and the CLI-side refusal of
+      // bypass, so say so rather than degrading quietly.
+      log.warn(
+        'permissionPreset "read-only": this claude CLI has no --restricted' +
+          " (2.1.258+), so file reads are not confined to the working" +
+          " directory. The mutating tools are still refused via" +
+          " --disallowedTools and every permission request is denied.",
+        { cliVersion: cliVersion?.raw ?? "unknown" },
+      )
+    }
+    if (cliSupportsPermissionPrompts(cliVersion ?? null)) {
+      args.push("--permission-prompts", "none")
+    } else {
+      log.warn(
+        'permissionPreset "read-only": this claude CLI has no' +
+          " --permission-prompts (2.1.263+), so permission requests are" +
+          " denied by the plugin's own can_use_tool handler instead of by" +
+          " the CLI. Same outcome, one layer fewer.",
+        { cliVersion: cliVersion?.raw ?? "unknown" },
+      )
+    }
+  } else if (permissionMode) {
     args.push("--permission-mode", permissionMode)
   }
 
@@ -1054,6 +1093,13 @@ export function buildCliArgs(opts: {
     args.push("--settings", JSON.stringify({ fastMode: true }))
   }
 
+  // Same rule as plan mode below, with a harder edge: `--restricted` and
+  // `--dangerously-skip-permissions` together are not a silent override but a
+  // startup error ("Error: bypassPermissions not supported in restricted
+  // mode", measured on 2.1.280), so a read-only spawn carrying both would
+  // never run at all. The preset already forces `skipPermissions` false; this
+  // is the second lock, for anyone calling `buildCliArgs` directly.
+  //
   // Plan mode is a capability restriction, not a prompt policy, and the CLI
   // lets `--dangerously-skip-permissions` override it outright: measured on
   // 2.1.258, a plan-mode run carrying both flags wrote a file on request
@@ -1063,7 +1109,7 @@ export function buildCliArgs(opts: {
   // full write access. Plan mode must never permit edits, so it wins here.
   // Every other `permissionMode` value governs prompting, which is exactly
   // what the skip flag is for, so those still pass both.
-  if (skipPermissions && permissionMode !== "plan") {
+  if (skipPermissions && permissionMode !== "plan" && !readOnly) {
     args.push("--dangerously-skip-permissions")
   }
 

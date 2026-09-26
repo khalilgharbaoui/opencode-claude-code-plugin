@@ -345,6 +345,7 @@ model: claude-code-work/claude-opus-5@work
 | `cwd` | string | see description | Working directory for the spawned CLI. Resolved **lazily per request**, first match winning: this explicit value, then the opencode session's own `directory` (so `opencode serve` and the web UI spawn in the right project even though one server handles many), then `process.cwd()` when it is a real directory, then the project directory captured at plugin init (this rescues macOS GUI launches, where `process.cwd()` is `/`), and finally `process.cwd()` regardless. [Startup diagnostics](#startup-diagnostics) reports which tier won. Session tier contributed by [@galvani](https://github.com/galvani). |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. It is still passed when `proxyTools` is set: proxied calls go through opencode's permission system regardless, but unproxied CLI built-ins do not. The one case where the flag is dropped is `permissionMode: "plan"`, because the CLI lets the skip flag override plan mode outright. See [Plan mode](#plan-mode). |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to headless `claude --permission-mode`. `"plan"` also suppresses `--dangerously-skip-permissions` (see the row above). Not version-gated, so check that your installed CLI accepts the value. The [interactive transport](#interactive-transport-experimental) does not forward it. |
+| `permissionPreset` | `"read-only"` | – | A named permission posture, so you set one option instead of combining five and getting one wrong. Opt-in: unset is exactly today's behaviour. `"read-only"` replaces `skipPermissions`, `permissionMode`, `controlRequestBehavior` and `controlRequestToolBehaviors`, and filters the write and command tools out of `proxyTools`. See [Read-only mode](#read-only-mode). |
 | `defaultSubagentModel` | string | – | Model that plugin-discovered `mode: subagent` agents run on when their own definition pins nothing. The caller's account is kept; only the model name changes. An agent's own `forceModel` wins over it, and an unknown id is refused rather than spawned. Unset means no implicit override at all. See [Subagents: your account, their model](#subagents-your-account-their-model). |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Claude built-in tools to route through opencode's executor + permission UI. Opt-in extras: `"Question"`, `"Compress"`. See [Selective tool proxy](#selective-tool-proxy). |
 | `extraDisallowedTools` | string[] | – | Extra Claude built-ins to switch off with `--disallowedTools`, on top of what `proxyTools` implies. Claude's names, e.g. `["NotebookEdit"]`. See [Closing a tool with no proxy](#closing-a-tool-with-no-proxy). |
@@ -912,6 +913,64 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 - **Deleted chat** → deleting a session in opencode kills its `claude` workers at once and forgets their session ids and per-chat state; there is nothing left to resume. Other chats, and the shared fallback bucket used when no session id is known, are untouched.
 - **opencode exits** → every retained worker is killed on the way out, so a hard shutdown does not leave `claude` processes reparented to init.
 - **Crash** → if the CLI dies mid-turn (no terminal `result` line), the turn ends with a visible error naming the exit code or signal and the last stderr the CLI wrote, not a silent `stop` that reads as a short but finished answer. An abort you asked for is not reported this way.
+
+---
+
+## Read-only mode
+
+```json
+"options": {
+  "permissionPreset": "read-only"
+}
+```
+
+That is the whole configuration. The turn can read your code and search the
+web, and it cannot write a file, run a command, or execute code.
+
+Presets exist because read-only was previously a combination you had to get
+exactly right. `permissionMode: "plan"` alone does not do it, and neither does
+any single Claude Code flag, because this plugin puts a second execution path
+next to the CLI's own tools: `proxyTools` defaults to `Bash`, `Edit`, `Write`,
+`WebFetch` and `Task`, and each of those is an MCP tool the CLI calls and
+**opencode** executes. No CLI flag reaches them. So the preset works at three
+layers:
+
+| Layer | What read-only does | Why it is needed |
+| --- | --- | --- |
+| Claude CLI tools | `--restricted` (CLI 2.1.258+) | Removes Bash, the REPL and the other code-running built-ins, removes WebFetch, confines the file tools to the working directories, and refuses bypass |
+| Claude CLI tools, older CLIs | `--disallowedTools Bash Write Edit NotebookEdit REPL JavaScript WebFetch` | `--restricted` is version-gated; these names are not |
+| The opencode proxy | `bash`, `write`, `edit`, `webfetch`, `task` and `task_batch` are dropped from `proxyTools` | These run in opencode, so the CLI flags above never see them |
+| Everything else | `--permission-prompts none` (CLI 2.1.263+) and `controlRequestBehavior: "deny"` | A bridged MCP tool or a read outside the working directory is neither of the above |
+
+`skipPermissions` is forced to `false`, and that is not a style choice:
+`--restricted --dangerously-skip-permissions` is a startup error on CLI 2.1.280
+(`Error: bypassPermissions not supported in restricted mode`), so a spawn
+carrying both would not run at all.
+
+**The preset replaces rather than merges.** Setting `skipPermissions`,
+`permissionMode`, `controlRequestBehavior` or `controlRequestToolBehaviors`
+next to it has no effect; each dropped value is logged at NOTICE at startup so
+you can see it happen. `proxyTools` is the exception: it is filtered, so a list
+naming `Question` keeps it. An unrecognised preset name applies **nothing** and
+logs a WARN, rather than guessing at what you meant.
+
+**What stops working.** Reads are fine (`Read`, `Grep`, `Glob`, `WebSearch`),
+but anything that would raise a permission prompt is denied, and that includes
+bridged MCP tools and the `question` proxy. Claude's own `AskUserQuestion`
+still renders its stop-and-wait markdown, so the model can still ask you
+things. If you need one specific tool allowed, do not use the preset: set the
+underlying options yourself.
+
+**On an older CLI** the preset still holds through `--disallowedTools` plus the
+plugin's own denial of every permission request, and it warns naming what is
+missing. Below 2.1.258 you lose the cwd confinement on reads; below 2.1.263 the
+denial happens in the plugin rather than in the CLI, one layer instead of two.
+
+Measured end to end on CLI 2.1.280 and `claude-haiku-4-5`: a turn under the
+preset asked to write a file and run a command did neither, the file was never
+created, and the CLI's own `permission_denials` recorded the single blocked
+`Write` with no Bash attempt at all, because there was no Bash tool to attempt
+with.
 
 ---
 
