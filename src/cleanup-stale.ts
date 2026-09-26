@@ -60,6 +60,11 @@ function ourLoadedDir(): string | null {
   }
 }
 
+/** Test seam: re-arms the once-per-process guard. */
+export function _resetCleanupStaleState(): void {
+  alreadyRan = false
+}
+
 export function cleanupStaleUnscopedInstall(): void {
   if (alreadyRan) return
   alreadyRan = true

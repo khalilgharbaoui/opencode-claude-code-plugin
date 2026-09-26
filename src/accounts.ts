@@ -193,7 +193,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 export CLAUDE_CONFIG_DIR=${shellSingleQuote(configDir)}
-exec ${shellSingleQuote(baseCliPath)} "\${args[@]}"
+# \${args[@]+...} keeps an empty array legal under \`set -u\` on bash 3.2,
+# which is the bash macOS ships and \`/usr/bin/env bash\` usually finds.
+exec ${shellSingleQuote(baseCliPath)} \${args[@]+"\${args[@]}"}
 `
 
   await writeFile(wrapperPath, script, "utf8")
