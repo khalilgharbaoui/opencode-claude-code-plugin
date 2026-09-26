@@ -19,7 +19,6 @@ import { createHostToolPartTranslator, translateStreamForHost } from "./host-too
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
-  shouldStripContextReminders,
 } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
@@ -37,7 +36,6 @@ import {
 } from "./cli-events.js"
 import {
   DEFAULT_ACCOUNT,
-  accountConfigDirPath,
   normalizeAccountName,
 } from "./accounts.js"
 import {
@@ -70,15 +68,12 @@ import {
   QUESTION_TOOL_NAME,
   consumeExitPlanModeQuestionResult,
   createExitPlanModeQuestionCall,
-  isPlanModeQuestionActive,
   type QuestionToolCall,
 } from "./plan-mode-question.js"
-import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
+import type { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
-  fetchOpencodeToolList,
   fetchSessionParentId,
-  type OpencodeToolListItem,
   resolveSpawnCwdForSession,
   fetchSessionRunState,
   settleSessionRunState,
@@ -113,16 +108,12 @@ import {
   clearCompression,
   consumeCompressionRestart,
   getCompressionSummary,
-  storeCompressionSummary,
 } from "./compression-store.js"
 import { log } from "./logger.js"
 import { detectCliVersion } from "./cli-version.js"
 import {
-  createProxyMcpServer,
   resolveDisallowedTools,
   resolveProxyOpencodeToolDefs,
-  resolveMcpProxyToolDefs,
-  DEFAULT_PROXY_TOOLS,
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
@@ -130,14 +121,11 @@ import {
   TASK_BATCH_TOOL_NAME,
   taskBatchTasks,
   taskBatchChildToolCallId,
-  formatTaskBatchResults,
   setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
   type ProxyMcpServer,
-  type ProxyToolCall,
   type ProxyToolDef,
-  type ProxyToolInterceptor,
   type ProxyToolResult,
 } from "./proxy-mcp.js"
 import {
@@ -146,17 +134,90 @@ import {
   isPendingProxyCallChannelClosed,
   markPendingProxyCallEmitted,
   onPendingProxyCall,
-  queuePendingProxyCall,
   rejectAllPendingProxyCallsForSession,
   rejectPendingProxyCallById,
   resolvePendingProxyCallById,
   type PendingProxyCall,
 } from "./proxy-broker.js"
-import { readFileSync, writeFileSync } from "node:fs"
+import {
+  buildAppendedSystemPrompt,
+  extractSystemMessages,
+  QUESTION_PROXY_HINT,
+  SUBAGENT_DISPATCH_HINT,
+} from "./prompts.js"
+import {
+  autoContinueEnabledFor,
+  continuationSignature,
+  makeAutoContinueMessage,
+  shouldAutoContinueIncompleteTurn,
+  type AutoContinueState,
+} from "./auto-continue.js"
+import {
+  denyMessageForTool,
+  formatAskUserQuestion,
+  isAskUserQuestionTool,
+} from "./ask-user-question.js"
+import { reportFastModeState } from "./fast-mode.js"
+import {
+  describeAbortReason,
+  hasNewUserContent,
+  resolveCompactionModel,
+  resolveOpencodeAgent,
+  resolveSessionAffinity,
+} from "./call-options.js"
+import {
+  extractPendingProxyResultForCall,
+  makeLateProxyResultMessage,
+} from "./proxy-results.js"
+import {
+  controlRequestBehaviorForTool,
+  handleControlRequest,
+  writeControlResponse,
+} from "./control-request.js"
+import {
+  createLiveToolInfoLoader,
+  effectiveMcpConfig,
+  ensureProxyServer,
+  fetchLiveToolInfo,
+  resolvedProxyMcpTools,
+  resolvedProxyTools,
+  resolvePlanModeQuestion,
+  skillBridgeSpawn,
+  stripContextRemindersEnabled,
+  type LiveToolInfo,
+} from "./spawn-planning.js"
+import {
+  isTitleRequest,
+  latestUserText,
+  requestScope,
+  synthesizeTitle,
+} from "./title.js"
+import { toFinishReason, toUsage } from "./usage.js"
 import { unlink } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
-import { randomUUID } from "node:crypto"
-import { dirname, join } from "node:path"
+
+// Re-exported so importers that have always reached for these here keep
+// working after the split. The definitions live in the modules named above.
+export {
+  buildAppendedSystemPrompt,
+  QUESTION_PROXY_HINT,
+  SUBAGENT_DISPATCH_HINT,
+} from "./prompts.js"
+export type { AppendedSystemPromptOptions } from "./prompts.js"
+export {
+  autoContinueEnabledFor,
+  shouldAutoContinueIncompleteTurn,
+} from "./auto-continue.js"
+export { denyMessageForTool, isAskUserQuestionTool } from "./ask-user-question.js"
+export { reportFastModeState, _resetFastModeWarnings } from "./fast-mode.js"
+export {
+  DEFAULT_COMPACTION_MODEL,
+  describeAbortReason,
+  hasNewUserContent,
+  resolveCompactionModel,
+  resolveOpencodeAgent,
+  resolveSessionAffinity,
+} from "./call-options.js"
+export { makeLateProxyResultMessage } from "./proxy-results.js"
 
 /**
  * Whether opencode is still serving a proxied call whose deadline just passed.
@@ -176,120 +237,6 @@ export async function isProxyCallStillServed(callId: string): Promise<boolean> {
 setProxyDeadlineGuard(({ callId }) => isProxyCallStillServed(callId))
 
 /**
- * Default model used for opencode `/compact`. Haiku 4.5 is fast
- * (~150 tok/s), has a hard 8k output cap that bounds latency, and is a
- * strong structured summarizer. Override per-project via the
- * `compactionModel` provider setting in opencode.json / opencode.jsonc,
- * or per-run via the `CLAUDE_CODE_COMPACTION_MODEL` env var (env wins).
- */
-export const DEFAULT_COMPACTION_MODEL = "claude-haiku-4-5"
-
-/**
- * Pick the model used to handle /compact. Precedence:
- *   1. `CLAUDE_CODE_COMPACTION_MODEL` env var (per-process override)
- *   2. `configured` argument (the `compactionModel` provider setting)
- *   3. `DEFAULT_COMPACTION_MODEL`
- *
- * Exported as a free function so it can be unit-tested without
- * instantiating the language model class.
- */
-export function resolveCompactionModel(configured?: string): string {
-  const env = process.env.CLAUDE_CODE_COMPACTION_MODEL?.trim()
-  if (env) return env
-  const trimmed = configured?.trim()
-  if (trimmed) return trimmed
-  return DEFAULT_COMPACTION_MODEL
-}
-
-/**
- * Resolve the session affinity token for a given LLM call. The affinity
- * token is part of the session key in session-manager so two different
- * opencode sessions sharing the same cwd+model still get separate Claude
- * CLI processes.
- *
- * Priority:
- *   1. `x-session-affinity` request header (primary — opencode sets it for
- *      third-party providers in packages/opencode/src/session/llm.ts).
- *   2. `opencodeSessionID` inside `providerOptions` (injected by the
- *      `chat.params` hook in index.ts). Covers cases where the header is
- *      absent: provider switch mid-session, title synthesis paths, older
- *      opencode versions. opencode wraps `output.options` under the
- *      providerID before passing it to the language model, so we look up
- *      both the configured provider key and the canonical `"claude-code"`.
- *   3. `"default"` — safe fallback when neither source is available.
- *
- * Exported as a free function so it can be unit-tested without
- * instantiating the language model class.
- */
-export function resolveSessionAffinity(
-  headers: Record<string, string | undefined> | undefined,
-  providerOptions: Record<string, unknown> | undefined,
-  providerKey: string,
-): string {
-  if (headers) {
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase() === "x-session-affinity") {
-        const v = headers[key]
-        if (typeof v === "string" && v.length > 0) return v
-      }
-    }
-  }
-  if (providerOptions) {
-    const bag =
-      (providerOptions as any)[providerKey] ??
-      (providerOptions as any)["claude-code"]
-    const sid = bag?.opencodeSessionID
-    if (typeof sid === "string" && sid.length > 0) return sid
-  }
-  return "default"
-}
-
-/**
- * The opencode agent this call runs for, which is how compaction and title
- * calls are told apart from ordinary turns.
- *
- *   1. `opencodeAgent` in providerOptions, written by V1's `chat.params`
- *      hook. Checked first so opencode 1.x behaves exactly as it always has.
- *   2. The `x-opencode-agent` request header, written by the V2 entrypoint's
- *      `model.request` hook (src/v2.ts), which can set headers but not
- *      provider options.
- */
-export function resolveOpencodeAgent(
-  headers: Record<string, string | undefined> | undefined,
-  providerOptions: Record<string, unknown> | undefined,
-  providerKey: string,
-): string | undefined {
-  if (providerOptions) {
-    const bag =
-      (providerOptions as any)[providerKey] ??
-      (providerOptions as any)["claude-code"]
-    const agent = bag?.opencodeAgent
-    if (typeof agent === "string") return agent
-  }
-  if (headers) {
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase() === "x-opencode-agent") {
-        const value = headers[key]
-        if (typeof value === "string" && value.length > 0) return value
-      }
-    }
-  }
-  return undefined
-}
-
-/** An `AbortSignal.reason` as loggable text: its name and message, or its type. */
-export function describeAbortReason(reason: unknown): string {
-  if (reason === undefined) return "undefined"
-  if (reason instanceof Error) return `${reason.name}: ${reason.message}`
-  if (typeof reason === "string") return reason
-  try {
-    return JSON.stringify(reason) ?? typeof reason
-  } catch {
-    return typeof reason
-  }
-}
-
-/**
  * Stream delta types we handle explicitly. `signature_delta` is listed as
  * known-and-silent: it carries encrypted thinking-block signatures that
  * are opaque to clients (the server uses them to reconstitute thinking
@@ -302,755 +249,10 @@ const KNOWN_DELTA_TYPES = new Set([
   "signature_delta",
 ])
 
-/**
- * True if the prompt has any user-side content after the last assistant
- * message (text, tool_result, or any user role entry). False when the
- * prompt ends with an assistant message and there is nothing for Claude
- * to respond to — opencode sometimes iterates the agent loop one more
- * time after a turn naturally completed; without short-circuiting we'd
- * spawn Claude CLI on an empty turn and the model would reply with a
- * stub like "Did you mean to send a message?".
- */
-export function hasNewUserContent(
-  prompt: LanguageModelV3CallOptions["prompt"],
-): boolean {
-  for (let i = prompt.length - 1; i >= 0; i--) {
-    const msg = prompt[i]
-    if (msg.role === "assistant") return false
-    // Tool-result turns from opencode's outer loop arrive in `tool`-role
-    // messages (AI SDK V3 shape). Treat any tool-result part as new
-    // content so the short-circuit doesn't drop turns where opencode is
-    // delivering the result for a still-pending proxy MCP call — letting
-    // that fire `stop` is what was forcing the user to press "continue".
-    if (msg.role === "tool") {
-      const content: any = msg.content
-      if (Array.isArray(content)) {
-        for (const part of content as any[]) {
-          if (part?.type === "tool-result") return true
-        }
-      }
-      continue
-    }
-    if (msg.role !== "user") continue
-    const content: any = msg.content
-    if (typeof content === "string") {
-      if (content.trim()) return true
-      continue
-    }
-    if (Array.isArray(content)) {
-      for (const part of content as any[]) {
-        if (part.type === "text" && part.text && part.text.trim()) return true
-        if (part.type === "tool-result") return true
-        // Image/file-only user turns count as new input — without this the
-        // short-circuit drops them as if the turn were empty.
-        if (part.type === "image" || part.type === "file") return true
-      }
-    }
-  }
-  return false
-}
-
-const AUTO_CONTINUE_MAX_ATTEMPTS = 8
-const AUTO_CONTINUE_MAX_ELAPSED_MS = 10 * 60 * 1000
-const AUTO_CONTINUE_NO_PROGRESS_LIMIT = 2
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
 const CHILD_EXIT_STATUS_GRACE_MS = 250
-
-const AUTO_CONTINUE_PROMPT =
-  "Continue the task from where you stopped. Do not summarize; keep working until the requested task is complete, you need clarification, or you hit a real blocker."
-
-/** One per-turn snapshot of opencode's live tool registry. */
-interface LiveToolInfo {
-  /** False when nothing answered (no SDK client, fetch failed). */
-  resolved: boolean
-  taskDescription: string | undefined
-  questionDescription: string | undefined
-  hasQuestion: boolean
-  /**
-   * The raw registry entries behind the fields above, so `proxyOpencodeTools`
-   * can be resolved from the same single fetch rather than a second one.
-   */
-  items?: OpencodeToolListItem[]
-}
-
-interface AutoContinueState {
-  enabled: boolean | "smart" | undefined
-  attempts: number
-  startedAt: number
-  noProgressCount: number
-  lastSignature?: string
-  aborted?: boolean
-  /**
-   * Latched true once AskUserQuestion is rendered this turn. Auto-continue
-   * must never fire afterwards: the model has handed control to the operator
-   * and is waiting for a real reply. Without this, a short trailing text after
-   * the question (one that doesn't trip looksLikeQuestion) would let the turn
-   * look "incomplete", and the auto-continue nudge would make the model
-   * proceed on its own — which the operator sees as the question being
-   * answered/cancelled without them ever interacting.
-   */
-  sawAskUserQuestion?: boolean
-}
-
-interface AutoContinueSnapshot {
-  text: string
-  /**
-   * Text of the most recent assistant text block only. Used for final-answer
-   * detection so mid-task narration like "Implementing now. Updated the
-   * search index." in an earlier block doesn't trip the keyword regex.
-   */
-  lastVisibleText: string
-  hadReasoning: boolean
-  hadToolActivity: boolean
-  hadProxyActivity: boolean
-  isError?: boolean
-  /**
-   * Protocol-level stop signal from the Claude API (forwarded by Claude
-   * CLI). When present and non-empty, we trust it as authoritative — the
-   * model itself signaled why the turn ended (`end_turn`, `max_tokens`,
-   * `stop_sequence`, `refusal`, `pause_turn`, `tool_use`, etc.) — and stop
-   * without running the keyword regex. The heuristic only runs as a
-   * fallback when `stop_reason` is missing (older CLI versions, abrupt
-   * termination).
-   */
-  stopReason?: string | null
-  now?: number
-}
-
-/**
- * A compaction turn must never be nudged to continue. `AUTO_CONTINUE_PROMPT`
- * says "Do not summarize; keep working", the exact inverse of what `/compact`
- * is for, and continuation reopens the same stream rather than closing it, so
- * the non-summary text would land inside what opencode stores as the session
- * summary. This was unreachable while every `stop_reason` ended the turn;
- * truncation-continue made a summary that hits the output cap reach it.
- * Exported so the wiring is testable, since the state itself is built inline
- * in `doStream`.
- */
-export function autoContinueEnabledFor(
-  compactionMode: boolean,
-  configured: boolean | "smart" | undefined,
-): boolean | "smart" | undefined {
-  return compactionMode ? false : configured
-}
-
-/**
- * Stop reasons that mean "cut off", not "done". Anthropic sends `max_tokens`;
- * `max_output_tokens` is accepted as a defensive alias so a rename upstream
- * degrades to today's behaviour rather than silently mis-reading a real stop.
- */
-function isTruncationStopReason(stopReason: string): boolean {
-  return stopReason === "max_tokens" || stopReason === "max_output_tokens"
-}
-
-interface AutoContinueDecision {
-  continue: boolean
-  reason: string
-}
-
-function normalizeVisibleText(text: string): string {
-  return text.replace(/\s+/g, " ").trim()
-}
-
-/** Tool names that mean "ask the human a question" (CLI casing variants). */
-export function isAskUserQuestionTool(name: string | undefined): boolean {
-  if (!name) return false
-  const n = name.toLowerCase()
-  return n === "askuserquestion" || n === "ask_user_question"
-}
-
-/**
- * Deny message returned to the model when it invokes AskUserQuestion.
- *
- * AskUserQuestion is denied (see controlRequestBehaviorForTool) so the
- * headless CLI cannot self-answer against an empty TTY. The question is
- * already rendered to the operator by formatAskUserQuestion, so this text
- * tells the model to stop and wait — unconditionally. Earlier versions
- * offered an "if this is non-interactive, proceed with a reasonable guess"
- * escape hatch, but the model could not reliably tell interactive opencode
- * from a headless run and routinely took it, so questions appeared to be
- * skipped (issue #8). Stopping is the correct default for opencode; a
- * headless run simply ends the turn with the question as its final output.
- */
-const ASK_USER_QUESTION_DENY_MESSAGE =
-  "Your question and its options have already been presented to the" +
-  " operator verbatim. This is NOT a cancellation or a refusal — the" +
-  " operator simply has not answered yet. Stop now: end your turn without" +
-  " calling any more tools and without answering the question yourself. Do" +
-  " not say the question was cancelled, skipped, or declined, and do not" +
-  " guess, assume, or proceed on their behalf. Wait for the operator's" +
-  " reply, which arrives as the next user message."
-
-/** Build the deny message for an auto-denied control request. */
-export function denyMessageForTool(
-  toolName: string | undefined,
-  configuredDenyMessage?: string,
-): string {
-  if (isAskUserQuestionTool(toolName)) return ASK_USER_QUESTION_DENY_MESSAGE
-  return (
-    configuredDenyMessage ??
-    `Denied by opencode-claude-code policy for tool ${toolName}`
-  )
-}
-
-/**
- * Render Claude Code's `AskUserQuestion` tool input as visible markdown.
- *
- * This is the fallback path used when the `Question` proxy is off or the
- * opencode build lacks the `question` registry entry. When the proxy is
- * enabled, `AskUserQuestion` is disabled via `--disallowedTools` and the
- * model calls `mcp__opencode_proxy__question` instead (opencode's native
- * `question` tool renders the TUI form). Here, the question + every
- * option is rendered as readable assistant text and the user answers in
- * the next turn — same approach as the `ExitPlanMode` handling. The
- * previous behavior collapsed the whole payload to a single faint
- * `_Asking: <q>_` line, dropping all options and any question past the
- * first.
- */
-function formatAskUserQuestion(input: Record<string, unknown>): string {
-  const anyInput = input as any
-  const questions: any[] = Array.isArray(anyInput?.questions)
-    ? anyInput.questions
-    : []
-
-  if (questions.length === 0) {
-    const single = anyInput?.question ?? anyInput?.text
-    const q =
-      typeof single === "string" && single.trim() ? single.trim() : "Question?"
-    return `\n\n**${q}**\n\n_Reply with your answer to continue._\n\n`
-  }
-
-  const out: string[] = ["\n\n"]
-  const multiQ = questions.length > 1
-  questions.forEach((q, i) => {
-    const text =
-      (typeof q?.question === "string" && q.question.trim()) ||
-      (typeof q?.text === "string" && q.text.trim()) ||
-      "Question?"
-    const header =
-      typeof q?.header === "string" && q.header.trim() ? q.header.trim() : ""
-    out.push(`**${multiQ ? `${i + 1}. ` : ""}${text}**`)
-    if (header) out.push(` _(${header})_`)
-    out.push("\n\n")
-
-    const options: any[] = Array.isArray(q?.options) ? q.options : []
-    options.forEach((opt, j) => {
-      const label =
-        (typeof opt?.label === "string" && opt.label.trim()) ||
-        (typeof opt === "string" && opt.trim()) ||
-        `Option ${j + 1}`
-      const desc =
-        typeof opt?.description === "string" && opt.description.trim()
-          ? ` — ${opt.description.trim()}`
-          : ""
-      out.push(`${j + 1}. **${label}**${desc}\n`)
-    })
-
-    out.push(
-      q?.multiSelect === true
-        ? "\n_Select one or more — reply with the numbers or labels._\n\n"
-        : "\n_Reply with your choice (the number or label)._\n\n",
-    )
-  })
-  return out.join("")
-}
-
-function looksLikeQuestion(text: string): boolean {
-  const normalized = normalizeVisibleText(text).toLowerCase()
-  if (!normalized) return false
-  // v0.4.10 tweak 5a: '?' anywhere in the last block, not just trailing.
-  // Catches long answers that pose a question mid-text then list options
-  // and end with a period. FP risk on inline code (`result?.value`) is
-  // accepted — cost is one extra "continue" press, in the safe direction.
-  if (normalized.includes("?")) return true
-  // v0.4.11 additions: ready when you are / standing by / i'll stand by /
-  // let me know when. These are awaiting-input idioms with no '?'. The
-  // "standing by" addition has historical significance — it's the exact
-  // stub phrase Claude CLI emits on empty turns that commit 49345e3 was
-  // designed to suppress at the message-builder layer. This adds a second
-  // line of defense at the model-output layer for cases where the model
-  // organically produces the same idiom.
-  //
-  // v0.4.12 additions: over to you / your turn / all yours / let me know
-  // how / i'm here. Defensive coverage of soft-proceed idioms in the
-  // model's vocabulary. "i'm here" has the highest FP risk ("I'm here to
-  // help with X" is a conversational opener) but cost of FP is one extra
-  // continue press — safe direction.
-  return /\b(please confirm|can you confirm|should i|would you like|do you want|which option|choose|pick one|need your|need you to|what would you like|let me know if|let me know whether|let me know what|let me know when|let me know how|if you'?d like|if you want to|tell me if|tell me which|tell me whether|say (?:go|yes|no)|push back|sign off|sounds? (?:good|right)|your call|your move|your turn|over to you|all yours|up to you|ready to (?:ship|go|proceed|merge)|ready (?:when|whenever|once|if) you|standing by|i'?ll stand ?by|i'?m here|happy to (?:ship|go|proceed|merge))\b/.test(normalized)
-}
-
-function looksLikeBlocker(text: string): boolean {
-  const normalized = normalizeVisibleText(text).toLowerCase()
-  if (!normalized) return false
-  // v0.4.10 tweak 3: 'needs your' / 'needs you to' / 'action required'
-  // are intent-equivalent to 'requires your' but use the verb-with-s form.
-  return /\b(blocked|blocker|cannot proceed|can't proceed|unable to proceed|need clarification|need more information|permission denied|failed and needs|requires your|needs your|needs you to|action required|manual step|required from you)\b/.test(normalized)
-}
-
-function looksLikeFinalAnswer(text: string): boolean {
-  const normalized = normalizeVisibleText(text).toLowerCase()
-  if (looksLikeQuestion(normalized) || looksLikeBlocker(normalized)) return false
-  // v0.4.15: strong-completion phrases bypass the 30-char length floor.
-  // These are unambiguous end-of-turn signals at any text length — even
-  // a short standalone "We're done." should stop.
-  if (/\b(we'?re done|we are done|all done|all set)\b/.test(normalized)) {
-    return true
-  }
-  // v0.4.10 tweak 4: floor lowered 40 → 30 chars. Catches short clean
-  // completions like "Task is now completely done. Pushed." (36 chars)
-  // while keeping a buffer against ambiguous short narration.
-  if (normalized.length < 30) return false
-  // v0.4.15: keyword list extended with deploy/ship verbs the model
-  // routinely uses at turn end (shipped, deployed, merged, tagged, live,
-  // pinned). FP risk highest on "live" — "live data" mid-turn could match
-  // — but cost of FP is one extra continue press, safe direction.
-  return /\b(done|completed|fixed|implemented|verified|published|released|sent|delivered|updated|shipped|deployed|merged|tagged|live|pinned)\b/.test(normalized) ||
-    // v0.4.15: also accept present-tense "tests pass" / "checks pass".
-    // Real fire 03:31 ended in "78/78 tests pass" — past-tense-only regex
-    // missed it.
-    /\b(checks?|tests?) (?:pass|passes|passed)\b/.test(normalized) ||
-    /\b(summary|what changed|verification)\b/.test(normalized)
-}
-
-function continuationSignature(snapshot: AutoContinueSnapshot): string {
-  const text = normalizeVisibleText(snapshot.text).slice(-500)
-  return JSON.stringify({
-    text,
-    reasoning: snapshot.hadReasoning,
-    tools: snapshot.hadToolActivity,
-    proxy: snapshot.hadProxyActivity,
-  })
-}
-
-export function shouldAutoContinueIncompleteTurn(
-  state: AutoContinueState,
-  snapshot: AutoContinueSnapshot,
-): AutoContinueDecision {
-  if (state.enabled === false) return { continue: false, reason: "disabled" }
-  if (snapshot.isError) return { continue: false, reason: "error" }
-  if (state.aborted) return { continue: false, reason: "aborted" }
-  // Once the model asked the operator a question this turn, never nudge it to
-  // continue — it is waiting for a reply, not stalled. Latched so it holds
-  // even when the trailing text after the question doesn't read as a question.
-  if (state.sawAskUserQuestion) return { continue: false, reason: "question" }
-  // v0.4.17: trust ANY protocol-level stop_reason as authoritative. If
-  // Claude CLI emitted a stop_reason value at all, the model has signaled
-  // a stop — honor it without consulting the keyword heuristic. The
-  // heuristic only runs as a fallback when stop_reason is missing (older
-  // CLI versions / edge cases). Maps snake_case → kebab-case for reason
-  // label consistency with other reasons.
-  if (snapshot.stopReason) {
-    // ...with one exception, which is the narrow half of @JWebCoder's PR #15
-    // worth keeping. Truncation is the single stop_reason that does NOT mean
-    // the model finished: the response hit the output cap mid-sentence. The
-    // old guard read it as a stop, so a cut-off answer was silently accepted
-    // as complete. Falling through to the keyword heuristic below would not
-    // fix it either, because a truncated prose answer has no tool or
-    // reasoning activity and would die at the `no-activity` gate. So
-    // truncation is authoritative in the opposite direction: continue, still
-    // bounded by the attempt and elapsed rails. PR #15 itself deleted the
-    // whole guard, which would have handed every turn back to the regex that
-    // v0.4.17 deliberately demoted; that is why it was closed.
-    if (isTruncationStopReason(snapshot.stopReason)) {
-      if (state.attempts >= AUTO_CONTINUE_MAX_ATTEMPTS) {
-        return { continue: false, reason: "max-attempts" }
-      }
-      const truncatedAt = snapshot.now ?? Date.now()
-      if (truncatedAt - state.startedAt > AUTO_CONTINUE_MAX_ELAPSED_MS) {
-        return { continue: false, reason: "max-elapsed" }
-      }
-      return { continue: true, reason: "truncated" }
-    }
-    return {
-      continue: false,
-      reason: snapshot.stopReason.replace(/_/g, "-"),
-    }
-  }
-  if (state.attempts >= AUTO_CONTINUE_MAX_ATTEMPTS) {
-    return { continue: false, reason: "max-attempts" }
-  }
-  const now = snapshot.now ?? Date.now()
-  if (now - state.startedAt > AUTO_CONTINUE_MAX_ELAPSED_MS) {
-    return { continue: false, reason: "max-elapsed" }
-  }
-
-  const text = normalizeVisibleText(snapshot.text)
-  const lastText = normalizeVisibleText(snapshot.lastVisibleText)
-  if (looksLikeQuestion(text)) return { continue: false, reason: "question" }
-  if (looksLikeBlocker(text)) return { continue: false, reason: "blocker" }
-  // Final-answer detection runs on the most recent text block only. Earlier
-  // blocks may contain mid-task narration that would false-positive the
-  // keyword regex; the model's actual "I'm done" sentence is in the last
-  // block before result/end_turn.
-  if (looksLikeFinalAnswer(lastText)) {
-    return { continue: false, reason: "final-answer" }
-  }
-
-  const hadActivity =
-    snapshot.hadReasoning || snapshot.hadToolActivity || snapshot.hadProxyActivity
-  if (!hadActivity) return { continue: false, reason: "no-activity" }
-
-  const signature = continuationSignature(snapshot)
-  const noProgress = signature === state.lastSignature
-  if (noProgress && state.noProgressCount + 1 >= AUTO_CONTINUE_NO_PROGRESS_LIMIT) {
-    return { continue: false, reason: "no-progress" }
-  }
-
-  if (!text) {
-    return { continue: true, reason: "activity-without-visible-answer" }
-  }
-
-  return { continue: true, reason: "non-final-progress" }
-}
-
-function makeAutoContinueMessage(): string {
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content: [{ type: "text", text: AUTO_CONTINUE_PROMPT }],
-    },
-  })
-}
-
-/**
- * A proxy result whose HTTP reply channel Claude already abandoned cannot
- * go back as a `tool_result` (the CLI closed that tool_use with a timeout
- * error). Hand it over as a user message that names the call instead.
- */
-export function makeLateProxyResultMessage(
-  entries: Array<{ call: PendingProxyCall; result: ProxyToolResult }>,
-): string {
-  const sections = entries.map(({ call, result }) => {
-    const failed = result.kind === "error" || result.isError === true
-    const body = result.kind === "error" ? result.message : result.text
-    return (
-      `Your earlier \`${call.toolName}\` tool call (id ${call.toolCallId})` +
-      ` has ${failed ? "failed" : "completed"}, but delivery or continuation was interrupted.` +
-      ` Treat the following as its ${failed ? "error" : "result"} and continue from there;` +
-      ` do not re-run it.\n\n${body}`
-    )
-  })
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content: [{ type: "text", text: sections.join("\n\n---\n\n") }],
-    },
-  })
-}
-
-function readPromptFileIfPresent(path: string): string | undefined {
-  try {
-    const content = readFileSync(path, "utf8").trim()
-    return content || undefined
-  } catch {
-    return undefined
-  }
-}
-
-function nearestWorkspaceAgentsPrompt(cwd: string): string | undefined {
-  let dir = cwd
-  while (true) {
-    const content = readPromptFileIfPresent(join(dir, "AGENTS.md"))
-    if (content) return content
-    const parent = dirname(dir)
-    if (parent === dir) return undefined
-    dir = parent
-  }
-}
-
-const AGENTS_MAINTENANCE_HINT = `## Keeping AGENTS.md up to date
-
-When you complete a task, phase, or to-do item that is listed in AGENTS.md, update the file
-immediately after the work is done — mark it ✅, check it off, or remove it. Do this inside
-the same turn so the next session does not repeat work that is already finished.`
-
-const MULTI_STEP_TASK_HINT = `## Continuing through multi-step tasks
-
-opencode requires the user to press "continue" after each turn ends. When a
-task has multiple steps, do them all in one turn — chain tool calls rather
-than pausing for user confirmation between subtasks. End the turn only
-when the task is done, you need clarification on intent, or you hit a real
-blocker. The user can interrupt or abort at any time; turn endings should
-mark meaningful checkpoints, not every completed substep.`
-
-/**
- * Appended to the system prompt whenever the `task` proxy tool is
- * enabled. Live sessions (2026-07-04) showed models resolving opencode's
- * "call the task tool with subagent: X" mention hint to Claude Code's
- * native TaskCreate: haiku created a todo and narrated a dispatch that
- * never happened; sonnet probed TaskCreate's schema before recovering.
- * The proxy tool can also be deferred behind ToolSearch, in which case
- * "the task tool" is invisible while TaskCreate is not. Name the exact
- * tool, the recovery path, and the failure mode.
- */
-export const SUBAGENT_DISPATCH_HINT = `## opencode subagents
-
-Subagent dispatch in this environment goes through exactly two tools: \`mcp__opencode_proxy__task\` for one subagent and \`mcp__opencode_proxy__task_batch\` for two or more at once.
-
-- Two or more independent subagents in one response: make ONE \`mcp__opencode_proxy__task_batch\` call with a \`tasks\` array (each item is a normal task input). Claude Code runs MCP calls one at a time, so several \`mcp__opencode_proxy__task\` calls in the same response run serially; \`task_batch\` runs them concurrently in opencode and returns every result together, labelled in order.
-- When the user mentions \`@<agent>\` or an instruction says "call the task tool with subagent: <name>", call \`mcp__opencode_proxy__task\` with \`subagent_type: "<name>"\`.
-- If that tool is not in your visible tool list it is deferred — load it with ToolSearch (\`select:mcp__opencode_proxy__task\`), then call it.
-- Claude Code's built-in TaskCreate/TaskUpdate/TaskList manage a local todo list. They cannot dispatch subagents; creating a task there runs nothing. Never report a subagent as dispatched unless \`mcp__opencode_proxy__task\` returned its result.
-- Do not verify a subagent's existence by searching config files — the tool's description lists the available agent types, and invalid types fail fast with a clear error.`
-
-/**
- * Appended to the system prompt whenever the `question` proxy tool is
- * enabled. Live testing (2026-07-05, haiku) showed the model's reasoning
- * correctly identified `mcp__opencode_proxy__question` as the tool to use,
- * but then emitted a tool call for bare `question` — stripping the MCP
- * prefix. opencode's AI SDK bridge has no bare `question` tool, so the
- * call rendered as `⚙ invalid`. Same near-miss pattern the task proxy
- * hit (TaskCreate vs mcp__opencode_proxy__task); the fix is the same:
- * name the exact tool in the system prompt so the model doesn't
- * abbreviate.
- */
-export const QUESTION_PROXY_HINT = `## Asking the operator questions
-
-Structured questions in this environment go through exactly one tool: \`mcp__opencode_proxy__question\`.
-
-- When you need to ask the operator a question with options, call \`mcp__opencode_proxy__question\` with a \`questions\` array (each item has \`question\`, \`header\`, \`options\` of \`{label, description}\`, and optional \`multiple\`).
-- If that tool is not in your visible tool list it is deferred — load it with ToolSearch (\`select:mcp__opencode_proxy__question\`), then call it by its FULL name.
-- Do NOT call bare \`question\` — that is not a tool. Always use the full \`mcp__opencode_proxy__question\` name when invoking it.
-- Claude Code's built-in \`AskUserQuestion\` is disabled in this environment; the proxy is the only way to ask structured questions.`
-
-/**
- * Prepended to every appended system prompt so Claude knows which
- * context-management tools exist in the Claude CLI runtime versus a
- * direct API provider. DCP and similar plugins forward compress/distill/
- * prune instructions via system.transform; those reach us through
- * extractSystemMessages, but the tools themselves are not available in
- * the CLI environment. Without this note Claude wastes thinking cycles
- * searching for tools that don't exist.
- */
-const CLAUDE_CLI_CONTEXT_NOTE = `## Runtime environment: Claude Code CLI
-
-You are running via the Claude Code CLI (not a direct API call). This affects context management:
-
-- The \`compress\` tool is NOT available. Do not attempt to call it.
-- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
-- Context window management is handled automatically by Claude CLI's own session history.
-- Ignore any system instructions that tell you to call \`compress\` — they are intended for direct API providers, not this environment.
-- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
-
-/**
- * Replaces the note above when `compress` is in the resolved proxy list.
- * The full MCP name is spelled out for the same reason the question proxy
- * hint spells its own out: models strip the prefix and call bare
- * `compress`, which opencode renders as `⚙ invalid`.
- */
-const CLAUDE_CLI_COMPRESS_NOTE = `## Runtime environment: Claude Code CLI
-
-You are running via the Claude Code CLI (not a direct API call). This affects context management:
-
-- To compress context, call \`mcp__opencode_proxy__compress\` with a \`summary\` argument. Use that exact full name.
-- The reset happens at the start of your NEXT turn: this Claude Code session is discarded and a fresh one starts with your summary as its only prior context. Keep working normally after the call.
-- Everything outside the summary is gone after the reset — tool output, files you read, and the earlier conversation are not replayed. Write the summary as the authoritative record.
-- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
-- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
-
-/**
- * Used when opencode's own `compress` tool is forwarded through the proxy
- * (`proxyOpencodeTools: ["compress"]`) instead of the plugin's in-process
- * one. The two shrink different windows and the difference has to be said
- * out loud: opencode's rewrites opencode's transcript, so the live Claude
- * Code session keeps everything it already had. A model told otherwise
- * would assume detail it can still see had been discarded.
- */
-const CLAUDE_CLI_OPENCODE_COMPRESS_NOTE = `## Runtime environment: Claude Code CLI
-
-You are running via the Claude Code CLI (not a direct API call). This affects context management:
-
-- To compress context, call \`mcp__opencode_proxy__compress\`. Use that exact full name. It runs opencode's own \`compress\` tool, which is what a "MAX CONTEXT LIMIT REACHED" reminder is asking you to do.
-- It compresses opencode's stored conversation, NOT this Claude Code session. Your current session keeps the context it already has, so do not assume earlier detail is gone after the call.
-- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
-- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
-
-/**
- * Extract text content from all `system`-role messages in the prompt.
- * Standard API providers forward these as the `system` parameter; for
- * Claude CLI, the only equivalent path is --append-system-prompt-file.
- * Plugins like opencode-dcp inject AGENTS.md and other context via
- * system-role messages and would otherwise be silently dropped.
- */
-function extractSystemMessages(
-  prompt: LanguageModelV3CallOptions["prompt"],
-): string[] {
-  const out: string[] = []
-  for (const msg of prompt) {
-    if (msg.role !== "system") continue
-    if (typeof msg.content === "string") {
-      if (msg.content.trim()) out.push(msg.content.trim())
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content as any[]) {
-        if (
-          part?.type === "text" &&
-          typeof part.text === "string" &&
-          part.text.trim()
-        ) {
-          out.push(part.text.trim())
-        }
-      }
-    }
-  }
-  return out
-}
-
-export interface AppendedSystemPromptOptions {
-  /** True when the plugin's own `compress` def is in the proxy list. */
-  compressEnabled?: boolean
-  /** True when opencode's `compress` tool is forwarded through the proxy. */
-  opencodeCompressEnabled?: boolean
-  /** Summary from a previous `compress` call, if this key has one. */
-  compressionSummary?: string
-}
-
-export function buildAppendedSystemPrompt(
-  cwd: string,
-  includeMultiStepHint = true,
-  extraSystemContent: string[] = [],
-  options: AppendedSystemPromptOptions = {},
-): string | undefined {
-  const parts: string[] = []
-  // First, so it reads as prior context for everything that follows.
-  if (options.compressionSummary?.trim()) {
-    parts.push(
-      `## Summary of earlier work (context was compressed)\n\n${options.compressionSummary.trim()}`,
-    )
-  }
-  // The plugin's own compress wins when both are somehow live, matching the
-  // def-level precedence in resolveProxyOpencodeToolDefs: it is the one that
-  // holds the name, so it is the one the model would reach.
-  parts.push(
-    options.compressEnabled
-      ? CLAUDE_CLI_COMPRESS_NOTE
-      : options.opencodeCompressEnabled
-        ? CLAUDE_CLI_OPENCODE_COMPRESS_NOTE
-        : CLAUDE_CLI_CONTEXT_NOTE,
-  )
-  for (const s of extraSystemContent) {
-    if (s.trim()) parts.push(s.trim())
-  }
-  const configRoot =
-    process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config")
-  const globalAgents = readPromptFileIfPresent(join(configRoot, "opencode", "AGENTS.md"))
-  const workspaceAgents = nearestWorkspaceAgentsPrompt(cwd)
-
-  // opencode already forwards AGENTS.md inside its own system prompt
-  // (`extraSystemContent`, under an "Instructions from:" header), so a
-  // disk-read copy would reach the model twice. Only push ours when the
-  // forwarded text does not already contain it. No match (formatting drift,
-  // or the interactive path, which forwards nothing) keeps the old behaviour,
-  // so AGENTS.md is never lost. (Dedup by @HeikoAtGitHub, 25260a4.)
-  const forwarded = extraSystemContent.join("\n\n")
-  const pushGlobal = !!globalAgents && !forwarded.includes(globalAgents)
-  const pushWorkspace =
-    !!workspaceAgents && workspaceAgents !== globalAgents &&
-    !forwarded.includes(workspaceAgents)
-  if (pushGlobal) parts.push(globalAgents)
-  if (pushWorkspace) parts.push(workspaceAgents)
-  if (pushGlobal || pushWorkspace) parts.push(AGENTS_MAINTENANCE_HINT)
-  if (includeMultiStepHint) parts.push(MULTI_STEP_TASK_HINT)
-
-  const content = parts.join("\n\n")
-  if (!content) return undefined
-
-  const path = join(tmpdir(), `opencode-cc-sys-${randomUUID()}.md`)
-  try {
-    writeFileSync(path, content, "utf8")
-    return path
-  } catch (err) {
-    log.warn("failed to write system prompt file", { error: String(err) })
-    return undefined
-  }
-}
-
-/**
- * Human-readable explanations for the CLI's `fast_mode_disabled_reason` codes,
- * so a downgrade tells the user what to do instead of leaking an enum.
- */
-const FAST_MODE_REASONS: Record<string, string> = {
-  sdk_opt_in_required:
-    "the CLI did not receive the headless opt-in (--settings). This is a plugin bug, please report it",
-  extra_usage_disabled:
-    "your account has usage credits turned off. Run /usage-credits in an interactive `claude` session to enable them",
-  free: "fast mode requires a paid subscription or purchased credits",
-  preference: "fast mode is turned off for your organization",
-  model_not_allowed:
-    "this model is not in your organization's allowed models",
-  not_first_party:
-    "fast mode only works against the Anthropic API directly, not Bedrock / Vertex / Foundry",
-  network_error: "the CLI could not reach Anthropic to check availability",
-  disabled_by_env: "CLAUDE_CODE_DISABLE_FAST_MODE is set in the environment",
-  pending: "the CLI is still checking availability",
-}
-
-/** Reasons already surfaced this process, so a persistent block warns once. */
-const warnedFastModeReasons = new Set<string>()
-
-/** Test-only. */
-export function _resetFastModeWarnings(): void {
-  warnedFastModeReasons.clear()
-}
-
-/**
- * Report what actually happened to a fast-mode request.
- *
- * Fast mode fails soft: an ineligible account or a rate-limit cooldown drops
- * back to standard speed with no error. That silence is the problem worth
- * solving here: the fast model ids advertise fast pricing in opencode's picker,
- * so a downgrade the user cannot see means the picker is lying about cost for
- * every subsequent turn.
- *
- * A hard block is therefore a WARN, which this codebase routes to the TUI
- * unconditionally (NOTICE only surfaces in debug mode, which would defeat the
- * purpose). It is deduped per reason per process because the blocking
- * conditions are account-level and would otherwise repeat on every respawn.
- * Cooldown stays quieter: it is transient and clears on its own.
- */
-export function reportFastModeState(
-  msg: ClaudeStreamMessage,
-  requested: boolean,
-): void {
-  const state = msg.fast_mode_state
-  if (!state) return
-
-  if (!requested) {
-    // Nothing was asked for. Only interesting at debug level.
-    log.debug("fast mode state", { state })
-    return
-  }
-
-  if (state === "on") {
-    log.info("fast mode active", { state })
-    return
-  }
-
-  const reason = msg.fast_mode_disabled_reason
-  if (state === "cooldown") {
-    log.notice(
-      "fast mode is in cooldown after a rate limit; this turn runs at standard speed and is billed at standard Opus rates, not the fast price shown in the model picker.",
-      { state, reason: reason ?? null },
-    )
-    return
-  }
-
-  const key = reason ?? "unknown"
-  const explanation = reason ? FAST_MODE_REASONS[reason] : undefined
-  const message = `fast mode was requested but is off${
-    explanation ? `: ${explanation}` : reason ? ` (${reason})` : ""
-  }. Turns run at standard speed and are billed at standard Opus rates, not the fast price shown in the model picker. Switch to the non-fast model id to make the picker's price accurate.`
-
-  if (warnedFastModeReasons.has(key)) {
-    log.debug(message, { state, reason: reason ?? null })
-    return
-  }
-  warnedFastModeReasons.add(key)
-  log.warn(message, { state, reason: reason ?? null })
-}
 
 export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -1069,78 +271,34 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private toUsage(rawUsage?: ClaudeStreamMessage["usage"]): LanguageModelV3Usage {
-    // Prefer the last iteration's counters over cumulative totals.
-    // CLI usage is the sum across all internal tool-use iterations;
-    // using it directly inflates context size and triggers premature compaction.
-    const iter = rawUsage?.iterations
-    const effective = iter?.length ? iter[iter.length - 1] : rawUsage
-    // Claude CLI reports input_tokens as non-cached input only.
-    // OpenCode expects total = noCache + cacheRead + cacheWrite.
-    const noCache = effective?.input_tokens ?? 0
-    const cacheRead = effective?.cache_read_input_tokens ?? 0
-    const cacheWrite = effective?.cache_creation_input_tokens ?? 0
-    return {
-      inputTokens: {
-        total: noCache + cacheRead + cacheWrite,
-        noCache,
-        cacheRead: cacheRead || undefined,
-        cacheWrite: cacheWrite || undefined,
-      },
-      outputTokens: {
-        total: effective?.output_tokens,
-        text: effective?.output_tokens,
-        reasoning: undefined,
-      },
-      raw: rawUsage as any,
-    }
+    return toUsage(rawUsage)
   }
 
   private toFinishReason(
     reason: "stop" | "tool-calls" | "error" = "stop",
   ): LanguageModelV3FinishReason {
-    return {
-      unified: reason,
-      raw: reason,
-    }
+    return toFinishReason(reason)
   }
 
   /**
    * Whether this call only names the session, which gets the synthetic stub
-   * rather than a `claude` spawn. opencode 1.x sends a title request with no
-   * tools, and that is the whole test there. opencode 2 sends its tool set
-   * along with it (measured on 2.0.11: `scope: "tools"`, agent `title`), so
-   * every new V2 session paid for a second `claude` process just to title
-   * itself; for a V2 model the request kind, carried as the `title` agent,
-   * decides instead.
+   * rather than a `claude` spawn. See `isTitleRequest` in title.ts.
    */
   private isTitleRequest(
     scope: "tools" | "no-tools",
     options: LanguageModelV3CallOptions,
   ): boolean {
-    if (scope === "no-tools") return true
-    return this.config.hostApi === "v2" && this.getOpencodeAgent(options) === "title"
+    return isTitleRequest(this.config, scope, options)
   }
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
-    const tools = options?.tools
-    if (Array.isArray(tools)) return "tools"
-    if (tools && typeof tools === "object") {
-      return Object.keys(tools as Record<string, unknown>).length > 0
-        ? "tools"
-        : "no-tools"
-    }
-    return "no-tools"
+    return requestScope(options)
   }
 
   /**
    * Build the combined `--mcp-config` list and return both the list and the
-   * hash of the bridged opencode MCP block (or null when bridging is off /
-   * yields nothing). The hash is used to detect mid-session config changes
-   * and respawn the underlying claude process.
-   *
-   * `runtimeStatus` is a snapshot of opencode's `client.mcp.status()`. When
-   * provided it overlays opencode's UI-toggled state on top of disk config
-   * so `/mcps` toggles propagate without a config file write.
+   * hash of the bridged opencode MCP block. See `effectiveMcpConfig` in
+   * spawn-planning.ts.
    */
   private effectiveMcpConfig(
     cwd: string,
@@ -1152,158 +310,37 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     bridgedHash: string | null
     allEnabledServerNames: string[]
   } {
-    const paths = Array.isArray(this.config.mcpConfig)
-      ? this.config.mcpConfig.slice()
-      : this.config.mcpConfig
-        ? [this.config.mcpConfig]
-        : []
-    let bridgedHash: string | null = null
-    let allEnabledServerNames: string[] = []
-    if (this.config.bridgeOpencodeMcp !== false) {
-      const bridged = bridgeOpencodeMcp(cwd, runtimeStatus, excludeServers)
-      if (bridged) {
-        if (bridged.path) paths.push(bridged.path)
-        bridgedHash = bridged.hash
-        allEnabledServerNames = bridged.allEnabledServerNames
-      }
-    }
-    if (proxyConfigPath) paths.push(proxyConfigPath)
-    return { paths, bridgedHash, allEnabledServerNames }
+    return effectiveMcpConfig(
+      this.config,
+      cwd,
+      proxyConfigPath,
+      runtimeStatus,
+      excludeServers,
+    )
   }
 
   /** Resolve ProxyToolDef[] for the configured proxyTools names. */
   private resolvedProxyTools(): ProxyToolDef[] | null {
-    const names = this.config.proxyTools
-    if (!names || names.length === 0) return null
-    const defsByName = new Map(
-      DEFAULT_PROXY_TOOLS.map((t) => [t.name.toLowerCase(), t]),
-    )
-    const picked: ProxyToolDef[] = []
-    const seen = new Set<string>()
-    const unknown: string[] = []
-    const pick = (def: ProxyToolDef) => {
-      if (seen.has(def.name)) return
-      seen.add(def.name)
-      picked.push(def)
-    }
-    for (const n of names) {
-      const def = defsByName.get(String(n).toLowerCase())
-      if (!def) {
-        unknown.push(String(n))
-        continue
-      }
-      pick(def)
-      // `task_batch` rides along with `task`: it is the same dispatch path for
-      // two or more subagents at once (TASK_BATCH_PROXY_NOTE), and a
-      // `proxyTools` list that names `Task` should not have to know it exists.
-      if (def.name === "task") {
-        const batch = defsByName.get(TASK_BATCH_TOOL_NAME)
-        if (batch) pick(batch)
-      }
-    }
-    // A typo used to vanish here. Silence is the wrong response: unknown
-    // names are not proxied, so the matching Claude built-in stays enabled
-    // and unmediated, and if *every* name is unknown the whole turn runs
-    // with no proxy at all (issue #26).
-    if (unknown.length > 0) {
-      const known = [...defsByName.keys()].join(", ")
-      if (picked.length === 0) {
-        log.warn(
-          "no proxyTools entry was recognised; nothing will be proxied this turn",
-          { unknown, known },
-        )
-      } else {
-        log.warn("ignoring unknown proxyTools entries", { unknown, known })
-      }
-    }
-    return picked.length > 0 ? picked : null
+    return resolvedProxyTools(this.config)
   }
 
-  /**
-   * Resolve ProxyToolDef[] for opencode's MCP-backed tools so they go
-   * through the in-process proxy instead of being bridged into Claude CLI's
-   * `--mcp-config`. Routing through the proxy keeps a single execution site
-   * (opencode), so the call is permission-prompted and rendered as an
-   * opencode tool call.
-   *
-   * Opt-in (`proxyOpencodeMcpTools: true`) and off by default. It used to
-   * default to true while finding nothing, because it discovered tools via
-   * `client.tool.list()`, which enumerates opencode's `ToolRegistry` and not
-   * the MCP tools merged into the model's tool set afterwards. Discovery now
-   * reads that merged set, the `tools` array opencode passes `doStream`, so
-   * the option does what it says. Turning it on by default at the same time
-   * would have silently moved every existing user's MCP traffic off the
-   * working direct bridge, so the default went to false instead: today's
-   * behaviour is preserved exactly and crossing over is the operator's call.
-   *
-   * Returns null when the feature is off or nothing matched, which leaves
-   * every server on the direct bridge.
-   */
+  /** Resolve ProxyToolDef[] for opencode's MCP-backed tools. */
   private resolvedProxyMcpTools(
     allEnabledServerNames: string[],
     modelTools: readonly ModelToolEntry[] | undefined,
     taken?: ReadonlySet<string>,
   ): McpProxyToolResolution | null {
-    if (this.config.proxyOpencodeMcpTools !== true) return null
-    if (this.config.bridgeOpencodeMcp === false) return null
-    if (allEnabledServerNames.length === 0) return null
-
-    const resolution = resolveMcpProxyToolDefs({
-      serverNames: allEnabledServerNames,
-      tools: modelTools,
+    return resolvedProxyMcpTools(
+      this.config,
+      allEnabledServerNames,
+      modelTools,
       taken,
-    })
-    if (resolution.defs.length === 0) {
-      // WARN, not NOTICE: only warn and error are alwaysStderr in
-      // src/logger.ts, so a NOTICE would be invisible to the very operator
-      // who opted in and is entitled to know their MCP calls are still
-      // going direct, and so still are not permission-prompted by opencode.
-      log.warn(
-        "proxyOpencodeMcpTools is on but no MCP tool was found in opencode's" +
-          " tool set; those servers stay on the direct bridge this spawn",
-        { servers: allEnabledServerNames, modelTools: modelTools?.length ?? 0 },
-      )
-      return null
-    }
-    log.debug("routing opencode MCP tools through the proxy", {
-      servers: [...resolution.coveredServers],
-      tools: resolution.defs.map((def) => def.name),
-    })
-    return resolution
+    )
   }
 
-  /**
-   * Live tool info derived from a single `client.tool.list()` fetch:
-   *
-   * - `taskDescription`: opencode's `task` tool description exactly as the
-   *   registry renders it for native models, including the "Available
-   *   agent types" list. Overlaid onto the static `task` proxy def so
-   *   Claude sees the same subagent catalog native models see, instead
-   *   of hunting through config files.
-   * - `questionDescription` / `hasQuestion`: opencode's `question` tool
-   *   description and whether the registry has the entry at all. Older
-   *   builds lack it, in which case a `mcp__opencode_proxy__question`
-   *   call resolves to `⚙ invalid`; the version gate drops the def.
-   *
-   * Returns undefined/false when the SDK client is unavailable (direct
-   * AI-SDK use, tests) so the static defs stand. `resolved` distinguishes
-   * "the registry answered and has no `question` entry" from "nobody
-   * answered": only the former is a real version-gate signal.
-   */
+  /** One `client.tool.list()` fetch, shaped for this turn's gates. */
   private async fetchLiveToolInfo(): Promise<LiveToolInfo> {
-    const items = await fetchOpencodeToolList(
-      this.config.provider,
-      this.modelId,
-      this.config.cwd,
-    )
-    const question = items?.find((item) => item.id === "question")
-    return {
-      resolved: items !== undefined,
-      taskDescription: items?.find((item) => item.id === "task")?.description,
-      questionDescription: question?.description,
-      hasQuestion: !!question,
-      items,
-    }
+    return fetchLiveToolInfo(this.config, this.modelId)
   }
 
   /**
@@ -1312,39 +349,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
    * spawn block resolves anything: `userMsg` is built well ahead of it.
    */
   private stripContextRemindersEnabled(): boolean {
-    return shouldStripContextReminders({
-      enabled: this.config.stripContextReminders,
-      proxyTools: this.config.proxyTools,
-      proxyOpencodeTools: this.config.proxyOpencodeTools,
-    })
+    return stripContextRemindersEnabled(this.config)
   }
 
   /**
    * Arguments the skill bridge needs beyond `cwd` / `cliPath`: which
    * `CLAUDE_CONFIG_DIR` this spawn reads its native skills from, and whether
-   * to drop the ones it already loads. A failover moves the spawn to another
-   * account, and therefore to that account's config dir.
+   * to drop the ones it already loads.
    */
   private skillBridgeSpawn(failover: FailoverSpawn): {
     configDir: string | undefined
     skipNative: boolean
   } {
-    return {
-      configDir:
-        failover.failedOver && failover.target
-          ? accountConfigDirPath(failover.target)
-          : this.config.configDir,
-      skipNative: this.config.bridgeSkipNativeSkills !== false,
-    }
+    return skillBridgeSpawn(this.config, failover)
   }
 
   /** Share one lazy registry request within a turn without making it stale. */
   private createLiveToolInfoLoader(): () => Promise<LiveToolInfo> {
-    let pending: Promise<LiveToolInfo> | undefined
-    return () => {
-      pending ??= this.fetchLiveToolInfo()
-      return pending
-    }
+    return createLiveToolInfoLoader(this.config, this.modelId)
   }
 
   /**
@@ -1357,24 +379,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     compactionMode: boolean,
     loadLiveToolInfo = () => this.fetchLiveToolInfo(),
   ): Promise<boolean> {
-    if (compactionMode || this.config.planModeQuestion !== true) return false
-    const info = await loadLiveToolInfo()
-    const active = isPlanModeQuestionActive({
-      configured: this.config.planModeQuestion,
-      opencodeHasQuestion: info.hasQuestion,
-      compactionMode,
-    })
-    if (!active) {
-      // Same reasoning as the question proxy's version-gate log: a silent
-      // fallback to the text path looks from the outside like the setting
-      // was ignored.
-      log.info("plan-mode question gate", {
-        opencodeHasQuestion: info.hasQuestion,
-        registryResolved: info.resolved,
-        active,
-      })
-    }
-    return active
+    return resolvePlanModeQuestion(this.config, compactionMode, loadLiveToolInfo)
   }
 
   /**
@@ -1384,138 +389,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private async ensureProxyServer(
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
-    // Whether the `compress` in `tools` is the PLUGIN's def rather than
-    // opencode's forwarded one. Keying the interceptor on the name alone
-    // would answer a forwarded `compress` in-process and opencode would
-    // never see the call: the same name, the wrong tool, silently. The
-    // caller knows which list the def came from, so it decides.
     interceptCompress: boolean,
   ): Promise<ProxyMcpServer> {
-    const timeoutOverrides = this.config.proxyToolTimeoutMs
-    const interceptors = new Map<string, ProxyToolInterceptor>()
-    if (interceptCompress && tools.some((t) => t.name === "compress")) {
-      interceptors.set("compress", (input) => {
-        const summary = typeof input.summary === "string" ? input.summary.trim() : ""
-        if (!summary) {
-          return {
-            kind: "error",
-            message:
-              "compress needs a non-empty `summary`: it becomes the only" +
-              " prior context after the reset. Nothing was compressed.",
-          }
-        }
-        storeCompressionSummary(sessionKeyForCalls, summary)
-        log.info("compress stored summary; session resets next turn", {
-          sessionKey: sessionKeyForCalls,
-          summaryLength: summary.length,
-        })
-        return {
-          kind: "text",
-          text:
-            "Summary stored. Finish this turn as normal; the next turn starts" +
-            " a fresh Claude Code session with this summary as its only prior" +
-            " context.",
-        }
-      })
-    }
-    const srv = await createProxyMcpServer(tools, timeoutOverrides, interceptors)
-    srv.calls.on("call", (call: ProxyToolCall) => {
-      queuePendingProxyCall(sessionKeyForCalls, call, timeoutOverrides)
-    })
-    return srv
-  }
-
-  private extractPendingProxyResult(
-    prompt: LanguageModelV3CallOptions["prompt"],
-    toolCallId: string,
-  ): ProxyToolResult | null {
-    for (let i = prompt.length - 1; i >= 0; i--) {
-      const msg = prompt[i]
-      if (msg.role !== "tool" || !Array.isArray(msg.content)) continue
-
-      for (const part of msg.content) {
-        if (part.type !== "tool-result" || part.toolCallId !== toolCallId) continue
-
-        const output = part.output as any
-        if (!output || typeof output !== "object") {
-          return {
-            kind: "text",
-            text: String(output ?? ""),
-          }
-        }
-
-        if (output.type === "text") {
-          return {
-            kind: "text",
-            text: String(output.value ?? ""),
-          }
-        }
-
-        if (output.type === "json") {
-          return {
-            kind: "text",
-            text: JSON.stringify(output.value),
-          }
-        }
-
-        if (output.type === "content" && Array.isArray(output.value)) {
-          const text = output.value
-            .filter((v: any) => v?.type === "text" && typeof v.text === "string")
-            .map((v: any) => v.text)
-            .join("\n")
-          return {
-            kind: "text",
-            text,
-          }
-        }
-
-        return {
-          kind: "text",
-          text: JSON.stringify(output),
-        }
-      }
-    }
-
-    return null
-  }
-
-  /**
-   * The result opencode produced for a pending proxy call, if the prompt
-   * carries it. For `task_batch` that means every child's result gathered
-   * back onto the parent: opencode runs the children in one step and hands
-   * all their results to the next call together, so a partial set is not
-   * expected. If it ever happens the batch still resolves, with the gap
-   * named in the text, because leaving the parent pending would send this
-   * turn down the fresh-envelope path and reject the call as orphaned.
-   */
-  private extractPendingProxyResultForCall(
-    prompt: LanguageModelV3CallOptions["prompt"],
-    call: PendingProxyCall,
-  ): ProxyToolResult | null {
-    if (call.toolName !== TASK_BATCH_TOOL_NAME) {
-      return this.extractPendingProxyResult(prompt, call.toolCallId)
-    }
-    const tasks = taskBatchTasks(call.input)
-    if (tasks.length === 0) {
-      return { kind: "error", message: "task_batch input is not a list of task objects" }
-    }
-    const children = tasks.map((task, index) => ({
-      task,
-      result: this.extractPendingProxyResult(
-        prompt,
-        taskBatchChildToolCallId(call.toolCallId, index),
-      ),
-    }))
-    const answered = children.filter((child) => child.result !== null).length
-    if (answered === 0) return null
-    if (answered < children.length) {
-      log.warn("task_batch resolving with child results missing", {
-        toolCallId: call.toolCallId,
-        answered,
-        total: children.length,
-      })
-    }
-    return formatTaskBatchResults(children)
+    return ensureProxyServer(
+      this.config,
+      tools,
+      sessionKeyForCalls,
+      interceptCompress,
+    )
   }
 
   /**
@@ -1542,29 +423,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private controlRequestBehaviorForTool(toolName: string): ControlRequestBehavior {
-    const configured = this.config.controlRequestToolBehaviors
-    if (configured && toolName) {
-      const direct = configured[toolName] ?? configured[toolName.toLowerCase()]
-      if (direct === "allow" || direct === "deny") return direct
-
-      const lower = toolName.toLowerCase()
-      for (const [key, behavior] of Object.entries(configured)) {
-        if (key.toLowerCase() === lower && (behavior === "allow" || behavior === "deny")) {
-          return behavior
-        }
-      }
-    }
-
-    // AskUserQuestion must never be auto-allowed. Allowing it lets the
-    // Claude CLI resolve its own question internally — in headless mode
-    // there is no TTY, so the CLI fabricates/empties the answer and the
-    // model proceeds on a guess. Deny so the CLI cannot self-answer; the
-    // tool_use is still streamed and rendered to the opencode user by
-    // formatAskUserQuestion, and the turn stops for a real reply. An
-    // explicit controlRequestToolBehaviors entry above can still override.
-    if (isAskUserQuestionTool(toolName)) return "deny"
-
-    return this.config.controlRequestBehavior ?? "allow"
+    return controlRequestBehaviorForTool(this.config, toolName)
   }
 
   private writeControlResponse(
@@ -1572,23 +431,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     requestId: string,
     response?: Record<string, unknown>,
   ): void {
-    const payload = {
-      type: "control_response",
-      response: {
-        subtype: "success",
-        request_id: requestId,
-        response,
-      },
-    }
-
-    try {
-      proc.stdin?.write(JSON.stringify(payload) + "\n")
-    } catch (error) {
-      log.warn("failed to write control response", {
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
+    writeControlResponse(proc, requestId, response)
   }
 
   /**
@@ -1599,52 +442,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     msg: ClaudeStreamMessage,
     proc: import("child_process").ChildProcess,
   ): boolean {
-    if (msg.type !== "control_request") return false
-    const requestId = msg.request_id
-    const request = msg.request
-    if (!requestId || !request?.subtype) return false
-
-    if (request.subtype === "can_use_tool") {
-      const toolName = request.tool_name ?? "unknown"
-      const behavior = this.controlRequestBehaviorForTool(toolName)
-
-      if (behavior === "allow") {
-        this.writeControlResponse(proc, requestId, {
-          behavior: "allow",
-          updatedInput: request.input ?? {},
-          toolUseID: request.tool_use_id,
-        })
-        log.info("control request auto-allowed", {
-          requestId,
-          toolName,
-        })
-      } else {
-        const denyMessage = denyMessageForTool(
-          toolName,
-          this.config.controlRequestDenyMessage,
-        )
-        this.writeControlResponse(proc, requestId, {
-          behavior: "deny",
-          message: denyMessage,
-          toolUseID: request.tool_use_id,
-        })
-        log.info("control request auto-denied", {
-          requestId,
-          toolName,
-        })
-      }
-
-      return true
-    }
-
-    // For control request subtypes we don't actively handle yet, acknowledge
-    // with an empty success so the CLI stream does not stall.
-    this.writeControlResponse(proc, requestId, {})
-    log.debug("control request acknowledged", {
-      requestId,
-      subtype: request.subtype,
-    })
-    return true
+    return handleControlRequest(this.config, msg, proc)
   }
 
   private getReasoningEffort(
@@ -1709,89 +507,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private latestUserText(
     prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
-    for (let i = prompt.length - 1; i >= 0; i--) {
-      const msg = prompt[i]
-      if (msg.role !== "user") continue
-
-      if (typeof msg.content === "string") {
-        return String(msg.content).trim()
-      }
-
-      if (Array.isArray(msg.content)) {
-        const text = (msg.content as any[])
-          .filter((part) => part.type === "text" && typeof part.text === "string")
-          .map((part: any) => String(part.text).trim())
-          .filter(Boolean)
-          .join(" ")
-        if (text) return text
-      }
-    }
-
-    return ""
+    return latestUserText(prompt)
   }
 
   private synthesizeTitle(
     prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
-    const source = this.latestUserText(prompt)
-      .replace(/\s+/g, " ")
-      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-      .trim()
-
-    if (!source) return "New Session"
-
-    const stop = new Set([
-      "a",
-      "an",
-      "the",
-      "and",
-      "or",
-      "but",
-      "to",
-      "for",
-      "of",
-      "in",
-      "on",
-      "at",
-      "with",
-      "can",
-      "could",
-      "would",
-      "should",
-      "please",
-      "hi",
-      "hello",
-      "hey",
-      "there",
-      "you",
-      "your",
-      "this",
-      "that",
-      "is",
-      "are",
-      "was",
-      "were",
-      "be",
-      "do",
-      "does",
-      "did",
-      "summarize",
-      "summary",
-      "project",
-    ])
-
-    const words = source
-      .split(" ")
-      .map((word) => word.trim())
-      .filter(Boolean)
-      .filter((word) => !stop.has(word.toLowerCase()))
-
-    const picked = (words.length > 0 ? words : source.split(" ").filter(Boolean))
-      .slice(0, 6)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ")
-
-    return picked || "New Session"
+    return synthesizeTitle(prompt)
   }
 
   private async doGenerateViaStream(
@@ -2894,7 +1616,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       result: ProxyToolResult | null
     }> = previousPendingProxyCalls.map((call) => ({
       call,
-      result: this.extractPendingProxyResultForCall(options.prompt, call),
+      result: extractPendingProxyResultForCall(options.prompt, call),
     }))
     const hasMatchedPendingResults = previousPendingProxyMatches.some(
       (m) => m.result !== null,
