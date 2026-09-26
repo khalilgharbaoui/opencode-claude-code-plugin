@@ -7,10 +7,37 @@ description: Configure and troubleshoot the opencode-claude-code-plugin, the ope
 
 This plugin is `@khalilgharbaoui/opencode-claude-code-plugin`. It registers one or more
 `claude-code*` providers and routes inference through the `claude` CLI, not opencode's
-native Anthropic provider. Headless `--print` is the default. Subscription headless
-usage draws on Agent SDK credit/extra usage under Anthropic's billing policy, not a
-promise of free or normal interactive-plan usage. API-key/cloud billing depends on
-the CLI's authentication. Confirm the user's intended account and billing method.
+native Anthropic provider. Headless `--print` is the default, which is the Agent SDK
+path. Never promise a user what subscription headless usage draws from: Anthropic's
+policy page is the only authority and it changes (fetched 2026-09-27 it carries a June 15
+update pausing the announced Agent SDK credit, so that usage still draws from plan usage
+limits and the monthly credit is unavailable). API-key/cloud billing depends on the CLI's
+authentication. Confirm the user's intended account and billing method.
+
+## How this differs from the alternatives
+
+Three routes reach Claude from opencode, and they are not interchangeable:
+
+1. **opencode's native `anthropic` provider**: an Anthropic Platform API key in
+   opencode's auth store, pay as you go, everything running in opencode's own runtime.
+2. **This plugin**: the official `claude` CLI authenticates, so opencode inherits
+   whatever that CLI holds (subscription login, API key, Bedrock, Vertex). It never
+   reads, stores or replays a token, which is why it is a sanctioned route. What it
+   costs: a `claude` child per conversation, Claude Code's own context compaction and
+   clearing happening behind opencode's back, a locally synthesised session title
+   instead of a model-written one, `/compact` on its own short-lived spawn, no todo
+   panel on opencode 2, and opencode's native reasoning features bypassed by design.
+3. **Proxy or token-reuse plugins** (`opencode-with-claude`/Meridian,
+   `opencode-claude-auth`, `opencode-claude-plan`): they reuse the Claude OAuth session
+   outside the official client. Anthropic disallowed that for third-party use in
+   February 2026, and each of those projects says so in its own README (a "community
+   workaround", "no claims regarding compliance", "could be suspended or terminated").
+
+Never recommend route 3, never help migrate a user onto it, and never enable
+`interactive: true` to dodge a billing or access restriction. If a user asks why this
+plugin is slower or heavier than a proxy, the answer is route 2's cost list above, plus
+the tool mediation: proxied `Bash`/`Edit`/`Write`/`WebFetch`/`Task` execute in opencode
+under its permissions instead of inside the CLI.
 
 This file ships with the package, so upgrading that package updates the bundled
 reference without a separate skill install. Do not copy it into a personal skill
@@ -583,10 +610,28 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 
 ## Troubleshooting
 
+Key a diagnosis on the FIRST symptom the user reports, and name the ONE check that
+settles it before proposing a fix. The four checks, in order of preference:
+`/claude-code-doctor` in the session (no inference, no billing, reports the loaded
+plugin version, the CLI path and version, providers, accounts, `proxyTools`, cwd and its
+tier, live `claude` children and pending proxy calls); `OPENCODE_CLAUDE_CODE_LOG_FILE=1`
+plus a grep of `plugin.log` for the named line; `claude --version` for a version gate;
+and `claude auth status` (with `CLAUDE_CONFIG_DIR` for a named account) for a login.
+Prefer the doctor: it needs no logging change and no restart.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | A config change did nothing | Options are read at startup; another opencode window is still running the old process | Fully quit every opencode window and relaunch |
 | New plugin version or model not in the picker after upgrading | Frozen `@latest` in opencode's package cache | Remove the cache dir (recipe "Upgrade the plugin") and relaunch |
+| No `claude-code` provider or model in the picker at all | The plugin never loaded, or it loaded and the CLI was not usable | Check for a `plugin ready` line first: absent means not loaded (wrong `plugin`/`plugins` key, a 2.x local install not pointing at `dist/`, or no full relaunch), present with `claudeCli.version: not detected` means the binary did not answer `--version`, which also disables every version-gated flag |
+| `Model unavailable` for a model id the user typed | The provider id is not what they assumed | Use the id the ready block's `providers` field lists. With no `accounts` configured on opencode 2 the id is `claude-code`, so `claude-code-default/<model>` fails while the plugin is healthy (measured on opencode 2.0.16, 2026-09-27). Declaring `accounts` is what creates `claude-code-default`; on 1.x with accounts the ids are `claude-code-default` / `claude-code-<name>` and never a bare `claude-code` |
+| `Tool result name changed`, turn aborts, on opencode 2 | Before 0.28.1 a CLI-executed tool's result reached opencode under a different name than its call, and 2.0.16 aborts the turn on the mismatch, breaking every Claude-side MCP server call | Upgrade to 0.28.1+ **and fully relaunch every opencode window**; plugin code is read once at process start, so upgrading the package under a running window changes nothing |
+| `plugin ready` missing from the log | Logging is off (the default), or the plugin genuinely did not load | Confirm `OPENCODE_CLAUDE_CODE_LOG_FILE=1` and a relaunch before concluding anything. `/claude-code-doctor` answers the same questions with no logging change |
+| "Failed to authenticate: OAuth session expired", one account, turns failing in milliseconds | That account's CLI login lapsed | `claude auth status` for it, then log in again with the command the `▌ **claude account:**` note prints (`CLAUDE_CONFIG_DIR=<that account's dir> claude auth login`). Restart opencode after: a switch taken from the failover form lasts until restart. Login is a user action, never a diagnostic probe |
+| A tool call reported as rejected although it ran | Two fixed causes: opencode 1.18.32 aborts the provider signal of every step ending in tool calls, read as an operator stop (0.26.1); and a call waiting on an unanswered permission prompt was rejected at the flat 10-minute deadline, after which the late approval cancelled Claude's next call (0.26.2) | Upgrade to 0.26.2+ and relaunch. Do NOT raise `proxyToolTimeoutMs` for this: a deadline now waits while opencode reports the session busy |
+| `proxy call still waiting` in the log, or a `task` that looks stuck | Expected: `task`/`task_batch` carry no default deadline, and the line is a status report | `/claude-code-doctor` lists pending calls with tool, age and deadline. Tell a working subagent from a wedged one there before proposing any timeout change; see the note under "Proxy tool names" |
+| An MCP server's tools are simply absent | Claude Code could not connect that server | Read the once-per-process WARN at session start. `mcpServers` in the ready block is disk discovery, not live connectivity; fix the server where it is configured |
+| `permissionPreset: "read-only"` set, but reads are unconfined or something still prompts | `--restricted` needs CLI 2.1.258 and `--permission-prompts none` needs 2.1.263; below those the preset falls back to `--disallowedTools` plus the plugin's own deny and WARNs naming what is lost | `claude --version`. Below 2.1.258 the working-directory confinement on reads is gone; below 2.1.263 the denial happens in the plugin instead of the CLI. The preset still holds, with one layer fewer |
 | `/btw` shows "Queued" or "requires an idle Claude Code session" | Plugin older than 0.15.2, or a window started before the current build | Upgrade and restart. `/btw` also needs Claude Code 2.1.258+ |
 | Model calls `Skill("x")` and gets `Unknown skill` | Wrong namespace (`opencode-skills:x`), a CLI without `--plugin-dir`, a compaction turn, or `bridgeOpencodeSkills: false` | Check the namespace and `claude --help`; remove the `false` only with approval |
 | One skill's name and description appear twice in a session | Plugin predates `bridgeSkipNativeSkills`, or it is set to `false` | Upgrade, or drop the `false` |
@@ -615,6 +660,32 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | Turn ends with an error naming an exit code or signal and a stderr tail | The `claude` child died mid-turn without emitting its terminal `result` | Read the quoted stderr; that is the CLI's own reason. Older builds reported this as a normal stop, so a truncated answer looked finished |
 | An answer is cut off with no error, in a window with many open chats | Plugin older than this fix: LRU eviction could kill a process mid-turn | Upgrade. Eviction now takes the oldest idle process and skips the round when all 8 are busy; the 30-minute idle timer spares a busy worker too |
 | A `claude` worker lingers after its chat was deleted, or after opencode quit | Plugin older than this release | Upgrade. Deleting a chat now releases its workers; every retained worker is killed when opencode exits |
+
+## Which login bills what
+
+The CLI decides; the plugin only reports. Never state which of these is in effect from
+`process.env` alone, and never read or print a key's value.
+
+- **OAuth subscription login** (`claude auth login`): turns run on the user's plan.
+  Headless `--print` is the Agent SDK path; see the note at the top of this file before
+  telling a user what that draws from. The interactive transport bills as normal plan
+  usage, which is not a reason to enable it.
+- **`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in the launching environment**: the CLI
+  prefers these over the subscription login and bills Platform pay-as-you-go. This is the
+  only route `ignoreAnthropicApiKey: true` strips, and the plugin warns at startup
+  whenever either is present regardless of the flag.
+- **A key the CLI found itself**, from its own `user`, `project` or `org` settings scopes
+  or an `apiKeyHelper`. That is CLI configuration, so no plugin option removes it. Do not
+  claim `ignoreAnthropicApiKey` fixes it.
+- **`apiKeySource` on the CLI's `system` init event is the field that tells the truth**:
+  anything other than `oauth` (the subscription) or `none` means a key is in effect, and
+  the plugin warns once per process. An absent env var proves nothing.
+- **Bedrock and Vertex**: if the CLI authenticates against either, neither a subscription
+  nor an Anthropic key is in play for that turn, and fast mode is excluded there (and on
+  Foundry), because it is first-party only.
+
+Changing any of this is the user's decision: explain the consequence and get approval
+before stripping a key, switching accounts, enabling usage credits or changing transport.
 
 ## Do not
 
