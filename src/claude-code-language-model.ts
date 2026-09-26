@@ -182,6 +182,11 @@ import {
   extractPendingProxyResultForCall,
   makeLateProxyResultMessage,
 } from "./proxy-results.js"
+import {
+  controlRequestBehaviorForTool,
+  handleControlRequest,
+  writeControlResponse,
+} from "./control-request.js"
 import { unlink } from "node:fs/promises"
 
 // Re-exported so importers that have always reached for these here keep
@@ -658,29 +663,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   private controlRequestBehaviorForTool(toolName: string): ControlRequestBehavior {
-    const configured = this.config.controlRequestToolBehaviors
-    if (configured && toolName) {
-      const direct = configured[toolName] ?? configured[toolName.toLowerCase()]
-      if (direct === "allow" || direct === "deny") return direct
-
-      const lower = toolName.toLowerCase()
-      for (const [key, behavior] of Object.entries(configured)) {
-        if (key.toLowerCase() === lower && (behavior === "allow" || behavior === "deny")) {
-          return behavior
-        }
-      }
-    }
-
-    // AskUserQuestion must never be auto-allowed. Allowing it lets the
-    // Claude CLI resolve its own question internally — in headless mode
-    // there is no TTY, so the CLI fabricates/empties the answer and the
-    // model proceeds on a guess. Deny so the CLI cannot self-answer; the
-    // tool_use is still streamed and rendered to the opencode user by
-    // formatAskUserQuestion, and the turn stops for a real reply. An
-    // explicit controlRequestToolBehaviors entry above can still override.
-    if (isAskUserQuestionTool(toolName)) return "deny"
-
-    return this.config.controlRequestBehavior ?? "allow"
+    return controlRequestBehaviorForTool(this.config, toolName)
   }
 
   private writeControlResponse(
@@ -688,23 +671,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     requestId: string,
     response?: Record<string, unknown>,
   ): void {
-    const payload = {
-      type: "control_response",
-      response: {
-        subtype: "success",
-        request_id: requestId,
-        response,
-      },
-    }
-
-    try {
-      proc.stdin?.write(JSON.stringify(payload) + "\n")
-    } catch (error) {
-      log.warn("failed to write control response", {
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
+    writeControlResponse(proc, requestId, response)
   }
 
   /**
@@ -715,52 +682,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     msg: ClaudeStreamMessage,
     proc: import("child_process").ChildProcess,
   ): boolean {
-    if (msg.type !== "control_request") return false
-    const requestId = msg.request_id
-    const request = msg.request
-    if (!requestId || !request?.subtype) return false
-
-    if (request.subtype === "can_use_tool") {
-      const toolName = request.tool_name ?? "unknown"
-      const behavior = this.controlRequestBehaviorForTool(toolName)
-
-      if (behavior === "allow") {
-        this.writeControlResponse(proc, requestId, {
-          behavior: "allow",
-          updatedInput: request.input ?? {},
-          toolUseID: request.tool_use_id,
-        })
-        log.info("control request auto-allowed", {
-          requestId,
-          toolName,
-        })
-      } else {
-        const denyMessage = denyMessageForTool(
-          toolName,
-          this.config.controlRequestDenyMessage,
-        )
-        this.writeControlResponse(proc, requestId, {
-          behavior: "deny",
-          message: denyMessage,
-          toolUseID: request.tool_use_id,
-        })
-        log.info("control request auto-denied", {
-          requestId,
-          toolName,
-        })
-      }
-
-      return true
-    }
-
-    // For control request subtypes we don't actively handle yet, acknowledge
-    // with an empty success so the CLI stream does not stall.
-    this.writeControlResponse(proc, requestId, {})
-    log.debug("control request acknowledged", {
-      requestId,
-      subtype: request.subtype,
-    })
-    return true
+    return handleControlRequest(this.config, msg, proc)
   }
 
   private getReasoningEffort(
