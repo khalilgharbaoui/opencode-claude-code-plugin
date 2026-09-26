@@ -94,6 +94,100 @@ function registerExitCleanup(): void {
   })
 }
 
+const PID_DIR_NAME = /^opencode-claude-code-(\d+)$/
+
+/**
+ * Alive from this process's point of view. `EPERM` means the pid exists but
+ * belongs to somebody else, which is still alive and doubly not ours.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/**
+ * Remove scratch directories left behind by plugin processes that are gone.
+ * The exit hook above never runs under SIGKILL, so a killed opencode leaves
+ * its `mcp-<hash>.json` (which can hold `{env:VAR}`-substituted secrets)
+ * on disk indefinitely.
+ *
+ * Four conditions, all required, because the OS tmpdir is shared: the name is
+ * exactly our pid pattern, `lstat` says a real directory rather than a
+ * symlink, the current user owns it, and the pid is not running. Anything
+ * else is left untouched. Opt out with OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1.
+ *
+ * Returns the directories removed, for tests and logging.
+ */
+export function sweepStalePluginTmpDirs(keep?: string): string[] {
+  const removed: string[] = []
+  if (process.env.OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP === "1") return removed
+
+  const root = os.tmpdir()
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(root)
+  } catch {
+    return removed
+  }
+
+  const uid = currentUid()
+  const keepPath = keep ? path.resolve(keep) : null
+  for (const entry of entries) {
+    const match = PID_DIR_NAME.exec(entry)
+    if (!match) continue
+    const pid = Number(match[1])
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue
+    if (pid === process.pid) continue
+
+    const dir = path.join(root, entry)
+    if (keepPath && path.resolve(dir) === keepPath) continue
+
+    let stat: fs.Stats
+    try {
+      stat = fs.lstatSync(dir)
+    } catch {
+      continue
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) continue
+    if (uid !== undefined && stat.uid !== uid) continue
+    if (isProcessAlive(pid)) continue
+
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+      removed.push(dir)
+    } catch (err) {
+      log.debug("could not remove a stale scratch directory", {
+        dir,
+        error: String(err),
+      })
+    }
+  }
+
+  if (removed.length > 0) {
+    log.info("removed stale plugin scratch directories", {
+      count: removed.length,
+      dirs: removed,
+    })
+  }
+  return removed
+}
+
+let swept = false
+
+function sweepOnce(keep: string): void {
+  if (swept) return
+  swept = true
+  try {
+    sweepStalePluginTmpDirs(keep)
+  } catch (err) {
+    log.warn("stale scratch directory sweep failed", { error: String(err) })
+  }
+}
+
 export function pluginTmpDir(): string {
   // Re-check every call: callers hold the string for the life of the process,
   // and a directory that became hostile mid-run must not keep being written to.
@@ -103,6 +197,9 @@ export function pluginTmpDir(): string {
   ensureDir(currentDir)
   createdDirs.add(currentDir)
   registerExitCleanup()
+  // First real use is this plugin's startup: nothing else in the module graph
+  // is a reliable entry point we are allowed to hook.
+  sweepOnce(currentDir)
   return currentDir
 }
 

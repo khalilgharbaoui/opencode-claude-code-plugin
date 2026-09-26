@@ -11,16 +11,23 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { test } from "node:test"
 
-import { __test, _resetPluginTmpDir, pluginTmpDir } from "./src/tmp.js"
+import {
+  __test,
+  _resetPluginTmpDir,
+  pluginTmpDir,
+  sweepStalePluginTmpDirs,
+} from "./src/tmp.js"
 
 // Read before anything calls pluginTmpDir(): the module registers its exit
 // hook lazily on first use, not at import, so this is the clean baseline.
@@ -170,4 +177,104 @@ test("an existing path that is not ours, or not a directory, is untrustworthy", 
   )
   // Our own directory is fine.
   assert.equal(__test.untrustworthyReason(pluginTmpDir()), null)
+})
+
+// The exit hook never runs under SIGKILL, so a killed opencode leaves its
+// mcp-<hash>.json (which can hold {env:VAR}-substituted secrets) on disk.
+// The sweep is what eventually removes those, and what it must NOT remove is
+// the part that matters: a live process's directory, or anyone else's.
+
+/** A pid that has certainly exited and been reaped. */
+function deadPid(): number {
+  const result = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" })
+  assert.equal(result.error, undefined)
+  assert.ok(result.pid && result.pid > 0)
+  return result.pid
+}
+
+function withTmpRoot(fn: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "tmp-sweep-"))
+  const saved = process.env.TMPDIR
+  try {
+    process.env.TMPDIR = root
+    // os.tmpdir() re-reads TMPDIR on every call, so this redirects the sweep.
+    // Hand the callback what os.tmpdir() reports, not the realpath: on macOS
+    // those differ (/var vs /private/var) and the sweep reports the former.
+    assert.equal(realpathSync(tmpdir()), realpathSync(root))
+    fn(tmpdir())
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = saved
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test("the sweep removes dead-pid scratch dirs and nothing else", () => {
+  withTmpRoot((root) => {
+    const dead = deadPid()
+    const deadDir = join(root, `opencode-claude-code-${dead}`)
+    mkdirSync(deadDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(deadDir, "mcp-abc123.json"), '{"secret":"x"}', "utf8")
+
+    // Our own directory: swept only when the process that owns it is gone.
+    const ownDir = join(root, `opencode-claude-code-${process.pid}`)
+    mkdirSync(ownDir, { recursive: true, mode: 0o700 })
+
+    // A different, still-running process.
+    const liveDir =
+      process.ppid > 1 ? join(root, `opencode-claude-code-${process.ppid}`) : null
+    if (liveDir) mkdirSync(liveDir, { recursive: true, mode: 0o700 })
+
+    // A name that is not ours, and a mkdtemp-style fallback name whose owner
+    // cannot be determined from the name.
+    const foreign = join(root, "opencode-claude-code-plugin-cache")
+    const fallbackNamed = join(root, "opencode-claude-code-A1b2C3")
+    mkdirSync(foreign, { recursive: true })
+    mkdirSync(fallbackNamed, { recursive: true })
+
+    // A symlink wearing a dead pid's name, pointing somewhere valuable.
+    const decoy = join(root, "decoy")
+    mkdirSync(decoy, { recursive: true })
+    writeFileSync(join(decoy, "keep-me"), "precious", "utf8")
+    const symlinked = join(root, `opencode-claude-code-${deadPid()}`)
+    symlinkSync(decoy, symlinked, "dir")
+
+    const removed = sweepStalePluginTmpDirs()
+
+    assert.deepEqual(removed, [deadDir])
+    assert.equal(existsSync(deadDir), false)
+    assert.equal(existsSync(ownDir), true)
+    if (liveDir) assert.equal(existsSync(liveDir), true)
+    assert.equal(existsSync(foreign), true)
+    assert.equal(existsSync(fallbackNamed), true)
+    // The symlink is left in place and its target is untouched.
+    assert.equal(lstatSync(symlinked).isSymbolicLink(), true)
+    assert.equal(readFileSync(join(decoy, "keep-me"), "utf8"), "precious")
+  })
+})
+
+test("the sweep skips the directory it is told to keep, and honours the opt-out", () => {
+  withTmpRoot((root) => {
+    const dead = deadPid()
+    const deadDir = join(root, `opencode-claude-code-${dead}`)
+    mkdirSync(deadDir, { recursive: true, mode: 0o700 })
+
+    assert.deepEqual(sweepStalePluginTmpDirs(deadDir), [])
+    assert.equal(existsSync(deadDir), true)
+  })
+
+  withTmpRoot((root) => {
+    const deadDir = join(root, `opencode-claude-code-${deadPid()}`)
+    mkdirSync(deadDir, { recursive: true, mode: 0o700 })
+
+    const saved = process.env.OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP
+    try {
+      process.env.OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP = "1"
+      assert.deepEqual(sweepStalePluginTmpDirs(), [])
+      assert.equal(existsSync(deadDir), true)
+    } finally {
+      if (saved === undefined) delete process.env.OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP
+      else process.env.OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP = saved
+    }
+  })
 })
