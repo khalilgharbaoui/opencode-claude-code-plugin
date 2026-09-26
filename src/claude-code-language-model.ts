@@ -19,7 +19,6 @@ import { createHostToolPartTranslator, translateStreamForHost } from "./host-too
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
-  shouldStripContextReminders,
 } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
@@ -37,7 +36,6 @@ import {
 } from "./cli-events.js"
 import {
   DEFAULT_ACCOUNT,
-  accountConfigDirPath,
   normalizeAccountName,
 } from "./accounts.js"
 import {
@@ -70,15 +68,12 @@ import {
   QUESTION_TOOL_NAME,
   consumeExitPlanModeQuestionResult,
   createExitPlanModeQuestionCall,
-  isPlanModeQuestionActive,
   type QuestionToolCall,
 } from "./plan-mode-question.js"
-import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
+import type { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
-  fetchOpencodeToolList,
   fetchSessionParentId,
-  type OpencodeToolListItem,
   resolveSpawnCwdForSession,
   fetchSessionRunState,
   settleSessionRunState,
@@ -113,16 +108,12 @@ import {
   clearCompression,
   consumeCompressionRestart,
   getCompressionSummary,
-  storeCompressionSummary,
 } from "./compression-store.js"
 import { log } from "./logger.js"
 import { detectCliVersion } from "./cli-version.js"
 import {
-  createProxyMcpServer,
   resolveDisallowedTools,
   resolveProxyOpencodeToolDefs,
-  resolveMcpProxyToolDefs,
-  DEFAULT_PROXY_TOOLS,
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
@@ -130,14 +121,11 @@ import {
   TASK_BATCH_TOOL_NAME,
   taskBatchTasks,
   taskBatchChildToolCallId,
-  formatTaskBatchResults,
   setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
   type ProxyMcpServer,
-  type ProxyToolCall,
   type ProxyToolDef,
-  type ProxyToolInterceptor,
   type ProxyToolResult,
 } from "./proxy-mcp.js"
 import {
@@ -146,7 +134,6 @@ import {
   isPendingProxyCallChannelClosed,
   markPendingProxyCallEmitted,
   onPendingProxyCall,
-  queuePendingProxyCall,
   rejectAllPendingProxyCallsForSession,
   rejectPendingProxyCallById,
   resolvePendingProxyCallById,
@@ -187,6 +174,18 @@ import {
   handleControlRequest,
   writeControlResponse,
 } from "./control-request.js"
+import {
+  createLiveToolInfoLoader,
+  effectiveMcpConfig,
+  ensureProxyServer,
+  fetchLiveToolInfo,
+  resolvedProxyMcpTools,
+  resolvedProxyTools,
+  resolvePlanModeQuestion,
+  skillBridgeSpawn,
+  stripContextRemindersEnabled,
+  type LiveToolInfo,
+} from "./spawn-planning.js"
 import { unlink } from "node:fs/promises"
 
 // Re-exported so importers that have always reached for these here keep
@@ -251,20 +250,6 @@ const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
 const CHILD_EXIT_STATUS_GRACE_MS = 250
-
-/** One per-turn snapshot of opencode's live tool registry. */
-interface LiveToolInfo {
-  /** False when nothing answered (no SDK client, fetch failed). */
-  resolved: boolean
-  taskDescription: string | undefined
-  questionDescription: string | undefined
-  hasQuestion: boolean
-  /**
-   * The raw registry entries behind the fields above, so `proxyOpencodeTools`
-   * can be resolved from the same single fetch rather than a second one.
-   */
-  items?: OpencodeToolListItem[]
-}
 
 export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -348,13 +333,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   /**
    * Build the combined `--mcp-config` list and return both the list and the
-   * hash of the bridged opencode MCP block (or null when bridging is off /
-   * yields nothing). The hash is used to detect mid-session config changes
-   * and respawn the underlying claude process.
-   *
-   * `runtimeStatus` is a snapshot of opencode's `client.mcp.status()`. When
-   * provided it overlays opencode's UI-toggled state on top of disk config
-   * so `/mcps` toggles propagate without a config file write.
+   * hash of the bridged opencode MCP block. See `effectiveMcpConfig` in
+   * spawn-planning.ts.
    */
   private effectiveMcpConfig(
     cwd: string,
@@ -366,158 +346,37 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     bridgedHash: string | null
     allEnabledServerNames: string[]
   } {
-    const paths = Array.isArray(this.config.mcpConfig)
-      ? this.config.mcpConfig.slice()
-      : this.config.mcpConfig
-        ? [this.config.mcpConfig]
-        : []
-    let bridgedHash: string | null = null
-    let allEnabledServerNames: string[] = []
-    if (this.config.bridgeOpencodeMcp !== false) {
-      const bridged = bridgeOpencodeMcp(cwd, runtimeStatus, excludeServers)
-      if (bridged) {
-        if (bridged.path) paths.push(bridged.path)
-        bridgedHash = bridged.hash
-        allEnabledServerNames = bridged.allEnabledServerNames
-      }
-    }
-    if (proxyConfigPath) paths.push(proxyConfigPath)
-    return { paths, bridgedHash, allEnabledServerNames }
+    return effectiveMcpConfig(
+      this.config,
+      cwd,
+      proxyConfigPath,
+      runtimeStatus,
+      excludeServers,
+    )
   }
 
   /** Resolve ProxyToolDef[] for the configured proxyTools names. */
   private resolvedProxyTools(): ProxyToolDef[] | null {
-    const names = this.config.proxyTools
-    if (!names || names.length === 0) return null
-    const defsByName = new Map(
-      DEFAULT_PROXY_TOOLS.map((t) => [t.name.toLowerCase(), t]),
-    )
-    const picked: ProxyToolDef[] = []
-    const seen = new Set<string>()
-    const unknown: string[] = []
-    const pick = (def: ProxyToolDef) => {
-      if (seen.has(def.name)) return
-      seen.add(def.name)
-      picked.push(def)
-    }
-    for (const n of names) {
-      const def = defsByName.get(String(n).toLowerCase())
-      if (!def) {
-        unknown.push(String(n))
-        continue
-      }
-      pick(def)
-      // `task_batch` rides along with `task`: it is the same dispatch path for
-      // two or more subagents at once (TASK_BATCH_PROXY_NOTE), and a
-      // `proxyTools` list that names `Task` should not have to know it exists.
-      if (def.name === "task") {
-        const batch = defsByName.get(TASK_BATCH_TOOL_NAME)
-        if (batch) pick(batch)
-      }
-    }
-    // A typo used to vanish here. Silence is the wrong response: unknown
-    // names are not proxied, so the matching Claude built-in stays enabled
-    // and unmediated, and if *every* name is unknown the whole turn runs
-    // with no proxy at all (issue #26).
-    if (unknown.length > 0) {
-      const known = [...defsByName.keys()].join(", ")
-      if (picked.length === 0) {
-        log.warn(
-          "no proxyTools entry was recognised; nothing will be proxied this turn",
-          { unknown, known },
-        )
-      } else {
-        log.warn("ignoring unknown proxyTools entries", { unknown, known })
-      }
-    }
-    return picked.length > 0 ? picked : null
+    return resolvedProxyTools(this.config)
   }
 
-  /**
-   * Resolve ProxyToolDef[] for opencode's MCP-backed tools so they go
-   * through the in-process proxy instead of being bridged into Claude CLI's
-   * `--mcp-config`. Routing through the proxy keeps a single execution site
-   * (opencode), so the call is permission-prompted and rendered as an
-   * opencode tool call.
-   *
-   * Opt-in (`proxyOpencodeMcpTools: true`) and off by default. It used to
-   * default to true while finding nothing, because it discovered tools via
-   * `client.tool.list()`, which enumerates opencode's `ToolRegistry` and not
-   * the MCP tools merged into the model's tool set afterwards. Discovery now
-   * reads that merged set, the `tools` array opencode passes `doStream`, so
-   * the option does what it says. Turning it on by default at the same time
-   * would have silently moved every existing user's MCP traffic off the
-   * working direct bridge, so the default went to false instead: today's
-   * behaviour is preserved exactly and crossing over is the operator's call.
-   *
-   * Returns null when the feature is off or nothing matched, which leaves
-   * every server on the direct bridge.
-   */
+  /** Resolve ProxyToolDef[] for opencode's MCP-backed tools. */
   private resolvedProxyMcpTools(
     allEnabledServerNames: string[],
     modelTools: readonly ModelToolEntry[] | undefined,
     taken?: ReadonlySet<string>,
   ): McpProxyToolResolution | null {
-    if (this.config.proxyOpencodeMcpTools !== true) return null
-    if (this.config.bridgeOpencodeMcp === false) return null
-    if (allEnabledServerNames.length === 0) return null
-
-    const resolution = resolveMcpProxyToolDefs({
-      serverNames: allEnabledServerNames,
-      tools: modelTools,
+    return resolvedProxyMcpTools(
+      this.config,
+      allEnabledServerNames,
+      modelTools,
       taken,
-    })
-    if (resolution.defs.length === 0) {
-      // WARN, not NOTICE: only warn and error are alwaysStderr in
-      // src/logger.ts, so a NOTICE would be invisible to the very operator
-      // who opted in and is entitled to know their MCP calls are still
-      // going direct, and so still are not permission-prompted by opencode.
-      log.warn(
-        "proxyOpencodeMcpTools is on but no MCP tool was found in opencode's" +
-          " tool set; those servers stay on the direct bridge this spawn",
-        { servers: allEnabledServerNames, modelTools: modelTools?.length ?? 0 },
-      )
-      return null
-    }
-    log.debug("routing opencode MCP tools through the proxy", {
-      servers: [...resolution.coveredServers],
-      tools: resolution.defs.map((def) => def.name),
-    })
-    return resolution
+    )
   }
 
-  /**
-   * Live tool info derived from a single `client.tool.list()` fetch:
-   *
-   * - `taskDescription`: opencode's `task` tool description exactly as the
-   *   registry renders it for native models, including the "Available
-   *   agent types" list. Overlaid onto the static `task` proxy def so
-   *   Claude sees the same subagent catalog native models see, instead
-   *   of hunting through config files.
-   * - `questionDescription` / `hasQuestion`: opencode's `question` tool
-   *   description and whether the registry has the entry at all. Older
-   *   builds lack it, in which case a `mcp__opencode_proxy__question`
-   *   call resolves to `⚙ invalid`; the version gate drops the def.
-   *
-   * Returns undefined/false when the SDK client is unavailable (direct
-   * AI-SDK use, tests) so the static defs stand. `resolved` distinguishes
-   * "the registry answered and has no `question` entry" from "nobody
-   * answered": only the former is a real version-gate signal.
-   */
+  /** One `client.tool.list()` fetch, shaped for this turn's gates. */
   private async fetchLiveToolInfo(): Promise<LiveToolInfo> {
-    const items = await fetchOpencodeToolList(
-      this.config.provider,
-      this.modelId,
-      this.config.cwd,
-    )
-    const question = items?.find((item) => item.id === "question")
-    return {
-      resolved: items !== undefined,
-      taskDescription: items?.find((item) => item.id === "task")?.description,
-      questionDescription: question?.description,
-      hasQuestion: !!question,
-      items,
-    }
+    return fetchLiveToolInfo(this.config, this.modelId)
   }
 
   /**
@@ -526,39 +385,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
    * spawn block resolves anything: `userMsg` is built well ahead of it.
    */
   private stripContextRemindersEnabled(): boolean {
-    return shouldStripContextReminders({
-      enabled: this.config.stripContextReminders,
-      proxyTools: this.config.proxyTools,
-      proxyOpencodeTools: this.config.proxyOpencodeTools,
-    })
+    return stripContextRemindersEnabled(this.config)
   }
 
   /**
    * Arguments the skill bridge needs beyond `cwd` / `cliPath`: which
    * `CLAUDE_CONFIG_DIR` this spawn reads its native skills from, and whether
-   * to drop the ones it already loads. A failover moves the spawn to another
-   * account, and therefore to that account's config dir.
+   * to drop the ones it already loads.
    */
   private skillBridgeSpawn(failover: FailoverSpawn): {
     configDir: string | undefined
     skipNative: boolean
   } {
-    return {
-      configDir:
-        failover.failedOver && failover.target
-          ? accountConfigDirPath(failover.target)
-          : this.config.configDir,
-      skipNative: this.config.bridgeSkipNativeSkills !== false,
-    }
+    return skillBridgeSpawn(this.config, failover)
   }
 
   /** Share one lazy registry request within a turn without making it stale. */
   private createLiveToolInfoLoader(): () => Promise<LiveToolInfo> {
-    let pending: Promise<LiveToolInfo> | undefined
-    return () => {
-      pending ??= this.fetchLiveToolInfo()
-      return pending
-    }
+    return createLiveToolInfoLoader(this.config, this.modelId)
   }
 
   /**
@@ -571,24 +415,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     compactionMode: boolean,
     loadLiveToolInfo = () => this.fetchLiveToolInfo(),
   ): Promise<boolean> {
-    if (compactionMode || this.config.planModeQuestion !== true) return false
-    const info = await loadLiveToolInfo()
-    const active = isPlanModeQuestionActive({
-      configured: this.config.planModeQuestion,
-      opencodeHasQuestion: info.hasQuestion,
-      compactionMode,
-    })
-    if (!active) {
-      // Same reasoning as the question proxy's version-gate log: a silent
-      // fallback to the text path looks from the outside like the setting
-      // was ignored.
-      log.info("plan-mode question gate", {
-        opencodeHasQuestion: info.hasQuestion,
-        registryResolved: info.resolved,
-        active,
-      })
-    }
-    return active
+    return resolvePlanModeQuestion(this.config, compactionMode, loadLiveToolInfo)
   }
 
   /**
@@ -598,45 +425,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private async ensureProxyServer(
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
-    // Whether the `compress` in `tools` is the PLUGIN's def rather than
-    // opencode's forwarded one. Keying the interceptor on the name alone
-    // would answer a forwarded `compress` in-process and opencode would
-    // never see the call: the same name, the wrong tool, silently. The
-    // caller knows which list the def came from, so it decides.
     interceptCompress: boolean,
   ): Promise<ProxyMcpServer> {
-    const timeoutOverrides = this.config.proxyToolTimeoutMs
-    const interceptors = new Map<string, ProxyToolInterceptor>()
-    if (interceptCompress && tools.some((t) => t.name === "compress")) {
-      interceptors.set("compress", (input) => {
-        const summary = typeof input.summary === "string" ? input.summary.trim() : ""
-        if (!summary) {
-          return {
-            kind: "error",
-            message:
-              "compress needs a non-empty `summary`: it becomes the only" +
-              " prior context after the reset. Nothing was compressed.",
-          }
-        }
-        storeCompressionSummary(sessionKeyForCalls, summary)
-        log.info("compress stored summary; session resets next turn", {
-          sessionKey: sessionKeyForCalls,
-          summaryLength: summary.length,
-        })
-        return {
-          kind: "text",
-          text:
-            "Summary stored. Finish this turn as normal; the next turn starts" +
-            " a fresh Claude Code session with this summary as its only prior" +
-            " context.",
-        }
-      })
-    }
-    const srv = await createProxyMcpServer(tools, timeoutOverrides, interceptors)
-    srv.calls.on("call", (call: ProxyToolCall) => {
-      queuePendingProxyCall(sessionKeyForCalls, call, timeoutOverrides)
-    })
-    return srv
+    return ensureProxyServer(
+      this.config,
+      tools,
+      sessionKeyForCalls,
+      interceptCompress,
+    )
   }
 
   /**
