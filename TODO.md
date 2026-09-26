@@ -100,6 +100,17 @@ Nothing parked.
 
 ## In progress
 
+- 2026-09-26: **accelerator lanes, delegated to implementor subagents** (maintainer: "maybe
+  we can start delegating some of these to the implementor agent ... do the ones that will
+  help us accelerate faster first"). Order and why, with measured costs and per-item token
+  estimates in the vault note `opencode-claude-code-plugin/Future Features.md`, section
+  "Cost calibration and weights": (1) condense AGENTS.md, 182 KB / about 45k tokens sent with
+  every reply of every session; (2) split `src/claude-code-language-model.ts` (5,383 lines),
+  behaviour-preserving; (3) tests for modules no test covers (`tmp.ts`, `cleanup-stale.ts`,
+  and the other gaps listed in the roadmap). Lanes 2 and 3 run in parallel and leave AGENTS.md
+  alone (their doc notes go in the PR body); lane 1 runs after they merge, so it condenses
+  the final text. Measured baseline: tasks this week cost 12M to 29M tokens each in a
+  session carrying 450k to 650k context; a fresh session is about a third of that.
 - 2026-09-23: opencode 2, the checks that were not possible before release. (1) Install
   by npm name (it failed from this Mac because Aikido's age filter hid the new version): `plugins: ["@khalilgharbaoui/opencode-claude-code-plugin@0.26.0"]` failed
   with `NpmInstallFail` right after publishing, because the registry's aggregate
