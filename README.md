@@ -391,7 +391,9 @@ Every variable the plugin itself reads, in one place. Config is read once at ope
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | logger | Directory for the log file, overriding `logging.dir`. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | logger | Minimum level to emit, overriding `logging.level`. An unrecognised value falls through to config. |
 | `DEBUG` | logger | `DEBUG=opencode-claude-code` promotes the logger to `mode: "debug"`, echoing every emitted level to opencode's TUI. |
-| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP` | startup cleanup | `1` skips the one-time removal of a stale **unscoped** `opencode-claude-code-plugin` install from opencode's plugin cache. That old package is a different artifact that shadows this scoped one when both are present; set this if you are deliberately keeping it. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP` | startup cleanup | `1` skips the removal of a stale **unscoped** `opencode-claude-code-plugin` install from opencode's plugin cache. That old package is a different artifact that shadows this scoped one when both are present; set this if you are deliberately keeping it. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP` | startup cleanup | `1` runs that cleanup even when the marker at `$XDG_STATE_HOME/opencode-claude-code-plugin/cleanup-stale.json` (default `~/.local/state/...`) records that this plugin version already swept. Without it the cleanup walks opencode's plugin cache once per installed version rather than on every launch. |
+| `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP` | scratch directory | `1` skips the sweep of `<tmpdir>/opencode-claude-code-<pid>` directories left behind by plugin processes that were killed. See [Scratch files on disk](#scratch-files-on-disk). |
 | `OPENCODE_WORKTREE` | MCP bridge | Overrides worktree-root detection, which otherwise walks up from the working directory looking for a `.git` entry. |
 | `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` | config discovery | Where the plugin looks for your opencode config when bridging MCP and skills. See [Discovery order](#discovery-order-highest-to-lowest-priority). |
 | `OPENCODE_VERSION` | startup diagnostics | Reported as the opencode version when set, sparing the plugin a `--version` spawn. Diagnostics only. |
@@ -527,6 +529,23 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:PORT/mcp \
 A patched process answers `401`. A `200` is a pre-0.13.2 process still running, and restarting it is the fix.
 
 Nothing to configure. If proxied tools ever stop working after a Claude Code upgrade, check the plugin log for `proxy-mcp rejected a request`, which names which guard failed.
+
+### Scratch files on disk
+
+Everything the plugin writes for the Claude CLI to read goes into one per-process directory, `<tmpdir>/opencode-claude-code-<pid>`, created `0700`:
+
+| File | Mode | Holds |
+| --- | --- | --- |
+| `mcp-<hash>.json` | `0600` | the bridged MCP config, including any `{env:VAR}` values substituted from your environment |
+| `proxy-<hash>.json` | `0600` | the proxy endpoint's bearer token |
+| `opencode-cc-sys-<uuid>.md` | `0600` | the full appended system prompt, forwarded opencode instructions and AGENTS.md included |
+| `skills-<hash>/` | inherits | staged skill plugin dirs for the skill bridge; the `0700` parent is what keeps them private |
+
+On a shared host the OS tmpdir is world-writable and the pid name is guessable, so the plugin refuses a path that already exists but is a symlink, is not a directory, or is not owned by you: it falls back to a fresh `mkdtemp` name and logs a warning naming both paths.
+
+The directory is removed on normal exit. `SIGKILL` skips that, so on first use each run the plugin also sweeps `<tmpdir>/opencode-claude-code-<pid>` directories whose pid is no longer running and which you own. Anything else, another user's directory, a live process's, a symlink, a name that is not exactly that pattern, is left alone. Set `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1` to turn the sweep off.
+
+**Windows is not hardened here.** Both spawn sites pass `shell: true` on `win32`, so the CLI argument list goes through `cmd.exe` unquoted. Treat Windows as unsupported until that is fixed; see the note in `docs/agents-history.md`.
 
 ### Closing a tool with no proxy
 

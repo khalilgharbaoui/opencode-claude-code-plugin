@@ -154,7 +154,9 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | Overrides `logging.dir`. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | Overrides `logging.level`. Invalid values fall through to config. |
 | `DEBUG` | A value containing `opencode-claude-code` promotes `logging.mode` to debug, not `logging.level`. Preserve other debug namespaces. |
-| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the one-time removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP=1` | Run that cleanup even when the marker at `$XDG_STATE_HOME/opencode-claude-code-plugin/cleanup-stale.json` says this plugin version already swept. Without it the sweep happens once per installed version, not once per opencode launch. |
+| `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1` | Skip the startup sweep of `<tmpdir>/opencode-claude-code-<pid>` scratch directories whose pid is dead and which the current user owns. The sweep exists because `SIGKILL` skips the exit hook, leaving the `0600` bridged MCP config (which can hold `{env:VAR}`-substituted secrets) behind. |
 | `ANTHROPIC_API_KEY` | CLI API authentication input, stripped when `ignoreAnthropicApiKey` is true; otherwise may change billing away from stored subscription auth. Never display it. |
 | `ANTHROPIC_AUTH_TOKEN` | CLI auth-token input; same strip/warning rule. Never display it. |
 | `DISABLE_AUTOUPDATER` | Set to `1` on every spawned `claude`, and only when the user has not set it. Keeps the CLI from updating mid-session, which would invalidate the cached version that gates `--thinking-display summarized`, `--plugin-dir` and fast mode. Not a provider option: a user-set value (including `0`, meaning keep updating) is never overwritten, which is the intended escape hatch. Tell a user who wants CLI autoupdates to export `DISABLE_AUTOUPDATER=0`, not to look for a config key. |
