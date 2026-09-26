@@ -253,6 +253,11 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 - `/claude-code-doctor` (report formatter, command-registration guard, `checkProxyAuth`, transcript strip, `describeSessionKey`): `test-doctor.ts`.
 - Subagent steering, the task hint and the `task_batch` def: `test-subagent-hint.ts`. `/btw`: `test-btw-command.ts`, `test-side-question.ts`. Bundled skill coverage: `test-configure-skill.ts`.
 - opencode 2: the entrypoint (`planV2Providers`, `configuredSeedSettings`, `resolveSdkSettings`, `isOpencodeV2Context`, `createV2Setup`, the title stub) in `test-v2-entrypoint.ts`, the V1-shaped client shim in `test-v2-client.ts`, the tool vocabulary (`translateToolForHost`) in `test-host-tools.ts`. None replace the two live probes in `V2.md`, one per major.
+- The per-process scratch directory (`pluginTmpDir`: its pid-isolated name, reuse, and the exit hook that removes the tree): `test-tmp-dir.ts`.
+- Stale unscoped-install cleanup, and above all what it must never delete (`cleanupStaleUnscopedInstall`, `_resetCleanupStaleState`): `test-cleanup-stale.ts`.
+- The generated per-account wrapper executed against a fake `claude` (`@account` stripping off `--model`, `CLAUDE_CONFIG_DIR`, quoting of odd HOME/CLI paths, shared-capability symlinks) plus the account naming helpers: `test-account-wrapper.ts`.
+- Session lookups through the captured SDK client (`fetchSessionRunState`, `settleSessionRunState`, `fetchSessionDirectory`, `fetchSessionParentId`): `test-runtime-status-sessions.ts`.
+- The V1 plugin hooks driven through `server()` (`chat.params` writing at the top level of `output.options`, `command.execute.before` and the `/btw` ownership guard): `test-index-hooks.ts`.
 
 ## Roadmap and open work
 
