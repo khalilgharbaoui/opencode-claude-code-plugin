@@ -35,6 +35,7 @@ interface Sandbox {
   home: string
   cache: string
   config: string
+  state: string
 }
 
 function sandbox(): Sandbox {
@@ -42,10 +43,12 @@ function sandbox(): Sandbox {
   const home = join(root, "home")
   const cache = join(root, "cache")
   const config = join(root, "config")
+  const state = join(root, "state")
   mkdirSync(home, { recursive: true })
   mkdirSync(cache, { recursive: true })
   mkdirSync(config, { recursive: true })
-  return { root, home, cache, config }
+  mkdirSync(state, { recursive: true })
+  return { root, home, cache, config, state }
 }
 
 async function inSandbox(
@@ -57,7 +60,9 @@ async function inSandbox(
     "HOME",
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
     "OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP",
+    "OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP",
     ...Object.keys(env),
   ]
   const saved = new Map(keys.map((key) => [key, process.env[key]]))
@@ -69,7 +74,9 @@ async function inSandbox(
     apply("HOME", box.home)
     apply("XDG_CACHE_HOME", box.cache)
     apply("XDG_CONFIG_HOME", box.config)
+    apply("XDG_STATE_HOME", box.state)
     apply("OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP", undefined)
+    apply("OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP", undefined)
     for (const [key, value] of Object.entries(env)) apply(key, value)
     _resetCleanupStaleState()
     await fn(box)
@@ -78,6 +85,22 @@ async function inSandbox(
     _resetCleanupStaleState()
     rmSync(box.root, { recursive: true, force: true })
   }
+}
+
+/** The marker the module writes once a version has swept. */
+function markerFile(box: Sandbox): string {
+  return join(box.state, "opencode-claude-code-plugin", "cleanup-stale.json")
+}
+
+/** This plugin's own version, which is what the marker is keyed on. */
+const OUR_VERSION: string = JSON.parse(
+  readFileSync(join(OUR_DIR, "package.json"), "utf8"),
+).version
+
+function writeMarker(box: Sandbox, version: string): void {
+  const file = markerFile(box)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ version }), "utf8")
 }
 
 /** The cache root cleanup reads when XDG_CACHE_HOME is set. */
@@ -321,6 +344,90 @@ test("runs at most once per process", async () => {
     cleanupStaleUnscopedInstall()
     assert.equal(existsSync(second), true)
   })
+})
+
+// The once-per-process guard alone still means a sweep of opencode's plugin
+// cache on every opencode launch, forever. The marker narrows that to one
+// sweep per installed plugin version.
+
+test("a sweep records the plugin version it ran for", async () => {
+  await inSandbox((box) => {
+    const stale = plantStale(cacheRoot(box))
+
+    cleanupStaleUnscopedInstall()
+
+    assert.equal(existsSync(stale), false)
+    const marker = JSON.parse(readFileSync(markerFile(box), "utf8"))
+    assert.equal(marker.version, OUR_VERSION)
+    assert.match(marker.at, /^\d{4}-\d{2}-\d{2}T/)
+  })
+})
+
+test("a marker for this version stops the next process from sweeping again", async () => {
+  await inSandbox((box) => {
+    writeMarker(box, OUR_VERSION)
+    const stale = plantStale(cacheRoot(box))
+
+    // A fresh process (the reset) would otherwise sweep.
+    cleanupStaleUnscopedInstall()
+
+    assert.equal(existsSync(stale), true)
+  })
+})
+
+test("a marker from an older version does not stop the sweep, and is replaced", async () => {
+  await inSandbox((box) => {
+    writeMarker(box, "0.0.1-ancient")
+    const stale = plantStale(cacheRoot(box))
+
+    cleanupStaleUnscopedInstall()
+
+    assert.equal(existsSync(stale), false)
+    const marker = JSON.parse(readFileSync(markerFile(box), "utf8"))
+    assert.equal(marker.version, OUR_VERSION)
+  })
+})
+
+test("a corrupt or marker-less state dir just means a sweep", async () => {
+  for (const body of ["{ not json", JSON.stringify({ version: 42 }), null]) {
+    await inSandbox((box) => {
+      if (body !== null) {
+        const file = markerFile(box)
+        mkdirSync(dirname(file), { recursive: true })
+        writeFileSync(file, body, "utf8")
+      }
+      const stale = plantStale(cacheRoot(box))
+
+      cleanupStaleUnscopedInstall()
+
+      assert.equal(existsSync(stale), false)
+    })
+  }
+})
+
+test("OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP=1 ignores the marker", async () => {
+  await inSandbox(
+    (box) => {
+      writeMarker(box, OUR_VERSION)
+      const stale = plantStale(cacheRoot(box))
+
+      cleanupStaleUnscopedInstall()
+
+      assert.equal(existsSync(stale), false)
+    },
+    { OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP: "1" },
+  )
+})
+
+test("an opted-out run writes no marker, so a later opt-in still sweeps", async () => {
+  await inSandbox(
+    (box) => {
+      plantStale(cacheRoot(box))
+      cleanupStaleUnscopedInstall()
+      assert.equal(existsSync(markerFile(box)), false)
+    },
+    { OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP: "1" },
+  )
 })
 
 test("a cache root that does not exist is skipped without throwing", async () => {

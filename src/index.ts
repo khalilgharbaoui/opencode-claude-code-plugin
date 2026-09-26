@@ -33,6 +33,11 @@ import {
   handleBtwCommand,
   type BtwSdkClient,
 } from "./btw-command.js"
+import {
+  isUnknownPreset,
+  resolvePermissionPreset,
+  type ResolvedPermissionPreset,
+} from "./permission-presets.js"
 import { registerBundledSkillPath } from "./skill-bridge.js"
 import {
   deleteActiveProcessesForSession,
@@ -162,6 +167,45 @@ export function warnIfPlanModeCannotExit(permissionMode: string | undefined): vo
   )
 }
 
+/**
+ * Resolve `permissionPreset` for this provider, reporting what it replaced.
+ *
+ * The result is applied over the operator's settings by `createClaudeCode`,
+ * which is the one funnel both opencode majors reach the language model
+ * through, so a preset needs wiring in exactly one place.
+ *
+ * Every override is logged at NOTICE, and an unrecognised preset name is a
+ * WARN plus no preset at all. A safety option must never be approximated: a
+ * typo'd `"readonly"` silently running at full permissions is worse than one
+ * that says so.
+ */
+export function applyPermissionPreset(
+  settings: ClaudeCodeProviderSettings,
+  defaultProxyTools: readonly string[],
+): ResolvedPermissionPreset | null {
+  const resolved = resolvePermissionPreset(settings, defaultProxyTools)
+  if (resolved === null) return null
+  if (isUnknownPreset(resolved)) {
+    log.warn(
+      "unknown permissionPreset; no preset applied and every permission" +
+        " setting is left exactly as configured",
+      { permissionPreset: resolved.unknown, known: ["read-only"] },
+    )
+    return null
+  }
+  log.notice(`permission preset "${resolved.preset}" applied`, {
+    permissionMode: resolved.permissionMode,
+    skipPermissions: resolved.skipPermissions,
+    proxyTools: resolved.proxyTools,
+    disallowedTools: resolved.extraDisallowedTools,
+    controlRequestBehavior: resolved.controlRequestBehavior,
+  })
+  for (const line of resolved.overridden) {
+    log.notice(`permission preset "${resolved.preset}" overrode ${line}`)
+  }
+  return resolved
+}
+
 export function createClaudeCode(
   settings: ClaudeCodeProviderSettings = {},
 ): ClaudeCodeProvider {
@@ -174,11 +218,15 @@ export function createClaudeCode(
     })
   }
   warnIfAnthropicApiKey(settings.ignoreAnthropicApiKey)
-  warnIfPlanModeCannotExit(settings.permissionMode)
+  const preset = applyPermissionPreset(settings, DEFAULT_PROXY_TOOL_NAMES)
+  // A preset drops any configured `permissionMode`, so the plan-mode warning
+  // would be about a mode this provider is not running in.
+  warnIfPlanModeCannotExit(preset ? undefined : settings.permissionMode)
   const cliPath =
     settings.cliPath ?? process.env.CLAUDE_CLI_PATH ?? "claude"
   const providerName = settings.providerID ?? settings.name ?? "claude-code"
-  const proxyTools = settings.proxyTools ?? [...DEFAULT_PROXY_TOOL_NAMES]
+  const proxyTools =
+    preset?.proxyTools ?? settings.proxyTools ?? [...DEFAULT_PROXY_TOOL_NAMES]
 
   const createModel = (modelId: string): LanguageModelV3 => {
     return new ClaudeCodeLanguageModel(modelId, {
@@ -192,18 +240,23 @@ export function createClaudeCode(
       baseCliPath: settings.baseCliPath ?? cliPath,
       accountFailover: settings.accountFailover ?? "ask",
       providerID: settings.providerID,
-      skipPermissions: settings.skipPermissions ?? true,
-      permissionMode: settings.permissionMode,
+      skipPermissions: preset?.skipPermissions ?? settings.skipPermissions ?? true,
+      permissionMode: preset?.permissionMode ?? settings.permissionMode,
+      permissionPreset: preset?.preset,
       mcpConfig: settings.mcpConfig,
       strictMcpConfig: settings.strictMcpConfig,
       bridgeOpencodeMcp: settings.bridgeOpencodeMcp ?? true,
-      controlRequestBehavior: settings.controlRequestBehavior ?? "allow",
-      controlRequestToolBehaviors: settings.controlRequestToolBehaviors,
+      controlRequestBehavior:
+        preset?.controlRequestBehavior ?? settings.controlRequestBehavior ?? "allow",
+      controlRequestToolBehaviors: preset
+        ? undefined
+        : settings.controlRequestToolBehaviors,
       controlRequestDenyMessage: settings.controlRequestDenyMessage,
       proxyTools,
       proxyOpencodeTools: settings.proxyOpencodeTools,
       stripContextReminders: settings.stripContextReminders === true,
-      extraDisallowedTools: settings.extraDisallowedTools,
+      extraDisallowedTools:
+        preset?.extraDisallowedTools ?? settings.extraDisallowedTools,
       proxyToolTimeoutMs: settings.proxyToolTimeoutMs,
       planModeQuestion: settings.planModeQuestion ?? false,
       webSearch: settings.webSearch,

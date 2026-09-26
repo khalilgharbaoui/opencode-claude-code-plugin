@@ -84,6 +84,12 @@ changing, reverting or "simplifying" a rule.
 - Subagent todos require `permission: { todowrite: "allow" }` on the subagent definition, or opencode injects `todowrite: false` and the synthetic todowrites surface as `⚙ invalid`. Built-in `general` denies it by default. (h #g86)
 - **A failed CLI tool needs `isError: true` on the `tool-result` stream part**, not just error text, because opencode's bridge routes on that flag. AI SDK v3 has no `tool-error` part a provider can emit; the source is `block.is_error`. (h #g112)
 
+### Scratch files on disk
+
+- **The scratch dir is `0700` and a pre-existing symlink, non-directory or foreign-owned path at the pid name is refused** for a fresh `mkdtempSync` one, re-checked every `pluginTmpDir()` call. The system prompt file is `0600` inside it, not loose in the OS tmpdir: it holds the whole forwarded prompt. `test-tmp-dir.ts`, `test-compaction-model.ts`. (h #g156)
+- **`sweepStalePluginTmpDirs` may only remove a pid-named directory that `lstat` says is a real directory, the current user owns, and whose pid is dead** (`EPERM` counts as alive). `cleanupStaleUnscopedInstall` is gated on a version marker under `XDG_STATE_HOME`, so it sweeps opencode's plugin cache once per installed version. `test-cleanup-stale.ts`. (h #g156)
+- **Windows still spawns through `cmd.exe` (`shell: win32`) and that is a known, documented hole**, not an oversight: Node quotes nothing there. Do not "fix" it without a Windows runner to verify the escaper on. (h #g156)
+
 ### Models, effort and spawn env
 
 - The `chat.params` hook tags opencode's active agent into provider options. Write to `output.options` at the **top level**. Do not pre-nest under `output.options[providerID]`, or the model sees `providerOptions[id][id]`. (h #g40)
@@ -134,6 +140,8 @@ Both question round-trips are verified, so treat older "blocked upstream, leave 
   - `QUESTION_PROXY_HINT` must name the FULL `mcp__opencode_proxy__question`, or haiku calls bare `question` and opencode renders `⚙ invalid`. `fetchLiveToolInfo` does ONE `client.tool.list()` fetch for all three gates.
 - **`planModeQuestion` cannot fire on the headless transport**, which does not offer `ExitPlanMode`. **`buildCliArgs` drops `--dangerously-skip-permissions` when `permissionMode` is `"plan"`**, because the CLI lets the skip flag win and plan mode was silently inert at the default. Do not "restore symmetry". `test-cli-args.ts`. (h #g94)
   - Plan mode is a capability restriction, so it wins; every other mode governs prompting and still passes both flags. `warnIfPlanModeCannotExit` warns once per process that nothing releases plan mode mid-session.
+- **`permissionPreset: "read-only"` must hold at three layers or it holds nowhere** (`src/permission-presets.ts`): `--restricted` plus `--disallowedTools` for the CLI's tools, the write and command defs filtered out of `proxyTools` because a proxied `bash` runs in opencode where no CLI flag reaches it, and deny for everything left that would prompt. It **replaces** `permissionMode`, `skipPermissions`, `controlRequestBehavior` and `controlRequestToolBehaviors` (NOTICE per override); an unknown name applies nothing and WARNs. `test-permission-presets.ts`. (h #g156)
+  - **`--restricted` + `--dangerously-skip-permissions` is a startup error, not an override** (`bypassPermissions not supported in restricted mode`, `restrictedMode` is `bypassImmune` in the binary), so `buildCliArgs` drops the skip flag for it exactly as for `"plan"`. Flags are gated at the versions measured, 2.1.258 and 2.1.263, each missing one logging its own WARN.
 - Plan-mode approval bridge (`src/plan-mode-question.ts`) is **opt-in via `planModeQuestion`, off by default**, and **not verified**. `ExitPlanMode` ends the turn on `tool-calls` with a synthetic `question` call and the answer returns as a `tool_result` **for the original `ExitPlanMode` tool_use id**, because a "yes" in prose never unlocks plan mode. `test-exit-plan-mode-question.ts`. (h #g95)
   - `isPlanModeQuestionActive` is resolved in the **prologue**, since a reused process never reaches the spawn block. Both transports have two ExitPlanMode sites each, so change a site's twin too; `finishReason` must be `tool-calls`.
 - Registry and cleanup semantics (superseding older lifetime-cache wording): `createLiveToolInfoLoader()` shares one lazy `client.tool.list()` within a `doStream` turn, and `deleteClaudeSessionId()` is the cleanup boundary for pending ExitPlanMode approvals, which respawn preserves. (h #g102)
@@ -245,6 +253,7 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 - Plan-mode approval bridge (`isPlanModeQuestionActive`, `createExitPlanModeQuestionCall`, `consumeExitPlanModeQuestionResult`): `test-exit-plan-mode-question.ts`.
 - Account failover (detection and its negative cases, the override and its expiry clamp, `resolveFailoverSpawn`, the form, every answer classification, the transcript strip and continuation prompt, plus a fake CLI through ask / switch / stop): `test-account-failover.ts`.
 - Compress tool (interceptor path, compression store, note selection), `resolveProxyOpencodeToolDefs` and both layers of the `compress` name collision: `test-compress-tool.ts`.
+- Permission presets (`resolvePermissionPreset`, `applyPermissionPreset`, the read-only branch of `buildCliArgs`, both new version gates): `test-permission-presets.ts`.
 - Config-path model metadata (`configModelsForProvider`), display names, limits and costs: `test-config-models.ts`.
 - Interactive transport (`decodeUserEnvelope`, the `spawnInteractiveProcess` shim, `interactiveExtraArgs`): `test-claude-session-wrapper.ts`.
 - Spawn-env API-key stripping and CLI hygiene vars (`claudeSpawnEnv`, `cliHygieneEnv`): `test-spawn-env.ts`.

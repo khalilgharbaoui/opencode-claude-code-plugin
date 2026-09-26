@@ -2,16 +2,22 @@
 // opencode's plugin cache by older configs. The unscoped name is a different
 // artifact than this scoped plugin and shadows it when both coexist.
 // Disable with OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1.
+//
+// This walks and mutates opencode's plugin cache, so it is gated on a marker
+// carrying the plugin version that last swept: one sweep per installed
+// version, not one per plugin load. Force one with
+// OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP=1.
 
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { log } from "./logger.js"
 
@@ -60,6 +66,55 @@ function ourLoadedDir(): string | null {
   }
 }
 
+/** This plugin's own version, or null when its package.json is unreadable. */
+function ourVersion(dir: string | null): string | null {
+  if (!dir) return null
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Where the "which version last swept" marker lives. Deliberately not inside
+ * opencode's cache: that is the very tree this module deletes from, and
+ * opencode rebuilds it.
+ */
+function markerPath(): string {
+  const stateRoot =
+    process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state")
+  return join(stateRoot, "opencode-claude-code-plugin", "cleanup-stale.json")
+}
+
+function markerVersion(): string | null {
+  try {
+    const marker = JSON.parse(readFileSync(markerPath(), "utf8"))
+    return typeof marker.version === "string" ? marker.version : null
+  } catch {
+    return null
+  }
+}
+
+function writeMarker(version: string): void {
+  const file = markerPath()
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(
+      file,
+      JSON.stringify({ version, at: new Date().toISOString() }, null, 2) + "\n",
+      "utf8",
+    )
+  } catch (err) {
+    // Not fatal: without the marker the sweep simply runs again next load.
+    log.warn("cleanup-stale: could not record the sweep marker", {
+      file,
+      error: String(err),
+    })
+  }
+}
+
 /** Test seam: re-arms the once-per-process guard. */
 export function _resetCleanupStaleState(): void {
   alreadyRan = false
@@ -74,6 +129,12 @@ export function cleanupStaleUnscopedInstall(): void {
 
   const ourDir = ourLoadedDir()
 
+  // A version we cannot read cannot be recorded either, so that case keeps the
+  // old behaviour: once per process, no marker written.
+  const version = ourVersion(ourDir)
+  const forced = process.env.OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP === "1"
+  if (version && !forced && markerVersion() === version) return
+
   for (const cacheRoot of candidateCacheRoots()) {
     try {
       cleanupOne(cacheRoot, ourDir)
@@ -84,6 +145,8 @@ export function cleanupStaleUnscopedInstall(): void {
       })
     }
   }
+
+  if (version) writeMarker(version)
 }
 
 function cleanupOne(cacheRoot: string, ourDir: string | null): void {

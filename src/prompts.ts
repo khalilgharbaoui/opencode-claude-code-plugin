@@ -8,10 +8,11 @@
  */
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
 import { readFileSync, writeFileSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { dirname, join } from "node:path"
 import { log } from "./logger.js"
+import { pluginTmpDir } from "./tmp.js"
 
 function readPromptFileIfPresent(path: string): string | undefined {
   try {
@@ -229,9 +230,12 @@ export function buildAppendedSystemPrompt(
   const content = parts.join("\n\n")
   if (!content) return undefined
 
-  const path = join(tmpdir(), `opencode-cc-sys-${randomUUID()}.md`)
+  // Inside the plugin's own 0700 scratch directory and 0600, not loose in the
+  // OS tmpdir world-readable: this file is the whole forwarded system prompt,
+  // AGENTS.md and every instruction block opencode sent us included.
+  const path = join(pluginTmpDir(), `opencode-cc-sys-${randomUUID()}.md`)
   try {
-    writeFileSync(path, content, "utf8")
+    writeFileSync(path, content, { encoding: "utf8", mode: 0o600 })
     return path
   } catch (err) {
     log.warn("failed to write system prompt file", { error: String(err) })
