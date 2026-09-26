@@ -1,13 +1,22 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  mkdirSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { test } from "node:test"
 import {
   buildAppendedSystemPrompt,
   DEFAULT_COMPACTION_MODEL,
   resolveCompactionModel,
 } from "./src/claude-code-language-model.js"
+import { pluginTmpDir } from "./src/tmp.js"
 
 function withCompactionEnv<T>(value: string | undefined, fn: () => T): T {
   const previous = process.env.CLAUDE_CODE_COMPACTION_MODEL
@@ -108,6 +117,32 @@ test("headless prompt path still preserves forwarded opencode system prompt", ()
     } else {
       process.env.XDG_CONFIG_HOME = previousConfigHome
     }
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// The prompt file holds every instruction opencode forwarded, AGENTS.md and
+// all, so it is the most sensitive thing this plugin writes to disk. It must
+// land inside the plugin's own 0700 scratch directory and be 0600, not loose
+// in a shared OS tmpdir at the umask default.
+test("the system prompt file is written 0600 inside the plugin scratch directory", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "opencode-cc-test-"))
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
+  let promptFile: string | undefined
+
+  try {
+    process.env.XDG_CONFIG_HOME = join(tmp, "config")
+    promptFile = buildAppendedSystemPrompt(tmp, true, ["SECRET-PROMPT-SENTINEL"])
+    assert.ok(promptFile)
+
+    assert.equal(dirname(promptFile), pluginTmpDir())
+    assert.equal(statSync(promptFile).mode & 0o777, 0o600)
+    assert.equal(statSync(pluginTmpDir()).mode & 0o777, 0o700)
+    assert.match(readFileSync(promptFile, "utf8"), /SECRET-PROMPT-SENTINEL/)
+  } finally {
+    if (promptFile) unlinkSync(promptFile)
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previousConfigHome
     rmSync(tmp, { recursive: true, force: true })
   }
 })
