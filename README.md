@@ -345,6 +345,7 @@ model: claude-code-work/claude-opus-5@work
 | `cwd` | string | see description | Working directory for the spawned CLI. Resolved **lazily per request**, first match winning: this explicit value, then the opencode session's own `directory` (so `opencode serve` and the web UI spawn in the right project even though one server handles many), then `process.cwd()` when it is a real directory, then the project directory captured at plugin init (this rescues macOS GUI launches, where `process.cwd()` is `/`), and finally `process.cwd()` regardless. [Startup diagnostics](#startup-diagnostics) reports which tier won. Session tier contributed by [@galvani](https://github.com/galvani). |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. It is still passed when `proxyTools` is set: proxied calls go through opencode's permission system regardless, but unproxied CLI built-ins do not. The one case where the flag is dropped is `permissionMode: "plan"`, because the CLI lets the skip flag override plan mode outright. See [Plan mode](#plan-mode). |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to headless `claude --permission-mode`. `"plan"` also suppresses `--dangerously-skip-permissions` (see the row above). Not version-gated, so check that your installed CLI accepts the value. The [interactive transport](#interactive-transport-experimental) does not forward it. |
+| `permissionPreset` | `"read-only"` | – | A named permission posture, so you set one option instead of combining five and getting one wrong. Opt-in: unset is exactly today's behaviour. `"read-only"` replaces `skipPermissions`, `permissionMode`, `controlRequestBehavior` and `controlRequestToolBehaviors`, and filters the write and command tools out of `proxyTools`. See [Read-only mode](#read-only-mode). |
 | `defaultSubagentModel` | string | – | Model that plugin-discovered `mode: subagent` agents run on when their own definition pins nothing. The caller's account is kept; only the model name changes. An agent's own `forceModel` wins over it, and an unknown id is refused rather than spawned. Unset means no implicit override at all. See [Subagents: your account, their model](#subagents-your-account-their-model). |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Claude built-in tools to route through opencode's executor + permission UI. Opt-in extras: `"Question"`, `"Compress"`. See [Selective tool proxy](#selective-tool-proxy). |
 | `extraDisallowedTools` | string[] | – | Extra Claude built-ins to switch off with `--disallowedTools`, on top of what `proxyTools` implies. Claude's names, e.g. `["NotebookEdit"]`. See [Closing a tool with no proxy](#closing-a-tool-with-no-proxy). |
@@ -362,7 +363,7 @@ model: claude-code-work/claude-opus-5@work
 | `stripContextReminders` | boolean | `false` | Remove opencode-dcp's `<dcp-system-reminder>` blocks from message text when no `compress` tool is proxied, so an order the model cannot follow stops being re-sent with every message that carries it. Inert as soon as `compress` is reachable. See [Trimming unsatisfiable context reminders](#trimming-unsatisfiable-context-reminders). |
 | `webSearch` | `"claude"` \| `"disabled"` \| `<tool>` | `"claude"` | Routing for Claude's built-in `WebSearch`. See [WebSearch routing](#websearch-routing). |
 | `multiStepContinuation` | boolean | `true` | Append a system-prompt hint nudging Claude to chain tool calls within one turn instead of pausing between subtasks. Each opencode turn boundary requires the user to manually press "continue", so for multi-step tasks this reduces friction. Set `false` to disable. |
-| `autoContinueIncompleteTurns` | boolean \| `"smart"` | `"smart"` | Smartly continue incomplete Claude CLI results inside the same opencode turn. Reduces manual "continue" presses when Claude ends after reasoning/tool activity without a useful final answer. Set `false` to disable. |
+| `autoContinueIncompleteTurns` | boolean \| `"smart"` | `"smart"` | Smartly continue incomplete Claude CLI results inside the same opencode turn. Reduces manual "continue" presses when Claude ends after reasoning/tool activity without a useful final answer. Also gates the `▌ **no reply:**` note on a turn that ends with no text and no tool call. Set `false` to disable both. |
 | `compactionModel` | string | `"claude-haiku-4-5"` | Model used when opencode invokes `/compact`. Override per-process via the `CLAUDE_CODE_COMPACTION_MODEL` env var (env wins over config). See [Compaction](#compaction). |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from every spawned `claude` process so it authenticates with your logged-in subscription instead of pay-as-you-go API billing. The plugin warns once at startup whenever an API key is detected, regardless of this setting. See [Billing](#billing). |
 | `idleProcessTimeoutMs` | number | – | Kill a retained headless Claude worker after this many idle milliseconds following a completed turn. The timer starts when a turn finishes, a new turn cancels it, a worker that is mid-turn when it fires is left alone and re-timed, and the session id is preserved for `--resume`. Values above Node's maximum timer delay (`2147483647`) are ignored. Omit or set `0` to retain workers until LRU eviction (16 processes). Interactive transport is excluded. Contributed by [@bernardofortes](https://github.com/bernardofortes). |
@@ -391,7 +392,9 @@ Every variable the plugin itself reads, in one place. Config is read once at ope
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | logger | Directory for the log file, overriding `logging.dir`. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | logger | Minimum level to emit, overriding `logging.level`. An unrecognised value falls through to config. |
 | `DEBUG` | logger | `DEBUG=opencode-claude-code` promotes the logger to `mode: "debug"`, echoing every emitted level to opencode's TUI. |
-| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP` | startup cleanup | `1` skips the one-time removal of a stale **unscoped** `opencode-claude-code-plugin` install from opencode's plugin cache. That old package is a different artifact that shadows this scoped one when both are present; set this if you are deliberately keeping it. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP` | startup cleanup | `1` skips the removal of a stale **unscoped** `opencode-claude-code-plugin` install from opencode's plugin cache. That old package is a different artifact that shadows this scoped one when both are present; set this if you are deliberately keeping it. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP` | startup cleanup | `1` runs that cleanup even when the marker at `$XDG_STATE_HOME/opencode-claude-code-plugin/cleanup-stale.json` (default `~/.local/state/...`) records that this plugin version already swept. Without it the cleanup walks opencode's plugin cache once per installed version rather than on every launch. |
+| `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP` | scratch directory | `1` skips the sweep of `<tmpdir>/opencode-claude-code-<pid>` directories left behind by plugin processes that were killed. See [Scratch files on disk](#scratch-files-on-disk). |
 | `OPENCODE_WORKTREE` | MCP bridge | Overrides worktree-root detection, which otherwise walks up from the working directory looking for a `.git` entry. |
 | `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` | config discovery | Where the plugin looks for your opencode config when bridging MCP and skills. See [Discovery order](#discovery-order-highest-to-lowest-priority). |
 | `OPENCODE_VERSION` | startup diagnostics | Reported as the opencode version when set, sparing the plugin a `--version` spawn. Diagnostics only. |
@@ -527,6 +530,23 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:PORT/mcp \
 A patched process answers `401`. A `200` is a pre-0.13.2 process still running, and restarting it is the fix.
 
 Nothing to configure. If proxied tools ever stop working after a Claude Code upgrade, check the plugin log for `proxy-mcp rejected a request`, which names which guard failed.
+
+### Scratch files on disk
+
+Everything the plugin writes for the Claude CLI to read goes into one per-process directory, `<tmpdir>/opencode-claude-code-<pid>`, created `0700`:
+
+| File | Mode | Holds |
+| --- | --- | --- |
+| `mcp-<hash>.json` | `0600` | the bridged MCP config, including any `{env:VAR}` values substituted from your environment |
+| `proxy-<hash>.json` | `0600` | the proxy endpoint's bearer token |
+| `opencode-cc-sys-<uuid>.md` | `0600` | the full appended system prompt, forwarded opencode instructions and AGENTS.md included |
+| `skills-<hash>/` | inherits | staged skill plugin dirs for the skill bridge; the `0700` parent is what keeps them private |
+
+On a shared host the OS tmpdir is world-writable and the pid name is guessable, so the plugin refuses a path that already exists but is a symlink, is not a directory, or is not owned by you: it falls back to a fresh `mkdtemp` name and logs a warning naming both paths.
+
+The directory is removed on normal exit. `SIGKILL` skips that, so on first use each run the plugin also sweeps `<tmpdir>/opencode-claude-code-<pid>` directories whose pid is no longer running and which you own. Anything else, another user's directory, a live process's, a symlink, a name that is not exactly that pattern, is left alone. Set `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1` to turn the sweep off.
+
+**Windows is not hardened here.** Both spawn sites pass `shell: true` on `win32`, so the CLI argument list goes through `cmd.exe` unquoted. Treat Windows as unsupported until that is fixed; see the note in `docs/agents-history.md`.
 
 ### Closing a tool with no proxy
 
@@ -782,6 +802,7 @@ Four Claude Code stream events used to reach nothing but a debug log:
 - **A conversation Claude Code cleared.** Sending `/clear` as a message, or a plan-mode exit that clears context, makes Claude Code start a fresh conversation while opencode still shows the old messages. A `▌ **claude code reset:**` note says so. The plugin deliberately does not replay the earlier messages, since that would undo the clear. Start a new opencode session if you want the two to match.
 - **A `result` whose subtype is not `success`** (`error_max_turns`, `error_during_execution`, …). The subtype is named in the transcript and the turn finishes as an error instead of an ordinary reply.
 - **A CLI-executed tool that failed.** Its result is forwarded with the AI SDK's error flag, so opencode renders the row as failed rather than as a success whose output happens to be an error message.
+- **A turn that finished cleanly without saying anything.** No text, no tool call, no error: opencode files it as an ordinary reply, so what you get is a blank message with nothing to distinguish it from a crash. A `▌ **no reply:**` note now says which of the two shapes it was, thinking-with-no-answer or nothing at all, and that nothing failed and nothing is pending. It is its own text part and is stripped from any transcript rebuilt for the CLI. Never on a compaction turn, a failed turn, an aborted one, or one that ended on a question, and suppressed entirely by `"autoContinueIncompleteTurns": false`. There is deliberately no automatic retry: measured across the whole retained plugin log, every finished turn carried between 940 and 5,080 characters of reply and none was silent.
 
 At session start the plugin also warns once per process for each MCP server Claude Code could not connect (its tools are simply absent otherwise) and once when the CLI's own `apiKeySource` says an API key is in effect, which is the field that tells you pay-as-you-go billing is happening. See [`ignoreAnthropicApiKey`](#options-reference).
 
@@ -912,6 +933,64 @@ Each chat keeps a long-lived `claude` subprocess so the model retains its native
 - **Deleted chat** → deleting a session in opencode kills its `claude` workers at once and forgets their session ids and per-chat state; there is nothing left to resume. Other chats, and the shared fallback bucket used when no session id is known, are untouched.
 - **opencode exits** → every retained worker is killed on the way out, so a hard shutdown does not leave `claude` processes reparented to init.
 - **Crash** → if the CLI dies mid-turn (no terminal `result` line), the turn ends with a visible error naming the exit code or signal and the last stderr the CLI wrote, not a silent `stop` that reads as a short but finished answer. An abort you asked for is not reported this way.
+
+---
+
+## Read-only mode
+
+```json
+"options": {
+  "permissionPreset": "read-only"
+}
+```
+
+That is the whole configuration. The turn can read your code and search the
+web, and it cannot write a file, run a command, or execute code.
+
+Presets exist because read-only was previously a combination you had to get
+exactly right. `permissionMode: "plan"` alone does not do it, and neither does
+any single Claude Code flag, because this plugin puts a second execution path
+next to the CLI's own tools: `proxyTools` defaults to `Bash`, `Edit`, `Write`,
+`WebFetch` and `Task`, and each of those is an MCP tool the CLI calls and
+**opencode** executes. No CLI flag reaches them. So the preset works at three
+layers:
+
+| Layer | What read-only does | Why it is needed |
+| --- | --- | --- |
+| Claude CLI tools | `--restricted` (CLI 2.1.258+) | Removes Bash, the REPL and the other code-running built-ins, removes WebFetch, confines the file tools to the working directories, and refuses bypass |
+| Claude CLI tools, older CLIs | `--disallowedTools Bash Write Edit NotebookEdit REPL JavaScript WebFetch` | `--restricted` is version-gated; these names are not |
+| The opencode proxy | `bash`, `write`, `edit`, `webfetch`, `task` and `task_batch` are dropped from `proxyTools` | These run in opencode, so the CLI flags above never see them |
+| Everything else | `--permission-prompts none` (CLI 2.1.263+) and `controlRequestBehavior: "deny"` | A bridged MCP tool or a read outside the working directory is neither of the above |
+
+`skipPermissions` is forced to `false`, and that is not a style choice:
+`--restricted --dangerously-skip-permissions` is a startup error on CLI 2.1.280
+(`Error: bypassPermissions not supported in restricted mode`), so a spawn
+carrying both would not run at all.
+
+**The preset replaces rather than merges.** Setting `skipPermissions`,
+`permissionMode`, `controlRequestBehavior` or `controlRequestToolBehaviors`
+next to it has no effect; each dropped value is logged at NOTICE at startup so
+you can see it happen. `proxyTools` is the exception: it is filtered, so a list
+naming `Question` keeps it. An unrecognised preset name applies **nothing** and
+logs a WARN, rather than guessing at what you meant.
+
+**What stops working.** Reads are fine (`Read`, `Grep`, `Glob`, `WebSearch`),
+but anything that would raise a permission prompt is denied, and that includes
+bridged MCP tools and the `question` proxy. Claude's own `AskUserQuestion`
+still renders its stop-and-wait markdown, so the model can still ask you
+things. If you need one specific tool allowed, do not use the preset: set the
+underlying options yourself.
+
+**On an older CLI** the preset still holds through `--disallowedTools` plus the
+plugin's own denial of every permission request, and it warns naming what is
+missing. Below 2.1.258 you lose the cwd confinement on reads; below 2.1.263 the
+denial happens in the plugin rather than in the CLI, one layer instead of two.
+
+Measured end to end on CLI 2.1.280 and `claude-haiku-4-5`: a turn under the
+preset asked to write a file and run a command did neither, the file was never
+created, and the CLI's own `permission_denials` recorded the single blocked
+`Write` with no Bash attempt at all, because there was no Bash tool to attempt
+with.
 
 ---
 

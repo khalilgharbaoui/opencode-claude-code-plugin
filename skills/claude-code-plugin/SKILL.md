@@ -86,7 +86,8 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. Ignored when `permissionMode` is `"plan"`, which always drops the flag. |
 | `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. `plan` is enforced: it overrides `skipPermissions: true` and the plugin drops `--dangerously-skip-permissions` for it, so claude cannot edit or run commands. Every other value governs prompting and still passes the skip flag, so `plan` is the only one that makes a run read-only. Nothing releases plan mode mid-session (no headless `ExitPlanMode`), so leaving it means a config change and an opencode restart; the plugin warns once at startup. Not forwarded by the current interactive spawn path. |
-| `controlRequestBehavior` | `allow` / `deny` | `allow` | Automatically answer CLI `can_use_tool` requests if emitted. Not an opencode permission prompt or a sandbox; bypass/pre-allowed tools may never ask. `AskUserQuestion` defaults to deny. |
+| `permissionPreset` | `"read-only"` | unset | One named posture instead of hand-combining the five options around it. Unset changes nothing. `read-only` forces `skipPermissions: false` (the CLI exits with `bypassPermissions not supported in restricted mode` if both are passed), replaces any `permissionMode` with `--restricted` (CLI 2.1.258+: no Bash, REPL or other code runners, no WebFetch, file tools confined to the working directories, bypass refused), adds `--permission-prompts none` (CLI 2.1.263+), disallows `Bash`, `Write`, `Edit`, `NotebookEdit`, `REPL`, `JavaScript` and `WebFetch` via `--disallowedTools`, drops `bash`/`write`/`edit`/`webfetch`/`task`/`task_batch` from `proxyTools`, forces `controlRequestBehavior: "deny"` and ignores `controlRequestToolBehaviors` entirely. Every override is logged at NOTICE. An unknown preset name applies nothing and WARNs rather than guessing. On a CLI below either flag gate the preset still holds through `--disallowedTools` plus the plugin's own deny, with a WARN naming what is lost. Reads (`Read`, `Grep`, `Glob`, `WebSearch`) still work; anything else that would prompt, including bridged MCP tools and the `question` proxy, is denied. |
+| `controlRequestBehavior` | `allow` / `deny` | `allow` | Automatically answer CLI `can_use_tool` requests if emitted. Forced to `deny` by `permissionPreset: "read-only"`. Not an opencode permission prompt or a sandbox; bypass/pre-allowed tools may never ask. `AskUserQuestion` defaults to deny. |
 | `controlRequestToolBehaviors` | object of tool name to `allow`/`deny` | unset | Case-insensitive per-tool override of the above (`Bash`, `Read`, `mcp__github__list_prs`). Do not allow `AskUserQuestion`: that can let headless Claude self-answer. |
 | `controlRequestDenyMessage` | string | built-in text | Override ordinary deny text. `AskUserQuestion` always uses its own stop-and-wait message. |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Case-insensitive replacement list, not additive and not a capability allowlist. Known entries expose `mcp__opencode_proxy__<name>`; omitted/unknown tools are not disabled. `Task` also brings `task_batch`; `[]` disables this list, not MCP proxying. See the proxy table for exceptions. |
@@ -102,7 +103,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `proxyOpencodeTools` | string[] | `[]` | Forward named opencode tools through the proxy by registry id (`client.tool.list()`, matched case-insensitively). Covers tools another opencode plugin declares directly, which belong to no MCP server and so are never matched by `proxyOpencodeMcpTools`: opencode-dcp's `compress` is the motivating case. Same broker as every other proxy tool, so the same events release the call. Unknown name is skipped with a warning; a name a proxy def already holds is dropped with a warning and the existing tool keeps it. Explicit allowlist only, because a forwarded tool runs in opencode with the calling agent's permissions. |
 | `stripContextReminders` | boolean | `false` | Strip opencode-dcp `<dcp-system-reminder>` blocks from user/assistant message text, including the fresh-session rebuild. Only when no `compress` is proxied via `proxyTools` or `proxyOpencodeTools`; reachable compress makes it inert. Resolved from config, so a configured-but-unregistered name still counts as reachable. Leaves opencode's own `<system-reminder>` blocks alone. |
 | `multiStepContinuation` | boolean | `true` | Append a system-prompt hint to chain tool calls in one turn instead of stopping between subtasks. |
-| `autoContinueIncompleteTurns` | boolean or `"smart"` | `"smart"` | `true`/`"smart"` continue a turn truncated at `max_tokens`, bounded by 8 attempts and 10 minutes, and otherwise run the keyword heuristic only when stop reason is missing. Every other stop reason, plus error, abort or latched question, stops it. Current measured CLIs always report a reason, so truncation is the only case that resumes in practice. |
+| `autoContinueIncompleteTurns` | boolean or `"smart"` | `"smart"` | `true`/`"smart"` continue a turn truncated at `max_tokens`, bounded by 8 attempts and 10 minutes, and otherwise run the keyword heuristic only when stop reason is missing. Every other stop reason, plus error, abort or latched question, stops it. Current measured CLIs always report a reason, so truncation is the only case that resumes in practice. Also gates the `▌ **no reply:**` note written when a turn finishes cleanly with no text and no tool call; `false` turns off the note as well as the continuation. |
 | `compactionModel` | string | `"claude-haiku-4-5"` | `/compact` uses a fresh short-lived headless process without the usual bridge/proxy/skill wiring. Nonblank `CLAUDE_CODE_COMPACTION_MODEL` wins. This is inference and can be billed. |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from headless/interactive spawn env, allowing stored auth to be used. Does not log in, change the parent env, or guarantee subscription billing if other CLI/cloud auth is configured. Warns at startup when either nonempty variable is present, regardless of the flag. |
 | `idleProcessTimeoutMs` | number | unset | Kill a conversation's idle `claude` worker this many ms after a finished turn. The timer starts when a turn completes, reuse cancels it, and a worker found mid-turn when it fires is re-timed rather than killed. The session id is kept, so the next message resumes transparently. Unset or `0` keeps workers until LRU eviction (16 processes, oldest idle first). Values above `2147483647` are ignored. Not applied to the interactive transport. Deleting a chat in opencode releases its workers and session ids immediately regardless. |
@@ -154,7 +155,9 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | Overrides `logging.dir`. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | Overrides `logging.level`. Invalid values fall through to config. |
 | `DEBUG` | A value containing `opencode-claude-code` promotes `logging.mode` to debug, not `logging.level`. Preserve other debug namespaces. |
-| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the one-time removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
+| `OPENCODE_CLAUDE_CODE_PLUGIN_FORCE_CLEANUP=1` | Run that cleanup even when the marker at `$XDG_STATE_HOME/opencode-claude-code-plugin/cleanup-stale.json` says this plugin version already swept. Without it the sweep happens once per installed version, not once per opencode launch. |
+| `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1` | Skip the startup sweep of `<tmpdir>/opencode-claude-code-<pid>` scratch directories whose pid is dead and which the current user owns. The sweep exists because `SIGKILL` skips the exit hook, leaving the `0600` bridged MCP config (which can hold `{env:VAR}`-substituted secrets) behind. |
 | `ANTHROPIC_API_KEY` | CLI API authentication input, stripped when `ignoreAnthropicApiKey` is true; otherwise may change billing away from stored subscription auth. Never display it. |
 | `ANTHROPIC_AUTH_TOKEN` | CLI auth-token input; same strip/warning rule. Never display it. |
 | `DISABLE_AUTOUPDATER` | Set to `1` on every spawned `claude`, and only when the user has not set it. Keeps the CLI from updating mid-session, which would invalidate the cached version that gates `--thinking-display summarized`, `--plugin-dir` and fast mode. Not a provider option: a user-set value (including `0`, meaning keep updating) is never overwritten, which is the intended escape hatch. Tell a user who wants CLI autoupdates to export `DISABLE_AUTOUPDATER=0`, not to look for a config key. |
@@ -310,6 +313,29 @@ only to deliberately remove a capability; omission from `proxyTools` is not deni
 The proxy's loopback endpoint has bearer, Host, Origin and Content-Type guards.
 Never weaken them, publish its token or relax the generated MCP file's `0600` mode.
 Restart all old processes after a security upgrade; changing files cannot patch them.
+
+### Make a provider read-only
+
+```json
+{ "permissionPreset": "read-only" }
+```
+
+That one line is the whole posture. Do not also set `skipPermissions`,
+`permissionMode`, `controlRequestBehavior` or `controlRequestToolBehaviors`
+alongside it: the preset replaces all four and logs each value it dropped.
+`proxyTools` is filtered rather than replaced, so a list naming `Question`
+keeps it while `Bash`, `Edit`, `Write`, `WebFetch` and `Task` go.
+
+Read-only is enforced at three layers because no single one covers the plugin:
+`--restricted` removes the CLI's own command and code-running tools, the
+`--disallowedTools` list covers CLIs older than 2.1.258, and the proxy defs are
+dropped before the MCP server is built because a proxied `bash` executes in
+opencode where no CLI flag reaches it. Anything left that would prompt is
+denied, so bridged MCP tools and the `question` proxy do not work under the
+preset; Claude's own `AskUserQuestion` still renders its stop-and-wait markdown.
+
+Pair it with a second provider entry when only some sessions should be
+read-only: `accounts` or `providerID` gives each its own model list.
 
 ### Let the model satisfy an opencode-dcp compress nudge
 
@@ -581,6 +607,7 @@ commands are preserved. Do not use it as an automatic diagnostic probe.
 | `AGENTS.md` appears twice in Claude's system prompt | Plugin older than 0.16.0 | Upgrade |
 | "What does the plugin actually think is going on?" | Startup diagnostics go to a log that is off by default | Run `/claude-code-doctor` in the session; paste that instead of the log |
 | A turn ended with no answer and nothing said why | The CLI's `result` carried a failure subtype, or a rate limit was rejected | Both are now written into the transcript as `▌` lines; read the subtype or the limit reason there |
+| The reply is empty and there is no error either | Claude finished the turn without writing anything or calling a tool | A `▌ **no reply:**` note says so, and says whether it thought first. Nothing failed and nothing is pending: send the message again. There is no automatic retry, and `"autoContinueIncompleteTurns": false` removes the note too |
 | A CLI tool row looks successful but its output is an error | Plugin older than this release forwarded `is_error` results as successes | Upgrade; failed CLI tools now render as failed |
 | Claude "forgot" the earlier part of a long conversation | Claude Code compacted its own context | Look for the `▌ **context compacted:**` note in the transcript |
 | Claude forgot the whole conversation at once | Claude Code cleared it (`/clear` sent as a message, or a plan-mode exit that clears context) | Look for the `▌ **claude code reset:**` note. The plugin does not replay history there on purpose; a new opencode session gets a clean slate |

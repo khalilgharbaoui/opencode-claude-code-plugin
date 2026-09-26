@@ -40,7 +40,15 @@ export interface ClaudeCodeConfig {
   accountFailover?: AccountFailoverMode
   providerID?: string
   skipPermissions?: boolean
-  permissionMode?: PermissionMode
+  /**
+   * Widened past `PermissionMode` because a resolved `permissionPreset` puts
+   * its own internal token here (`READ_ONLY_PERMISSION_MODE`), which
+   * `buildCliArgs` translates to CLI flags. The operator-facing option on
+   * `ClaudeCodeProviderSettings` stays a plain `PermissionMode`.
+   */
+  permissionMode?: EffectivePermissionMode
+  /** The preset this config was resolved from, for diagnostics. */
+  permissionPreset?: PermissionPreset
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
   bridgeOpencodeMcp?: boolean
@@ -160,6 +168,23 @@ export interface ClaudeCodeProviderSettings {
   defaultSubagentModel?: string
   skipPermissions?: boolean
   permissionMode?: PermissionMode
+  /**
+   * Apply a named permission preset instead of hand-combining
+   * `permissionMode`, `skipPermissions`, `proxyTools`,
+   * `extraDisallowedTools` and `controlRequestBehavior`.
+   *
+   * `"read-only"` makes the turn unable to change anything: no
+   * `--dangerously-skip-permissions` (the CLI refuses bypass under
+   * `--restricted` outright), `--restricted` so the CLI has no Bash, REPL or
+   * WebFetch at all, the mutating built-ins on `--disallowedTools` for CLIs
+   * too old for that flag, the write and command tools removed from the
+   * opencode proxy, and every remaining permission request denied.
+   *
+   * A preset overrides those five options rather than merging with them, so
+   * one setting decides the posture; the plugin warns about each value it
+   * drops. Unset (the default) changes nothing.
+   */
+  permissionPreset?: PermissionPreset
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
   /**
@@ -502,6 +527,30 @@ export type PermissionMode =
   | "default"
   | "dontAsk"
   | "plan"
+
+/**
+ * A named bundle of permission settings, so a safety posture is one option
+ * instead of a hand-rolled combination of `permissionMode`, `skipPermissions`,
+ * `proxyTools`, `extraDisallowedTools` and `controlRequestBehavior`. Opt-in:
+ * unset means today's behaviour, unchanged.
+ *
+ * `read-only` is the only preset so far. See `src/permission-presets.ts` for
+ * what it resolves to and why each part is needed.
+ */
+export type PermissionPreset = "read-only"
+
+/**
+ * The `permissionMode` a resolved preset puts on `ClaudeCodeConfig`.
+ * Plugin-internal, never a value the operator sets: `buildCliArgs` translates
+ * `"read-only"` into `--restricted` (plus `--permission-prompts none` where
+ * the CLI has it) rather than passing it to `--permission-mode`, which would
+ * reject it.
+ */
+export const READ_ONLY_PERMISSION_MODE = "read-only"
+
+export type EffectivePermissionMode =
+  | PermissionMode
+  | typeof READ_ONLY_PERMISSION_MODE
 
 export type ControlRequestBehavior = "allow" | "deny"
 

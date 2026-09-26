@@ -52,6 +52,11 @@
 
 ## Dropped
 
+- Dropped 2026-09-26 at the maintainer's request ("ok do it"): branch `disable-thinking`
+  (tip `b80cf54`, a `disableThinking` provider option from 2026-05-29). It worked around a
+  CLI bug that corrupted thinking blocks across turns (API 400 "thinking or
+  redacted_thinking blocks ... cannot be modified"), last seen in August. If it returns,
+  `CLAUDE_CODE_DISABLE_THINKING=1` is the switch, and the plugin already respects it.
 - Dropped 2026-09-06 at the user's request: live observation of `idleProcessTimeoutMs: 900000`. The 15-minute eviction and subsequent resume remain unverified in the user's window; no test is planned.
 
 ## Backlog
@@ -87,10 +92,18 @@ Nothing queued here; the working backlog is the vault note
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-09-23: branch `disable-thinking` (local and on origin) holds an unmerged
-  `disableThinking` provider option from 2026-05-29. Kept during branch cleanup because
-  it is unique work. Claude Code's own `CLAUDE_CODE_DISABLE_THINKING`, which the plugin
-  already respects, may make it redundant. Keep, finish, or drop?
+- 2026-09-27: **contributor PR #46 (@acastro2, opened 2026-09-24), unreviewed.** Fixes CLI
+  tool results being emitted under the raw CLI name while their call used the mapped name
+  (`toolCallsById` stored the raw name), so opencode 2.0.16 aborts every turn that uses a
+  Claude-side MCP server ("Tool result name changed"). Measured by the contributor on plugin
+  0.27.1, opencode 2.0.16, Claude Code 2.1.280. Needs review against the split (#49) and the
+  V2 name translation in `src/host-tools.ts`, then merge with credit and a patch release.
+- 2026-09-26: follow-ups the lanes reported, not scheduled: (1) Windows spawns go through
+  `cmd.exe` with no argument quoting (injection with `& | > ^`, broken with spaces or quotes);
+  needs a Windows CI job first, then a resolver and escaper. Do it, or leave it documented?
+  (2) show `permissionPreset` in `/claude-code-doctor` and the startup block (small);
+  (3) the language model's remaining turn state (54 shared identifiers) and routing
+  `doGenerate` through `doGenerateViaStream`, each a deliberate refactor with a live probe.
 
 ## Parked
 
@@ -107,6 +120,17 @@ Nothing parked.
 
 ## Done
 
+- 2026-09-26: **done** (v0.28.0): three parallel implementor lanes, PR #53 read-only
+  permission preset, PR #51 `▌ no reply` note (measured zero silent turns, so no nudge),
+  PR #52 scratch-file hardening (Windows part deferred). 832 tests, live-checked on opencode
+  1.18.32 and 2.0.11. The three lanes all wrote their history under `#g156`; renumbered to
+  g156 to g158 at merge.
+- 2026-09-26: **done**, the three accelerator lanes, each an implementor subagent: PR #47
+  (AGENTS.md 182 KB to 53.6 KB, history verbatim in `docs/agents-history.md`, three dropped
+  rules restored before merge), PR #49 (language model 5,383 to 4,105 lines, ten modules, no
+  behaviour change), PR #48 (720 to 784 tests, bash 3.2 wrapper bug fixed). Master green at
+  784, live-checked on opencode 1.18.32 and 2.0.11. Measured cost against the estimates is in
+  the vault roadmap, "Cost calibration and weights".
 - 2026-09-24: **closed, not an npm bug.** The "stuck npm record" was Aikido Endpoint
   Protection on the maintainer's Mac (org-2542): its minimum-package-age policy strips
   too-new versions from the npm package document and resets `latest`, confirmed by its

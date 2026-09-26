@@ -135,6 +135,32 @@ export function cliSupportsFastMode(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 1, patch: 220 })
 }
 
+/**
+ * `--restricted` (removes the command and code-running built-ins plus
+ * WebFetch, confines the file tools to the working directories, refuses
+ * bypassPermissions). Claude Code's changelog puts it at 2.1.248; 2.1.258 is
+ * the oldest binary on hand whose `--help` was checked and has it, and 2.1.248
+ * itself could not be checked, so the gate sits at what was measured. Gating
+ * one release line too high costs nothing but the flag; gating too low would
+ * hand an older CLI an argument it exits on.
+ */
+export function cliSupportsRestricted(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 258 })
+}
+
+/**
+ * `--permission-prompts <host|none>`. Measured absent from 2.1.258's `--help`
+ * and present in 2.1.263's, so the introduction is somewhere in between
+ * (the changelog says 2.1.259) and the gate again sits at the verified side.
+ * Below it the plugin's own `can_use_tool` handler is the only denier, which
+ * is why the read-only preset sets `controlRequestBehavior` as well.
+ */
+export function cliSupportsPermissionPrompts(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 263 })
+}
+
 /** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
 export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
   if (!v) return false
