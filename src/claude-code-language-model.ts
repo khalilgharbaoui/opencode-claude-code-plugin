@@ -217,11 +217,7 @@ export {
   resolveOpencodeAgent,
   resolveSessionAffinity,
 } from "./call-options.js"
-export {
-  extractPendingProxyResult,
-  extractPendingProxyResultForCall,
-  makeLateProxyResultMessage,
-} from "./proxy-results.js"
+export { makeLateProxyResultMessage } from "./proxy-results.js"
 
 /**
  * Whether opencode is still serving a proxied call whose deadline just passed.
