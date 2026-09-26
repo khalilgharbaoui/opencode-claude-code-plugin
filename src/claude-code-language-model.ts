@@ -186,6 +186,12 @@ import {
   stripContextRemindersEnabled,
   type LiveToolInfo,
 } from "./spawn-planning.js"
+import {
+  isTitleRequest,
+  latestUserText,
+  requestScope,
+  synthesizeTitle,
+} from "./title.js"
 import { unlink } from "node:fs/promises"
 
 // Re-exported so importers that have always reached for these here keep
@@ -305,30 +311,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   /**
    * Whether this call only names the session, which gets the synthetic stub
-   * rather than a `claude` spawn. opencode 1.x sends a title request with no
-   * tools, and that is the whole test there. opencode 2 sends its tool set
-   * along with it (measured on 2.0.11: `scope: "tools"`, agent `title`), so
-   * every new V2 session paid for a second `claude` process just to title
-   * itself; for a V2 model the request kind, carried as the `title` agent,
-   * decides instead.
+   * rather than a `claude` spawn. See `isTitleRequest` in title.ts.
    */
   private isTitleRequest(
     scope: "tools" | "no-tools",
     options: LanguageModelV3CallOptions,
   ): boolean {
-    if (scope === "no-tools") return true
-    return this.config.hostApi === "v2" && this.getOpencodeAgent(options) === "title"
+    return isTitleRequest(this.config, scope, options)
   }
 
   private requestScope(options: { tools?: unknown }): "tools" | "no-tools" {
-    const tools = options?.tools
-    if (Array.isArray(tools)) return "tools"
-    if (tools && typeof tools === "object") {
-      return Object.keys(tools as Record<string, unknown>).length > 0
-        ? "tools"
-        : "no-tools"
-    }
-    return "no-tools"
+    return requestScope(options)
   }
 
   /**
@@ -543,89 +536,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private latestUserText(
     prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
-    for (let i = prompt.length - 1; i >= 0; i--) {
-      const msg = prompt[i]
-      if (msg.role !== "user") continue
-
-      if (typeof msg.content === "string") {
-        return String(msg.content).trim()
-      }
-
-      if (Array.isArray(msg.content)) {
-        const text = (msg.content as any[])
-          .filter((part) => part.type === "text" && typeof part.text === "string")
-          .map((part: any) => String(part.text).trim())
-          .filter(Boolean)
-          .join(" ")
-        if (text) return text
-      }
-    }
-
-    return ""
+    return latestUserText(prompt)
   }
 
   private synthesizeTitle(
     prompt: LanguageModelV3CallOptions["prompt"],
   ): string {
-    const source = this.latestUserText(prompt)
-      .replace(/\s+/g, " ")
-      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-      .trim()
-
-    if (!source) return "New Session"
-
-    const stop = new Set([
-      "a",
-      "an",
-      "the",
-      "and",
-      "or",
-      "but",
-      "to",
-      "for",
-      "of",
-      "in",
-      "on",
-      "at",
-      "with",
-      "can",
-      "could",
-      "would",
-      "should",
-      "please",
-      "hi",
-      "hello",
-      "hey",
-      "there",
-      "you",
-      "your",
-      "this",
-      "that",
-      "is",
-      "are",
-      "was",
-      "were",
-      "be",
-      "do",
-      "does",
-      "did",
-      "summarize",
-      "summary",
-      "project",
-    ])
-
-    const words = source
-      .split(" ")
-      .map((word) => word.trim())
-      .filter(Boolean)
-      .filter((word) => !stop.has(word.toLowerCase()))
-
-    const picked = (words.length > 0 ? words : source.split(" ").filter(Boolean))
-      .slice(0, 6)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ")
-
-    return picked || "New Session"
+    return synthesizeTitle(prompt)
   }
 
   private async doGenerateViaStream(
