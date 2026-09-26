@@ -736,6 +736,7 @@ export function spawnClaudeProcess(
     stdio: ["pipe", "pipe", "pipe"],
     env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort }),
     shell: process.platform === "win32",
+    windowsHide: true,
   })
 
   const lineEmitter = new EventEmitter()

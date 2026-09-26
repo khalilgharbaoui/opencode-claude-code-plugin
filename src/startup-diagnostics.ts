@@ -100,7 +100,7 @@ export function detectOpencodeVersion(
       return undefined
     }
     try {
-      const { stdout } = await execFileAsync(execPath, ["--version"], { timeout: 5000 })
+      const { stdout } = await execFileAsync(execPath, ["--version"], { timeout: 5000, windowsHide: true })
       const match = /\d+\.\d+\.\d+\S*/.exec(stdout.trim())
       return match ? match[0] : undefined
     } catch (err) {

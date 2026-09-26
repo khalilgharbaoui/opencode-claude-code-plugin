@@ -32,6 +32,7 @@ function resolveClaude(cmd = "claude"): string {
     const out = execFileSync(isWin ? "where" : "which", [cmd], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     })
     const first = out
       .split(/\r?\n/)

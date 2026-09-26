@@ -804,6 +804,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         effort: reasoningEffort,
       }),
       shell: process.platform === "win32",
+      windowsHide: true,
     })
 
     if (systemPromptFile) {

@@ -70,6 +70,7 @@ export function detectCliVersion(cliPath: string): Promise<CliVersion | null> {
     try {
       const { stdout } = await execFileAsync(cliPath, ["--version"], {
         timeout: 5000,
+        windowsHide: true,
       })
       const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout.trim())
       if (!match) {
@@ -172,6 +173,7 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
         timeout: 5000,
         killSignal: "SIGKILL",
         maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
       })
       // A wrapper may wait for stdin EOF even when asked for help.
       execution.child.stdin?.end()
