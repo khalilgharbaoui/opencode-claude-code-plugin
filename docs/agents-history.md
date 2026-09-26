@@ -1,0 +1,1036 @@
+# AGENTS.md history
+
+This is the full, unabridged record that `AGENTS.md` used to carry inline: the
+measurement stories, probe transcripts, dates, version numbers, who found what,
+superseded corrections, fork-sweep history and roadmap state. `AGENTS.md` keeps
+the rules and points here for the evidence behind them.
+
+Nothing here has been edited. Every paragraph is the original text, with
+heading lines and `<a id="gNN">` anchors inserted so each item can be linked.
+`AGENTS.md` cites those short ids, for example `(h #g26)`.
+
+
+## Project Shape
+
+<a id="g1"></a>
+
+#### This is an npm package that exposes
+
+- This is an npm package that exposes an opencode provider by wrapping the Claude Code CLI (`claude`), not the Anthropic HTTP API directly.
+
+<a id="g2"></a>
+
+#### Package entrypoint is src/index.ts
+
+- Package entrypoint is `src/index.ts`; runtime provider behavior lives mostly in `src/claude-code-language-model.ts`.
+
+<a id="g3"></a>
+
+#### src/message-builder.ts owns AI-SDK
+
+- `src/message-builder.ts` owns AI-SDK prompt → Claude CLI stream-json message conversion, including `/compact` transcript rendering.
+
+<a id="g4"></a>
+
+#### src/session-manager.ts owns Claude
+
+- `src/session-manager.ts` owns Claude CLI process reuse, session ids, LRU eviction, and CLI arg construction.
+
+<a id="g5"></a>
+
+#### src/cli-version.ts gates optional
+
+- `src/cli-version.ts` gates optional CLI flags. Do not pass newly-added Claude CLI flags unconditionally.
+
+<a id="g6"></a>
+
+#### src/claude-session-bun.ts + src/claude-session-wrapper.ts
+
+- `src/claude-session-bun.ts` + `src/claude-session-wrapper.ts` own the experimental interactive transport (from PR #10): the interactive `claude` TUI under Bun's native PTY, prompts typed via bracketed paste, output tailed from the session JSONL transcript. Opt-in via `interactive: true` / `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`; headless `--print` stays the default.
+
+<a id="g7"></a>
+
+#### One package serves opencode 1.x
+
+- **One package serves opencode 1.x and 2.x.** The default export carries both `server` (1.x) and `setup` (2.x). `src/v2.ts` is the 2.x entrypoint, `src/opencode-v2-types.ts` a hand-written mirror of the 2.x API slice we use, `src/v2-client.ts` answers the live-state calls in 1.x's response shapes, and `src/host-tools.ts` renames tool calls into 2.x's vocabulary. Measurements, sandbox and phases: `V2.md`.
+
+<a id="g8"></a>
+
+#### Build output is dist/, is gitignored
+
+- Build output is `dist/`, is gitignored, and is rebuilt by CI. Do not commit `dist/`.
+
+## Commands
+
+<a id="g9"></a>
+
+#### Keep skills/claude-code-plugin/SKILL.md
+
+- Keep `skills/claude-code-plugin/SKILL.md` current in the same change whenever options, defaults, env vars, model ids, proxy tools, agent configuration or troubleshooting behavior change. This bundled skill is the agent-facing configuration reference, not a generated file. `test-configure-skill.ts` checks identifier coverage against source; reviewers must still verify defaults, precedence, safety and recipes. `test-skill-bridge.ts` covers native delivery and opencode skill-path registration. Keep `skills` in the npm package files list and verify built-package discovery when changing layout.
+
+<a id="g10"></a>
+
+#### Typecheck: npm run typecheck (tsc
+
+- Typecheck: `npm run typecheck` (`tsc --noEmit`).
+
+<a id="g11"></a>
+
+#### Test suite: npm test. The script
+
+- Test suite: `npm test`. The script enumerates test files explicitly — when adding a `test-*.ts` file you MUST add it to `package.json`'s `test` script or it silently never runs (this had drifted: `test-config-models.ts` and `test-ask-user-question.ts` were missing until 2026-06-10).
+
+<a id="g12"></a>
+
+#### Single focused test file: npx tsx
+
+- Single focused test file: `npx tsx --test test-get-claude-user-message.ts` (replace file as needed).
+
+<a id="g13"></a>
+
+#### Build: npm run build (tsup, emits
+
+- Build: `npm run build` (`tsup`, emits ESM + d.ts to `dist/`).
+
+<a id="g14"></a>
+
+#### Before release, run: npm run typecheck
+
+- Before release, run: `npm run typecheck && npm test && npm run build`.
+
+<a id="g15"></a>
+
+#### There is no lockfile. CI uses Node
+
+- There is no lockfile. CI uses Node 24 and runs `npm install`, then `npm run build`.
+
+## Release Workflow
+
+<a id="g16"></a>
+
+#### Never run npm publish manually
+
+- Never run `npm publish` manually. Tag push triggers `.github/workflows/publish.yml`, which publishes to npm.
+
+<a id="g17"></a>
+
+#### Publishing uses npm trusted publishing
+
+- Publishing uses npm **trusted publishing (OIDC)**, not a token (since v0.6.2). The `publish` job has `id-token: write`, upgrades npm (`npm install -g npm@latest`; OIDC needs npm >= 11.5.1), and runs `npm publish --access public` with **no `NODE_AUTH_TOKEN`**. The trusted publisher is configured on npmjs.com and must match repo `khalilgharbaoui/opencode-claude-code-plugin` + workflow filename `publish.yml`. The legacy `NPM_TOKEN` secret is unused (it expired ~2026-05-25, which silently failed the 0.6.0/0.6.1 publishes with `npm error 404` on PUT until the OIDC switch). If a publish fails on auth, check the trusted-publisher config, not a token.
+
+<a id="g18"></a>
+
+#### Release flow: commit code/docs
+
+- Release flow: commit code/docs, then `npm version patch` (or minor/major), then `git push origin master --follow-tags`.
+
+<a id="g19"></a>
+
+#### npm version creates the version
+
+- `npm version` creates the version commit and annotated `v*` tag. Prior release commit/tag messages are `v0.x.y`; keep that style.
+
+<a id="g20"></a>
+
+#### After pushing a release tag, confirm
+
+- After pushing a release tag, confirm the publish workflow with `gh run list --repo khalilgharbaoui/opencode-claude-code-plugin --limit 3`.
+
+<a id="g21"></a>
+
+#### From the maintainer's Mac a fresh
+
+- **From the maintainer's Mac a fresh release looks unpublished for its first hours, and that is Aikido, not npm.** The machine runs Aikido Endpoint Protection (Appical's org `org-2542`, managed alongside Intune). Its network system extension `com.aikido.endpoint.proxy.l4` intercepts TLS to `registry.npmjs.org` (the certificate curl receives is issued by a hex-named intermediate under "Aikido Endpoint Protection Root CA - org-2542") and enforces a **minimum package age**: it strips versions younger than the policy from the package document that `npm install` reads, resets `latest` to the newest version it allows, and blocks their tarballs, while the per-version document and the `-/package/<pkg>/dist-tags` endpoint pass through. Aikido's own event log listed exactly the versions that looked missing on 2026-09-23 (this plugin's 0.25.0 to 0.27.0, `@opencode/cli` 2.0.12 to 2.0.15 as "Published too Recently", `@ai-sdk/provider` 4.0.18, npm 12.1.0). Every symptom that day was that filter: `npm view <pkg>@latest` said 0.24.0 here while CI saw 0.27.0, `npm install <pkg>@0.27.0` failed with `ETARGET`, opencode 2's `plugins: ["…@0.26.0"]` failed with `NpmInstallFail`, and the V2 sandbox got 403s on `@opencode/cli` 2.0.12 to 2.0.14 tarballs. **A day went into diagnosing it as a stuck npm record**, with a support ticket drafted and a "registry-wide outage" theory resting on other packages that looked the same, measured from the same machine. The comparison across packages was the tell that got misread: an outage that hits every recent release alike is what a local age filter looks like. Rules: verify a publish from the `Publish package` step's own tail (`+ <pkg>@<version>`) and cross-check the version document's `shasum` against its `npm notice shasum:` line; never judge a release by the package document, `npm view` or an install from this machine; and before calling anything a registry fault, read Aikido's event log. The one real propagation delay seen was brief: on v0.26.0 the version document answered 404 for about 3.5 minutes after publishing. A real auth failure looks nothing like this: it fails the step with a 404 on the PUT, so read the **`Publish package` step's own tail** rather than the job's conclusion, and note `gh run view --log | grep publish` is useless there because the job is named `publish` and matches every line.
+
+<a id="g22"></a>
+
+#### GitHub Releases lapsed after v0.9.2
+
+- GitHub Releases lapsed after v0.9.2 (tag pushes publish to npm on their own, so notes are optional). They were resumed for **v0.13.2** because it carried a security fix and users need to know why to upgrade. Write notes for anything security-relevant or behaviour-changing; a routine patch does not need them.
+
+<a id="g23"></a>
+
+#### A freshly published version will
+
+- A freshly published version will NOT appear in a local opencode until its frozen plugin cache is cleared. opencode resolves the `@latest` spec once and freezes the concrete version into `~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest/` (its `package.json` + `package-lock.json`); a plain restart never re-resolves the tag. To pick up a new release: `rm -rf ~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest` then fully relaunch opencode. Confirmed 2026-05-29: the cache was frozen at 0.5.1, which is why 0.6.2 (Opus 4.8) did not show in the model picker after a restart until the dir was removed.
+
+<a id="g24"></a>
+
+#### Do not add a Claude co-author trailer
+
+- Do not add a Claude co-author trailer to commits.
+
+<a id="g25"></a>
+
+#### Keep README.md updated when adding
+
+- Keep `README.md` updated when adding public options, env vars, required CLI versions, or behavior users can observe.
+
+## High-Signal Runtime Gotchas
+
+<a id="g26"></a>
+
+#### An abort at a proxy tool boundary
+
+- **An abort at a proxy tool boundary is usually opencode, not the operator** (fixed 2026-09-23, after the maintainer saw "Rejected again even though the command already ran" from an agent nobody had interrupted). opencode 1.18.32 aborts the provider signal of **every** step that ends in tool calls, roughly a second after the finish, while it is running the tool: measured 348 of 938 proxied calls that day, and **every** call in a plugin-only scratch config, so it is opencode's own behaviour and not another plugin's. The boundary branch of the abort handler took that as the operator pressing stop, rejected the in-flight calls, answered the CLI's parked HTTP request with "the user doesn't want to proceed", interrupted the turn, and then delivered the real result on the next turn through the issue-#29 text path. Cost: one wasted round trip per tool call, plus a model repeatedly told it had been refused. `AbortSignal.reason` is the same `AbortError: The operation was aborted.` either way (measured on both), so the tell is opencode's own session status, polled briefly because an abort can land before the map updates (`settleSessionRunState`, `src/runtime-status.ts`). **Only a positive `busy` keeps the call**; `unknown` (no SDK client, no status route, a failed read, or the no-affinity `default` session) releases exactly as before, so opencode 2 and the offline tests are never left worse off than they were. Live-verified both ways on 1.18.32: a routine two-command turn now logs `keeping pending calls` with zero rejections and the tool completes, while a real abort during a `sleep 40` still releases in about 1.4 s and interrupts the CLI. Test: `test-process-lifecycle.ts`, which fails with the condition stubbed out.
+
+<a id="g27"></a>
+
+#### A proxy deadline must not count
+
+- **A proxy deadline must not count the operator's time on a permission prompt** (fixed 2026-09-23, the second "rejected when I never rejected" report, on 0.26.1). The 10-minute `bash` deadline kept running while opencode's `external_directory` prompt waited: opencode's own part timings showed three calls at 24, 34 and 10.5 minutes, each rejected at 10. Claude then moved on and issued a new call, and the approval, once given, arrived as a late tool result for an id the broker had already dropped, so the fresh-turn path rendered it as text and its orphan sweep **cancelled Claude's new call**, which is the "rejected" the model narrated. Both timers (the HTTP handler's and the broker's) now go through `armProxyDeadline` in `proxy-mcp.ts`, which asks a registered `ProxyDeadlineGuard` when the deadline passes; the language model registers `isProxyCallStillServed`, which keeps a call only when it was `emitted` to opencode **and** opencode's session status reads `busy`, and then rechecks every `PROXY_DEADLINE_RECHECK_MS` (60 s). Measured on 1.18.32 before building on it: the session reads `busy` on every poll while a permission prompt is open and idle once it is answered (and `GET /permission` lists the prompt with our proxy call id as `tool.callID`, a more precise signal kept in reserve). No guard, a throwing guard, `unknown` status or the `default` affinity all end the call at its deadline exactly as before. Known limit: a user who sets a finite `task` deadline also lowers the CLI's own MCP client ceiling (`resolveProxyClientCeilingMs`), which an extension can outlast; the CLI then hangs up and the late-result recovery path delivers. Tests: `test-broker.ts` (guard, recheck, throw, cancel) and `test-process-lifecycle.ts` (end to end through a parked fake CLI; fails with the guard unregistered).
+
+<a id="g28"></a>
+
+#### The account failover form never
+
+- **The account failover form never switched, from the day it shipped (0.24.0 to 0.26.1).** opencode's `question` tool returns one sentence, not the answer: `User has answered your questions: "<question>"="<answer>". You can now continue with the user's answers in mind.` (read out of the 1.18.32 binary; a blank answer is `Unanswered`, a dismissal is a tool error `The user dismissed this question`). `unwrapOpencodeQuestionResult` in `plan-mode-question.ts` only recognised the plan-approval question, so every failover pick reached `classify` as the whole sentence and was declined as `unrecognised answer`; the log shows it for every pick on 2026-09-23. It now takes the question text (stored on the pending entry) and matches it whole, because the failover question quotes the account name and a split on quotes lands in the wrong place; without one it splits on the last `"="`. Two more defects in the same path: a restart between the form and the answer lost the in-memory pending entry, so `consumeAccountFailoverAnswer` now takes a `fallback` (the form this model would offer now) and applies it to the **newest message only**; and on the turn after a form, the answer reached Claude as a stray `<opencode_tool_result>`, so `getClaudeUserMessage` strips the dialog up front, completing invariant 6 below. The offline tests had fed bare labels (`"work"`), one of them under a comment claiming the unwrapper handled opencode's sentence; the end-to-end tests now feed the real sentence and fail without the fix. **Still not live-verified with a real usage limit**; the parsing is now proven against the real output format, not against a real limit.
+
+<a id="g29"></a>
+
+#### conversation_reset is announced
+
+- **`conversation_reset` is announced and clears index-keyed bookkeeping, and deliberately does NOT replay history** (added 2026-09-23). Schema on Claude Code 2.1.280: `{type:"conversation_reset", new_conversation_id, uuid, session_id}`, "emitted by /clear, plan-mode exit, and fresh-session flows". Measured by driving the real CLI over stream-json: an ordinary turn emits none (so there is no note on every chat), and a `/clear` user message emits one carrying the **old** `session_id`, then a `system/init` with a new session id that is **not** `new_conversation_id`, after which Claude answered it could not recall the conversation. So the Claude session id needs nothing special: the init that follows updates it through the existing `setClaudeSessionId`. The line handler clears `toolCallMap`, `reasoningIds`, `reasoningStarted` and `textBlockIndices`, because block indices restart and a stale entry re-emits a finished tool call (the 2026-09-06 family; the stream test fails with the clears removed), and writes a `▌ **claude code reset:**` note (`CONVERSATION_RESET_MARKER`, registered in `PLUGIN_NOTE_MARKERS`). A replay of opencode's history on the next turn was designed and rejected: every known trigger is a clear someone asked for, and replaying would silently undo it. Pending proxy calls are not touched: the CLI cannot emit a reset while it is parked inside one. A frame without a string `new_conversation_id` is ignored, as the CLI's own adapter drops it. Not yet handled from the same schema: `tombstone` (a message the CLI removed from its transcript, such as a partial orphan after a streaming fallback).
+
+<a id="g30"></a>
+
+#### An account that cannot serve is
+
+- **An account that cannot serve is read from the `error` kind on the CLI's own failure reply, never from its text** (added 2026-09-23 after the `appical` login expired and the only thing on screen was the CLI's "Failed to authenticate: OAuth session expired and could not be refreshed", naming no account and no fix). Claude Code 2.1.280's schema puts `error` at the top level of an `assistant` message (`{type:"assistant", message, parent_tool_use_id, error?, uuid}`), with the kinds `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`, `rate_limit`, `overloaded`, `invalid_request`, `model_not_found`, `server_error`, `unknown` and more; the CLI's own status line maps `authentication_failed` to "login required". `accountBlockKind` accepts only the five account-level kinds: `rate_limit` has its own path, and the request-level kinds would fail the same way on any account. On a failed result the stream writes a `▌ **claude account:**` note (`ACCOUNT_BLOCK_MARKER`, registered in `PLUGIN_NOTE_MARKERS`) with `loginCommandFor(configDir)`, sets `resultFailure` so the turn finishes as an error (the CLI labels that result `success` with `is_error: true`, so nothing else did), and opens the same switch form as a limit with the question worded by `describeAccountBlock`. No `resetsAt`, so a switch holds until opencode restarts. Measured shape (72-character text, `stop_reason: stop_sequence`, turn failing in about 40 ms) is what the fake CLI in `test-account-failover.ts` replays; both end-to-end tests fail with the stream wiring removed. Not yet seen live after the fix: it needs an account whose login has actually expired.
+
+### opencode 2 (dual support, measured on 2.0.11 with Claude Code 2.1.280, 2026-09-23)
+
+<a id="g31"></a>
+
+#### opencode 1.18 calls a dual export's
+
+- **opencode 1.18 calls a dual export's `setup` too, not only `server`.** A build that flipped a process-wide "V2 mode" at the top of `setup` made the maintainer's real 1.18.32 emit `shell` for every proxied call, and 1.x rejected each one as an unavailable tool. So nothing about the host major is process-wide: the tool vocabulary rides on each model (`ClaudeCodeConfig.hostApi`, set only by the V2 `sdk` hook in `resolveSdkSettings`), and `setup` registers nothing unless `isOpencodeV2Context` sees V2's `provider`, `aisdk` and `session` domains and no 1.x `app.version`. The V1 regression probe runs the real 1.x binary on the built `dist/` with a scratch `XDG_CONFIG_HOME`; run it after any entrypoint change, because unit tests could not see this.
+
+<a id="g32"></a>
+
+#### The model path is the aisdk sdk
+
+- **The model path is the `aisdk` `sdk` hook, and `package` is only a label.** V2 never imports it: `AISDK.language` checks the `aisdk:` prefix, takes the SDK object from the `sdk` hooks and the model from `sdk.languageModel(modelID ?? id)`. The website's plugin docs describe providers as metadata only and omit the `aisdk` domain; the shipped `.d.ts` is what is true.
+
+<a id="g33"></a>
+
+#### A plugin's provider transform cannot
+
+- **A plugin's provider transform cannot see the config's provider settings.** V2 applies the config file's provider block through its own `opencode.config.provider` plugin after plugin transforms, so config overrides plugin defaults and our seed record lacked `accounts`. `planV2Providers` therefore reads the seed from the same on-disk layers the MCP bridge reads (`opencodeConfigLayers`, shared, never duplicated) plus the plugin's own `options`. Per-call settings need none of this: the `sdk` hook's `options` hold the merged result, and they win over the planned copy.
+
+<a id="g34"></a>
+
+#### V2 renamed tools and fields, and
+
+- **V2 renamed tools and fields, and an unknown tool name is an error there.** `src/host-tools.ts` rewrites the stream at `doStream`'s edge and `doGenerate`'s content, only for a V2 model: `bash` to `shell` (no `description`), `task` to `subagent` (`subagent_type` to `agent`, `task_id` to `sessionID`), `filePath` to `path` for `edit`/`write`/`read`; it drops `todowrite`, `plan_enter`, `plan_exit` and `notebookedit`, which V2 does not have. Nothing reads an incoming tool name, only ids, so translating outbound only is enough. The table was read off each tool's registered `name` and input schema in `@opencode/core/dist/tool/plugin/*.js`; re-read it after a V2 bump.
+
+<a id="g35"></a>
+
+#### Session and agent reach the model
+
+- **Session and agent reach the model as headers.** `session.hook("model.request")` sets `x-session-affinity` (what the language model already reads) and `x-opencode-agent`, with `kind: "compaction" | "title"` mapped onto those agent names. `resolveOpencodeAgent` reads providerOptions first, so 1.x is unchanged.
+
+<a id="g36"></a>
+
+#### V2 sends its title request with
+
+- **V2 sends its title request with the whole tool set**, so 1.x's "no tools means title" test missed it and every new V2 session spawned a second `claude`. `isTitleRequest` also accepts the `title` agent, for V2 models only.
+
+<a id="g37"></a>
+
+#### The live-state client is a shim
+
+- **The live-state client is a shim** (`src/v2-client.ts`): `mcp.status`, `tool.list` (with V2's `subagent` aliased as `task` and an agent list built from `agent.list()`, because V2's `subagent` description names no agents) and `session.get` (`location.directory` plus `subpath` as `directory`). Anything V2 cannot answer is left out so its caller takes the no-client path. The agent **registry** is still built by V1's `buildAgentRegistry` from disk, never from `agent.list()`, which includes built-ins that must not be rewritten.
+
+<a id="g38"></a>
+
+#### /btw and the doctor are real commands
+
+- **`/btw` and the doctor are real commands** that send V1's template text through `session.prompt`. `/btw` is always `delivery: "queue"`: steered into a running turn it would swallow the turn's continuation. Answering inside a running turn is not ported; V2's plugin session domain has no status route to detect the turn.
+
+<a id="g39"></a>
+
+#### Sandbox and probe discipline. ~/opencode-v2-sandbox/env.sh
+
+- **Sandbox and probe discipline.** `~/opencode-v2-sandbox/env.sh` redirects all four XDG dirs and `TMPDIR`; always `--standalone` (otherwise V2 starts its shared background service); never `opencode service start`, which may register a login item. A `serve` needs HTTP Basic with user `opencode` and the password printed in its log. A configured plugin path must be a directory, resolved as `<dir>/server` or `<dir>/index`, so a local checkout is `<repo>/dist`. V2 reads 1.x's `plugin` key as well as its own `plugins`, and reads `~/.opencode/`, `~/.claude` and `~/.agents` as config and skill layers exactly as it would outside the sandbox.
+
+### Question Diagnosis Correction (2026-09-06)
+
+This correction supersedes the historical claims below that native-provider failures proved an upstream TUI rendering regression, or that enabling the question bridges must wait for PR #36603. The user's clean Omarchy installation reportedly works. On this Mac, global `~/.config/opencode/plugins/notify.ts` awaited `notifyQuestionIfNeeded` inside `tool.execute.before`; its backend awaited `alerter` exit, which defaults to waiting for dismissal indefinitely. A real question notification child started at exactly the failed question's timestamp and remained alive. opencode awaits before-hooks before calling the native question tool, so the request/form could not exist yet. Native providers still run global hooks and were not a plugin-free control. A no-inference test importing the real notification plugin failed with a pending simulated alerter and passed after the hook dispatched notification delivery without awaiting it, with rejection handling and deduplication preserved. Local regression test: `~/.config/opencode/tests/notify-question.test.ts`. For future failures, `GET /question` on the same server/workspace separates pre-tool blocking (absent request) from event/session/rendering issues (present request). #36604 remains open for detach/reattach; #36603 is closed unmerged, not a fix to wait on. Do not remove the user's no-question-tool preference without their approval.
+
+**Both round-trips are now verified, so every "blocked upstream, leave it off" line in the bullets below is history, not current advice.** After the restart, the maintainer authorized one native `question` call in the Mac TUI and answered it: the form rendered and the answer came back. The `"Question"` proxy was then verified end to end on plugin **0.18.0**, Claude Code **2.1.258**, opencode **1.18.29** through a headless `opencode serve` with a scratch config (`proxyTools: ["Question"]`, `permission.question: "allow"`, account `appical`, haiku): `plugin.log` shows `question proxy version gate {"opencodeHasQuestion":true,"kept":true}` then `proxy-mcp tool call received {"toolName":"question"}`, `GET /question` listed one pending request for the session, `POST /question/{id}/reply` with a random token completed the single `question` tool part, and Claude's final answer was that token, which it could only have obtained through the tool result. Probe script: `/var/folders/.../opencode/verify-provider-question.mjs` (scratch, not in the repo). The headless probes answered over HTTP, not by clicking, so the last join was closed separately: with `"Question"` added to the maintainer's own `proxyTools` and opencode relaunched, a two-question `mcp__opencode_proxy__question` call rendered as a real form in his TUI and both answers came back into the turn. Model to form to answer to model, in the actual terminal. `"Question"` stays out of `DEFAULT_PROXY_TOOL_NAMES` anyway: enabling it disables Claude's `AskUserQuestion` via `--disallowedTools`, and that swap is the operator's call, not a silent upgrade. `planModeQuestion` is still **unverified**, for a different reason than before: its delivery surface now works, but nobody has driven an actual `ExitPlanMode` approval through it. That is the test to run before promoting it.
+
+<a id="g40"></a>
+
+#### The chat.params hook tags opencode's
+
+- The `chat.params` hook tags opencode's active agent (`default`, `compaction`, `title`, etc.) into provider options. Write to `output.options` at the top level. opencode wraps that bag under the provider id later. Do not pre-nest under `output.options[providerID]`, or the model sees `providerOptions[id][id]`.
+
+<a id="g41"></a>
+
+#### Reasoning effort is a spawn-time
+
+- Reasoning effort is a spawn-time env var (`CLAUDE_CODE_EFFORT_LEVEL`, set in `claudeSpawnEnv` and the interactive session's env), not message text. Claude Code 2.1.x only recognises the `ultrathink` keyword, so the old per-level keywords were silently inert. Because the var is fixed per process, effort is part of the session key (`::effort=<level>`); a respawn reads it back from `ActiveProcess.effort`. Compaction spawns never carry it.
+
+<a id="g42"></a>
+
+#### Per-agent model override (src/agent-models.ts)
+
+- **Per-agent model override (`src/agent-models.ts`) swaps the model NAME only, never the provider.** The account lives in the provider (`claude-code-<account>` → `CLAUDE_CONFIG_DIR`) and in the `@<account>` marker on the id, so the override reattaches that marker: `claude-fable-5-1@work` becomes `claude-opus-5@work`. Dropping the marker would silently move the work to the default account. Three guards keep it from surprising anyone, and none of them are optional: `defaultSubagentModel` is **unset by default**, so an upgrade changes no existing behaviour; only agents the plugin discovered (`config.agent` entries, markdown in `agents/`) are eligible, so opencode's built-ins stay out of the path or `explore` quietly becomes an Opus agent; and an unknown model id is refused rather than spawned. The effective model is part of the session key in BOTH `doGenerate` and `doStream`, otherwise an overridden subagent shares a `claude` process with its caller. The plugin defines **no agents of its own** on purpose: a provider plugin injecting opinionated agents (with their own permission blocks) into every user's `@` menu is not its job.
+
+<a id="g43"></a>
+
+#### An agent's declared reasoningEffort
+
+- **An agent's declared `reasoningEffort` beats the effort the call arrived with** (`resolveAgentEffort`, applied in both `doGenerate` and `doStream`). opencode resolves one effort per session and a subagent inherits it, which fails in the expensive direction: a parent on `max` silently dispatches every worker at `max`, so a four-fix mechanical lane runs at the costliest setting there is and eats a weekly Opus cap. Declaring nothing keeps the inherited value, an unknown level is refused rather than forwarded (the CLI rejects it), and compaction is exempt because its summary needs the whole budget. Effort is part of the session key, so changing it respawns rather than reusing a process started at the old level.
+
+<a id="g44"></a>
+
+#### /compact must not fall through the
+
+- `/compact` must not fall through the no-tools title stub. It is detected via `opencodeAgent === "compaction"`, runs through `doStream`, uses a fresh short-lived Claude CLI process, skips MCP/proxy/tool wiring, and defaults to `claude-haiku-4-5`.
+
+<a id="g45"></a>
+
+#### Compaction model precedence is
+
+- Compaction model precedence is: `CLAUDE_CODE_COMPACTION_MODEL` env var, then `compactionModel` provider option, then default `claude-haiku-4-5`.
+
+<a id="g46"></a>
+
+#### Opus 4.7 omits thinking summaries
+
+- Opus 4.7 omits thinking summaries by default. The plugin asks for summaries with `--thinking-display summarized`, but only when `src/cli-version.ts` confirms Claude Code CLI >= 2.1.142. Older CLIs must skip that flag instead of crashing.
+
+<a id="g47"></a>
+
+#### Respect user Claude Code env vars
+
+- Respect user Claude Code env vars. Do not delete or override `CLAUDE_CODE_DISABLE_THINKING`, `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING`, or explicit `CLAUDE_CODE_SHOW_THINKING_SUMMARIES` values. The same rule governs the CLI hygiene vars below.
+
+<a id="g48"></a>
+
+#### Every spawned child gets DISABLE_AUTOUPDATER=1
+
+- **Every spawned child gets `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and the reason is the version cache, not tidiness.** `detectCliVersion` resolves once per `cliPath` and caches that answer for the life of the opencode process, and three flag gates read it: `--thinking-display summarized`, `--plugin-dir`, and fast mode via `--settings`. If the CLI autoupdates underneath a long-running opencode, the cached version stops describing the binary actually being spawned, so a gated flag can be passed to a CLI that rejects it or withheld from one that supports it; swapping the binary mid-session is a plain correctness hazard besides. Both names were **read out of the 2.1.263 Mach-O** (`rg -a`, the same technique the CLI stream-event gotcha records), not assumed: `DISABLE_AUTOUPDATER` is parsed by `hQ()` as an update blocker, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is read by `I()` as `"essential-traffic"` **and** returned by `dxe()` as a second, independent update blocker, so the two overlap on purpose. Anthropic's own runner sets `DISABLE_AUTOUPDATER:"1"` on the children it spawns, which is the same use this is. `cliHygieneEnv` lives in `src/cli-version.ts` rather than `session-manager.ts` because it exists to protect that module's cache, and because `src/claude-session-bun.ts` needs it too: `cli-version.ts` pulls in only `logger.ts`, so the interactive module stays cheap to import (it is also driven directly by `e2e-claude-session-bun.ts`). It **fills gaps only** and never overwrites, so `DISABLE_AUTOUPDATER=0` in the user's shell keeps the autoupdater and an empty string stays empty, which both vars read as off; that is the escape hatch, and it is why this needs **no provider option**. The interactive env moved out of the `Bun.spawn` literal into `interactiveSpawnEnv` purely so a test can reach it without a PTY. Tests: `test-spawn-env.ts` (7 cases; 4 fail with `cliHygieneEnv` stubbed to `{}`, the other 3 assert the constant or the absence of an override).
+
+<a id="g49"></a>
+
+#### Reasoning stream parts are only
+
+- Reasoning stream parts are only started after the first non-empty `thinking_delta`. This prevents empty Thinking rows when the CLI opens a thinking block but streams no text.
+
+<a id="g50"></a>
+
+#### opencode's own reasoning features
+
+- opencode's own reasoning features (e.g. v1.17.0 "Added Claude Fable reasoning support", vLLM interleaved `reasoning` field) live in opencode's **native** Anthropic/vLLM runtime, which this plugin deliberately bypasses by routing through the `claude` CLI. There is nothing to "switch to" — the plugin implements reasoning itself (reasoning variants → thinking keyword + `--thinking`/`--thinking-display` flags → `thinking_delta` forwarding), and any model defined with `reasoning: true` (including `claude-fable-5`) inherits the full path automatically. Do not re-investigate adopting opencode's native reasoning; it would mean abandoning the CLI wrapper.
+
+<a id="g51"></a>
+
+#### Model display names carry a list-price
+
+- Model display names carry a list-price multiplier as a `(N×)` suffix (`src/models.ts` `defineModel`, via the `multiplier` field): haiku 1×, sonnet 3×, opus 5× (Opus 5.5: 4×, its fast mode 8×), fable 10×, mythos 10×. These are exact ratios of published per-token price vs Haiku (input and output ratios coincide), so Fable/Mythos = 2× Opus. opencode has no native multiplier field, so the suffix is the only way it surfaces in the picker; it's display-only and model resolution still keys off `id`. `test-config-models.ts` asserts the suffixed names — update both if the format changes.
+
+<a id="g52"></a>
+
+#### Fast mode's -fast model ids are
+
+- **Fast mode's `-fast` model ids are OURS, not Anthropic's.** `claude-opus-5-fast` / `claude-opus-4-8-fast` are registry entries this plugin invents; `src/models.ts` `parseModelId` strips the marker before `--model` and turns it into `--settings '{"fastMode":true}'`. Do not "fix" this by passing the id through: Anthropic's real `-fast` names are retired (`claude-opus-4-6-fast` silently falls back to standard, `claude-opus-4-7-fast` hard-errors). There is no `--fast` flag. `--settings` is the only headless opt-in because the CLI's SDK gate reads the **flagSettings** layer specifically (`if (le() && Ui() && !flagSettings.fastMode) return "sdk_opt_in_required"`), so a `fastMode` in the user's own settings.json does nothing for a `--print` run. Only Opus 4.8 / 5 / 5.5 qualify (the CLI matches on the name containing `opus-4-8` / `opus-5`, which `claude-opus-5-5` also satisfies; 2.1.280's baked model catalog lists `fast_mode` for it outright and carries a dedicated $8/$40 fast table keyed on the exact id); registering a fast entry for any other model would show a fast price on a standard-speed turn. Verified live against 2.1.245 on 2026-08-30. `--settings` takes one value, so the interactive wrapper merges `permissions` and `fastMode` into a single payload rather than pushing the flag twice.
+
+<a id="g53"></a>
+
+#### Fast mode fails soft, so the downgrade
+
+- **Fast mode fails soft, so the downgrade must warn, not notice.** An ineligible account returns `fast_mode_state: "off"` with a reason and runs at standard speed with no error, while the picker still advertises 10×. `reportFastModeState` uses `log.warn` deliberately: in `src/logger.ts` only warn/error are alwaysStderr, so a NOTICE would be invisible outside debug mode and defeat the point. Deduped per reason per process, because the blockers are account-level and would otherwise fire on every respawn. Maintainer's own account reports `extra_usage_disabled` (fix: `/usage-credits`), so the on-state path is **unverified in production**: only the opt-in plumbing and the downgrade path have live evidence. **Superseded 2026-09-23:** the on-state is now live-verified. One turn on `claude-code-default/claude-opus-5-5-fast` through opencode 1.18.32 on Claude Code 2.1.280 logged `fast mode active {"state":"on"}` and answered, so the account has since become eligible. That turn billed at the fast rate; a probe of it is not free.
+
+<a id="g54"></a>
+
+#### Sonnet 5 is on standard pricing
+
+- Sonnet 5 is on **standard pricing** ($3/M in, $15/M out, `sonnetCost`, multiplier 3×) as of 2026-09-01, when its introductory $2/$10 period ended. The `sonnet5Cost` constant is gone; do not reintroduce it, and do not "correct" the 3× suffix back to 2× from an older README or screenshot.
+
+<a id="g55"></a>
+
+#### Costs in src/models.ts are dollars
+
+- **Costs in `src/models.ts` are dollars per MILLION tokens**, the unit opencode and models.dev use (`~/.cache/opencode/models.json` has `claude-haiku-4-5 -> {"input": 1, ...}`); opencode divides by 1e6 itself. They were per-token until @CNQQC's PR #25 (merged 2026-08-19), which made every reported session cost 1,000,000x too low — do not "restore" the `1e-6` form. `opusCost` is the real Opus 4.5+ standard price ($5/M in, $25/M out — corrected from a stale legacy $15/$75; Opus 5 keeps it). Haiku ($1/$5), Sonnet ($3/$15), and Fable/Mythos ($10/$50) were already correct. Fable/Mythos 5.1 keep those input/output rates but use a separately published $0.25/M cache-read rate, not 5.0's $1/M. Opus 5.5 (`opus55Cost`, $4/$20, cache read $0.20 = 0.05× input, cache write $5) and its fast table (`opus55FastCost`, exactly double) were both read out of the Claude Code 2.1.280 binary (`tier_4_20_cache_read_0_20` and the exact-id fast entry), and the model needs that CLI or newer: the API refuses it from 2.1.278 with a 400 naming the floor. Every one of those figures was independently confirmed against Anthropic's published pricing page before merge, including the footnote that Opus 5.5 alone prices cache hits at 0.05× input rather than the usual 0.1×, which is the whole reason it cannot share `opusCost`. If you add a model, set its cost from the published standard (not Fast Mode) pricing so the `(N×)` suffix stays consistent. **Every entry now carries its published `limit`**, audited against the Anthropic models + pricing docs on 2026-07-26 (the placeholder `output: 16_384` is gone; do not reintroduce it). Two classes of drift were corrected: `claude-sonnet-4-5` and `claude-opus-4-5` claimed a **1M context they never had** — the whole 4.5 generation (including Haiku 4.5) is **200k context / 64k output** — while every 4.6-and-later entry is **1M / 128k**. Release dates for the three dated IDs were also wrong and now match the snapshot suffix (haiku `2025-10-01`, sonnet-4-5 `2025-09-29`, opus-4-5 `2025-11-01`). `test-config-models.ts` pins all fourteen non-fast-model limits, with fast-model limits pinned separately, so a regression fails the suite rather than silently misreporting the context gauge.
+
+<a id="g56"></a>
+
+#### No long-context pricing tier exists
+
+- **No long-context pricing tier exists — do not add one.** Investigated for issue #24 on 2026-07-26: Anthropic's pricing page has a "Long context pricing" section stating that Claude 4.6 and later include the full 1M window **at standard pricing** ("a 900k-token request is billed at the same per-token rate as a 9k-token request"), with caching and batch discounts unchanged across it. opencode 1.18.5's optional `cost.tiers` / `cost.experimentalOver200K` fields therefore stay unset — populating them would misreport the real price. The premiums that *do* exist are out of scope here: Fast Mode ($10/$50 on Opus 5/4.8, and this plugin never sends `speed: "fast"`), `inference_geo: "us"` (1.1×, not a CLI flag we pass), and partner-cloud regional endpoints (10%, not our path). Re-open only if Anthropic publishes an above-200K rate. A comment above the cost constants in `src/models.ts` records the same finding.
+
+<a id="g57"></a>
+
+#### Billing context (researched 2026-06-10
+
+- Billing context (researched 2026-06-10, documented in README "Billing change: June 15, 2026"): from 2026-06-15 Anthropic bills `claude -p` / Agent SDK usage (the plugin's default headless `--print` path) against a separate monthly Agent SDK credit on subscription plans (Pro $20 / Max 5x $100 / Max 20x $200), not normal plan limits; API-key auth is unaffected. Same day, `claude-sonnet-4-20250514` / `claude-opus-4-20250514` retire (not registered here, but pass-through overrides could hit them). Fable 5 is included free on plans only through 2026-06-22; after that it needs usage credits. Confirmed failure mechanism: the 400 `Third-party apps now draw from your extra usage...` corresponds to a `rate_limit_event` with `{rateLimitType:"five_hour", overageStatus:"rejected", overageDisabledReason:"org_level_disabled"}` under OAuth subscription auth, so org-level overage/extra usage being disabled can reject requests that do not fit the remaining rolling window. URL redaction was tested and reverted; the opencode repo URL is not the trigger. Interactive mitigation: live bisection showed this plugin's own CLI/AGENTS/continuation prompt succeeds, while opencode's forwarded system prompt payload can trip the usage gate on constrained subscription accounts. Interactive mode therefore intentionally omits the forwarded opencode system prompt by default. Real account-side fixes remain: enable overage/add extra usage, wait for the 5-hour window reset, switch account/org/plan, or use API-key auth.
+
+<a id="g58"></a>
+
+#### AGENTS.md must not reach the model
+
+- **`AGENTS.md` must not reach the model twice** (`buildAppendedSystemPrompt`, cherry-picked from @HeikoAtGitHub's `25260a4`, absorbed 2026-09-06). opencode forwards `~/.config/opencode/AGENTS.md` inside its own system prompt under an `Instructions from:` header, and this plugin also read it from disk and appended it, so every turn paid for both copies (visible in any plugin-driven session's own system prompt). The disk copy is now pushed only when the forwarded `extraSystemContent` does not already contain it; no match keeps the old behaviour, so the interactive transport (which forwards nothing) never loses it. Live-verified: one copy in a 63 KB appended prompt. Test in `test-compaction-model.ts`.
+
+<a id="g59"></a>
+
+#### Abort sends the CLI an interrupt
+
+- **Abort sends the CLI an `interrupt` control request** (`interruptTurn` in `session-manager.ts`, adapted from @broskees' `68ed142`, absorbed 2026-09-06). The CLI runs one turn per process and closing our stream told it nothing: an aborted turn ran to completion, billed, executed tools, and its late output plus stale `result` landed in the next turn (Joseph measured ~7,500 characters generated after abort). `noteTurnStarted` marks the process in flight at every stdin write that asks for work (fresh envelope, auto-continue, watchdog re-send), the terminal `result` line clears it inside the `rl` handler in `spawnClaudeProcess` (**not** a permanent `lineEmitter` listener: `listenerCount("line") === 0` is what routes unattended lines to the buffer and what `/btw` reads as busy, so a permanent listener would break both), the abort handler sends `{type:"control_request", request:{subtype:"interrupt"}}`, and a new turn that finds the previous one in flight interrupts it first with a 5 s cap, except tool-result turns where the CLI is legitimately parked in a proxy call. The interactive transport is never marked in flight (its stdin is a TUI). Live-verified on 2.1.258: abort mid-webfetch, `interrupt sent for aborted turn {idle:true}`, next turn clean in 8.5 s. Tests: `test-session-manager.ts`.
+
+<a id="g60"></a>
+
+#### idleProcessTimeoutMs (cherry-picked
+
+- **`idleProcessTimeoutMs`** (cherry-picked from @bernardofortes' `a5f723a`, absorbed 2026-09-06, resolved by hand onto the current tree because his base predated the `--resume` rename and the respawn rework; the commit is still his). **Off unless set** (`DEFAULT_IDLE_PROCESS_TIMEOUT_MS` is 0, resolved by `resolveIdleProcessTimeoutMs` at the `completeResult` call site so unset and `0` both arm nothing; @broskees' fork-parity PR #36 proposed 30 minutes by default and that was reverted at merge, since it changes when a resumed chat pays for a fresh `--resume` spawn and that is the user's call. The helper stays so a default can be revisited in one line). Timer armed in `completeResult` after `cleanupTurn`, so the clock starts when a turn finishes, not at spawn; cancelled by `getActiveProcess`/`setActiveProcess`/`detachActiveProcess`/spawn/exit, unref'd, and it deletes only if the same process object is still registered so a respawn cannot be killed by its predecessor's timer. A process found `turnInFlight` when it fires (recovered continuation, auto-continue, late tool result) is re-armed, never killed, the same rule the LRU cap follows. Session id survives, so the next turn resumes. Tests: `test-session-manager.ts`, `test-process-lifecycle.ts`.
+
+<a id="g61"></a>
+
+#### The child's stdin needs its own
+
+- **The child's stdin needs its own `error` listener, and `proc.on("error")` is not it.** Every write that asks the CLI for work (fresh envelope, auto-continue, the watchdog re-send, `interruptTurn`) can land after the child died, and an `error` event on a stream with no listener throws inside **opencode's** process, not the child's. `spawnClaudeProcess` attaches a baseline `proc.stdin?.on("error", ...)` next to the process one; it logs at WARN with the errno and calls `settleTurn`, because no terminal `result` is ever coming for a write that never arrived. It deliberately does not end the turn: the child is gone, so the readline `close` follows and the turn's close handler reports it. Note EPIPE is delivered whenever libuv gets round to failing the queued write (measured: hundreds of ms, sometimes only once the child is killed), so the regression test emits the event directly; the contract under test is that something is listening. The interactive shim's `stdin` is a plain object with `write`/`end` and no emitter, so it cannot emit `error` and needs nothing. Test: `test-session-manager.ts`.
+
+<a id="g62"></a>
+
+#### LRU eviction must never take a process
+
+- **LRU eviction must never take a process that is mid-turn.** `evictIfNeeded` deleted the oldest of 16 outright, and the evicted turn's close handler then finished with reason `stop` and no error, so a user with many open chats saw an answer silently truncated. It now walks insertion order (which is LRU) for the first process with `turnInFlight !== true`, and when every process is busy it evicts **nothing** and warns, letting the map exceed the cap for a moment rather than killing live work. Do not "restore" the one-liner. The cap is **8** (was 16; the fork's figure, adopted in the fork-parity PR): the idle timer above does the real work and this is the backstop for a burst of chats inside one idle window. Tests: `test-session-manager.ts` (both branches).
+
+<a id="g63"></a>
+
+#### A deleted opencode session releases
+
+- **A deleted opencode session releases everything at once, and host exit kills what is left.** The plugin's `event` hook (`index.ts`) acts on `session.deleted` only, reading the id from `properties.info.id` (`extractDeletedSessionId`), and calls `deleteActiveProcessesForSession`: every process whose `opencodeSessionID` tag or session-key affinity segment (`describeSessionKey(key).session`, which covers effort and compaction keys) matches is killed, its proxy server closed, and, unlike idle eviction, its Claude session id, plan-mode questions, todo ledger and compression summary are dropped, because a deleted session never resumes. The `"default"` affinity is the shared fallback bucket and is never matched. `ensureProcessExitCleanup` arms a single `process.once("exit")` that runs the synchronous `killAllActiveProcesses`, guarded so repeated plugin initialisation never stacks listeners. `detachActiveProcess` also rejects the broker's pending calls for the key once it closed the proxy server: nothing can answer them any more, and a `task` call has no deadline that would otherwise reap the entry. Tests: `test-session-manager.ts`, `test-process-lifecycle.ts`.
+
+<a id="g64"></a>
+
+#### A child that closes without a result
+
+- **A child that closes without a `result` is an error, not a `stop`.** The doStream close handler finished the stream with `toFinishReason("stop")` and empty usage, so a crashed CLI read as a short but successful answer. It now emits an `error` part (consistent with the other error paths in that file) plus `finishReason: "error"`, built by `describeChildCrash(exitCode, signal, lastStderr)`. Three things hold it together: stderr was debug-only and clipped to 200 chars, so `retainStderr` keeps a 2 KB tail on the ActiveProcess (`lastStderr`, newest wins) as the only record of why; `proc.exitCode` is usually still `null` when stdout hits EOF, so the crash branch waits up to `CHILD_EXIT_STATUS_GRACE_MS` (250 ms) for the `exit` event rather than reporting a bare "closed its output"; and an abort is exempt (`autoContinueState.aborted`), since the operator asked for it and the CLI may exit before the interrupt's own result lands. The path where a `result` did arrive is untouched, and auto-continue is unaffected because it only runs from `completeResult` (`isError` already returns `{continue:false, reason:"error"}`). Tests: `test-respawn.ts` (fake CLI, crash and abort), `test-session-manager.ts` (retention cap, message shape).
+
+<a id="g65"></a>
+
+#### Skill bridge is opt-in (bridgeOpencodeSkills
+
+- **Skill bridge is opt-in** (`bridgeOpencodeSkills`, `src/skill-bridge.ts` written by @broskees in `68ed142`, absorbed 2026-09-06; his fork-parity PR #36 proposed on-by-default and that was reverted at merge, see the follow-up commit). opencode and Claude share the `<name>/SKILL.md` format but not the roots, so opencode advertised skills the CLI's `Skill` tool could not find. The bridge stages a throwaway plugin dir (`skills-<hash>` under `pluginTmpDir`, linked, copy fallback for Windows) and passes `--plugin-dir`; the flag has no version marker so `detectCliSupportsFlag` probes `claude --help` (cached). **Deliberately off by default**: every bridged skill is also in the system prompt opencode forwards, so a big skill set is paid for twice per turn by every user; `bridgeOpencodeSkills: true` opts the user's skills in, and the bundled skill is staged regardless. Live-verified via `OPENCODE_CONFIG=<copy with the option>` on a temp project: 4 skills bridged, `Skill` call rendered as opencode's `skill` tool, token returned. Wired into the headless `doStream` spawn, `doGenerate`'s direct spawn, and the interactive spawn (`pluginDirs` on `spawnInteractiveProcess`, appended by `interactiveExtraArgs`); compaction's lean spawn never stages it, and the `--help` probe keeps the flag off a CLI that does not know it on every path. Tests: `test-skill-bridge.ts` (including the real argv of a spawned fake CLI on both headless paths), `test-claude-session-wrapper.ts`.
+
+<a id="g66"></a>
+
+#### The bridge's roots were wrong, and
+
+- **The bridge's roots were wrong, and the sentence above used to say so.** It previously read "Only `~/.config/opencode/skills` and `.opencode/skills` are roots; `~/.agents/skills` is not opencode's, so those are not bridged." Both halves are false, read out of the `opencode` binary's own loader rather than inferred: `var bA=".claude",xA=".agents",GA="skills/**/SKILL.md",SA="{skill,skills}/**/SKILL.md"`, and opencode's bundled config docs name `OPENCODE_DISABLE_EXTERNAL_SKILLS` / `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` as the switches that "skip the external skill scans under `~/.claude/` and `~/.agents/`". So opencode reads `.opencode/`, `.claude/` and `.agents/` walking up from the workspace, its own config dirs under `{skill,skills}`, and globally `~/.claude/skills` and `~/.agents/skills`. `skillRoots()` covered only the `.opencode` quarter of that, so everything a user kept in `~/.agents/skills` was advertised by opencode in the forwarded system prompt and answered `Unknown skill` from a Claude turn. Discovery now covers every one of them, honours both kill switches, and a skill is keyed by the `name:` its frontmatter declares (`declaredSkillName`, directory basename as the fallback), because that is the name opencode advertises and therefore the one the model will call.
+
+<a id="g67"></a>
+
+#### Expanding the roots is what made
+
+- **Expanding the roots is what made the bridge collide with Claude's own, so `bridgeSkipNativeSkills` shipped with it and is ON by default.** `~/.claude/skills` and the project's `.claude/skills` are read by *both* runtimes, so bridging them hands one skill to a single session twice: two names and two descriptions in the prompt, every turn, with no way to tell which copy a `Skill()` call reaches. `discoverNativeClaudeSkills` scans what the spawn will actually load, which is the account's own `CLAUDE_CONFIG_DIR` (`accountConfigDirPath` in `accounts.ts`, added for exactly this) rather than a hardcoded `~/.claude`, plus the project scope and every installed plugin's `skills/` from `plugins/installed_plugins.json`. `dropNativelyLoadedSkills` then matches on three identities in order: the resolved realpath (a symlink into a shared root is one skill, which is the Appical marketplace's symlink install), a SHA-256 of `SKILL.md` (byte-identical copies in two roots are one skill, whatever they are called on disk), and finally the declared name. **A name collision whose content differs is never silently dropped**: Claude's native copy wins, because it is the one the CLI resolves regardless of what we stage, and the bridge logs a WARN naming both paths so the loser is findable. Measured against the maintainer's real machine before shipping: 114 opencode-discovered skills against 118 native (100 user, 18 plugin), 14 bridged, 100 skipped as 99 `same-copy` plus 1 `name-taken`. That one is `herdr`, genuinely divergent at 12600 bytes native against 10553 bridged, and it was live in the session that built this, which is what proves the whole thing is not theoretical. Off by default would have meant shipping a known duplicate, so the flag inverts the `bridgeOpencodeSkills` convention deliberately; `bridgeSkipNativeSkills: false` is the escape hatch and reinstates every duplicate. **Live-verified 2026-09-23** on opencode 1.18.32 with Claude Code 2.1.280, in a scratch `XDG_CONFIG_HOME` with only `bridgeOpencodeSkills: true` set: `plugin.log` showed `skills claude code already loads; left unbridged {"count":100}` and `bridged opencode skills into claude` naming the `~/.agents/skills` set, and a haiku turn asked to load `git-archeology` (a skill only reachable through the new roots) made a completed `skill` tool call and answered with that file's first heading. Before this branch the same call answered `Unknown skill`. Re-measured on the merged tree the same day, both accounts: 14 bridged, 100 skipped (99 `same-copy`, 1 `name-taken`: `herdr`).
+
+<a id="g68"></a>
+
+#### Two forks independently named the
+
+- **Two forks independently named the 5-minute proxy wall's timer**, which the 0.15.0 note above says not to claim without evidence: @broskees (`68ed142`) measured a hard 301 s and attributes it to undici's `headersTimeout` and `bodyTimeout` (300 s each) behind Node `fetch` in the CLI's MCP client; @HeikoAtGitHub (`42f426d`) measured 293 to 296 s plus a separate 300 s MCP-idle timer and, like 0.15.0, fixed it with SSE plus progress notifications. Treat 300 s undici as the working explanation; the 0.15.0 fix already covers it.
+
+<a id="g69"></a>
+
+#### Do not wait for message_stop to
+
+- **Do not wait for `message_stop` to drain proxy calls.** @broskees' `a44a2dc`: draining only at that boundary deadlocked two ordinary Bash calls until their timeouts fired in succession, because the CLI blocks inside the MCP call before emitting it. Our broker drains as calls arrive; keep it that way.
+
+<a id="g70"></a>
+
+#### Sweep the forks more often than
+
+- **Sweep the forks more often than once a quarter.** @galvani fixed the stale `toolCallMap` re-emission on 2026-05-25 (`2238ed0`) with the same log signature that took until 2026-09-06 to find here. The sweep is cheap: clone, add every fork as a remote, `git cherry origin/master <branch>` per branch (patch-id equivalence, so absorbed cherry-picks do not show), read the bodies of what is left.
+
+<a id="g71"></a>
+
+#### signature_delta is expected encrypted
+
+- `signature_delta` is expected encrypted thinking metadata. Ignore it quietly; do not treat it as an error.
+
+<a id="g72"></a>
+
+#### WebSearch with the default "claude"
+
+- `WebSearch` with the default `"claude"` routing must NOT be forwarded as a tool-call part. opencode has no `WebSearch` registry entry, and (at least as of opencode v1.17.0) the AI SDK rejects unknown tool names with "Model tried to call unavailable tool" even when `providerExecuted: true` — users saw `⚙ invalid` rows on every CLI-internal web search (fixed after v0.8.0). `mapTool` returns `skip: true` for it, and both tool_use sites in `claude-code-language-model.ts` render the query as a `> **Web search:** …` text line instead (gated by `isWebSearchTool` + `isWebSearchHandledByCli` from `tool-mapping.ts`). Explicit opencode-tool routing (`webSearch: "<tool>"`) still forwards with `executed: false`. Tests in `test-tool-mapping.ts`.
+
+<a id="g73"></a>
+
+#### tool-input-delta parts must only
+
+- `tool-input-delta` parts must only be forwarded for tool calls whose `tool-input-start` was actually emitted. opencode's AI SDK bridge (`packages/opencode/src/session/llm/ai-sdk.ts`) resolves delta/end names via `state.toolNames[event.id] ?? "unknown"`; a delta for an unseen id creates a permanently-pending part with `tool: "unknown"` that the TUI renders as `⚙ unknown`. Skipped tools (ToolSearch, TaskCreate/TaskUpdate, CLI-internal WebSearch, AskUserQuestion, ExitPlanMode, proxy tools) stream `input_json_delta` like any other tool_use, so the streaming site in `claude-code-language-model.ts` gates delta forwarding on a `started` flag set only when the input-start part went out (fixed after v0.8.1). Keep accumulating `inputJson` unconditionally — the skip-path text rendering (AskUserQuestion/ExitPlanMode/WebSearch) depends on it.
+
+<a id="g74"></a>
+
+#### Subagent dispatch must be steered
+
+- Subagent dispatch must be steered at the tool *and* the prompt (absorbed from @jknlsn's `94980a6`, diagnosed on his fork 2026-07-04, re-confirmed live here 2026-07-26). Headless `--print` Claude Code exposes no `Agent`/`Task` dispatch tool of its own (checked through CLI 2.1.211), so the `task` proxy is the only path — but the CLI *does* expose `TaskCreate`, a todo tool, and models resolve opencode's "call the task tool with subagent: X" mention hint straight to it: a todo appears, nothing runs, and the model narrates a successful dispatch. Since Task is proxied by default (v0.10.0) this is reachable without any config. Two spawn-time countermeasures, both required: `overlayTaskProxyDescription` in `proxy-mcp.ts` front-loads opencode's live agent-type list onto the `task` proxy def, and `SUBAGENT_DISPATCH_HINT` goes into the appended system prompt naming `mcp__opencode_proxy__task` as the only dispatch path. **Claude Code truncates long MCP tool descriptions, so position is load-bearing:** jknlsn's original pasted opencode's entire live description (2858 chars) in front of the static def, but opencode puts "Available agent types" at the *end* of it (char 2306), so the only part the model needed was exactly what got cut. Live-verified failure (2026-07-26, haiku): the model asked for `general-purpose`, then `default`, then `code-reviewer` — Claude Code's own agent names — and every dispatch died with `Unknown agent type`, after which it grepped `~/.config/opencode/opencode.json` and answered the question itself. Fix: `extractAgentTypeList` keeps only the list, trims each blurb to 140 chars, drops opencode's generic preamble, and the overlay puts it **first**; total description stays under ~1.4 KB (a test asserts < 1600). Same prompt then dispatched cleanly on the first try (`subagent_type: general`, real child session, `completed`). If you ever grow that description, re-run the live check — a passing unit test will not catch truncation. The hint's ToolSearch line is load-bearing, not padding: harnesses that defer MCP tool schemas (opencode-dcp does) leave `mcp__opencode_proxy__task` invisible while `TaskCreate` stays visible, which is the worst case for this confusion — the maintainer hit exactly that during the v0.10.0 smoke test. `TASK_PROXY_NOTE` must keep describing the real deadline (none by default; a positive `proxyToolTimeoutMs` adds one) and `background` mode; jknlsn's original said 10 minutes, which predated the per-tool timeouts, and a later version said 60. Only wired into `doStream`'s spawn path — `doGenerate` has no proxy wiring at all, so it deliberately has no hint. Tests: `test-subagent-hint.ts`.
+
+<a id="g75"></a>
+
+#### task_batch is the only way to run
+
+- **`task_batch` is the only way to run two subagents at once, because the CLI serialises MCP calls** (from @broskees' `68ed142`, adapted 2026-09-06, his design). Measured before building it, not assumed: haiku asked for two parallel `mcp__opencode_proxy__bash` sleeps emitted **both tool_use blocks in one assistant message** (same `message.id`, 275 ms apart), yet the second MCP request reached the proxy 7 ms **after** the first resolved, 8 s later. So "call task twice" is serial by construction and no amount of prompting fixes it. `task_batch` (`proxy-mcp.ts`) is one MCP call whose `tasks` array `finishWithToolCalls` fans out as N `task` tool-calls in the **same** stream finish, ids `${parent}_task_${i}` (`taskBatchChildToolCallId`), which opencode runs concurrently as one step; `extractPendingProxyResultForCall` gathers the children's results back onto the parent id (`formatTaskBatchResults`, labelled in order) and resolves the one broker call. Invariants: (1) it rides along with `task` in `resolvedProxyTools`, so `proxyTools: ["Task"]` gets both and nobody has to know it exists; it disables the same built-in (`Agent`), deduped. (2) The batch is validated in the `tools/call` handler **before** it is queued (`taskBatchInputError`), as an MCP `isError` result, since a bad batch has nothing to fan out and a broker entry for it would only time out. (3) A partial set of child results still resolves the parent, with the gap written into the text as `[missing]`: returning null there would send the turn down the fresh-envelope path, which rejects the parent as orphaned and renders the children as text, the worst of both. opencode hands all of a step's results to the next call together, so partial is theoretical. (4) The `TASK_PROXY_NOTE`, the batch def's note, and `SUBAGENT_DISPATCH_HINT` all name it, because the model has to be told the serial behaviour exists to prefer the batch. The fork's "unlimited by default" task deadline (`dd494a8`) was first left out as contradicting the then-documented 60-minute contract, and adopted in the fork-parity PR; see the deadline gotcha below for the lifecycle that releases an abandoned call instead. Tests: `test-proxy-mcp.ts` (def, validation, deadline, formatter), `test-subagent-hint.ts`, `test-proxy-task.ts` (fake-CLI fan-out and the two-turn gather). **Live-verified 2026-09-06** on Claude Code 2.1.258 + opencode 1.18.29 (haiku, two `general` subagents): `plugin.log` shows exactly one `proxy-mcp tool call received` with `toolName: task_batch` and zero plain `task` calls, the parent holds two `task` tool parts with ids `<parent>_task_0` / `_task_1` that started 13 ms apart and overlapped for their whole 5.6 s / 5.8 s runs, two child sessions exist, and the final answer quoted both subagents' tokens. That overlap is the fingerprint: if the two child intervals ever stop overlapping, the fan-out has silently become serial again.
+
+<a id="g76"></a>
+
+#### toolCallMap is keyed by content-block
+
+- **`toolCallMap` is keyed by content-block index and MUST be deleted at `content_block_stop`.** Claude CLI restarts block indices at 0 on every assistant message, and one turn routinely holds several (tool_use -> tool_result -> answer, `numTurns: 2`). The entry was never deleted, unlike its neighbours `reasoningIds` and `textBlockIndices`, so message 2's answer-text block at index 0 hit message 1's stale tool_use entry and re-emitted a `tool-call` for an id opencode had already completed. That second part never receives a `tool-result`, so opencode aborts it at stream end with `Tool execution aborted` / `interrupted: true`, and opencode's `task` tool turns that abort into `Subagent failed (task_id: ...)` **even though the child answered correctly and finished with `stop`**. Diagnosed live 2026-09-06 on 0.15.0: three probes, deterministic — a subagent using any provider-executed tool failed, a subagent using no tools returned fine. The plugin log is the tell: two `tool call complete` lines with the same `id`, the second ~2 ms after the final text ends. This was NOT a 0.15.0 regression (aborted parts go back to at least 2026-08-16) and it silently produced the long-standing background noise of `⚙ aborted` rows in the main lane too; it only became a hard failure through the `task` tool. Do not "tidy" the delete away. Test: `test-tool-block-index.ts`, which fails with `got 2` without it.
+
+<a id="g77"></a>
+
+#### Claude CLI emits internal tools
+
+- Claude CLI emits internal tools (`Agent`, `ToolSearch`, `AskFollowupQuestion`, `TaskList`, `TaskGet`, `TaskStop`) that have no opencode registry entry. They live in `CLAUDE_INTERNAL_TOOLS` in `src/tool-mapping.ts` and must be skipped, not forwarded. Forwarding them surfaces `⚙ invalid` tool rows in opencode. `TaskOutput` is the exception: it stays mapped to a `bash echo` so the result is visible. `TaskCreate` and `TaskUpdate` are NOT in this set — they route through the todo ledger (see next gotcha).
+
+<a id="g78"></a>
+
+#### proxy-mcp tools/call responses MUST
+
+- proxy-mcp `tools/call` responses MUST be MCP results (`{ result: { content, isError } }`), never JSON-RPC error envelopes. Claude CLI validates every `tools/call` response against the MCP result schema and rejects JSON-RPC errors as a "malformed result that failed schema validation" (seen live 2026-07-04 on broker timeouts/orphans — fixed post-0.9.2). All three error paths in `src/proxy-mcp.ts` now return results with `isError: true`: unknown tool, `result.kind === "error"` (merged into the success path), and the outer `catch` when `requestMethod === "tools/call"`. Non-`tools/call` methods (initialize, tools/list) and unparseable requests still use JSON-RPC errors, which is spec-correct. `requestId`/`requestMethod` are hoisted above the try so the catch can echo them — do not regress to `id: null`. Tests: `test-proxy-mcp.ts`.
+
+<a id="g79"></a>
+
+#### The proxy MCP endpoint is authenticated
+
+- **The proxy MCP endpoint is authenticated.** It executes Bash/Edit/Write through opencode's executor, so before @willmcginnis's PR #28 (fixed in 0.13.2, disclosed as **GHSA-3mxm-w7gf-3c5x**, High/CVSS 7.5 `AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H`, affecting >= 0.1.3 < 0.13.2; a CVE was requested from GitHub's CNA on 2026-08-20 and was still unassigned at that point — check `gh api /repos/khalilgharbaoui/opencode-claude-code-plugin/security-advisories/GHSA-3mxm-w7gf-3c5x --jq .cve_id` and, once it lands, add it to the README security section and the v0.13.2 release notes) any local process could POST to the loopback port and get arbitrary command execution, and a web page could do it blind via a `text/plain` CORS simple request. `createProxyMcpServer` now mints a 256-bit bearer token per server, hands it to Claude in the `headers` block of the generated `--mcp-config` (that file is `0600`, which is now load-bearing), and rejects every request that fails one of four guards, in this order: `Host` must equal the bound `127.0.0.1:<port>` authority (DNS rebinding), `Origin` must be absent, `Content-Type` must be `application/json` (forces a preflight that then fails, closing the simple-request hole), and the bearer token must match under `timingSafeEqual`. All four run **before** `readBody`, so an unauthenticated peer cannot stream a body into memory, and `reject()` sets `Connection: close` and destroys the socket so a slow unauthenticated body cannot hold `server.close()` open. Three consequences to remember: (1) `authToken` must never be logged or put in the URL — the log line in `reject()` deliberately reports only `hasAuthorization`, never values; (2) the Origin and Content-Type guards are **measured properties of the client we spawn**, not spec guarantees, so a future Claude CLI that starts sending an `Origin` would 403 every call — that is exactly why `reject()` logs a reason at NOTICE; (3) anything in-repo that drives the endpoint over HTTP has to authenticate, which is why `test-proxy-mcp.ts` has `authedPost` and `test-compress-tool.ts` threads `srv.authToken`. Live-verified end to end on **Claude Code 2.1.226** (2026-08-20): real CLI, real `--mcp-config`, proxy call received and answered. Do not "simplify" a guard without re-running that check; the unit tests cannot see a client-side header change. **Upgrading does not patch a running opencode**: the plugin is loaded once at process start, so every opencode left open from before the upgrade keeps serving an unauthenticated proxy port until it is restarted. Observed on the maintainer's own machine on 2026-08-20, where three sessions from Aug 5 and Aug 18 still answered `POST /mcp` with 200 and 145-byte MCP configs (no `headers` block) while the freshly started one answered 401 with a 272-byte config. That probe (`lsof -nP -iTCP -sTCP:LISTEN | grep opencode`, then an unauthenticated `initialize`, 401 = patched, 200 = stale) is the check to run after any security release, and it is in the README security section for users.
+
+<a id="g80"></a>
+
+#### proxyOpencodeMcpTools read the wrong
+
+- **`proxyOpencodeMcpTools` read the wrong registry, and the prefix rule was never the bug.** It defaulted to `true` and routed nothing, because `resolvedProxyMcpTools` discovered candidates from `client.tool.list()` (`GET /experimental/tool`), and **opencode's tool registry does not contain MCP tools**. Measured twice on 1.18.31, once on the maintainer's real config with five servers connected and once on a scratch config with one, both times returning only built-ins plus plugin-declared tools (`invalid, question, bash, read, glob, grep, edit, write, task, webfetch, todowrite, websearch, skill, apply_patch`, plus `gemini_quota, quota_status, compress` where those plugins are loaded); `GET /experimental/tool/ids` documents itself as "all tool IDs (including built-in and dynamically registered)" and is no better. Waiting 25 s changed nothing, so it is not a startup race, and no loose substring of a connected server name matched either, so it was never a naming-scheme problem. The full SDK route list in `dist/gen/sdk.gen.js` has exactly two tool routes and no other surface carries tool names, and neither the v1 `Hooks` surface nor the v2 `PluginContext` (`agent`, `aisdk`, `catalog`, `command`, `integration`, `plugin`, `reference`, `skill`) has an MCP-tool domain.
+  - **Where they actually are: the model tool set, which is downstream of the registry.** In opencode's own bundle the session assembles `o` from `ToolRegistry.tools` first, then adds the MCP resources tool, then does `for (let [k, W] of Object.entries(yield* d.tools())) { ... o[k] = b } return o`, where `d.tools()` is `MCP.tools()` and `k` is `MCP.toolName(server, tool)`. So MCP tools join the same dict the built-ins are in, after the registry has been read, which is why a registry query cannot see them and why `tool.definition` cannot either. That dict is what reaches the provider, so **the `tools` argument of `doStream` is the only place a provider plugin can discover them**. `resolveMcpProxyToolDefs` in `proxy-mcp.ts` now reads it. The `<server>` / `<server>_<tool>` prefix match is unchanged and was always correct: live names look like `codebase-memory-mcp_list_projects`, hyphens in the server name and all.
+  - **The default went `true` to `false`, and that changed no behaviour.** The option was inert, so leaving it on while repairing discovery would have silently moved every user's MCP traffic off the direct bridge that is carrying it today. Turning it on is now the operator's call, consistent with `proxyOpencodeTools`, the compress tool and the skill bridge. `excludeServers` also narrowed from "every enabled server" to only the servers a def was actually built for: it was safe while the resolution was always null, but excluding a server with no def would drop it from `--mcp-config` without putting it on the proxy, reachable by neither route.
+  - **Enabling it is not enough on its own, and this cost a probe to find.** Claude Code merges its *own* user-scope MCP config with the `--mcp-config` this plugin writes. With `codebase-memory-mcp` in both, excluding it from our config changed nothing: Claude called `mcp__codebase-memory-mcp__list_projects` through its own child, the log shows `mapping MCP tool` and `executed: true`, and the proxy was never touched. Adding `strictMcpConfig: true` fixed it. Both README and SKILL.md say to pair the two; a user reporting "I enabled it and nothing routes" is almost certainly hitting this.
+  - **Live-verified 2026-09-19** on opencode 1.18.31 + Claude Code 2.1.263, scratch `XDG_CONFIG_HOME` and scratch cwd (one `plugin ready`, providers `["claude-code"]`): `routing opencode MCP tools through the proxy` listed all 14 `codebase-memory-mcp_*` tools while `GET /experimental/tool/ids` on the same server listed none of them, `proxy-mcp server started` carried them as defs, `proxy-mcp tool call received {"toolName":"codebase-memory-mcp_list_projects"}` fired, and the stored transcript holds a `completed` tool part with 3521 characters of real output followed by the model's answer. One wrinkle to expect and not misread: opencode aborted the provider stream at that tool boundary (`abort between proxy tool boundaries`) and the result reached the model through the issue-#29 text path (`rendering opencode-side tool result as text`), the same shape AGENTS.md already records for dcp's `compress`. The turn completed and the tool part rendered correctly. Probe scripts were scratch under `/tmp/ocprobe`, not in the repo.
+  - **Re-verified across every connected server before release** (2026-09-19, on a copy of the maintainer's real config so all eight enabled servers were in play, `plugin ready` asserted exactly once). `GET /mcp` reported five connected (`alwasiyyah-errors`, `codebase-memory-mcp`, `figma`, `furno-postgres`, `obsidian`) and three failed (`postgres`, `postgres-alwasiyyah`, `slack`), and the discovery line covered **exactly those five**, 60-odd tools, with no `no MCP tool was found` warning. The two-call structure is worth knowing before reading a log: the `bridged opencode MCP config {"excluded":[]}` line is the hot-reload **probe** (`:2671`), which deliberately passes no exclusions, while the spawn's own call (`:2967`) is the one carrying `coveredServers`. With every bridged server covered, `mcp-bridge.ts:580` returns no path, which is why the argv then holds a single `--mcp-config` pointing at the proxy and no bridged file, and why only one bridge line is ever logged. A partially covered set takes the other branch and still writes a bridged config for the uncovered servers, which is the stranding fix doing its job; that case cannot be produced on demand live, so it is a unit test.
+  - **The bridged config file is content-addressed, and that is load-bearing.** `finishBridge` writes `mcp-<digest>.json` only when the file is absent, and the digest is now taken over the file **body**. It used to be `hash`, which covers the merged opencode config and **not** `excludeServers`, so two calls differing only in exclusions collided on one filename and the first writer won. The hot-reload probe (`:2671`) always runs first with no exclusions, so the spawn's own exclusions never reached disk: a server routed through the proxy stayed in the bridged config as well and Claude could reach it both ways, which is the double execution the option exists to prevent. Only the partially covered case was affected, because full coverage returns early with `path: ""` before touching a file, which is exactly why the live five-server probe looked clean and a test was needed to find it. The returned `hash` is unchanged, since drift detection wants to track the config rather than the exclusions. Test: the wiring test below fails when the filename goes back to `mcp-${hash}.json`.
+  - **`--mcp-config <configs...>` is variadic**, so `buildCliArgs` pushing the flag once followed by every path (`args.push("--mcp-config", ...filtered)`) is correct and must not be "fixed" into a repeated flag. Anything parsing that argv has to read every argument after the flag until the next option; a parser that reads only `argv[i + 1]` silently sees one path and misses the rest.
+  - This is still why `proxyOpencodeTools` (PR #38) takes an explicit allowlist keyed on registry ids rather than extending the server-prefix rule: a plugin-declared tool belongs to no MCP server, so no prefix rule can ever reach it.
+
+<a id="g81"></a>
+
+#### A call with no deadline reports
+
+- **A call with no deadline reports itself, because nothing else will** (`PROXY_STALL_WARNING_MS` in `src/proxy-broker.ts`, 5 minutes, repeating). Removing the `task`/`task_batch` deadline was right on correctness and wrong on visibility: a wedged subagent went from "fails after 60 minutes" to "silent forever", with the operator as the only detector. The heartbeat restores the visibility half without restoring a killer: it **never ends a call**, it logs one line naming tool, call id, elapsed, `emitted`, `channelClosed` and what will end it. Four things hold it together. It is armed **only** when `deadlineMs === PROXY_NO_DEADLINE_MS`, since a deadline-bearing call already reports itself and a 5-minute build is not a stall. It is WARN for the same reason `reportFastModeState` is: only warn/error are alwaysStderr in `src/logger.ts`, so a NOTICE would be invisible outside debug mode and the line would exist for nobody. It is `unref`'d, so a heartbeat can never hold opencode's process open. And every removal site now goes through `clearPendingTimers(pending)` rather than clearing `timer` by hand, because a pending call holds **two** timers and an interval left running against a deleted entry is a leak that repeats forever. Deliberately not done: no warning from the proxy-mcp HTTP side, which holds its own timer for the same call and would double every line. **The deadline-bearing half followed immediately, and the reason is worth keeping**: the original claim, that "a deadline already reports the call", was true only in the sense that it reports it *by killing it*, so the first signal is the failure. `PROXY_DEADLINE_WARNING_FRACTION` (0.6) fires one notice at 60% of the deadline with `remainingMs` and the `proxyToolTimeoutMs` hint, one-shot because the rejection speaks next, and `PROXY_DEADLINE_WARNING_MIN_MS` (60 s) skips short deadlines where the notice and the rejection would land together. Found by hitting it: two `write`/`bash` proxy calls were rejected at their 10-minute deadline while the work was actually succeeding, with no prior signal, and the session had to infer it from silence. Tests: five more in `test-broker.ts`; only the substantive one fails when the arm condition is stubbed, since three assert absence. Tests: `test-broker.ts` (repeat, both stop paths, the deadline-bearing case, the `0` seam), three of which fail with the arm condition stubbed to `false`.
+
+<a id="g82"></a>
+
+#### A proxied call ends on an event
+
+- **A proxied call ends on an event, not on a clock, and the tests pin each event.** This is the rationale behind the no-deadline `task` default, not a bigger timer: the plugin listens to the child process, the stdout stream and the control protocol, so it never has to infer from elapsed time that a subagent failed. The events, each with the regression that proves the call is released: opencode's result resolves it (`test-proxy-task.ts` "proxy MCP initializes, lists Task, and resolves it through the broker"); an abort rejects the turn's pending calls at once and interrupts the CLI, whether it lands before content (`test-proxy-task.ts` "immediate abort rejects a buffered Task call"), after content (`test-process-lifecycle.ts` "an abort after content…"), or while opencode is running the tool with the stream already closed on its boundary, where the signal fires on a closed stream and the handler acts only if no later turn has attached to the process (`test-process-lifecycle.ts` "an abort while opencode is running the tool…"; before the fork-parity PR that abort did nothing and the call waited for the next message); the next user message rejects the previous turn's calls as orphaned and the CLI's HTTP request gets the error result (`test-process-lifecycle.ts` "a task call the previous turn left pending…"); the child dying mid-turn ends the turn as an error and rejects its calls, and the child dying between turns rejects them from `spawnClaudeProcess`'s exit handler with no turn attached (`test-process-lifecycle.ts`, both `exit-*` modes; the between-turns case was a real gap before the fork-parity PR, covered only by the 60-min timer); a deleted session and host exit reject them through `detachActiveProcess` (`test-process-lifecycle.ts` event hook test, `test-session-manager.ts` `killAllActiveProcesses`); and a CLI that hung up on its own request keeps its entry for late-result recovery (`test-proxy-task.ts` recovery modes), as does a watchdog respawn (`test-respawn.ts`, completions carried to the replacement). **Every terminal-event test asserts both registries**, the proxy server's open HTTP requests (`ProxyMcpServer.pendingCallIds()`, read-only) and the broker's entries (`getPendingProxyCalls`), not merely that `kill()` ran or one promise rejected: with no deadline, an entry either side forgets to drop is permanent. What no event covers is a child that is alive and silent, which is what the start and inactivity watchdogs are for; they are unchanged and are not proxy deadlines. Keepalives are about the CLI's HTTP client, not the tool. Do not describe this change as "removing timeouts"; describe it as listening.
+
+<a id="g83"></a>
+
+#### Proxy call deadlines are per-tool
+
+- Proxy call deadlines are per-tool, not flat. `resolveProxyCallTimeoutMs(toolName, input, overrides)` in `src/proxy-mcp.ts` is the single resolver consumed by BOTH the proxy-mcp HTTP handler (`:478` area) and the broker (`queuePendingProxyCall`); the two layers must never race on different values, so any new timeout site must call it too. Layering: flat 10-min default → per-tool default (`task` and `task_batch` **none**, `PROXY_NO_DEADLINE_MS` = 0; `question` 30 min) → `proxyToolTimeoutMs` config override (case-insensitive; positive replaces, `0` disables, negative/NaN ignored) → for `bash` only, `max(resolved, input.timeout)` so the proxy never undercuts a build the caller explicitly asked to run long (the bash def advertises a `timeout` field; ignoring it forced a model to `nohup` xcodebuild and poll a log file — live ses_0cfc0da6, 2026-07-05). `buildProxyTimeoutError(toolName, ms)` keeps the catch-block substrings (`"timed out after"` + `"waiting for opencode to resolve"`) so the expected-cleanup classifier at the proxy-mcp catch still demotes to NOTICE; the `task` variant appends a "do not schedule a wake-up, that does not apply here" note. That note is load-bearing: when a Task timeout fires the subagent may still be running but its result is unreachable (the late broker resolve finds the entry already deleted), and without the note the model "schedules a wake-up" — a real Claude Code affordance that cannot fire in headless/proxy mode — and ends its turn, so the operator must manually nudge "please check now, it seems the task succeeded" (same live session). The flat `PROXY_CALL_TIMEOUT_MS` constant is gone; do not reintroduce it. The one remaining flat value is `resolveProxyClientCeilingMs(overrides)` — the `timeout` written into Claude's `--mcp-config` entry for the proxy server (without it Claude's remote-HTTP MCP client aborts at its 60-second default, @broskees PR #18); it tracks the max of all effective deadlines (defaults with overrides applied) so the client never gives up before the broker, and it is `MAX_PROXY_TIMEOUT_MS` whenever any tool has no deadline, because the CLI rejects `timeout: 0` in the MCP config (fork measurement, `dd494a8`). **A deadline of 0 means no timer**: both the HTTP handler and the broker guard their `setTimeout` on `deadlineMs > 0` (the broker's `timer` is nullable), since `setTimeout(fn, 0)` would reject the call on the next tick. What releases an unlimited call instead is the existing lifecycle: the next user turn's orphan sweep, an abort before content, the child closing, the process being deleted (which now also rejects the broker's entries for the key, see the deleted-session gotcha), and the late-result recovery path for a client that hung up. That last one is why the fork's immediate client-disconnect cancellation (`CLIENT_GONE_MESSAGE`, `calls.emit("cancel")`) was **not** taken: it deleted the entry the recovery machinery needs to deliver a late `task` result as a continuation. Config is read once at opencode startup like the rest of the proxy block, so `proxyToolTimeoutMs` changes need a full restart. `/claude-code-doctor` prints a 0 deadline as `none`. Tests: `test-proxy-mcp.ts`, `test-broker.ts`, `test-doctor.ts`.
+
+<a id="g84"></a>
+
+#### Reused-process start watchdog. A
+
+- Reused-process start watchdog. A reused `claude --print` child can go silent on stdout after a fresh-turn envelope write — seen after a very long proxy-blocked `task` call resumed successfully (the per-tool timeout fix let the block return instead of ending the turn, which is what previously masked this). The doStream `armStartWatchdog()` (`src/claude-code-language-model.ts`, fired only on the fresh-turn write path) complements the existing inactivity watchdog, which explicitly skips the pre-content gap (`if (!hasReceivedContent) return`). On first fire (default 90s, env `CLAUDE_CODE_START_WATCHDOG_MS`) it respawns the child via `respawnActiveProcess` (`src/session-manager.ts`) — which kills the wedged child but REUSES its proxy server, system-prompt file, and mcp hash (their handles are baked into the original `cliArgs`) and appends `--resume` so the conversation resumes transparently (`--session-id` would be rejected with "already in use" once a transcript exists — see the `--resume` gotcha; adapted during absorption on top of PR #18). The replacement inherits the old process's in-flight marker (`turnWasInFlight` read before the swap, `noteTurnStarted(replacement)` after; @broskees' `b719497`), and `deliverPendingCompletions` calls `noteTurnStarted` before its own write, so a recovered continuation is busy for abort, LRU eviction, the idle timer and the next turn's quiesce; before that handoff every one of them read the working replacement as idle. Still no permanent `lineEmitter` listener for it: `listenerCount("line") === 0` is load-bearing for the unattended buffer and `/btw`. The old child's exit handler is silenced (`removeAllListeners("exit")`) before kill so it doesn't close the reused proxy. A second fire (respawn also silent) ends the turn with an error + `deleteActiveProcess` so the next opencode turn spawns fresh. `cliArgs` is hoisted to doStream scope so the watchdog (which lives outside the non-interactive `else` spawn block) can see it. The tool-result turn path (`hasMatchedPendingResults`) does NOT arm the watchdog — no envelope is written there (the proxy resolution unblocks claude directly). Tests: `test-respawn.ts`.
+
+<a id="g85"></a>
+
+#### Todo ledger translates Claude CLI's
+
+- Todo ledger translates Claude CLI's granular `TaskCreate`/`TaskUpdate` family into opencode's full-list `todowrite` so the opencode todo panel populates during multi-step Claude work. State lives in `src/todo-ledger.ts`, keyed by Claude CLI session id, cleared via `clearLedger` from `deleteClaudeSessionId` in `session-manager.ts`. TaskCreate stashes pending by `tool_use_id` on tool_use and commits on tool_result (parsed via `/Task\s*#?\s*(\d+)\s+created/i`); TaskUpdate mutates in place. Without `sessionId` in `MapToolOptions`, both fall back to `{skip: true}` to preserve safety for callers that haven't been threaded. Tests live in `test-todo-ledger.ts` and `test-tool-mapping.ts`; live UI verification requires a fresh opencode session with a multi-step Claude task.
+
+<a id="g86"></a>
+
+#### Subagent todos require permission
+
+- Subagent todos require `permission: { todowrite: "allow" }` on the subagent definition. opencode's `task.ts:197` injects `todowrite: false` into the tools dict for subagents that don't have the rule, so the ledger's synthetic todowrites surface as `⚙ invalid` in the subagent's stream. Built-in `general` denies todowrite by default (`agent.ts:171`); custom subagents must grant it explicitly. When permission is granted, the data flow is fully verifiable in `~/.local/share/opencode/opencode.db`: rows land in the `todo` table and parts with `tool="todowrite"` appear in the `part` table for the subagent's session id. Todos then render inline in the subagent's session view (navigate via `session.child.next`), not the parent's. Empirically confirmed 2026-05-16 via subagent `ses_1d16d3bb4ffeOI5QUWZzBKDsSL`.
+
+<a id="g87"></a>
+
+#### Verified compatible with opencode
+
+- Verified compatible with **opencode v1.18.31** (re-audited 2026-09-19: `1.18.29 → 1.18.31` is **byte-identical in both packages** apart from the `version` field, 69 plugin files and 79 sdk files compared each side, so every finding below still stands verbatim). Fetch the tarballs from `registry.npmjs.org` with `curl` rather than `npm pack`: on a slow link `npm pack` of four packages exceeded a 300 s timeout twice, while the direct tarball fetch took seconds. Previously audited at v1.18.29 (2026-09-07, by diffing the published packages 1.18.18 → 1.18.29). **`@opencode-ai/plugin` is byte-identical apart from `package.json`**, so every v1 hook we implement is unchanged, including `chat.params`, whose output still carries `options: Record<string, …>` at the top level (the "do not pre-nest under providerID" gotcha still holds). **SDK v1 (`dist/gen/*`) is byte-identical too**: `McpStatus` is still the same five variants, so `enabled: status === "connected"` in `mcp-bridge.ts` stays correct, and the v1 `Model` type did not move. The entire delta is in **v2**, which we do not use: provider `chunkTimeout` widened to `number | false`, its and `headersTimeout`'s docs now name a 300000 ms default, `GlobalUpgradeData.body.target` became required, and an `upgrade` doc string was reworded. Nothing to change in the plugin; the 1.18.5 audit notes below still stand in full.
+  - **`src/opencode-types.ts` is not a copy of any single upstream type, so do not "fix" it by pasting one in.** Its `OpenCodeModel` blends two schemas: `release_date`, and the flat models.dev-shaped provider config entry, come from the **v1 config schema**, while nested `capabilities` with `interleaved` matches the **v2 runtime `Model`**. v1's own runtime `Model` has none of `interleaved`, `release_date`, `family`, `variants` or `limit.input`. The blend is what opencode actually accepts from the `provider.models()` hook, confirmed empirically: models resolve and sessions run on 1.18.29 (live probes, 2026-09-06). Non-load-bearing but worth knowing: v2 documenting 300000 ms as the ambient timeout default is consistent with the 300 s proxy wall, though that wall is in the Claude CLI's MCP client, not opencode's fetch, so it is corroboration and not proof.
+
+<a id="g88"></a>
+
+#### Earlier audit, opencode v1.18.18
+
+- Earlier audit, opencode v1.18.18 (2026-08-20, by diffing the published packages: `@opencode-ai/plugin` 1.18.5 vs 1.18.18 is byte-identical apart from `package.json`, and the only `@opencode-ai/sdk` type change is `capabilities.interleaved` widening — `reasoning_details` became `reasoning_text` and bare strings/booleans are accepted. `src/opencode-types.ts` was updated to match; we pass `interleaved: false`, so nothing else moved. The 1.18.5 audit below therefore still stands in full). Original audit 2026-07-26 (audit notes, against the published `@opencode-ai/plugin@1.18.5` + `@opencode-ai/sdk@1.18.5` type surface, plus a live `opencode run` turn on that binary). Nothing we depend on broke, because the plugin does not import opencode's types at all — `src/opencode-types.ts` is a hand-written structural mirror, so drift is silent and has to be audited deliberately. Findings worth remembering:
+  - The **v1 `Hooks` surface is unchanged** where we touch it: `config`, `provider: { id, models(provider, ctx) }`, `chat.params` (output still has `options: Record<string, any>` at the top level, so the "do not pre-nest under providerID" gotcha still holds).
+  - A **v2 plugin API** now ships alongside it (`@opencode-ai/plugin/v2`, effect + promise flavors, `PluginContext` with `aisdk` / `catalog` / `agent` / `skill` / `command` hooks). It is additive; v1 `Plugin` is still the documented entry. Migration is optional — tracked in issue #24, do not start it casually.
+  - `PluginInput` gained `serverUrl: URL`, `$: BunShell`, `worktree`, `experimental_workspace`. Still **no version field** (see the diagnostics gotcha).
+  - `McpStatus` is still the same 5 variants, so `enabled: status === "connected"` in `mcp-bridge.ts` remains correct.
+  - The model schema (`sdk/v2` `Model`) gained optional `cost.tiers` (`{ tier: { type: "context", size } }`) and `cost.experimentalOver200K`, and `capabilities.interleaved` gained a `field: "reasoning"` variant. All optional, so our `defineModel` output still validates. Long-context pricing for the `1_000_000`-context entries is now expressible — issue #24.
+  - New hooks that overlap features we hand-rolled: `tool.definition` (description/param overlay), `experimental.session.compacting` + `experimental.compaction.autocontinue` (our `/compact` detection and auto-continue nudge), `experimental.chat.system.transform`, `chat.headers`, `permission.ask`.
+  - CLI flags changed: `opencode run` no longer accepts `-a` as shorthand for `--agent` (spell it out in smoke tests), and gained `--variant`, `--thinking`, `--auto`, `--pure`, `--fork`, `--attach`.
+  - **Superseded as of PR #39:** this line used to read "opencode's `tools` argument to `doStream` is still intentionally unused". It is read now, and it is the only place a provider plugin can see opencode's MCP tools, because they join the model tool set after `ToolRegistry` has been enumerated (see the `proxyOpencodeMcpTools` gotcha above for the bundle evidence). `resolveMcpProxyToolDefs` reads it for exactly that purpose and nothing else: Claude CLI is still only offered its own built-ins plus whatever reaches it through `--mcp-config` or the proxy, so opencode-native tools like `task_status` still never reach the model and still need no `mapTool` entry. Do not "tidy away" the read on the strength of the old sentence.
+  - Re-audit at the next opencode minor bump. The `opencode` field in the startup block names the running version, so an audit starts by reading that.
+
+<a id="g89"></a>
+
+#### cwd resolution at spawn must stay
+
+- `cwd` resolution at spawn must stay lazy. `opencodeProjectDirectory` captured from `PluginInput.directory` lives in `runtime-status.ts` and is consumed via `resolveSpawnCwd()` at spawn time only as a fallback when `process.cwd()` is unusable (`/`). Do NOT bake the captured value into `mergedOptions.cwd` during provider registration in `index.ts` — that freezes it at plugin init and breaks workspace switching mid-session. The v0.2.4 fix did exactly this and it shipped as the v0.4.21 regression report on issue #4. Tests live in `test-cwd-resolution.ts`.
+  - **Serve mode gets a tier between the pin and `process.cwd()`: the session's own `directory`** (`resolveSpawnCwdForSession` in `runtime-status.ts`, cherry-picked from @galvani's `9e02ce4`, absorbed 2026-09-06). In `opencode serve` / web UI / OpenChamber one long-lived server handles many projects and `process.cwd()` is the server's launch dir, which is "usable", so it won and **every** `claude` spawned there. `GET /session/{id}` carries `directory`; it is fetched per call (no cache, a workspace switch can change it) keyed by the affinity id, and any failure falls back to the old resolution so the TUI path is unchanged. Live-verified: server launched from `/tmp`, session created with `?directory=<project>`, spawn log `cwd` = the project's realpath. `describeSpawnCwd` for the startup block still mirrors the synchronous order only; the session tier is per call and cannot be described at init.
+
+<a id="g90"></a>
+
+#### AskUserQuestion is auto-denied in
+
+- `AskUserQuestion` is auto-denied in `controlRequestBehaviorForTool` (so the headless CLI can't self-answer an empty TTY) and rendered to the operator as markdown via `formatAskUserQuestion`. The deny message (`denyMessageForTool` / `ASK_USER_QUESTION_DENY_MESSAGE` in `claude-code-language-model.ts`) must tell the model to **stop and wait unconditionally** — end the turn, no more tools, no self-answer. Before v0.7.0 it offered an "if non-interactive, proceed with a reasonable guess" escape hatch; the model could not tell interactive opencode from a headless run and routinely took it, so questions appeared skipped (issue #8). Do not re-add a proceed-anyway clause to that message. Behavior is verified via `denyMessageForTool` in `test-ask-user-question.ts`; the full stop-the-turn flow needs a live opencode session where the model calls AskUserQuestion. Two reinforcing guards were added after v0.9.1: (1) the deny message explicitly states it is **not a cancellation** and forbids the model from saying the question was cancelled/skipped/declined — this kills the "the user cancelled, so I'll proceed" rationalization the model otherwise narrates; (2) a turn-local latch `AutoContinueState.sawAskUserQuestion`, set when `formatAskUserQuestion` renders, makes `shouldAutoContinueIncompleteTurn` return `{continue:false, reason:"question"}` for the rest of the turn. Without the latch, a short non-`?` trailing line after the question (e.g. "I'll go with the first option.") looked like an incomplete turn, and the auto-continue nudge made the model proceed with no operator input — the exact "I never interacted and it answered itself" symptom. Latch test in `test-auto-continue.ts`.
+
+<a id="g91"></a>
+
+#### The AskUserQuestion fallback is
+
+- **The `AskUserQuestion` fallback is currently dormant in headless mode.** Probed 2026-07-26 against Claude Code CLI **2.1.211**: the name is still *known* to the CLI (`--disallowedTools AskUserQuestion` validates silently, while a bogus name prints `matches no known tool`), but the tool is **not offered to the model** under `--print` — a direct "list every tool you can call" returns `Agent, Bash, Edit, Read, ReportFindings, Skill, ToolSearch, Workflow, Write`, and `ToolSearch select:AskUserQuestion` returns nothing. It reads as a TUI-only affordance the headless surface no longer presents. Consequence: with `Question` off (the default), the model has **no** question tool at all and can only ask in prose and end the turn — which is what the deny/markdown path produced anyway, so behavior is unchanged, but do not expect `formatAskUserQuestion` or the auto-continue latch to fire on this CLI. Keep the machinery (older/newer CLIs and the interactive transport may still offer it); just do not treat "the fallback did not render" as a plugin bug without re-running the two probes above. Evidence is model self-report plus the ToolSearch miss, both on haiku.
+
+<a id="g92"></a>
+
+#### Question proxy is blocked upstream
+
+- **Question proxy is blocked upstream — leave it off.** Verified 2026-07-26 on opencode 1.18.5: the proxy delivers correctly but opencode's own `question` TUI form never renders, so an enabled `Question` costs you the working `AskUserQuestion` fallback and gives a silent hang the operator can only escape by interrupting. Proof it is not ours: (a) `github-copilot/gpt-5.5`, a native provider with the plugin nowhere in the path, fails identically (`Tool execution aborted`, `metadata.interrupted: true`, ~27 s); (b) the `part` table shows every `question` call `completed` through 2026-04-25 and every one since 2026-05-18 aborted, i.e. an opencode regression somewhere in v1.14.24…v1.15.5 (note `The user dismissed this question` is a *different*, healthy error — it means the form rendered); (c) a `--pure` (no-plugin) headless `opencode serve` drives the whole server path green — tool blocks, `question.asked` publishes, `GET /question` lists it, `POST /question/{id}/reply` completes the tool with the answer and emits `question.replied`. So the server is fine and only the TUI render is broken. Upstream: anomalyco/opencode issue **#36604** (open) with fix **PR #36603** (`hydratePending()` at TUI bootstrap, open since 2026-07-13, unmerged). Re-test when that merges; until then do not promote `Question` toward the default list, and do not spend time debugging the proxy for this symptom.
+
+<a id="g93"></a>
+
+#### Question proxy (absorbed from @jknlsn's
+
+- Question proxy (absorbed from @jknlsn's `47501d0`, on master after 0.11.2) is the **opt-in alternative** to the deny/markdown path above, not a replacement for it. `"Question"` is deliberately NOT in `DEFAULT_PROXY_TOOL_NAMES` (`src/index.ts`) — enabling it disables Claude's built-in `AskUserQuestion` via `--disallowedTools` and swaps the unconditional stop-and-wait guarantee for an in-turn blocking form, which is a trade against issue #8. Keep it opt-in until it has Task's mileage; the comment above the constant records why, so do not "tidy" it into the default list. Three invariants: (1) `--disallowedTools` is computed from the **post-filter** proxy list (`enrichedProxy`), never `resolvedProxy` — `filterQuestionProxyByOpencodeSupport` drops the def on opencode builds without a `question` registry entry, and computing from the pre-filter list would disable `AskUserQuestion` while its replacement is absent, leaving the model with no question path at all. (2) `QUESTION_PROXY_HINT` must name the FULL `mcp__opencode_proxy__question`: haiku strips the MCP prefix and calls bare `question`, which opencode renders as `⚙ invalid` (same near-miss family as TaskCreate vs the task proxy). (3) `question` gets a 30-min default in `PROXY_PER_TOOL_DEFAULT_TIMEOUT_MS` because it blocks on a human reading a form; the flat 10-min ceiling rejected calls mid-answer. `fetchLiveToolInfo` does ONE `client.tool.list()` fetch feeding the task overlay, the question gate and the plan-mode gate — do not add a second fetch; `liveToolInfoOnce()` memoizes it per model instance for exactly that reason, and deliberately does **not** memoize an unresolved fetch (`resolved: false`) so a not-yet-ready opencode server cannot disable every overlay for the life of the process. The proxy defs stay spawn-time, so a reused process keeps its defs. Verified live on opencode 1.18.5 (registry has `question`); a build lacking it takes the fallback silently, which the `question proxy version gate` log line makes visible. Tests: `test-proxy-mcp.ts`, `test-cli-args.ts`, `test-subagent-hint.ts`, `test-ask-user-question.ts`.
+
+<a id="g94"></a>
+
+#### planModeQuestion cannot fire on
+
+- **`planModeQuestion` cannot fire on the headless transport, and `permissionMode: "plan"` is inert at the default `skipPermissions`. Both measured on CLI 2.1.258, 2026-09-06.** The bridge keys on an `ExitPlanMode` tool_use, and headless `--print` does not offer that tool: asked for its tool list in plan mode the model returned `Agent, Bash, Edit, ListAgents, Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow, Write`, said "I'm unable to exit plan mode from within the tool set available to me" when asked to work, and a full probe through the plugin (`planModeQuestion: true`, `skipPermissions: false`, opencode 1.18.29) logged no `ExitPlanMode` at all while the model asked for approval in prose and its blocked `write` produced no file. `--disallowedTools ExitPlanMode` still validates silently where a bogus name warns, so the name is known and this is headless dormancy, exactly the `AskUserQuestion` shape above — do not read "the bridge did not fire" as a plugin bug without re-running those probes. **The separate trap is now fixed: `buildCliArgs` drops `--dangerously-skip-permissions` when `permissionMode` is `"plan"`.** It used to push both independently and the CLI lets the skip flag win, so `permissionMode: "plan"` at the default `skipPermissions: true` gave no plan mode whatsoever: verified by writing a file, unprompted, in a plan-mode run, where the same request without the skip flag was refused. Plan mode is a capability restriction rather than a prompt policy, so it wins; every other mode governs prompting, which is exactly what the skip flag is for, and still passes both. Live-verified after the fix through a full plugin probe at default settings: `--permission-mode plan` present, skip flag absent, requested file never created. Do not "restore symmetry" by making the flag unconditional again. The honest remainder, which `warnIfPlanModeCannotExit` in `index.ts` states once per process at WARN: nothing releases plan mode mid-session, so an enforced plan mode is a one-way door out of which the only exit is editing config and restarting opencode. The CLI does still write its own plan markdown under `~/.claude*/plans/`, which is its feature and outside the workspace. Probe scripts: `/var/folders/.../opencode/verify-plan-mode-question.mjs` and `verify-plan-enforced.mjs` (scratch, not in the repo). Tests: `test-cli-args.ts`.
+
+<a id="g95"></a>
+
+#### Plan-mode approval bridge (src/plan-mode-question.ts
+
+- Plan-mode approval bridge (`src/plan-mode-question.ts`, absorbed from @CollieIsCute's `8c5b583` with authorship preserved, issue #21) is **opt-in via `planModeQuestion` and off by default**, for the same reason the question proxy is: it delivers through opencode's `question` form, and that form does not render (see the gotcha above), so an enabled bridge turns a working text prompt into a hang. Do not promote it to a default until #36603 merges and the round-trip is re-tested live. What it does when on: `ExitPlanMode` stops being rendered as `**Do you want to proceed with this plan?** (yes/no)` text and instead ends the turn on `tool-calls` with a synthetic `question` tool-call, then the operator's answer is turned back into a `tool_result` **for the original `ExitPlanMode` tool_use id** and sent as the entire next user message. That last part is the whole point of the port: Claude Code only leaves plan mode when it sees that `tool_result`, so a "yes" typed as ordinary prose never actually unlocks it. Invariants: (1) the gate is `isPlanModeQuestionActive` (config + live registry has `question` + not compaction) and it is resolved in the doStream/doGenerate **prologue**, not inside the stream body: the ExitPlanMode branches run in a synchronous line handler and a reused process never reaches the spawn block where the registry snapshot is otherwise taken. (2) Both transports have two ExitPlanMode sites each (partial-event `content_block_stop` and whole-`assistant`-message), so a change to one needs the same change to its twin; all four keep the legacy text path verbatim in the `else`. (3) `clearExitPlanModeQuestions(sk)` runs wherever `deleteClaudeSessionId`/`deleteActiveProcess` do, or a stale pending id outlives its session and the next answer is routed to a dead tool_use. (4) `finishReason` must be `tool-calls` (not the usual unconditional `stop`) when a question call was emitted, or opencode never runs the tool. Offline tests: `test-exit-plan-mode-question.ts`. The approval round-trip itself needs a live opencode session with `permissionMode: "plan"` and is **not verified**; it cannot be while the form is broken.
+
+<a id="g96"></a>
+
+#### Compress proxy tool (src/compression-store.ts
+
+- Compress proxy tool (`src/compression-store.ts` + the `compress` def in `proxy-mcp.ts`, reimplemented from @flupkede's `4ac319f`/`5b4ee5d` on their unmerged `feature/compress-tool` branch, credit theirs). **Opt-in via `proxyTools: [..., "Compress"]`**, deliberately absent from `DEFAULT_PROXY_TOOL_NAMES` — it throws away the model's working context, which is not something to enable behind someone's back. It is the only proxy tool opencode never sees: `createProxyMcpServer`'s third argument is an interceptor map, and an intercepted `tools/call` is answered in-process (no broker entry, no deadline, no permission prompt). Five invariants:
+  1. Interceptor results go out through `writeToolCallResult`, the single exit both the broker and interceptor paths share. The fork wrote a JSON-RPC error envelope on interceptor failure, which Claude CLI rejects as a malformed result (same trap as the proxy-mcp gotcha above).
+  2. **The summary must survive `deleteClaudeSessionId()`** — the opposite of the plan-mode-question rule, and the fork got this exactly backwards: it cleared the summary there, and the reset path calls it, so the summary was wiped microseconds before the fresh spawn read it and the feature silently did nothing. `clearCompression` is called only from the `!hasPriorConversation` branch (a new opencode conversation), plus a 32-entry cap in the store. Regression test: "summary survives the session reset that the compress call triggers".
+  3. The reset runs inside `doStream`'s `start()`, **after** `userMsg` and `includeHistoryContext` were resolved against the still-live session. That ordering is what makes it a real reset: `includeHistoryContext` stays false, so the fresh child gets this turn's message plus the summary in its system prompt and nothing else. Move the reset earlier and `compactConversationHistory` would replay the whole opencode conversation, which is the opposite of compressing.
+  4. It is skipped when `hasMatchedPendingResults` — evicting a child whose tool results are arriving this turn would deliver a `tool_result` to a process that never issued the `tool_use`. The mark is not consumed, so it fires on the next turn instead.
+  5. `CLAUDE_CLI_COMPRESS_NOTE` replaces `CLAUDE_CLI_CONTEXT_NOTE` only when `compress` is in the **post-overlay** proxy list (`enrichedProxy`), and it spells out the full `mcp__opencode_proxy__compress` for the same reason `QUESTION_PROXY_HINT` does. The default note still tells the model compress does not exist, which stays true for `doGenerate` (no proxy wiring) and the interactive transport (no proxy server). Tests: `test-compress-tool.ts`. The store/interceptor/prompt layers are covered offline; the end-to-end "model calls compress, next turn is fresh" round-trip is **not live-verified**.
+
+<a id="g97"></a>
+
+#### Two different tools want the MCP
+
+- **Two different tools want the MCP name `compress`, and the precedence is deliberate** (`proxyOpencodeTools` + `resolveProxyOpencodeToolDefs` in `proxy-mcp.ts`). `resolvedProxyMcpTools` forwards an opencode tool only when its id matches an enabled MCP server (`<server>` or `<server>_<tool>`), so a tool another opencode **plugin declares directly** belongs to no server and `if (!matchedServer) continue` drops it. opencode-dcp's `compress` is exactly that, which is why dcp's "MAX CONTEXT LIMIT REACHED ... You MUST use the `compress` tool now" reminders were unobeyable under this provider: the tool is in `client.tool.list()` (confirmed on 1.18.31, alongside `question`, `task`, `skill`, `gemini_quota`, `quota_status`) and was simply never offered. `proxyOpencodeTools` is the explicit allowlist that forwards it, **empty by default**, and never automatic because a forwarded tool executes in opencode with the calling agent's permissions. The collision is resolved **twice, at two layers, and both are load-bearing**: (1) at def level, `taken` holds the names already claimed by `enrichedProxy` and the MCP defs, so a forwarded `compress` is dropped with a WARN rather than becoming a second def of the same name; (2) at interceptor level, `ensureProxyServer` takes an explicit `interceptCompress` flag instead of keying on `tools.some(t => t.name === "compress")`. Layer 2 is the one a def-level check cannot see and the one that actually bit: with **only** the forwarded def present there is nothing to collide with, and the old name-keyed condition would have answered opencode's tool with the plugin's in-process reset ("Summary stored...") while opencode never saw the call. The plugin's own tool wins when both are configured, because it is named explicitly in `proxyTools` and it manages the window that overflows here. `buildAppendedSystemPrompt` follows the same precedence and has a **third** note variant (`CLAUDE_CLI_OPENCODE_COMPRESS_NOTE`) that says the forwarded tool compresses **opencode's** transcript and not the Claude session: reusing the plugin's note would tell the model its context had been discarded when it has not. Live-verified 2026-09-19 on CLI 2.1.263 + opencode 1.18.31 with dcp loaded: `forwarding opencode tools through the proxy {"tools":["compress"]}`, proxy started with `tools: ["bash","compress"]`, `proxy-mcp tool call received {"toolName":"compress"}`, queued through the normal broker, and dcp really ran (`Compressed 3 messages into [Compressed conversation section]`). **The wrinkle to expect:** dcp's compress rewrites opencode's message history mid-turn, so opencode aborts the provider stream at that tool boundary (`abort between proxy tool boundaries; releasing pending calls`) and the result reaches the model on the next step through the issue #29 text path (`rendering opencode-side tool result as text`). The turn completes and nothing leaks, but do not read that abort as a regression. Collision verified live in the same session: WARN emitted, exactly one `compress` in the server's tool list, and the interceptor answered. Tests: `test-compress-tool.ts` (forwarding, unknown name, unreachable registry, both collision layers, note selection).
+  - **Probing any of this live needs a scratch `XDG_CONFIG_HOME`, not just `OPENCODE_CONFIG`.** opencode **merges** the `plugin` array with the user's global config, so a scratch config still loads the parent checkout's copy of this plugin and its provider registration can win. The symptom is silent and cost three paid runs: the option is visibly present in `GET /config` provider options, yet the model behaves like a build without it, because the language model came from the other copy. Assert `plugin ready` appears exactly **once** in `plugin.log`. Two smaller traps in the same family: a leftover `opencode.json` in a **parent directory** of the probe's cwd beats `OPENCODE_CONFIG`, so give each probe its own cwd; and an account provider's model id carries the marker (`claude-haiku-4-5@appical`), where a bare id 500s as an opaque `UnknownError`.
+  - **`stripContextReminders`** (`message-builder.ts`) is the other half, also **off by default**. dcp anchors its nudges into **message text** (`lib/messages/inject/utils.ts` appends to an existing text part or splices a synthetic one), not into the system prompt, so each is re-sent with every message that carries it; all of them are wrapped in `<dcp-system-reminder>`. The strip runs once at the top of `getClaudeUserMessage`, which is why the fresh-session rebuild and the `/compact` transcript get it for free instead of each needing a flag. Three rules: it is matched **wherever the block sits**, because dcp appends `<dcp-message-id>` after one and an end-anchored check would miss it (the same trap the `/btw` strip hit in production); emptied parts are kept as empty strings rather than dropped, since a nudge can be a message's only text part and removing it could leave a user message with no content at all; and it must never touch opencode's own `<system-reminder>` blocks, which are opencode's instructions to the model. `shouldStripContextReminders` turns it off as soon as `compress` is named in either list, resolved from **config alone** so it is answerable before the spawn block (`userMsg` is built well ahead of it) and so a configured-but-unregistered name errs toward keeping the reminder. Tests: `test-get-claude-user-message.ts`.
+
+<a id="g98"></a>
+
+#### Account failover is ON by default
+
+- **Account failover is ON by default, and the thing that makes that safe is that the pick is the consent** (`src/account-failover.ts`). With more than one account configured, a usage limit ends the turn on opencode's native `question` form (the same mechanism as the plan-mode bridge: `finishWithQuestionCall` emits `tool-input-start` + `tool-call` and finishes on `tool-calls`, and the answer arrives on the NEXT `doStream` as a `tool-result` with the same id) instead of the rate-limit error. Nothing moves until an account is picked, and an unanswered form waits at zero cost. Seven things hold it together and none is optional:
+  1. **Detection is two exact signals, never "an error".** `isAccountLimitError` fires on a `rate_limit_event` that `isRateLimitRejected` accepts, or on one of `ACCOUNT_LIMIT_PATTERNS` (the two texts this file already records). A generic 4xx opening this form would silently move where usage is billed, which is the one failure mode that would be worse than the error it replaces. The rate-limit branch parses the event **separately from `reportRateLimitEvent`**, which dedupes per process and returns null on a repeat: the second rejection in a session is still a rejection this turn must act on. **`status` is the verdict and `overageStatus` is not.** `isRateLimitRejected` used to accept `overageStatus: "rejected"` on its own, and on an org with extra usage disabled that is the steady state of every served request: measured on CLI 2.1.280 (2026-09-23) as `{status: "allowed", overageStatus: "rejected", overageDisabledReason: "org_level_disabled"}` on a turn that answered normally. The result was a false `▌ rate limit: rejected` line and, because `completeResult` did not check the outcome, the failover form replacing a good answer. Now `allowed`/`allowed_warning` always wins, an overage rejection counts only when no status came with it, and the form additionally requires `msg.is_error === true`. Tests: `test-cli-events.ts` and `test-account-failover.ts` (served-turn fixture), both failing without the fix.
+  2. **The override is keyed on the LIMITED ACCOUNT, not the session.** A rate limit is a property of the account, so one pick covers every session on it and a subagent follows its parent for free. That is also why `isAccountFailoverQuestionActive` refuses child sessions (`fetchSessionParentId` in `runtime-status.ts`, off the same `GET /session/{id}` as `fetchSessionDirectory`): a form in a subagent session is one nobody is looking at.
+  3. **`--resume` can never cross accounts**, because transcripts live under the account's own `CLAUDE_CONFIG_DIR`. A switch is therefore always a fresh session with the thread replayed: the prologue drops the active process **and** the Claude session id when `ActiveProcess.cliPath` differs from the resolved one, which is what makes `includeHistoryContext` true, and is equally what switches back once the override expires. The comparison is guarded on `active?.cliPath &&` so the interactive shim, which carries no path, is never dropped by it.
+  4. **The `@account` suffix must come off the model id.** `parseModelId` keeps it on purpose (the source account's own wrapper strips it), but a failover spawn goes through a *different* wrapper, or the bare binary for `default`, and `--model claude-opus-5@appical` is rejected outright. `resolveFailoverSpawn` strips it; `parseModelId` is called on `failover.modelId`, not on `effectiveModelId`.
+  5. **A reset time that is not in the future degrades to "until opencode restarts".** Found by the fake-CLI test, not by reasoning: with `until` behind `now` (clock skew, a stale `resetsAt`), `resolveAccountOverride` deleted the override on the very next read, so the switch the operator had just authorised was undone before it ran and the turn re-hit the same limit and asked again. `setAccountOverride` clamps it.
+  6. **The dialog must never be replayed.** The synthetic `question` tool-call and its `tool-result` carry `account_failover_` ids Claude never issued or saw, so `stripAccountFailoverParts` is called from `filterSideQuestionHistory` (both transcript rebuild paths) and from `buildFailoverContinuationPrompt`. `FAILOVER_MARKER` is registered in `PLUGIN_NOTE_MARKERS` and the note is enqueued as its own text part, the same rule every `▌` line follows. A message left with no content after the strip is dropped rather than replayed empty.
+  7. **`doGenerate` takes the override with no dialog of its own.** A title or no-tools call must not ask anything, but it must follow the account the conversation moved to, or it quietly bills the limited one.
+  Excluded entirely: compaction (its answer would have nowhere to go) and the interactive transport (TUI stdin, no proxy server). `clearAccountFailoverQuestions` is wired into `deleteClaudeSessionId` next to `clearExitPlanModeQuestions`. `ExitPlanModeQuestionCall` is now an alias of the shared `QuestionToolCall`, and `unwrapToolOutput`/`collectAnswerStrings` are exported rather than copied. Tests: `test-account-failover.ts` (23, including the negative detection cases and a fake CLI that answers differently depending on the `CLAUDE_CONFIG_DIR` it was reached through, which is how the routing, the stripped `--model` and the `<conversation_history>` replay are asserted). **Not live-verified**: the whole path is offline only, so the first real-account run is the one that proves it.
+
+<a id="g99"></a>
+
+#### ignoreAnthropicApiKey (added 0.9.1
+
+- `ignoreAnthropicApiKey` (added 0.9.1, issue #9 secondary ask from @Aptul9): a stray `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in the env makes Claude Code authenticate with the key (pay-as-you-go Console billing) instead of the logged-in subscription, silently bypassing the Agent SDK plan credit. The flag strips both vars from the spawn env. The single strip point is `claudeSpawnEnv({ ignoreAnthropicApiKey })` in `session-manager.ts`; the headless `doGenerate`/`doStream` spawns and the interactive transport (`ClaudeSessionOptions.ignoreAnthropicApiKey` → inline env block in `claude-session-bun.ts`) all thread it through. Default off so deliberate API-key users are unaffected. `warnIfAnthropicApiKey` in `index.ts` logs a one-time startup warning whenever a key is present, regardless of the flag. Tests: `test-spawn-env.ts`.
+
+<a id="g100"></a>
+
+#### Interactive transport (opt-in, src/claude-session-bun.ts
+
+- Interactive transport (opt-in, `src/claude-session-bun.ts` + `src/claude-session-wrapper.ts`): `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doStream's line handler, session reuse, and eviction work unchanged. Key invariants: (1) doStream writes stream-json user envelopes to `stdin.write`; `decodeUserEnvelope` converts them to typed plain text — text blocks joined, `tool_result` rendered as labeled text, image/other blocks dropped with a logged warning (never paste base64 into a TTY). (2) The wrapper synthesizes the terminal `{type:"result"}` line; a turn with no terminal stop_reason (timeout/exit mid-turn) MUST stay `subtype: "error_during_execution", is_error: true` — do not "clean it up" to `end_turn`, that masks truncation from the user and from auto-continue. (3) The appended prompt reaches the TUI only via `--append-system-prompt-file` (built per spawn, unlinked on kill); interactive mode intentionally appends only this plugin's CLI note, AGENTS.md guidance, and continuation hint by default, not opencode's forwarded system prompt, because live testing showed that forwarded `extra` payload can trigger Claude Code's third-party-app usage gate on subscription accounts. `interactiveSystemPrompt: false` is diagnostic-only and drops even the plugin prompt. (4) There is no `can_use_tool` control channel in the TUI — permissions are pre-allowed via `--settings '{"permissions":{"allow":[...]}}'`: MCP wildcards always derived from the live bridge config, built-ins from `interactiveAllowTools` (default Bash/Edit/Write/Read/WebFetch). Do NOT pass `--permission-mode bypassPermissions` in interactive mode: Claude Code shows a manual safety confirmation and defaults to "No, exit", so pasted prompts can terminate the process. (5) The interactive spawn must use the configured `cliPath`, not plain `claude`; account providers rely on wrapper scripts like `~/.cache/opencode-claude-code-plugin/claude-<account>` to strip `@account` model suffixes and set `CLAUDE_CONFIG_DIR`. The JSONL tail path must use the same `configDir` (`~/.claude-<account>` for account providers), otherwise opencode hangs while Claude writes transcripts elsewhere. (6) The `Bun.Terminal` capability gate falls back to headless silently. (7) Compaction always takes the headless path. Turn timeout default is 30 min (`turnTimeoutMs` in `claude-session-bun.ts`). Offline tests: `test-claude-session-wrapper.ts`; live verification needs a Bun-run opencode with `interactive: true`.
+
+<a id="g101"></a>
+
+#### Startup diagnostics (src/startup-diagnostics.ts
+
+- Startup diagnostics (`src/startup-diagnostics.ts`, roadmap #3): one `NOTICE: claude-code plugin ready` block emitted once per process from the `config` hook in `index.ts`, replacing the older "registered claude-code provider(s)" notices. Fields: plugin version, opencode version, `claudeCli` path+version, `cwd` **with the branch that won** (`configured` | `process` | `captured` | `unresolved` — `captured` is the issue-#4 macOS-GUI fingerprint), provider ids, accounts, `proxyTools`, enabled MCP servers, interactive-transport flag, `anthropicApiKeyInEnv`. It is fire-and-forget (`claude --version` is async, 5s timeout, cached) and every field is wrapped so diagnostics can never break provider registration. `describeSpawnCwd` intentionally mirrors `resolveSpawnCwd`'s priority order and a test asserts they never disagree — change both together. The MCP list is the **disk-only** merge (`mergeOpencodeMcp`, split out of `bridgeOpencodeMcp` so diagnostics never writes a scratch config): opencode's runtime status isn't settled at plugin init, so the per-turn overlay is deliberately not applied. The `opencode` field is resolved by `detectOpencodeVersion()`: the plugin runs inside opencode's process, so `process.execPath` **is** the opencode binary and `<execPath> --version` is the only reliable source (cached, 5s timeout, guarded on the basename containing "opencode" so a `bun run` from source reports "unknown" instead of Bun's version). It is only spawned when the plugin input and `OPENCODE_VERSION` gave us nothing. Do not "fix" this with an SDK call: re-verified on **1.18.5** that nothing on the plugin surface carries the version (`PluginInput` has no version field, the SDK client's `app` namespace is still only `log` + `agents`, and the server exposes no `/version` route — the route list in `sdk.gen.js` has none). To see the block: `OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode` then read `~/.local/share/opencode-claude-code/plugin.log` (the plugin logger is silent by default and does **not** write to opencode's own log). Tests: `test-startup-diagnostics.ts`.
+
+### Current plan-mode registry and cleanup semantics
+
+These rules supersede the older lifetime-cache and process-cleanup wording in the question-proxy and plan-mode notes above:
+
+<a id="g102"></a>
+
+#### createLiveToolInfoLoader() shares
+
+- `createLiveToolInfoLoader()` shares one lazy `client.tool.list()` request within a `doStream` turn. A later turn creates a fresh loader, and `doGenerate` fetches per call, so runtime tool changes do not stay cached for the model lifetime.
+
+<a id="g103"></a>
+
+#### deleteClaudeSessionId() is the cleanup
+
+- `deleteClaudeSessionId()` is the cleanup boundary for pending ExitPlanMode approvals. Process-only deletion or respawn intentionally preserves them because the same Claude session can resume; every destructive session reset clears them centrally through `deleteClaudeSessionId()`.
+
+<a id="g104"></a>
+
+#### Auto-continue never fires on current
+
+- **Auto-continue never fires on current Claude Code CLI.** Measured 2026-08-19 from `~/.local/share/opencode-claude-code/plugin.log`: 53 decisions stopped at `reason: "end-turn"` with `attempts: 0`, 12 at `error`, and nothing else. **Re-measured 2026-09-20 against CLI 2.1.263 and the conclusion holds, but two sentences of the original are wrong and are corrected here.** The window was 2026-09-19T20:13Z to 2026-09-20T01:29Z (the log rotates at ~5 MB, which is what bounds it), 275 decision lines, of which only **47 are production**: the other 228 carry a `/var/folders/` cwd or a `claude-test-*` model id and are the suite's own fake CLIs. Split them before reading a tally or the picture is badly wrong. Production: 34 `end-turn` (`stop_reason: end_turn`), 13 `error` (`stop_reason: stop_sequence`), **zero continuations, every line `attempts: 0`**, and no `max_tokens` anywhere, so the truncation branch still has no production mileage. The two corrections: (1) `stop_sequence` is a stop reason this record never mentioned and it is now a third of production decisions, and it lands on `reason: "error"` because `snapshot.isError` is checked **before** the stop-reason guard. (2) **"The CLI always emits a `stop_reason`" is not strictly true on 2.1.263.** An interrupted turn's `result` carries `stop_reason: null` with `subtype: "error_during_execution"`, measured directly (see the abort probe below). The conclusion survives anyway, and for a reason worth keeping: that same result has `is_error: true`, and the `isError` check short-circuits above the guard, so the heuristic is still never consulted. The only `stopReason: null` lines that reach the heuristic in the whole log come from the fake CLI in `test-unattended-replay.ts`, which is what the fallback is for. Also re-checked on 2.1.263 and **not** found: any sign that the CLI continues itself, which would risk our nudge doubling up on a turn. A plain `-p` turn emits exactly one terminal `result` (`num_turns: 1`), and an interrupted turn emits exactly one error `result` and then stays silent until a new user message. The 515 real `replaying stdout the child emitted between turns` lines are **not** this: that is the known proxy-detach path (PR #35), not unprompted continuation. The stall and server-error cases the backlog claims were not reproducible cheaply and are therefore **not established either way**. Abort was re-verified live on 2.1.263 by driving the real CLI over stream-json stdin with exactly `interruptTurn`'s payload: `control_response` `subtype: "success"` came back in **1 ms** (now carrying `still_queued: []`, matching the new `interrupt_receipt_v1` / `interrupt_cancel_queued_v1` capabilities that `system`/`init` advertises), the turn ended 331 ms later, only **14 characters** streamed after the interrupt, and the same process answered the next turn cleanly with `stop_reason: end_turn`. Unparsed-but-forwarded stream events as of 2.1.263, reported and deliberately **not** implemented in that lane: the CLI's SDK allowlist forwards `tool_progress`, `tool_use_summary`, `prompt_suggestion`, `conversation_reset` and `command_lifecycle`, none of which `src/cli-events.ts` reads; `system` also has `hook_started` / `hook_response` subtypes (seen live), `compact_metadata` gained an optional `cumulative_dropped_tokens`, and `init` now carries `agents`, `capabilities`, `plugins`, `skills` and `slash_commands` among others. `conversation_reset` is the one worth a look first, since a reset would invalidate the `toolCallMap` and pending-proxy bookkeeping. `/goal` and `/loop` **are** advertised in `init.slash_commands` under `--print` on 2.1.263 (159 commands listed), which confirms the backlog's claim that far; neither was executed, deliberately, because `/loop` can loop. The original reasoning, as corrected above: the CLI emits a `stop_reason` on every turn that is not aborted, and `shouldAutoContinueIncompleteTurn` treats any `stop_reason` as authoritative (v0.4.17), so the keyword heuristic below that guard (`looksLikeFinalAnswer` / `looksLikeQuestion` / `looksLikeBlocker` and the whole v0.4.10 to v0.4.15 idiom list) is dead code in practice, and `autoContinueIncompleteTurns: "smart"` behaves as `off`. @JWebCoder's PR #15 diagnosed this correctly; it was closed because the remedy (delete the guard) promotes the regex back to the deciding vote on every turn, which is exactly what v0.4.17 removed, and it also carried a `package-lock.json` this repo deliberately does not have. **The narrow change has since been made, and not the way that sentence originally proposed.** `isTruncationStopReason` (`max_tokens`, plus `max_output_tokens` as a defensive alias) now returns `{continue: true, reason: "truncated"}`, bounded by the attempt and elapsed rails, while every other `stop_reason` stays authoritative. It could not simply "fall through to the heuristic": the common truncation case is one long prose answer with no tool or reasoning activity, which dies at the `no-activity` gate a few lines below, so truncation had to be authoritative in the opposite direction instead. It runs at the default `autoContinueIncompleteTurns: "smart"`, which is what makes it reachable at all given everything else about that setting behaves as off. Do not delete the heuristic either: it is the fallback for CLIs that omit `stop_reason`. Tests: `test-auto-continue.ts` (five cases, all failing with the branch stubbed out).
+  - **A compaction turn must never be nudged, and truncation-continue is what made that reachable.** `AUTO_CONTINUE_PROMPT` says "Do not summarize; keep working", the exact inverse of a `/compact` turn's job, and continuation reopens the same stream instead of closing it, so the non-summary text would be appended to what opencode stores as the session summary. `doStream` builds `autoContinueState` inline and passed `self.config.autoContinueIncompleteTurns` straight through with no `compactionMode` term, which was harmless only while every `stop_reason` returned `continue:false`. `autoContinueEnabledFor(compactionMode, configured)` now gates it, exported purely so the wiring is testable rather than only the pure decision function. Bounded at 8 attempts either way, so the pre-fix worst case was an inflated and corrupted summary, not a hang. Found by a subagent review of the truncation change, not by the test suite, which had no compaction case at all.
+
+<a id="g105"></a>
+
+#### opencode's tool.definition, experimental.session.compacting
+
+- **opencode's `tool.definition`, `experimental.session.compacting` and `experimental.compaction.autocontinue` hooks were evaluated on 1.18.29 and deliberately NOT adopted** (issue #24). `tool.definition` fires only inside opencode's own `ToolRegistry.tools`, over built-ins plus filesystem/plugin-declared tools; **MCP tools are not in that registry**, and the MCP assembly path triggers only `tool.execute.before`/`after`. So it cannot reach the proxy defs this plugin serves to the Claude CLI, and it could not do the job anyway: opencode appends `describeTask`'s agent list *after* the hook returns, which is the exact ordering `overlayTaskProxyDescription` exists to control against Claude Code's description truncation. Its input is `{toolID}` alone, with no session/provider scope, so any edit would reshape tools for every provider in the user's opencode. The compaction hooks are a prompt-authoring hook and a veto on opencode's post-compaction synthetic turn; neither is registered here, so they cannot interact with this plugin's auto-continue, and they operate on a different boundary regardless (an opencode turn versus a CLI turn inside one opencode turn). `experimental.session.compacting` would also be strictly worse for detection than `opencodeAgent === "compaction"`, which is available synchronously per call and drives the model override, effort exemption, session key and lean spawn.
+
+<a id="g106"></a>
+
+#### SUPERSEDED 2026-09-23, read V2.md
+
+- **SUPERSEDED 2026-09-23, read `V2.md` instead. The bullet below was right about the surface it measured and wrong about what that surface was.** It read `@opencode-ai/plugin/v2` inside opencode **1.x** and concluded that v2 was an additive alternative API with no payoff. v2 is a new **major of opencode itself**: V1 and V2 share the `opencode` command, are not installed side by side, the installer replaces the V1 binary, and the migration guide states plainly that **V1 plugin implementations do not run in V2**. So this is not an optional migration, it is the day this plugin stops existing. The specific claim that killed it is also now false against the shipped package: `@opencode/plugin@2.0.11` (a different package from `@opencode-ai/plugin`) **does** carry an `aisdk` domain on the plugin context, and its `language` hook takes a `LanguageModelV3`, which is exactly what `ClaudeCodeLanguageModel` already is, against the same `@ai-sdk/provider` 3.x we already depend on. The website's plugin docs do not mention that domain and describe providers as metadata only; the `.d.ts` in the tarball is what settles it. Dual V1/V2 support from one package is officially documented, and `src/index.ts`'s default export is already the required object shape. Plan, probes and phases: `V2.md`.
+
+<a id="g107"></a>
+
+#### v2 plugin API: do not migrate, and
+
+- **v2 plugin API: do not migrate, and the reload that exists is not the one we want** (tracker is issue **#31**, checked on 1.18.29; #24 is closed and is not the tracker any more). `Reload` is `{ reload: () => Promise<void> }` (`dist/v2/promise/registration.d.ts`), and `catalog`, `agent`, `command`, `integration`, `reference` and `skill` carry it while **`aisdk` does not** (`dist/v2/promise/context.d.ts`). So model *metadata* can be re-transformed at runtime through `CatalogHooks = Hooks<{transform: CatalogDraft}>`, but the model implementation path cannot. That does not touch this plugin's actual pain point: provider options are captured at `createClaudeCode()` and baked into each `ClaudeCodeLanguageModel`, and `catalog.reload()` re-runs a catalog transform rather than re-reading `provider.claude-code.options`. The restart requirement is opencode's config loading, not the plugin API. Even the metadata win is nil here, since `src/models.ts` is a static registry that only changes on package upgrade, which requires a restart anyway. v1 is **not deprecated**: all five `@deprecated` markers in `dist/index.d.ts` are unrelated (auth-prompt `condition` → `when`, and the `AuthOuathResult` typo alias).
+
+<a id="g108"></a>
+
+#### Every ▌-led text part the plugin
+
+- **Every `▌`-led text part the plugin writes must be registered in `PLUGIN_NOTE_MARKERS`** (`src/message-builder.ts`). The `/btw` aside started this, and there are now five more: the turn-stats footer (`TURN_STATS_MARKER`), the CLI self-compaction note, the rate-limit rejection line, the failed-result-subtype line, and the doctor report. None of them was ever Claude's output or ever in Claude's context, so a transcript rebuilt for a fresh CLI process must not hand any of them back as something the model said. The strip is **part-level and anchored at the start** for the same reason the aside's is: it matches `text.trimStart().startsWith(marker)` on a whole text part, so every one of these has to be enqueued as **its own** text part (`startTextBlock()` before it) rather than appended to the model's block. `filterSideQuestionHistory` also now drops the `/claude-code-doctor` user message and its reply, the same way it drops a `/btw` pair; it kept its `/btw`-era name because it is called from both transcript rebuild paths and renaming it would touch code two other lanes are in. Tests: `test-turn-stats.ts`, `test-doctor.ts`.
+
+<a id="g109"></a>
+
+#### turnStats is off by default and
+
+- **`turnStats` is off by default and must never fire on a compaction turn or a failed one** (`src/turn-stats.ts`, consumed in `doStream`'s `result` branch). A footer on a `/compact` turn would be appended to what opencode stores as the session summary, the same trap the auto-continue compaction fix documents above; a footer on a failed turn puts the bill where the error belongs. The numbers are the **turn totals** (`msg.usage` directly), deliberately not the last-iteration figures `toUsage` prefers: `toUsage` feeds opencode's context gauge, where summing iterations inflates the window and triggers premature compaction, while a cost line has to match `total_cost_usd`, which is cumulative. The same numbers go to `log.info` whatever the option is set to, because the footer is a display preference and the numbers are diagnostics. `permission_denials` reaches `providerMetadata` as **names and ids only**: a denial carries a `tool_input` on the wire that can be a whole file-write payload, which is why `ClaudeStreamMessage` deliberately does not declare that field. Tests: `test-turn-stats.ts`, `test-cli-events-stream.ts`.
+
+<a id="g110"></a>
+
+#### The four CLI stream events in src/cli-events.ts
+
+- **The four CLI stream events in `src/cli-events.ts` were read out of the CLI's own zod schemas, not guessed** (2.1.263, `rg -a` over `~/.local/share/claude/versions/<v>`; the binary is a Mach-O bundle and the schemas are in it as plain text). Confirmed shapes: `{type:"rate_limit_event", rate_limit_info:{status:"allowed"|"allowed_warning"|"rejected", rateLimitType?, resetsAt?, utilization?, isUsingOverage?, overageStatus?, overageResetsAt?, overageDisabledReason?}}`; `{type:"system", subtype:"compact_boundary", compact_metadata:{trigger:"manual"|"auto", pre_tokens, post_tokens?}}` (the stream schema says `compact_metadata`, the CLI's own transcript reader says `compactMetadata`, and both are parsed because both exist in the binary); `system`/`init` carrying `apiKeySource`, `permissionMode`, `model`, `tools[]`, `mcp_servers[{name,status}]`, `claude_code_version`; and `result` carrying `modelUsage` (per-model numeric counters) and `permission_denials`. Re-run those greps before changing a parser, and keep the parsing defensive anyway: a diagnostic that throws is worse than one that stays quiet. Every reporter dedupes **once per identity per process** (`_resetRateLimitReports` / `_resetSystemInitReports` are the test seams, same shape as `_resetFastModeWarnings`), because a rejected rate limit and a failed MCP server both repeat on every respawn. Levels follow the `src/logger.ts` rule: WARN for anything the user must act on, since only warn/error are alwaysStderr.
+
+<a id="g111"></a>
+
+#### apiKeySource is the field that tells
+
+- **`apiKeySource` is the field that tells you pay-as-you-go billing is happening, and `process.env` is not.** `warnIfAnthropicApiKey` in `index.ts` sees only the env-var route; the CLI also takes a key from its own settings scopes (`user`, `project`, `org`) and from an `apiKeyHelper`, and `API_KEY_SOURCES` in `cli-events.ts` treats everything except `oauth` (the subscription) and `none` as a key in effect. That is also why the warning text branches on `ignoreAnthropicApiKey`: with the option already on, the env vars are stripped from the spawn, so a key still in effect did not come from the environment and recommending the option again would be wrong.
+
+<a id="g112"></a>
+
+#### A failed CLI tool needs isError
+
+- **A failed CLI tool needs `isError: true` on the `tool-result` stream part, not just error text in the output.** Measured in opencode's own bundle: its AI SDK bridge does `if (V.isError) enqueue({type:"tool-error", ..., error: V.result}) else enqueue({type:"tool-result", ...})`, so without the flag a failed `Read` was forwarded as a successful tool result whose output happened to be an error message. AI SDK v3 has no `tool-error` stream part for a provider to emit directly (`LanguageModelV3ToolResult` with `isError` is the only route), so do not go looking for one. The source is `block.is_error` on the CLI's `tool_result` content block, which is why that field is now declared on `ClaudeStreamMessage.message.content[]`.
+
+<a id="g113"></a>
+
+#### A result with a failing subtype
+
+- **A `result` with a failing subtype finishes as `{unified:"error", raw:<subtype>}`, and that is a deliberate widening of `toFinishReason`'s two-value vocabulary.** It used to be an unconditional `stop`, so opencode recorded `error_max_turns` as an ordinary reply. Checked against opencode's bundle before shipping: it validates the finish reason against the standard enum and falls back to `"unknown"`, so `"error"` is accepted and nothing branches on it destructively. This is the **with-result** case only; a CLI that dies without emitting a `result` at all is a different failure with its own handling.
+
+<a id="g114"></a>
+
+#### /claude-code-doctor is answered
+
+- **`/claude-code-doctor` is answered by the plugin with no CLI inference** (`src/doctor.ts`, branch in `doStream` immediately above the `/btw` aside branch, registered by `registerDoctorCommand` in `index.ts`). Four things to keep true: (1) the command name has **no space** in it, because opencode invokes `/<key>` and takes everything after the first space as `$ARGUMENTS`, so `claude-code doctor` would be the command `claude-code` with an argument; (2) it never overwrites a user-defined command of that name, same guard as `/btw`, and unlike `/btw` there is no hook to gate because the language model answers the message the template produces; (3) nothing secret may enter the report, meaning no proxy `authToken`, no `ANTHROPIC_API_KEY` value, no system prompt, and no pending call's `input` (a test asserts the report matches no credential-shaped string); (4) the loopback auth self-check posts **`initialize` only**, never `tools/call`, because a `tools/call` probe would execute something. `formatDoctorReport` is pure and `gatherDoctorReport` is the live half, which is what lets a test pin the whole report against a fixed object. It reads providers through `lastDiagnosticsProviders()` in `startup-diagnostics.ts`, recorded **before** that module's once-per-process log guard so an account expansion's second call wins.
+
+<a id="g115"></a>
+
+#### snapshotActiveProcesses and snapshotPendingProxyCalls
+
+- **`snapshotActiveProcesses` and `snapshotPendingProxyCalls` are read-only views added for the doctor.** Neither touches eviction, the child's `close`/`exit` handler, or stdin. `ActiveProcess.startedAt` is set in `spawnClaudeProcess`'s object literal purely so the report can show an age; `lastStderr` is read through an **optional property access and is never written here**, so the report works whether or not another change adds that field.
+
+## Running The Suite
+
+<a id="g116"></a>
+
+#### The test script forces OPENCODE_CLAUDE_CODE_LOG_FILE=0
+
+- **The `test` script forces `OPENCODE_CLAUDE_CODE_LOG_FILE=0`, and that is not tidiness.** The maintainer's shell exports `OPENCODE_CLAUDE_CODE_LOG_FILE=1`, and every test process inherits it, so each run appended fixture lines and fake `plugin ready` blocks to the **live** `~/.local/share/opencode-claude-code/plugin.log`: 1,732 fixture lines by 2026-09-23, and entries such as `"opencode":"2.0.11","claudeCli":{"path":"/opt/claude"}` from `test-v2-entrypoint.ts`, which another session read as a broken V2 install sharing the machine. Measured with the switch: 695 of 695 pass and zero lines reach the live log. Tests that exercise file logging set it explicitly. A tally of old log lines still has to drop the `/var/folders` and `claude-test-*` entries written before this change.
+
+<a id="g117"></a>
+
+#### Never pipe npm test into grep inside
+
+- **Never pipe `npm test` into `grep` inside an `&&` chain.** The pipeline exits with grep's status, not the test runner's, so a red suite reads as green and the chain continues. This is not hypothetical: on 2026-09-19 it carried a `npm version minor` and a tag push through five failing tests, and v0.21.0 published before anyone knew. Redirect and check instead: `npm test > /tmp/run.log 2>&1; echo "EXIT=$?"`, then grep the file.
+
+<a id="g118"></a>
+
+#### The fake-CLI recovery tests in test-proxy-task.ts
+
+- **The fake-CLI recovery tests in `test-proxy-task.ts` are timing-sensitive and everything they wait on is derived from `START_WATCHDOG_MS`.** The fixture is a real Node process, so its cold start competes with the machine. The old 500 ms budget (whose comment claimed it was "ample") failed every recovery test at load average 5 with dozens of node processes around, **identically on master and on already-released tags**, which is what proves such a failure is the machine talking and not a regression. Diagnose it that way before touching code: run the same file at the last known-green tag, and if it fails there too, the code is exonerated. Do not raise one of the three waits on its own; the longest path lets **two** consecutive watchdog deadlines elapse, so a hard-coded wait under twice the watchdog fails by construction. That is exactly how the first attempt at this fix broke.
+
+## Tests To Touch When Editing
+
+<a id="g119"></a>
+
+#### Version 0.15.0 proxy recovery: SSE
+
+- Version 0.15.0 proxy recovery: SSE `tools/call` replies send headers immediately plus 15-second comments, while preserving the existing authentication guards and per-tool deadlines. A real Claude 2.1.258 call held for 390 seconds completed successfully; the previous single-shot response timed out before delivery. Do not claim a specific underlying timer without fresh evidence. A JSON-only client now gets the same liveness (`openJsonStream`, from @broskees' `68ed142`): headers flushed at once, chunked body, whitespace on the same `PROXY_KEEPALIVE_MS` cadence, envelope last, so the body is still one valid JSON-RPC response on success and on error. Only broker-backed calls stream; `initialize`, `tools/list`, unknown tools, bad batches and interceptors keep the single-shot `Content-Length` reply, and nothing is flushed before the four guards ran. `createProxyMcpServer`'s fourth argument (`keepaliveMs`) is a test seam. `ActiveProcess.pendingProxyCompletions` retains resolved results and shared channel references until continuation settles. Both live and buffered terminal boundaries must consume abandoned completions once, and respawn must preserve the map and original CLI args. Bookkeeping-only stdout must not disarm the start watchdog. Tests: `test-proxy-task.ts`, `test-proxy-mcp.ts`, `test-respawn.ts`.
+
+<a id="g120"></a>
+
+#### Native /btw (0.15.0): src/side-question.ts
+
+- Native `/btw` (0.15.0): `src/side-question.ts` uses `control_request.request.subtype: "side_question"`, with the answer at `control_response.response.response.response`. The gate is CLI >= 2.1.258 (oldest measured), idle headless process only. Route matching replies through `dispatchSideQuestionResponse` before ordinary stdout buffering. Never send the aside as a user envelope, spawn a different model, or promise a concurrent opencode overlay. Command registration preserves user definitions. History filtering excludes aside exchanges from fresh-process and compaction transcripts. The CLI response has no usage stats. Tests: `test-side-question.ts`, `test-get-claude-user-message.ts`. `scripts/live-probe.ts` is opt-in paid inference, not part of `npm test`.
+  - **The aside question must be stripped of opencode's `<system-reminder>` blocks** (`SYSTEM_REMINDER_BLOCK` in `src/side-question.ts`). opencode appends them as *extra text parts* on the same user message, and `parseSideQuestionContent` joins every text part, so without the strip the reminder travels with the aside. Measured live on opencode 1.18.29 (2026-09-06): a 35-character question was sent as 1,599 characters, and a bare `/btw` was never empty, so `SIDE_QUESTION_USAGE` was unreachable and the model answered "I don't see a question in your message" instead. The plan-mode reminder is the worst case (1,523 chars of "READ-ONLY phase / STRICTLY FORBIDDEN"), which is exactly the content most likely to steer an aside. Strip **wherever the block sits**, not by matching a whole part or anchoring at the end: a harness may append trailing metadata after the closing tag (opencode-dcp adds `<dcp-message-id>`), and the first attempt at this fix used `endsWith("</system-reminder>")`, passed its unit test, and still did nothing in production for exactly that reason. Only this parse strips reminders; normal turns must keep forwarding them, since they are opencode's instructions to the model. Live-verified after the fix by asking the aside its own word count: 17, matching the question alone.
+  - **`/btw` is asked early and kept in the conversation (`src/btw-command.ts`, after 0.15.1).** Two designs were rejected live before this one. 0.15.x left the aside in the main lane, so a `/btw` typed mid-turn was "Queued" and then refused by the idle guard. The next attempt answered it in a child session with a toast, which the maintainer rejected on UX: the toast vanished before it could be read and the child session was not where anyone looked. What holds now rests on measured facts, re-check them before changing it: (1) opencode's TUI sends `session.command` immediately, busy or not (`packages/tui/src/component/prompt/index.tsx`), so `command.execute.before` fires at once; the resulting user message is what gets queued. (2) opencode's loop exits only when `lastAssistant.parentID === lastUser.id` (`session/prompt.ts` `runLoop`), so **any** message added to a busy session, `noReply` included, becomes the turn's next step, and that step is also the one carrying the results of the tools opencode just ran. Answering the aside there swallowed the turn's own continuation: measured live, turn 2's "finished" never appeared. (3) Claude Code answers `side_question` while the main loop is blocked (2.1.258: 2.3 s into a 35 s held tool call). So the hook finds the process by opencode session id (`findActiveProcessBySessionId`, fed by the `opencodeSessionID`/`asideTransport` tags doStream writes on every non-compaction turn), sends the `side_question` **immediately**, remembers the promise per session (`rememberSideQuestionAnswer`), toasts the answer when it arrives if the session was busy, and then **holds the command until `client.session.status()` reports the session idle** before returning, so opencode creates the `/btw` message only after the turn is completely over and runs it as a fresh turn. That turn hits the aside branch in `claude-code-language-model.ts`, which takes the remembered answer (`takeSideQuestionAnswer`) or asks the now idle process, and emits it as the assistant reply at 0 tokens; `filterSideQuestionHistory` keeps the pair out of Claude's prompt, and `collectSideQuestionHistory` feeds earlier pairs to follow-ups. Three traps: the remembered answer is matched by **prefix**, not equality, because opencode-dcp appends `<dcp-message-id>` to the message text (an exact match missed live and the turn re-asked into the single-flight guard); busy must come from `session.status`, not the process's line-listener count, because the listener is detached while opencode runs a tool; and holding the route is fine because opencode already keeps the command route open for a queued prompt (34 s observed) and the TUI's call is fire-and-forget. The hook only intercepts when `registerSideQuestionCommand` returned true, so a user-defined `btw` command keeps opencode's normal behaviour. A no-process `/btw` answers with `BTW_NO_SESSION_MESSAGE` as text, not an error. Tests: `test-btw-command.ts` (hook incl. the held return and the give-up timeout, answer store, history fetch, fake-CLI end to end), `test-side-question.ts`.
+    - **Both lookups the hook makes are racy the instant `/btw` is typed, and losing either race puts the "Queued" bubble straight back.** Reported live 2026-09-06 ("if i do the /btw too soo it still gets queued") and confirmed in `plugin.log`: `btw: no live claude process for session` at 14:04:06, then the same question at 14:04:28 found a process and was answered concurrently. Cause: doStream tags the process (`opencodeSessionID`/`asideTransport`) only where it attaches its line listener, which is **after the whole spawn path**, so on a conversation's first turn there is a multi-second window with nothing to ask; the hook fell through, and the message it let past is exactly what opencode queues. The same shape applies to `session.status`, where a session that opencode has not registered yet is **absent from the map and therefore reads as idle**, so a single early read says "not busy" and the hold is skipped. So `waitForAsideProcess` polls for the process while the session is busy (giving up after `SPAWN_WAIT_MAX_MS`, 30 s, because the running turn may belong to another provider and then no process is ever coming), and `settleSessionBusy` keeps re-reading status for `BUSY_SETTLE_MS` (1.5 s) before it will conclude idle. Two ordering rules hold this together: the settle runs **concurrently** with the request, never before it, or an idle `/btw` would wait out the settle window before being asked at all; and `answer.catch(() => undefined)` goes on immediately, because the settle spans timer ticks and a fast failure (dead process, interactive transport) would otherwise surface as an unhandled rejection in opencode's own process before the real handlers are attached. The suite caught that second one, so do not remove it as dead code.
+    - **The answer is written into the running turn's own reply, and only falls back to the toast plus a held message.** The toast was the delivery while a turn ran, and the maintainer rejected it twice for the same reason ("the notification is too short and is gone right away", then "can you also add it printed to the main thread"): a toast expires, and the held `/btw` pair could not land until the turn was over. So `doStream` registers an `AsideSink` per conversation (`registerAsideSink(affinity, ...)`, unregistered in `cleanupTurn`) that enqueues one finished text block into the live stream, and `deliverAsideInline` uses it; on success the hook throws `BtwHandledError` so opencode never creates the `/btw` message at all, since the answer is already in the transcript. Four things this rests on: (1) the sink is keyed by `affinity`, which **is** the opencode session id, the same key `takeSideQuestionAnswer` uses. (2) `registerAsideSink` returns an unregister that only deletes its own sink, because a turn's cleanup runs after the next turn has already registered. (3) A turn is a **run of streams**, not one: every proxy tool call ends the stream (`finishWithPendingProxyCalls`) and opencode opens the next one with the result, so an answer arriving in that gap has nothing to write to. `deliverAsideInline` therefore retries for `INLINE_WAIT_MAX_MS` (20 s) while the session stays busy and only then falls back to the toast plus the held message, which is still the whole point of keeping that path. (4) The block is its own text part led by `INLINE_ASIDE_MARKER` (`▌ **btw:**`), which is what lets `filterSideQuestionHistory` strip it exactly when a transcript is rebuilt: an aside was never Claude's output and was never in its context. Do not merge it into the model's own text block, and do not match the marker mid-part; the strip is part-level for a reason. Live-verified 2026-09-06 on Claude 2.1.258 + opencode 1.18.29: `/btw` typed 15 s into a 35 s webfetch, block written 1.4 s later inside that turn's assistant message, no `/btw` message in the transcript, turn still delivered its own "finished". Note the command route answers **HTTP 500** on the drop, as it does for every `BtwHandledError`; the TUI's `session.command` call is fire-and-forget and swallows it. Tests: `test-btw-command.ts` (sink ownership, marker strip, and a fake-CLI turn held open by the `SLOW` keyword that the aside is written into).
+      - **The aside's left bar is a literal `▌` the plugin emits, NOT a markdown blockquote.** Asked for "a subtle green border around the full response", and the blockquote answer shipped first and was wrong; it was replaced after the maintainer reported "the theme is picked but nothing green shows up", which is exactly what the source predicts. Read `@opentui/core`'s `src/renderables/Markdown.ts` before touching this (`npm pack @opentui/core`, the sourcemap carries the TS): a blockquote **does** get a real left border (`createBlockquoteRenderable` → `BoxRenderable` with `border: ["left"]`, `paddingLeft: 1`), but `getBlockquoteBorderColor()` reads the **`conceal`** scope, falling back to `default`, while `theme.markdownBlockQuote` / `markup.quote` colours only the quoted **text**. So the one key a theme could plausibly change is the one that does not paint the bar, there is no per-block override, and a custom theme is the operator's config anyway (opencode resolves `theme.theme` as-is, with no merge over a base, so it means copying a whole theme). `barEveryLine` therefore prefixes **every** line, blank ones as a bare `▌`, so the bar runs the full height.
+        - **The bar is not coloured, and the search for a green one is closed.** Correction to an earlier note here: assistant text is **not** run through `strip-ansi`. That call sites at `packages/tui/src/routes/session/index.tsx:2051,2349` apply to **tool output**; `TextPart` passes the text straight into `<markdown>`. ANSI is still useless, for a better reason: OpenTUI renders markdown through tree-sitter into its own buffer with its own colours, so escape bytes print literally and corrupt width measurement. Colour in that renderer comes only from syntax scopes, and there is no scope for a plain character in a paragraph: `` `x` `` is `markup.raw`, `**x**` is `markup.strong`, a blockquote border is `conceal` (`Markdown.ts` `renderInlineToken`). Every one of those is theme-wide, so painting the bar green would repaint all inline code, or all bold, or all blockquotes, across every message, and needs a whole copied theme to do it. The only zero-config green is a colour emoji, which the maintainer refused outright ("no emoji please") and which contradicts the original ask for something *subtle*. So the bar stays a plain `▌`. Do not re-open this without a new opencode rendering feature. Two facts hold the rendering together, both from the same file: OpenTUI renders a paragraph from `token.raw` **verbatim**, so line breaks survive and nothing reflows; and blockquote content goes through `createMarkdownCodeRenderable(token.text, …)` rather than being re-parsed, so the old shape never rendered nested markdown either and dropping it costs nothing. `INLINE_ASIDE_MARKER` must stay the leading characters after `trimStart()` or `filterSideQuestionHistory` stops stripping the block; `LEGACY_INLINE_ASIDE_MARKERS` keeps the old `> **btw:**` blocks strippable in conversations that predate the change, and a test covers it.
+      - **No toast ever carries the answer** ("so we can get rid of the notification now?", once the inline block worked). Every path that produces an answer now puts it in the conversation, inline or as the held pair, so announcing it as well was duplicate delivery of the *worse* copy: a toast expires, which is the complaint that started this whole redesign. Removed with it: `answerToastMessage` / `answerToastDuration` and the `ANSWER_TOAST_*` sizing constants, `BTW_BUSY_TOAST_MESSAGE` (the "answering alongside the turn" notice, which the inline block obsoletes) and `BTW_IN_FLIGHT_TOAST_MESSAGE` (a second `/btw` still gets asked when the turn ends, so its answer lands too). The **two** that stay are exactly the paths where nothing reaches the conversation because the message is dropped: a bare `/btw` (`SIDE_QUESTION_USAGE`) and `BTW_TURN_TOO_LONG_MESSAGE` after the 30 minute hold gives up. That is the rule to apply to any new toast here: if the conversation gets the content, do not also toast it. `showToast` itself stays, and so does the `tui.showToast` receiver-binding care in it (a detached `const show = client.tui.showToast` throws, since the SDK method reads `this._client`).
+      - **A receipt block goes into the turn the moment the question is sent** ("there should be some feedback of them actually having sent it also in the main", once the toast was gone). `formatInlineAsideAsk(question)` writes the question on the marker line with the note on its own bar line beneath it, through the same `deliverAsideInline`, and the answer handler **awaits** that promise before writing the answer, so a receipt can never land under the answer it announces. **The receipt quotes the question in full and the answer block repeats it, and that duplication is deliberate.** It went question-less first, on the reasoning that the answer block carries the question anyway; the maintainer asked for it back ("maybe we should see: ▌ btw: &lt;the text you actually sent here&gt; sent to Claude on the side"), and the ask is right: the prompt box clears on submit and the `/btw` message is dropped, so with no question in the receipt **nothing on screen ever says what was sent**. A 240-character `RECEIPT_QUESTION_MAX` was added and then removed for the same reason ("i want the question to hold the full untruncated question"): once the receipt is the only readback, eliding it means a long aside can be read nowhere, and it also produced the odd shape the maintainer spotted, a short copy in the receipt above a full copy in the answer. The reason the answer block must keep its own copy is measured, not stylistic: the model keeps streaming its own text between the two (receipt in the assistant message *before* the tool part, answer in the one after, 13 s later), so a headerless answer arriving after that reads as orphaned. Keeping the answer block's existing shape and marker is also what means nothing new has to be stripped: a continuation marker (`"▌\n"`) was written and then deleted for exactly that reason.
+        - **Updating the receipt in place when the answer lands is not available, do not try again without new evidence.** Asked for directly ("maybe dont want a new block when answer comes in instead update the original"). Two blockers, both checked rather than assumed on 2026-09-06: opencode's SDK exposes **no** part or message update route (`/session/{id}/message/{messageID}` is read-only, and the full route list has nothing else), and the AI SDK stream has no replace-text event, so the only way to grow a block is to keep its text part open and append deltas to the same id. That is ruled out by stream lifetime: a turn is a run of streams, every proxy tool call ends one, and the receipt lands in the stream *before* the tool part while the answer arrives in the one after, so the part is already closed and drained. What *is* true, and is the part worth keeping if this ever becomes possible: opencode's bridge resolves ids explicitly (`currentTextID(state, event.id)` in `session/llm/ai-sdk.ts`) and every delta this plugin emits carries an explicit id, so two concurrently open text parts are protocol-legal. The blocker is the stream boundary, not the id model. `startTextBlock()` here is single-slot and would also have to stop closing the aside's part. Only sent while `busy`, since an idle `/btw` gets its own message a moment later anyway. Live-verified 2026-09-06 on haiku: receipt 0.3 s after the command, answer 13 s later, `/btw` message dropped, turn still delivered its own reply.
+      - **Probing this live needs a turn that is genuinely still running**, which took three wasted paid runs to get right. `POST /session/:id/message?async=true` **still blocks** until the turn finishes on opencode 1.18.29, so a `/btw` fired after it "returns" is measured against an idle session and silently exercises the wrong path (`busy:false` in the log is the tell); background the curl instead. opencode's `webfetch` also times out well before 30 s, so a stall server has to sleep under that (12 s works) or the tool errors and the turn ends early. And the provider ids are `claude-code-default` / `claude-code-appical`, never a bare `claude-code`, which fails as an opaque `UnknownError` from the message route.
+
+<a id="g121"></a>
+
+#### A tool_result may only be sent back
+
+- **A `tool_result` may only be sent back for an id THIS CLI process issued** (`cliToolCallIds` on `getClaudeUserMessage`, issue #29 from @nic-lan). opencode runs some tools on its own behalf, notably the `task` call a `subtask: true` command dispatches, and the resumed CLI session never emitted those `tool_use` blocks. Sending a `tool_result` for one is orphaned: Claude cannot resolve the id, so the payload, **which is right there in the envelope**, is unreachable. Reported as "the result is lost"; measured offline on master, the 613-character subagent answer was physically present as `{"type":"tool_result","tool_use_id":"call_X",...}` and simply unusable. Unmatched ids now render as `<opencode_tool_result tool="...">…</opencode_tool_result>` text **before** the trailing user message, which is what makes opencode's own synthetic "Summarize the task tool output above" instruction true. Two things hold this together and both are load-bearing: (1) the gate cannot break the proxy round-trip, because the envelope is **not** how proxy results are delivered. `proc.stdin.write(userMsg)` is the fresh-turn path only; when a pending proxy call has a matching tool-result, doStream returns before that write (`hasMatchedPendingResults`) and the broker resolves the call directly, and on the write path any still-pending call is being **rejected as orphaned** a few lines above. So a tool-result reaching a written envelope is an opencode-side one by construction. (2) `cliToolCallIds` is read from `getPendingProxyCalls(sk)` **before** `userMsg` is built, in both `doStream` and `doGenerate`, because there is an `await` in between; `doGenerate` passes an **empty** set, since it has no proxy wiring and therefore issued no calls at all. Omitting the option keeps the old unconditional block, so a forgotten call site degrades to the status quo rather than hanging the CLI. **Live-verified 2026-09-06** on Claude Code 2.1.258 + opencode 1.18.29 through a headless `opencode serve`: a project command with `subtask: true` (`.opencode/command/<name>.md`, `agent: general`) whose subagent answers with a secret token and no tools; the parent's "Summarize the task tool output above" turn quoted the token back, and `plugin.log` showed `rendering opencode-side tool result as text` for the real opencode call id (`tool: task`, 154 chars) at the moment of the command. That log line is the fingerprint to look for if this ever regresses; the unit tests alone had already passed for two fixes that did nothing in production that day.
+
+<a id="g122"></a>
+
+#### The fresh-session history fallback
+
+- **The fresh-session history fallback must render tool content, not count it.** Second half of issue #29, and worse than reported: `compactConversationHistory`'s `fresh-session` mode filtered to `user`/`assistant`, so a `tool`-role message was dropped **entirely** and even `[Received N tool result(s)]` never appeared. All that survived a subagent was `[Called 1 tool(s): task]`. It now includes `tool` roles and uses `renderMessageContentForCompaction`, the same serializer `/compact` already used, so `[tool_use:name(input)]` and `[tool_result:name]` plus the clipped body survive. Do not "simplify" this back to placeholders; the whole point is that this path is what a fresh CLI process gets when the prior session id is gone.
+
+<a id="g123"></a>
+
+#### opencode 2 entrypoint (planV2Providers
+
+- opencode 2 entrypoint (`planV2Providers`, `configuredSeedSettings`, `resolveSdkSettings`, `isOpencodeV2Context`, `createV2Setup` against a fake V2 context incl. commands, event cleanup and the bundled skill, the title stub on a V2 model): `test-v2-entrypoint.ts`. The V1-shaped client shim: `test-v2-client.ts`. The V2 tool vocabulary (`translateToolForHost`, the per-stream part translator): `test-host-tools.ts`. None of these replace the two live probes in V2.md, one per major.
+
+<a id="g124"></a>
+
+#### Prompt/message conversion or compaction
+
+- Prompt/message conversion or compaction transcript behavior: `test-get-claude-user-message.ts`. Also owns issue #29: the orphaned-`tool_use_id` gate (both branches, allowed and degraded) and the fresh-session history keeping tool inputs and result bodies. Each of those three tests fails with the corresponding fix reverted.
+
+<a id="g125"></a>
+
+#### Claude CLI arg construction / version-gated
+
+- Claude CLI arg construction / version-gated flags: `test-cli-args.ts`. Also owns fast mode: `parseModelId`, `cliSupportsFastMode`, the `--settings` opt-in, and `reportFastModeState`'s log levels.
+
+<a id="g126"></a>
+
+#### Tool name/input mapping (mapTool
+
+- Tool name/input mapping (`mapTool`, `CLAUDE_INTERNAL_TOOLS`): `test-tool-mapping.ts`.
+
+<a id="g127"></a>
+
+#### Content-block index reuse across
+
+- Content-block index reuse across assistant messages within one turn (stale `toolCallMap` entry re-emitting a completed tool call, which breaks subagent `task` results): `test-tool-block-index.ts`.
+
+<a id="g128"></a>
+
+#### Todo ledger (Task todowrite translation
+
+- Todo ledger (Task* → todowrite translation, TTL pruning, multi-session isolation): `test-todo-ledger.ts`.
+
+<a id="g129"></a>
+
+#### MCP bridge/proxy behavior: test-bridge.ts
+
+- MCP bridge/proxy behavior: `test-bridge.ts`, `test-broker.ts`, `test-proxy-mcp.ts` (HTTP-level JSON-RPC framing incl. error-envelope id echo, `tools/list`, per-tool proxy timeouts + bash `input.timeout` + task-timeout wake-up note).
+
+<a id="g130"></a>
+
+#### MCP tool discovery for proxyOpencodeMcpTools
+
+- MCP tool discovery for `proxyOpencodeMcpTools` (`resolveMcpProxyToolDefs`: the model tool set as the source, the registry-shaped list resolving to nothing, longest-server-prefix, `coveredServers` not stranding an unmatched server, name collisions): `test-proxy-mcp.ts`. Five of those seven fail if discovery is stubbed back to finding nothing; the two that still pass are the two asserting absence.
+
+<a id="g131"></a>
+
+#### The consequence of that discovery
+
+- The consequence of that discovery, at the argv a real spawn receives (a partially covered server set still bridges the uncovered server; a fully covered one passes only the proxy config): `test-proxy-mcp.ts`. It is one test rather than two because the helper swaps `XDG_CONFIG_HOME`/`HOME` for the duration of a spawn, and it uses a distinct server set per scenario because the bridged file is content-addressed. It fails if the bridged filename goes back to being keyed on the config hash.
+
+<a id="g132"></a>
+
+#### Reused-process respawn (appendResumeIfNeeded
+
+- Reused-process respawn (`appendResumeIfNeeded`, `respawnActiveProcess` undefined-branch and in-flight handoff): `test-respawn.ts`; the recovered continuation being marked in flight, through a real turn: `test-proxy-task.ts` (`late` and `swallow` modes).
+
+<a id="g133"></a>
+
+#### Process lifetime as opencode sees
+
+- Process lifetime as opencode sees it (`session.deleted` through the plugin's `event` hook, `extractDeletedSessionId`, the idle timer armed by a real turn with no option set) and what ends a proxied call (next user message, abort, child exit mid-turn and between turns, with a fake CLI that parks inside a `task` call and records what its HTTP request got): `test-process-lifecycle.ts`.
+
+<a id="g134"></a>
+
+#### Auto-continue / incomplete turn
+
+- Auto-continue / incomplete turn handling: `test-auto-continue.ts`, `test-has-new-user-content.ts`.
+
+<a id="g135"></a>
+
+#### Logger/env behavior: test-logger.ts
+
+- Logger/env behavior: `test-logger.ts`.
+
+<a id="g136"></a>
+
+#### Spawn-time cwd resolution (resolveSpawnCwd
+
+- Spawn-time cwd resolution (`resolveSpawnCwd`, captured-directory fallback, session-directory tier): `test-cwd-resolution.ts`.
+
+<a id="g137"></a>
+
+#### Turn lifecycle and abort interrupt
+
+- Turn lifecycle and abort interrupt (`noteTurnStarted`, `noteTurnLine`, `interruptTurn`), idle eviction (`scheduleIdleProcessEviction`, the 30-minute default, the in-flight re-arm), the 8-process cap, `deleteActiveProcessesForSession`, `killAllActiveProcesses`, `ensureProcessExitCleanup`, broker rejection on detach: `test-session-manager.ts`.
+
+<a id="g138"></a>
+
+#### Skill bridge (discoverOpencodeSkills
+
+- Skill bridge (`discoverOpencodeSkills`, `buildSkillPluginDir`, `resolveSkillPluginDirs`, `--plugin-dir` in `buildCliArgs`, the default-on `createClaudeCode` wiring, and the argv of a real spawned fake CLI on `doStream` and `doGenerate`): `test-skill-bridge.ts`; the interactive `--plugin-dir` (`interactiveExtraArgs`): `test-claude-session-wrapper.ts`.
+
+<a id="g139"></a>
+
+#### AGENTS.md dedup against the forwarded
+
+- `AGENTS.md` dedup against the forwarded system prompt: `test-compaction-model.ts`.
+
+<a id="g140"></a>
+
+#### AskUserQuestion deny/stop behavior
+
+- AskUserQuestion deny/stop behavior (`denyMessageForTool`, `isAskUserQuestionTool`): `test-ask-user-question.ts`.
+
+<a id="g141"></a>
+
+#### Plan-mode approval bridge (isPlanModeQuestionActive
+
+- Plan-mode approval bridge (`isPlanModeQuestionActive`, `createExitPlanModeQuestionCall`, `consumeExitPlanModeQuestionResult`): `test-exit-plan-mode-question.ts`.
+
+<a id="g142"></a>
+
+#### Account failover (limit detection
+
+- Account failover (limit detection incl. its negative cases, the account-scoped override and its expiry clamp, `resolveFailoverSpawn` for a default vs a named target, the form, every answer classification, the transcript strip and the continuation prompt, plus a fake CLI driving a real `doStream` through ask / switch / stop): `test-account-failover.ts`.
+
+<a id="g143"></a>
+
+#### Compress tool (proxy interceptor
+
+- Compress tool (proxy interceptor path, compression store, compress vs default runtime note), plus `resolveProxyOpencodeToolDefs` and both layers of the `compress` name collision: `test-compress-tool.ts`.
+
+<a id="g144"></a>
+
+#### dcp reminder stripping (stripContextReminderBlocks
+
+- dcp reminder stripping (`stripContextReminderBlocks`, `stripContextReminders`, `shouldStripContextReminders`, and that it is off by default): `test-get-claude-user-message.ts`.
+
+<a id="g145"></a>
+
+#### Config-path model metadata injection
+
+- Config-path model metadata injection (`configModelsForProvider`): `test-config-models.ts`.
+
+<a id="g146"></a>
+
+#### Interactive transport (decodeUserEnvelope
+
+- Interactive transport (`decodeUserEnvelope`, `spawnInteractiveProcess` shim shape): `test-claude-session-wrapper.ts`.
+
+<a id="g147"></a>
+
+#### Spawn-env API-key stripping (claudeSpawnEnv
+
+- Spawn-env API-key stripping (`claudeSpawnEnv` with/without `ignoreAnthropicApiKey`): `test-spawn-env.ts`.
+
+<a id="g148"></a>
+
+#### Startup diagnostics (collectStartupDiagnostics
+
+- Startup diagnostics (`collectStartupDiagnostics`, `describeSpawnCwd`, `detectOpencodeVersion`, `claudeCodeProviders`): `test-startup-diagnostics.ts`.
+
+<a id="g149"></a>
+
+#### Per-turn cost/cache stats (extractTurnStats
+
+- Per-turn cost/cache stats (`extractTurnStats`, `formatTurnStatsLine`, the `turnStats` default, the transcript strip): `test-turn-stats.ts`.
+
+<a id="g150"></a>
+
+#### CLI stream-event parsers and their
+
+- CLI stream-event parsers and their once-per-process dedup (`parseRateLimitEvent`, `describeRateLimit`, `parseSystemInit`, `apiKeySourceWarning`, `parseCompactBoundary`, `describeResultFailure`): `test-cli-events.ts`.
+
+<a id="g151"></a>
+
+#### The same events as opencode sees
+
+- The same events as opencode sees them, through a fake CLI and a real `doStream` (failed `tool_result` carrying `isError`, failing result subtype finishing as an error, footer gated on `turnStats`, rate-limit and compaction notes): `test-cli-events-stream.ts`.
+
+<a id="g152"></a>
+
+#### The wire-inactivity watchdog's visible
+
+- The wire-inactivity watchdog's visible note (`formatStreamTimeoutNote`, `CLAUDE_CODE_RESULT_FALLBACK_MS`, its own text part, the transcript strip), through a fake CLI that produces output and then never sends a `result`: `test-result-fallback.ts`.
+
+<a id="g153"></a>
+
+#### /claude-code-doctor (report formatter
+
+- `/claude-code-doctor` (report formatter against a fixed report, command-registration guard, `checkProxyAuth`, transcript strip, `describeSessionKey`): `test-doctor.ts`.
+
+## Roadmap
+
+Current state (refreshed 2026-07-26 after the fork/PR sweep):
+
+1. ✅ Per-tool proxy timeouts — absorbed from @jknlsn's fork (`84f3db9`, authorship preserved) in v0.10.0: `proxyToolTimeoutMs` config, per-tool defaults (`task` 60 min then; no deadline since the fork-parity PR, see the deadline gotcha), bash `input.timeout` floor. Contributor-style note: this repo absorbs fork work directly via cherry-pick (authorship preserved) with credit + thanks in release notes; don't wait on inviting a PR first.
+2. ✅ Task proxy default-on — resolved by PR #18 (@broskees), absorbed via cherry-pick for v0.10.0 (maintainer live smoke test passed 2026-07-26: subagent dispatch through opencode's TaskTool via `opencode run`). `proxyTools` config remains the escape hatch; subagents need `permission.task`.
+3. ✅ Startup diagnostics / doctor log — landed as `src/startup-diagnostics.ts` (`claude-code plugin ready` NOTICE, see the gotcha above).
+4. ✅ Subagent todo docs + config example — README "Subagent todos" section: worked `multistep` agent block with `permission.todowrite: allow`, why it is load-bearing, `session.child.next` navigation, and the sqlite queries that prove the todos landed.
+5. ✅ Retired 2026-09-06 with issue #4, closed as resolved-pending-feedback (no retest reported in the 2.5 weeks after the ping). The tier-two fix, a per-request/current-project query instead of `process.cwd()`, was never built and should not be unless #4 is reopened with evidence. The startup-diagnostics `cwd` branch is the fingerprint to ask for: `captured` means this bug, `process`/`configured` means it resolved normally.
+6. ✅ ExitPlanMode approval bridge, absorbed from @CollieIsCute's `8c5b583` (authorship preserved) behind the opt-in `planModeQuestion` flag (issue #21). @CollieIsCute called their own commits experimental and gave explicit permission to take them (2026-07-31), so this shipped gated rather than blind: the delivery surface (opencode's `question` form) is still broken upstream, so the live approval round-trip is **unverified** and the flag stays off. Re-test when #36603 merges.
+
+**Update 2026-09-23: no open issues.** #31 was closed as completed once opencode 2 support shipped in v0.26.0 (#44); its "not planned" verdict rested on reading 1.x's v2-compat API rather than opencode 2 itself, and its closing comment records why. The remaining V2 live checks live in `TODO.md`, not in an issue. What follows is the 2026-09-19 state, kept for its evidence. Open work, re-checked 2026-09-19: only **#31**, the v2 plugin API migration tracker, and it is explicitly **not planned** (see the v2 gotcha above for the evidence and the checklist of what would change the answer). **#24** is **closed**: its long-context-cost-tiers item was not-applicable, and `tool.definition` plus both compaction hooks were evaluated on 1.18.29 and skipped, shipped in v0.18.3 via PR #30. #24 had been carrying the v2-migration tracker role, which is why #31 exists; do not reopen #24 for it. **#29** (@nic-lan, subtask/`task` tool results lost across the CLI resume boundary) is **closed**: fixed in `dc3368c`, live-verified, shipped as v0.15.4 on 2026-09-06 (see the `cliToolCallIds` gotcha above). Nothing else is open, and there are **no open PRs**. #22 (Sonnet 5 standard-pricing bump) landed on its 2026-09-01 date. #26 (`proxyTools` allowlist-by-omission) and #27 (`TaskOutput` shell interpolation) are **done** on master, both reported by @tkszeler: #27 became `singleQuoteForShell` + `printf` in `tool-mapping.ts`, #26 became the `extraDisallowedTools` option plus `resolveDisallowedTools` and a warning for unknown `proxyTools` names. #26's other half, a `notebookedit` proxy def, is **deliberately not done**: forwarding it needs a matching opencode registry entry to execute against, and that is unverified, so check `client.tool.list()` on a live server before adding one. #20 (jknlsn absorption) is complete: timeouts + respawn in v0.10.0, task steering in v0.11.2, question proxy in v0.12.0. #21 (CollieIsCute absorption) is complete: flupkede's four items had already landed independently on 2026-05-18, so compare fork *contents*, not commit counts.
+
+Fork sweep state (2026-09-19, all 20 forks, every branch, by patch-id; `gh api repos/<owner>/<repo>/forks` for the list, then one remote per fork and `git cherry origin/master <branch>`): three forks had pushed since the previous sweep and both open PRs were theirs. **Merged:** @nic-lan's PR #35 (`fix/replay-single-text-block`, squash `4aad4c7`), unattended stdout replayed as one text block instead of one per delta, with a fake-CLI regression test that fails without the fix; @broskees' PR #36 (`feature/fork-reliability-parity`, merge commit `9866f02` keeping his `ff2edf0`), every terminal event releasing a proxied call on both the broker and the HTTP side, `session.deleted` and host-exit cleanup, respawn keeping `turnInFlight`, idle timer re-arming on a busy process, JSON-only keepalive, skill bridge on `doGenerate` and interactive, and **no default deadline for `task`/`task_batch`**, which was declined in the previous sweep (`dd494a8`) and accepted now because the lifecycle release is what makes a wall clock redundant. Of his four proposed default changes only that one stayed; `dfb82d5` restored `bridgeOpencodeSkills: false`, idle eviction off unless set, and the 16-process cap, and the PR comment says why. `HeikoAtGitHub/master` and `broskees/master` carried nothing new beyond that PR (Heiko's 8 remain the `submit_plan`/workstream product work declined below; broskees' `b796c71` Fable 5.1 and Sonnet 5 pricing had already landed here independently). Every other fork's remaining `git cherry` output is either a stale copy of an origin branch (`disable-thinking`, `feature/claude-code-accounts`, `sonnet-5-standard-pricing`) or was resolved in an earlier sweep.
+
+Previous sweep (2026-09-06, all 19 forks, every branch, by patch-id): absorbed this round, authorship preserved, credited in the README **Credits** table: @galvani `9e02ce4` (serve-mode cwd), @HeikoAtGitHub `25260a4` (AGENTS.md dedup), @bernardofortes `a5f723a` (idle timeout), and from @broskees' `68ed142` the abort interrupt, the skill bridge, and (after the premise was re-measured live) `task_batch` (three commits under his authorship, adapted). Deliberately **not** taken: @HeikoAtGitHub's other 13 commits (`submit_plan` for Plannotator, a private "workstream" contract system, `repo_policy_scope`: fork-specific product work); @broskees' `ae48773` (commits `dist/`, against policy), his one-turn guard (in via interrupt) and his parallel idle sweep as such (its 30-minute figure and 8-process cap were proposed again as defaults in his fork-parity PR #36 and reverted at merge, see the 2026-09-19 sweep below; his immediate client-disconnect cancellation was not taken either, see the deadline gotcha); @galvani's `7b7841f` (drops `--thinking-display summarized`, which we set on purpose; its other two fixes were already here). Earlier state (2026-08-19): nothing unabsorbed is left on `CollieIsCute/master`, `jknlsn/main`, or `flupkede/feature/compress-tool`. The compress branch's three commits are all resolved:
+
+<a id="g154"></a>
+
+#### 60a6e9a (AI-SDK-v4 image parts)
+
+- `60a6e9a` (AI-SDK-v4 image parts) **absorbed** by cherry-pick, authorship preserved. `toImageBlock` accepted `type: "image"` parts but never read `part.image`, where v4 puts the binary, so pasted screenshots were dropped with a "file part without data" warning. Two regression tests in `test-get-claude-user-message.ts`; the first fails without the fix (verified, not vacuous).
+
+<a id="g155"></a>
+
+#### 4ac319f + 5b4ee5d (compress proxy
+
+- `4ac319f` + `5b4ee5d` (compress proxy tool) **reimplemented rather than cherry-picked** — see the compress gotcha below. The design was right, four defects were not.
+
+Recommendation as of 2026-09-19 (after the PR #35 and #36 merges): **nothing open has a user-visible payoff.** The one follow-up those merges create is the proxy-call stall warning: with no `task` deadline a wedged subagent is silent until something releases it, so a periodic WARN naming tool and call id is the next reliability item, tracked in the maintainer's Future Features note. #29 and #24 both shipped. The only open issue is #31, the v2 migration tracker, which is deliberately parked; pick it up only when one of its checklist triggers fires, not because an opencode bump happened. Note that PR #15's narrow half did eventually land (truncation-continue, v0.18.2), and that it introduced the compaction regression fixed in v0.18.3, which is the argument for a compaction case in any future auto-continue change. The PRs that used to need a decision are all resolved: #25 (@CNQQC, cost units off by 1e6) merged, #23 (own draft) and #15 (@JWebCoder, auto-continue stopReason short-circuit) closed, the latter for the reason in the auto-continue gotcha above.
+
+## Outward-facing follow-ups (posted 2026-08-19)
+
+Both deferred items were approved and are done. What they are waiting on now:
+
+1. **[anomalyco/opencode#36604](https://github.com/anomalyco/opencode/issues/36604)** — our question-form evidence is posted. Two corrections to the older note: **PR #36603 is CLOSED unmerged**, so no fix is landing, and the issue is scoped to *detach + reattach* while our symptom happens with the TUI attached the whole time (the comment says so and offers to file separately if maintainers see it as distinct). Evidence posted: still reproducing on **1.18.18** (2026-08-19); 59 `completed` question parts between 2026-03-31 and 2026-04-25 vs essentially all aborted from 2026-05-18 on, bracketing the regression to v1.14.24…v1.15.5; the single post-boundary `completed` is our own headless `POST /question/{id}/reply` test, which is what isolates the fault to the TUI render step. **Re-test the `question` proxy and `planModeQuestion` when this moves** — both stay off until then.
+2. **Issue #4** — @jessielaf pinged for a retest, with the startup-diagnostics `cwd` branch (`captured` is the fingerprint of this bug) as the thing to paste. Stated intent: close as resolved-pending-feedback if there is no reply in about a week, reopening on request. That also retires roadmap item #5.
