@@ -84,6 +84,12 @@ changing, reverting or "simplifying" a rule.
 - Subagent todos require `permission: { todowrite: "allow" }` on the subagent definition, or opencode injects `todowrite: false` and the synthetic todowrites surface as `⚙ invalid`. Built-in `general` denies it by default. (h #g86)
 - **A failed CLI tool needs `isError: true` on the `tool-result` stream part**, not just error text, because opencode's bridge routes on that flag. AI SDK v3 has no `tool-error` part a provider can emit; the source is `block.is_error`. (h #g112)
 
+### Scratch files on disk
+
+- **The scratch dir is `0700` and a pre-existing symlink, non-directory or foreign-owned path at the pid name is refused** for a fresh `mkdtempSync` one, re-checked every `pluginTmpDir()` call. The system prompt file is `0600` inside it, not loose in the OS tmpdir: it holds the whole forwarded prompt. `test-tmp-dir.ts`, `test-compaction-model.ts`. (h #g156)
+- **`sweepStalePluginTmpDirs` may only remove a pid-named directory that `lstat` says is a real directory, the current user owns, and whose pid is dead** (`EPERM` counts as alive). `cleanupStaleUnscopedInstall` is gated on a version marker under `XDG_STATE_HOME`, so it sweeps opencode's plugin cache once per installed version. `test-cleanup-stale.ts`. (h #g156)
+- **Windows still spawns through `cmd.exe` (`shell: win32`) and that is a known, documented hole**, not an oversight: Node quotes nothing there. Do not "fix" it without a Windows runner to verify the escaper on. (h #g156)
+
 ### Models, effort and spawn env
 
 - The `chat.params` hook tags opencode's active agent into provider options. Write to `output.options` at the **top level**. Do not pre-nest under `output.options[providerID]`, or the model sees `providerOptions[id][id]`. (h #g40)
