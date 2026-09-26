@@ -510,3 +510,29 @@ export function formatStreamTimeoutNote(silenceMs: number): string {
     "result. The answer above may be incomplete.\n"
   )
 }
+
+// ---------------------------------------------------------------------------
+// a turn that succeeded without saying anything
+// ---------------------------------------------------------------------------
+
+export const SILENT_TURN_MARKER = "▌ **no reply:**"
+
+/**
+ * A `result` with `subtype: "success"` after a stream that emitted no visible
+ * text and called no tool. opencode records it as an ordinary reply, so the
+ * operator gets an empty assistant message and has to guess whether Claude
+ * failed, was interrupted, or simply had nothing to say. This is the note that
+ * says which.
+ *
+ * `hadReasoning` distinguishes the two shapes the empty turn takes: a thinking
+ * block with no answer after it, and a turn that produced nothing at all.
+ */
+export function formatSilentTurnNote(hadReasoning: boolean): string {
+  const what = hadReasoning
+    ? "Claude Code finished the turn after thinking but never wrote an answer"
+    : "Claude Code finished the turn without writing anything or calling a tool"
+  return (
+    `\n${SILENT_TURN_MARKER} ${what}, so there is no reply above. ` +
+    "Nothing failed and nothing is pending: send the message again, or rephrase it.\n"
+  )
+}

@@ -26,6 +26,7 @@ import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } fro
 import {
   describeResultFailure,
   formatResultFailureNote,
+  formatSilentTurnNote,
   formatStreamTimeoutNote,
   isRateLimitRejected,
   parseRateLimitEvent,
@@ -148,6 +149,7 @@ import {
 import {
   autoContinueEnabledFor,
   continuationSignature,
+  isSilentTurn,
   makeAutoContinueMessage,
   shouldAutoContinueIncompleteTurn,
   type AutoContinueState,
@@ -205,6 +207,7 @@ export {
 export type { AppendedSystemPromptOptions } from "./prompts.js"
 export {
   autoContinueEnabledFor,
+  isSilentTurn,
   shouldAutoContinueIncompleteTurn,
 } from "./auto-continue.js"
 export { denyMessageForTool, isAskUserQuestionTool } from "./ask-user-question.js"
@@ -2157,6 +2160,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           let hadReasoningSinceContinue = false
           let hadToolActivitySinceContinue = false
           let hadProxyActivitySinceContinue = false
+          // The same four signals for the whole stream rather than for the
+          // window since the last auto-continue nudge. `resetAutoContinueWindow`
+          // clears the counters above, so they cannot answer "did the operator
+          // see anything at all this turn", which is what the silent-turn note
+          // is deciding.
+          let sawVisibleText = false
+          let sawReasoning = false
+          let sawToolActivity = false
+          let sawProxyActivity = false
           // v0.4.16: protocol-level stop signal captured from Claude CLI's
           // stream. Set by either the `message_delta` partial event or the
           // top-level `assistant` message, whichever arrives first.
@@ -2537,6 +2549,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const noteVisibleText = (text: string) => {
           visibleTextSinceContinue += text
           lastVisibleTextSinceContinue += text
+          if (text.length > 0) sawVisibleText = true
         }
 
         const resetLastVisibleTextBlock = () => {
@@ -2545,14 +2558,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         const noteReasoning = () => {
           hadReasoningSinceContinue = true
+          sawReasoning = true
         }
 
         const noteToolActivity = () => {
           hadToolActivitySinceContinue = true
+          sawToolActivity = true
         }
 
         const noteProxyActivity = () => {
           hadProxyActivitySinceContinue = true
+          sawProxyActivity = true
         }
 
         const resetAutoContinueWindow = () => {
@@ -2681,6 +2697,37 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 id: reasoningId,
               } as any)
             }
+          }
+
+          // A turn that finished cleanly having said nothing and done nothing.
+          // opencode files it as an ordinary reply, so without this the
+          // operator gets a blank assistant message and no way to tell it from
+          // a crash. Its own text part, led by SILENT_TURN_MARKER, so a later
+          // transcript rebuild strips it: it was never Claude's output.
+          if (
+            isSilentTurn({
+              enabled: autoContinueState.enabled,
+              compactionMode,
+              sawVisibleText,
+              sawToolActivity,
+              sawProxyActivity,
+              isError: msg.is_error === true || resultFailure !== undefined,
+              aborted: autoContinueState.aborted,
+              sawQuestion: autoContinueState.sawAskUserQuestion,
+            })
+          ) {
+            log.notice("claude finished the turn without a reply", {
+              sessionKey: sk,
+              stopReason: lastStopReason,
+              hadReasoning: sawReasoning,
+              attempts: autoContinueState.attempts,
+            })
+            controller.enqueue({
+              type: "text-delta",
+              id: startTextBlock(),
+              delta: formatSilentTurnNote(sawReasoning),
+            })
+            endTextBlock()
           }
 
           controller.enqueue({

@@ -242,6 +242,56 @@ export function shouldAutoContinueIncompleteTurn(
   return { continue: true, reason: "non-final-progress" }
 }
 
+/**
+ * Everything the silent-turn check needs, gathered at the `result` boundary.
+ * Deliberately stream-scoped rather than window-scoped: the `SinceContinue`
+ * counters reset on every auto-continue nudge, so a turn whose first attempt
+ * answered and whose second said nothing would read as silent even though the
+ * operator can see the answer.
+ */
+export interface SilentTurnSnapshot {
+  /** `AutoContinueState.enabled`, already resolved through `autoContinueEnabledFor`. */
+  enabled: boolean | "smart" | undefined
+  /** True for a `/compact` turn, whose reply is a stored summary and not shown. */
+  compactionMode: boolean
+  /** Any text delta the CLI produced this stream. Plugin `▌` notes do not count. */
+  sawVisibleText: boolean
+  sawToolActivity: boolean
+  sawProxyActivity: boolean
+  /** `result.is_error`, or a non-success `result.subtype`. */
+  isError: boolean
+  aborted?: boolean
+  /** The turn ended on a question form the operator still has to answer. */
+  sawQuestion?: boolean
+}
+
+/**
+ * Whether a finished turn produced nothing the operator can see.
+ *
+ * Measured before it was built (2026-09-26, the whole retained `plugin.log`
+ * pair): every completed turn carried between 940 and 5,080 characters of text
+ * and none had `textLength: 0`, so this ships as a note and not as a recovery
+ * nudge. A nudge would spend a second model round-trip on a case with no
+ * evidence behind it, and `shouldAutoContinueIncompleteTurn` already refuses to
+ * fire here anyway: a silent turn arrives with an authoritative `end_turn`.
+ *
+ * Every exclusion below is a turn where an empty reply is the correct output,
+ * not a defect. The `enabled === false` case is the operator having said they
+ * do not want the plugin second-guessing how a turn ended.
+ */
+export function isSilentTurn(snapshot: SilentTurnSnapshot): boolean {
+  if (snapshot.enabled === false) return false
+  if (snapshot.compactionMode) return false
+  if (snapshot.isError) return false
+  if (snapshot.aborted) return false
+  if (snapshot.sawQuestion) return false
+  return (
+    !snapshot.sawVisibleText &&
+    !snapshot.sawToolActivity &&
+    !snapshot.sawProxyActivity
+  )
+}
+
 export function makeAutoContinueMessage(): string {
   return JSON.stringify({
     type: "user",
