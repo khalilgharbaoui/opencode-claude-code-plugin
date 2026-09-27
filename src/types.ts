@@ -568,6 +568,28 @@ export type EffectivePermissionMode =
 
 export type ControlRequestBehavior = "allow" | "deny"
 
+/**
+ * `Question` is deliberately absent: enabling it disables Claude Code's
+ * built-in AskUserQuestion (via --disallowedTools) and replaces the
+ * stop-and-wait deny/markdown path with an in-turn blocking form. That is a
+ * behavior trade against the issue-#8 guarantee, so it stays opt-in until it
+ * has the same live mileage Task had before v0.10.0 flipped it on. Users opt
+ * in by listing it in `proxyTools`; see README "Question proxy tool".
+ *
+ * It lives here rather than in `index.ts` (which still re-exports it, so the
+ * public name is unchanged) because `permission-presets.ts` needs it to say
+ * which proxy tools a preset dropped, and `startup-diagnostics.ts` and
+ * `doctor.ts` read that answer. Importing `index.ts` from any of the three
+ * would be a cycle.
+ */
+export const DEFAULT_PROXY_TOOL_NAMES = [
+  "Bash",
+  "Edit",
+  "Write",
+  "WebFetch",
+  "Task",
+]
+
 export interface ClaudeCodeCallOptions {
   reasoningEffort?: ReasoningEffort
 }

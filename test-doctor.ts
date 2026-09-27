@@ -35,6 +35,15 @@ const report: DoctorReport = {
   accounts: ["default", "work"],
   proxyTools: ["Bash", "Edit", "Write", "WebFetch", "Task"],
   mcpServers: ["github"],
+  permissionPresets: [
+    { provider: "claude-code-default", preset: "none", applied: false, overrides: [] },
+    {
+      provider: "claude-code-work",
+      preset: "read-only",
+      applied: true,
+      overrides: ["skipPermissions: forced to false; the CLI exits with ..."],
+    },
+  ],
   transport: "headless",
   planModeQuestion: false,
   turnStats: true,
@@ -73,6 +82,7 @@ test("the report names every field a bug report needs, and nothing secret", () =
     "| accounts | default, work |",
     "| proxyTools | Bash, Edit, Write, WebFetch, Task |",
     "| MCP servers (on disk) | github |",
+    "| permissionPreset | claude-code-default: none, claude-code-work: read-only |",
     "| transport | headless |",
     "| turnStats | true |",
     "| ANTHROPIC_API_KEY in env | no |",
@@ -86,6 +96,29 @@ test("the report names every field a bug report needs, and nothing secret", () =
 
   // Nothing that identifies a credential may appear, by value or by name.
   assert.equal(/authToken|bearer|sk-ant|Authorization/i.test(text), false)
+})
+
+test("an applied preset lists the options it replaced", () => {
+  const text = formatDoctorReport(report)
+  assert.ok(text.includes("**Permission preset overrides**"), text)
+  assert.ok(text.includes("`claude-code-work` (read-only) replaced:"), text)
+  assert.ok(text.includes("- skipPermissions: forced to false"), text)
+  // The provider that has no preset gets no override block of its own.
+  assert.equal(text.includes("`claude-code-default` (none)"), false)
+})
+
+test("an unrecognised preset is never shown as if it took effect", () => {
+  const text = formatDoctorReport({
+    ...report,
+    permissionPresets: [
+      { provider: "claude-code", preset: "readonly", applied: false, overrides: [] },
+    ],
+  })
+  assert.ok(
+    text.includes("| permissionPreset | claude-code: readonly (unknown, nothing applied) |"),
+    text,
+  )
+  assert.equal(text.includes("**Permission preset overrides**"), false)
 })
 
 test("a pending call with no deadline reads as none, not as 0.0s", () => {
@@ -106,10 +139,13 @@ test("an empty runtime reads as empty rather than as broken", () => {
     accounts: [],
     proxyTools: [],
     mcpServers: [],
+    permissionPresets: [],
   })
   assert.ok(text.includes("None. The next message in a Claude Code session spawns one."))
   assert.ok(text.includes("None running."))
   assert.ok(text.includes("| providers | none |"))
+  assert.ok(text.includes("| permissionPreset | none |"))
+  assert.equal(text.includes("**Permission preset overrides**"), false)
   assert.equal(text.includes("Last stderr"), false)
 })
 

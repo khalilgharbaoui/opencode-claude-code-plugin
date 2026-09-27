@@ -5,6 +5,10 @@ import {
   type PendingProxyCallSnapshot,
 } from "./proxy-broker.js"
 import {
+  NO_PERMISSION_PRESET,
+  type PermissionPresetSummary,
+} from "./permission-presets.js"
+import {
   snapshotActiveProcesses,
   type ActiveProcessSnapshot,
 } from "./session-manager.js"
@@ -103,6 +107,8 @@ export interface DoctorReport {
   accounts: string[]
   proxyTools: string[]
   mcpServers: string[]
+  /** One row per provider; `none` where no preset is configured. */
+  permissionPresets: PermissionPresetSummary[]
   transport: "headless" | "interactive"
   planModeQuestion: boolean
   turnStats: boolean
@@ -139,6 +145,25 @@ function describeAuth(auth: ProxyAuthCheck): string {
 }
 
 /**
+ * The preset cell: `provider: preset` per provider, so an operator running two
+ * accounts can see which one is restricted. An unrecognised name is called out
+ * rather than shown as if it took effect, because a typo'd `permissionPreset`
+ * runs at full permissions and that is the whole point of reporting it.
+ */
+function describePermissionPresets(rows: PermissionPresetSummary[]): string {
+  if (rows.length === 0) return NO_PERMISSION_PRESET
+  return rows
+    .map((row) => {
+      const suffix =
+        row.preset === NO_PERMISSION_PRESET || row.applied
+          ? ""
+          : " (unknown, nothing applied)"
+      return `${row.provider}: ${row.preset}${suffix}`
+    })
+    .join(", ")
+}
+
+/**
  * Markdown, in one text part, led by `DOCTOR_MARKER`. Pure so a test can pin
  * the whole report against a fixed object; everything live is gathered in
  * `gatherDoctorReport`.
@@ -157,10 +182,25 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push(`| accounts | ${list(report.accounts)} |`)
   lines.push(`| proxyTools | ${list(report.proxyTools)} |`)
   lines.push(`| MCP servers (on disk) | ${list(report.mcpServers)} |`)
+  lines.push(`| permissionPreset | ${describePermissionPresets(report.permissionPresets)} |`)
   lines.push(`| transport | ${report.transport} |`)
   lines.push(`| planModeQuestion | ${report.planModeQuestion} |`)
   lines.push(`| turnStats | ${report.turnStats} |`)
   lines.push(`| ANTHROPIC_API_KEY in env | ${report.anthropicApiKeyInEnv ? "yes" : "no"} |`)
+
+  // Only when a preset actually replaced something, the way "Last stderr"
+  // below appears only when there is stderr to show.
+  const overriding = report.permissionPresets.filter((row) => row.overrides.length > 0)
+  if (overriding.length > 0) {
+    lines.push("")
+    lines.push("**Permission preset overrides**")
+    for (const row of overriding) {
+      lines.push("")
+      lines.push(`\`${row.provider}\` (${row.preset}) replaced:`)
+      lines.push("")
+      for (const override of row.overrides) lines.push(`- ${override}`)
+    }
+  }
 
   lines.push("")
   lines.push("**Live `claude` processes**")
@@ -310,6 +350,7 @@ export async function gatherDoctorReport(
     accounts: base.accounts,
     proxyTools: base.proxyTools,
     mcpServers: base.mcpServers,
+    permissionPresets: base.permissionPresets,
     transport: options.interactive || base.interactiveTransport ? "interactive" : "headless",
     planModeQuestion: base.planModeQuestion,
     turnStats: options.turnStats,

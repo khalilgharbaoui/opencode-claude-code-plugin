@@ -8,6 +8,7 @@ import type {
   OpenCodePlugin,
   OpenCodeProvider,
 } from "./opencode-types.js"
+import { DEFAULT_PROXY_TOOL_NAMES } from "./types.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
 import {
   BASE_PROVIDER_ID,
@@ -81,19 +82,10 @@ function pickOpencodeDirectory(input: unknown): string | undefined {
 let warnedAnthropicApiKey = false
 let warnedPlanModeNoExit = false
 
-// `Question` is deliberately absent: enabling it disables Claude Code's
-// built-in AskUserQuestion (via --disallowedTools) and replaces the
-// stop-and-wait deny/markdown path with an in-turn blocking form. That is a
-// behavior trade against the issue-#8 guarantee, so it stays opt-in until it
-// has the same live mileage Task had before v0.10.0 flipped it on. Users opt
-// in by listing it in `proxyTools`; see README "Question proxy tool".
-export const DEFAULT_PROXY_TOOL_NAMES = [
-  "Bash",
-  "Edit",
-  "Write",
-  "WebFetch",
-  "Task",
-]
+// Defined in `types.ts` so `permission-presets.ts` and the two diagnostics
+// modules can read it without importing this file, and re-exported here
+// unchanged because it is part of the package's public surface.
+export { DEFAULT_PROXY_TOOL_NAMES } from "./types.js"
 
 /**
  * Registers `/btw` unless the user defined their own. Returns whether the

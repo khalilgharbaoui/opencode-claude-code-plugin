@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url"
 import { detectCliVersion } from "./cli-version.js"
 import { log } from "./logger.js"
 import { mergeOpencodeMcp } from "./mcp-bridge.js"
+import {
+  summarizePermissionPreset,
+  type PermissionPresetSummary,
+} from "./permission-presets.js"
 import { getOpencodeProjectDirectory, isUsableDirectory } from "./runtime-status.js"
 
 /**
@@ -26,6 +30,14 @@ export interface StartupDiagnostics {
   accounts: string[]
   proxyTools: string[]
   mcpServers: string[]
+  /**
+   * `permissionPreset` per provider, `none` where unset, plus the options an
+   * applied preset replaced. Per provider rather than first-wins like the
+   * fields above: a preset is a safety posture, and two accounts can be
+   * configured with different ones, so a single value would name the wrong
+   * one for the provider the operator is actually running under.
+   */
+  permissionPresets: PermissionPresetSummary[]
   interactiveTransport: boolean
   /** ExitPlanMode approval routed through opencode's `question` tool. */
   planModeQuestion: boolean
@@ -188,6 +200,9 @@ export function collectStartupDiagnostics(
     accounts,
     proxyTools: stringList(firstOption(providers, "proxyTools")),
     mcpServers,
+    permissionPresets: Object.entries(providers).map(([name, entry]) =>
+      summarizePermissionPreset(name, entry?.options),
+    ),
     interactiveTransport:
       firstOption(providers, "interactive") === true ||
       process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT === "1",

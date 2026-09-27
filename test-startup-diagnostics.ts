@@ -109,12 +109,68 @@ test("collectStartupDiagnostics summarizes account providers", () => {
   assert.ok(Array.isArray(diagnostics.mcpServers))
 })
 
+test("collectStartupDiagnostics reports permissionPreset per provider", () => {
+  const diagnostics = collectStartupDiagnostics({
+    "claude-code-work": {
+      options: { account: "work", permissionPreset: "read-only" },
+    },
+    "claude-code-personal": { options: { account: "personal" } },
+  })
+
+  // Per provider, not first-wins: one account restricted and one not is a
+  // configuration a single value would report wrongly.
+  assert.deepEqual(
+    diagnostics.permissionPresets.map((row) => [row.provider, row.preset, row.applied]),
+    [
+      ["claude-code-work", "read-only", true],
+      ["claude-code-personal", "none", false],
+    ],
+  )
+})
+
+test("collectStartupDiagnostics carries the options a preset replaced", () => {
+  const [row] = collectStartupDiagnostics({
+    "claude-code": {
+      options: {
+        permissionPreset: "read-only",
+        permissionMode: "acceptEdits",
+        skipPermissions: true,
+        controlRequestBehavior: "allow",
+      },
+    },
+  }).permissionPresets
+
+  assert.equal(row.applied, true)
+  // The same facts applyPermissionPreset logs at NOTICE, one line per option.
+  const joined = row.overrides.join("\n")
+  assert.match(joined, /permissionMode: "acceptEdits" is dropped/)
+  assert.match(joined, /skipPermissions: forced to false/)
+  assert.match(joined, /controlRequestBehavior: forced to "deny"/)
+  // No proxyTools of its own, so the default list is what got filtered.
+  assert.match(joined, /proxyTools: dropped Bash, Edit, Write, WebFetch, Task/)
+})
+
+test("collectStartupDiagnostics calls out an unrecognised preset", () => {
+  const [row] = collectStartupDiagnostics({
+    "claude-code": { options: { permissionPreset: "readonly" } },
+  }).permissionPresets
+
+  // A typo'd safety option runs at full permissions, so it must never read as
+  // if it took effect.
+  assert.equal(row.preset, "readonly")
+  assert.equal(row.applied, false)
+  assert.deepEqual(row.overrides, [])
+})
+
 test("collectStartupDiagnostics falls back when options are absent", () => {
   const diagnostics = collectStartupDiagnostics({ "claude-code": {} })
 
   assert.equal(diagnostics.claudeCliPath, "claude")
   assert.deepEqual(diagnostics.accounts, [])
   assert.deepEqual(diagnostics.proxyTools, [])
+  assert.deepEqual(diagnostics.permissionPresets, [
+    { provider: "claude-code", preset: "none", applied: false, overrides: [] },
+  ])
   assert.equal(diagnostics.cwd.source, "process")
   // No opencode version handed in and none in the env → explicit "unknown",
   // never a fabricated number.
