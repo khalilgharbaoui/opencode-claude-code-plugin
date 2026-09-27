@@ -559,7 +559,10 @@ includes NOTICE). Do not paste the entire log or raw spawn arguments.
 
 Fields: `plugin` (version actually loaded), `opencode`, `cwd.resolved` and `cwd.source`
 (`configured`, `process`, `captured`, `unresolved`), `providers`, `accounts`,
-`proxyTools`, `mcpServers`, `interactiveTransport`, `planModeQuestion`,
+`proxyTools`, `mcpServers`, `permissionPresets` (one row per provider:
+`{provider, preset, applied, overrides}`, `preset: "none"` where unset,
+`applied: false` for `none` and for an unrecognised name, `overrides` naming the
+options an applied preset replaced), `interactiveTransport`, `planModeQuestion`,
 `anthropicApiKeyInEnv`, `claudeCli.path` and `.version`
 (`not detected` means the binary did not answer `--version`, which also disables
 version-gated flags). Cwd is a startup fallback snapshot, not the per-session spawn
@@ -586,7 +589,10 @@ alone do not prove it patched. Never call `tools/call` or obtain the bearer to p
 `/claude-code-doctor` prints the same fields as the startup block plus live runtime
 state, in the chat, with no model inference and at zero tokens: plugin/opencode/CLI
 versions, cwd and its resolution tier, providers, accounts, `proxyTools`, disk MCP
-servers, transport, whether an `ANTHROPIC_API_KEY` is present (never its value), the
+servers, the `permissionPreset` in force per provider (`provider: preset`, `none` where
+unset, an unknown name marked `(unknown, nothing applied)`, plus a
+**Permission preset overrides** block listing what an applied preset replaced),
+transport, whether an `ANTHROPIC_API_KEY` is present (never its value), the
 live `claude` processes (opencode session, model, pid, in flight, age, effort), pending
 proxy calls with their deadlines, and one unauthenticated `initialize` against each
 proxy URL (`401, good`; anything else is flagged unsafe). Prefer it over asking for
@@ -631,6 +637,7 @@ Prefer the doctor: it needs no logging change and no restart.
 | A tool call reported as rejected although it ran | Two fixed causes: opencode 1.18.32 aborts the provider signal of every step ending in tool calls, read as an operator stop (0.26.1); and a call waiting on an unanswered permission prompt was rejected at the flat 10-minute deadline, after which the late approval cancelled Claude's next call (0.26.2) | Upgrade to 0.26.2+ and relaunch. Do NOT raise `proxyToolTimeoutMs` for this: a deadline now waits while opencode reports the session busy |
 | `proxy call still waiting` in the log, or a `task` that looks stuck | Expected: `task`/`task_batch` carry no default deadline, and the line is a status report | `/claude-code-doctor` lists pending calls with tool, age and deadline. Tell a working subagent from a wedged one there before proposing any timeout change; see the note under "Proxy tool names" |
 | An MCP server's tools are simply absent | Claude Code could not connect that server | Read the once-per-process WARN at session start. `mcpServers` in the ready block is disk discovery, not live connectivity; fix the server where it is configured |
+| `permissionPreset` set but nothing about the session looks restricted | The option never reached that provider, or the name is not one the plugin knows (only `read-only` exists) | Read the `permissionPreset` row in `/claude-code-doctor`, or `permissionPresets` in the ready block, for the provider the conversation is on: `none` means it is not configured there (each account is its own provider id), `applied: false` with a name means an unrecognised name applied nothing, and `overrides` lists what an applied preset replaced |
 | `permissionPreset: "read-only"` set, but reads are unconfined or something still prompts | `--restricted` needs CLI 2.1.258 and `--permission-prompts none` needs 2.1.263; below those the preset falls back to `--disallowedTools` plus the plugin's own deny and WARNs naming what is lost | `claude --version`. Below 2.1.258 the working-directory confinement on reads is gone; below 2.1.263 the denial happens in the plugin instead of the CLI. The preset still holds, with one layer fewer |
 | `/btw` shows "Queued" or "requires an idle Claude Code session" | Plugin older than 0.15.2, or a window started before the current build | Upgrade and restart. `/btw` also needs Claude Code 2.1.258+ |
 | Model calls `Skill("x")` and gets `Unknown skill` | Wrong namespace (`opencode-skills:x`), a CLI without `--plugin-dir`, a compaction turn, or `bridgeOpencodeSkills: false` | Check the namespace and `claude --help`; remove the `false` only with approval |

@@ -782,11 +782,13 @@ Fully restart opencode after upgrading to load the command and runtime changes. 
 
 Prints, in the chat, what the plugin currently thinks is happening. The plugin answers it itself: no model is called, nothing is billed, and the reply reports 0 tokens. It is the thing to paste into a bug report.
 
-It carries the startup-diagnostics fields (plugin version, opencode version, `claude` path and version, the working directory and which resolution tier picked it, providers, accounts, `proxyTools`, the on-disk MCP servers, transport, whether an `ANTHROPIC_API_KEY` is present) plus the live runtime state the startup block cannot know:
+It carries the startup-diagnostics fields (plugin version, opencode version, `claude` path and version, the working directory and which resolution tier picked it, providers, accounts, `proxyTools`, the on-disk MCP servers, the `permissionPreset` in force per provider, transport, whether an `ANTHROPIC_API_KEY` is present) plus the live runtime state the startup block cannot know:
 
 - every live `claude` child, by opencode session id and model, with its pid, whether a turn is in flight, how long it has been up, and the effort it was spawned at,
 - every pending proxy call, with the tool, the call id, how long it has waited, and its deadline,
 - each proxy server's URL with one unauthenticated `initialize` posted to it: `401, good` is the patched behaviour, and anything else is flagged unsafe with the fix (restart every opencode window, since a window opened before 0.13.2 keeps serving an open port). See [Proxy endpoint security](#proxy-endpoint-security).
+
+The `permissionPreset` row reads `provider: preset` for every registered provider, `none` where none is set, so two accounts configured with different postures are not collapsed into one answer. When a preset is in force, a **Permission preset overrides** block under the table lists the options it replaced, in the same words the log uses. A name the plugin does not recognise is reported as `readonly (unknown, nothing applied)` rather than shown as if it took effect: a typo'd safety option runs at full permissions, and the report is where you find that out. See [Read-only mode](#read-only-mode).
 
 Nothing secret goes in it: not the proxy bearer token, not the value of `ANTHROPIC_API_KEY`, not the system prompt, not a pending call's arguments. A `claude-code-doctor` command you defined yourself is never overwritten. The name has no space in it because opencode reads everything after the first space as the command's arguments. The whole exchange is kept out of any transcript replayed to the CLI, like a `/btw` pair.
 
@@ -1230,6 +1232,15 @@ grep "plugin ready" ~/.local/share/opencode-claude-code/plugin.log
   "accounts": ["default", "work"],
   "proxyTools": ["Bash", "Edit", "Write", "WebFetch", "Task"],
   "mcpServers": ["github", "slack"],
+  "permissionPresets": [
+    { "provider": "claude-code-default", "preset": "none", "applied": false, "overrides": [] },
+    {
+      "provider": "claude-code-work",
+      "preset": "read-only",
+      "applied": true,
+      "overrides": ["skipPermissions: forced to false; ..."]
+    }
+  ],
   "interactiveTransport": false,
   "anthropicApiKeyInEnv": false,
   "claudeCli": { "path": "claude", "version": "2.1.211 (Claude Code)" }
@@ -1249,6 +1260,12 @@ Reading it:
   flags like `--thinking-display`.
 - **`mcpServers`** is the on-disk merge, before opencode's runtime toggles
   are applied (those aren't settled yet at startup).
+- **`permissionPresets`** is one row per provider rather than a single value,
+  because a preset is a safety posture and two accounts can be configured with
+  different ones. `preset` is the configured name or `none`; `applied` is false
+  for `none` and for a name the plugin does not recognise, which applies
+  nothing at all; `overrides` are the operator settings the preset replaced,
+  the same lines logged at NOTICE when it was applied.
 - **`opencode`** is read from the running opencode binary (`--version`), since
   opencode still does not hand its version to plugins. It reads `unknown` when
   opencode is run from source rather than as the packaged binary.
@@ -1296,7 +1313,7 @@ Four checks answer almost everything. Run them in this order, and stop as soon a
 
 | Check | What it tells you |
 |---|---|
-| `/claude-code-doctor` in the session | The plugin version actually loaded, the `claude` path and version, which providers and accounts registered, `proxyTools`, the working directory and which rule picked it, every live `claude` child, and every pending proxy call. No model is called and nothing is billed. Start here. |
+| `/claude-code-doctor` in the session | The plugin version actually loaded, the `claude` path and version, which providers and accounts registered, `proxyTools`, the `permissionPreset` per provider and what it replaced, the working directory and which rule picked it, every live `claude` child, and every pending proxy call. No model is called and nothing is billed. Start here. |
 | `OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode`, then grep `~/.local/share/opencode-claude-code/plugin.log` | Whether the plugin loaded at all, and every warning it emitted. The log file is off by default, so turning it on needs a relaunch. |
 | `claude --version` | Whether a version-gated feature can work at all. Version floors: 2.1.142 thinking summaries, 2.1.220 fast mode, 2.1.258 `/btw` and `--restricted`, 2.1.263 `--permission-prompts none`, 2.1.280 `claude-opus-5-5`. |
 | `claude auth status`, or `CLAUDE_CONFIG_DIR=~/.claude-<name> claude auth status` | Which account is signed in, and whether its login is still valid. |
@@ -1317,6 +1334,7 @@ Four checks answer almost everything. Run them in this order, and stop as soon a
 | A `-fast` model clearly ran at ordinary speed | Grep `plugin.log` for `fast mode` | Fast mode fails soft, so the plugin warns once per reason and names it; the CLI reports `fast_mode_state: "off"`. The usual cause is that usage credits are off (`/usage-credits` in an interactive `claude`). Also: a CLI below 2.1.220, a cooldown after a fast-mode rate limit, free tier or an organization that disabled it, `CLAUDE_CODE_DISABLE_FAST_MODE=1`, or a non-first-party route, since Bedrock, Vertex and Foundry are excluded. Until it is fixed, switch to the non-fast id so the picker's price matches your bill. |
 | An MCP server's tools are simply absent | The WARN the plugin logs once per process at session start for each server Claude Code could not connect | Authenticate or repair that server where it is configured. `mcpServers` in the ready block is on-disk discovery, so a server can be listed there and still be unreachable. |
 | A freshly published version does not appear | The `plugin` version in `/claude-code-doctor` against the version you expect | Remove the frozen cache entry and relaunch: see [Nothing in the picker](#nothing-in-the-picker-or-a-version-you-just-upgraded-to-is-missing). If npm itself does not list the version, a local security scanner with a minimum-package-age policy can be filtering it out of the reply, so read that tool's event log before blaming the registry. |
+| `permissionPreset` is set but nothing about the session looks restricted | The `permissionPreset` row in `/claude-code-doctor`, for the provider the conversation is actually on | `none` there means the option never reached this provider: it belongs under `provider.<id>.options`, and with `accounts` configured each account is its own provider id. `readonly (unknown, nothing applied)` means the name is not one the plugin knows, so nothing was applied at all; the only name today is `read-only`. When it did apply, the **Permission preset overrides** block names every option it replaced. |
 | `permissionPreset: "read-only"` is set, but reads are not confined or something still prompts | `claude --version` | The preset holds on any CLI, but two of its four layers are version-gated: `--restricted` needs 2.1.258 and `--permission-prompts none` needs 2.1.263. Below those it falls back to `--disallowedTools` plus the plugin's own denial of every permission request, and warns naming what is missing. Below 2.1.258 you lose the working-directory confinement on reads; below 2.1.263 the denial happens in the plugin instead of in the CLI, one layer instead of two. See [Read-only mode](#read-only-mode). |
 | A config change did nothing | `/claude-code-doctor`, which reports the options in force | Provider options are read once at opencode startup. Quit every opencode window, `serve` and GUI processes included, and relaunch. A `/new` session is not enough. |
 | A question form never renders and the turn hangs | `GET /question` on the same opencode server and workspace | See [A question form never renders](#a-question-form-never-renders-and-the-turn-hangs). |

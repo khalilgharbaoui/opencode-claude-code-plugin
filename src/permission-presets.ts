@@ -36,6 +36,7 @@
  * attempt at all: the shell tool was not in the set to begin with.
  */
 import {
+  DEFAULT_PROXY_TOOL_NAMES,
   READ_ONLY_PERMISSION_MODE,
   type ClaudeCodeProviderSettings,
   type ControlRequestBehavior,
@@ -228,6 +229,61 @@ export function isUnknownPreset(
   resolved: ResolvedPermissionPreset | { unknown: string } | null,
 ): resolved is { unknown: string } {
   return resolved !== null && "unknown" in resolved
+}
+
+/** What the diagnostics report about one provider's `permissionPreset`. */
+export interface PermissionPresetSummary {
+  /** The provider id the setting was read from. */
+  provider: string
+  /** The configured name, or `"none"` when unset. */
+  preset: string
+  /** False for `none` and for an unrecognised name, which applies nothing. */
+  applied: boolean
+  /** Operator settings the preset replaced; empty unless one applied. */
+  overrides: string[]
+}
+
+/** The name diagnostics print for a provider with no preset configured. */
+export const NO_PERMISSION_PRESET = "none"
+
+/**
+ * One provider's preset, for the startup block and `/claude-code-doctor`.
+ *
+ * Recomputed from the provider's own options rather than recorded when
+ * `applyPermissionPreset` ran, for two reasons. The doctor deliberately re-runs
+ * `collectStartupDiagnostics` on demand instead of reporting a snapshot frozen
+ * at startup, and `applyPermissionPreset` runs in `createClaudeCode`, which a
+ * session that has not asked for a model yet has never reached: a recorded
+ * snapshot would report no preset on a provider that has one configured. The
+ * `overrides` strings are the same ones `applyPermissionPreset` logs at NOTICE,
+ * because both come out of `resolvePermissionPreset`.
+ *
+ * Defensive about its input: `options` arrives as an untyped config record, so
+ * a preset that is not a string lands in the unknown branch and reads as
+ * "configured but not applied" rather than throwing.
+ */
+export function summarizePermissionPreset(
+  provider: string,
+  options: unknown,
+  defaultProxyTools: readonly string[] = DEFAULT_PROXY_TOOL_NAMES,
+): PermissionPresetSummary {
+  const settings =
+    options !== null && typeof options === "object" && !Array.isArray(options)
+      ? (options as ClaudeCodeProviderSettings)
+      : ({} as ClaudeCodeProviderSettings)
+  const resolved = resolvePermissionPreset(settings, defaultProxyTools)
+  if (resolved === null) {
+    return { provider, preset: NO_PERMISSION_PRESET, applied: false, overrides: [] }
+  }
+  if (isUnknownPreset(resolved)) {
+    return { provider, preset: resolved.unknown, applied: false, overrides: [] }
+  }
+  return {
+    provider,
+    preset: resolved.preset,
+    applied: true,
+    overrides: resolved.overridden,
+  }
 }
 
 /**
