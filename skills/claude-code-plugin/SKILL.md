@@ -110,6 +110,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
+| `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when `accountFailover` has no other account to offer; with another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction, title stubs, `doGenerate` or the interactive transport. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. Ignored when `permissionMode` is `"plan"`, which always drops the flag. |
 | `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. `plan` is enforced: it overrides `skipPermissions: true` and the plugin drops `--dangerously-skip-permissions` for it, so claude cannot edit or run commands. Every other value governs prompting and still passes the skip flag, so `plan` is the only one that makes a run read-only. Nothing releases plan mode mid-session (no headless `ExitPlanMode`), so leaving it means a config change and an opencode restart; the plugin warns once at startup. Not forwarded by the current interactive spawn path. |
@@ -323,6 +324,37 @@ the opencode schema requires it. Markdown fallback reads top-level scalar fields
 | `model` | Full `provider/model` pins bypass plugin model overrides, not the separate effort override. |
 | `forceModel` | Registered bare model id, preserving the caller's account even if an account suffix is supplied. Works for any discovered agent mode. |
 | `reasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid declarations warn and keep inherited effort. `minimal` maps to CLI `low`. Compaction skips this override. |
+| `fallbackModels` | Ordered registered bare model ids to try when this agent's model is refused. Both YAML spellings (`[a, b]` or a `- ` block). Replaces the provider-level `fallbackModels` rather than extending it. Keeps the caller's account; an entry carrying `@account` has it stripped. Unknown ids warn and are skipped. |
+
+### Degrade to another model instead of failing
+
+```yaml
+forceModel: claude-opus-5
+fallbackModels: [claude-sonnet-5, claude-haiku-4-5]
+```
+
+Or as the default for every agent that declares none:
+
+```json
+{ "provider": { "claude-code": { "options": { "fallbackModels": ["claude-sonnet-5"] } } } }
+```
+
+Per-agent replaces provider-level; it never merges. Unset means no chain, which is
+the default. Two triggers only, never a generic error: the CLI refusing the model
+(assistant `error: "model_not_found"`, or a failed result whose text is *"There's an
+issue with the selected model"*, measured on CLI 2.1.280, where the result `subtype`
+is misleadingly `success`), and a usage limit **only when `accountFailover` has no
+other account to offer**. With another account configured the switch form wins and
+the chain stays out of it: model is a capability choice, account is a billing choice.
+An expired login, a billing hold and every other error kind are excluded because they
+fail the same way on the next model.
+
+On a trigger the failed process is killed, its session id dropped, a fresh process
+spawns on the next model with the same account, effort and cwd, the conversation
+replays, and a `▌ **model fallback:**` note names the failed model, the reason and the
+serving model. The failed attempt's output is discarded entirely. Each model is tried
+at most once per turn; an exhausted chain surfaces the original error unchanged.
+Never on compaction turns, title stubs, `doGenerate`, or the interactive transport.
 
 ### Route a tool through opencode, or switch one off
 

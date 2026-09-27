@@ -330,6 +330,81 @@ To force an **account** rather than a model, pin the full string. This only appl
 model: claude-code-work/claude-opus-5@work
 ```
 
+### Fallback model chain
+
+`forceModel` and the model picker each name exactly one model, so a model this
+account cannot run today is a dead turn. The two ordinary ways to get there are
+a **retired id** (Anthropic retires model names on a published schedule, and an
+agent file written six months ago outlives them) and a **per-model usage cap**.
+An ordered chain degrades instead of failing:
+
+Per agent, in the agent's own file, either YAML spelling:
+
+```yaml
+forceModel: claude-opus-5
+fallbackModels: [claude-sonnet-5, claude-haiku-4-5]
+```
+
+Or once, as the default for every agent that declares none:
+
+```json
+{ "provider": { "claude-code": { "options": { "fallbackModels": ["claude-sonnet-5"] } } } }
+```
+
+A per-agent list **replaces** the provider one rather than extending it, because
+a merge would append the provider's expensive tail to an agent that deliberately
+named two cheap models.
+
+**Exactly two things arm it, and "an error" is not one of them:**
+
+1. **The CLI refuses the model.** Measured on Claude Code 2.1.280: a retired,
+   sunset or made-up id produces an assistant frame tagged
+   `"error": "model_not_found"` and a result with `is_error: true`,
+   `api_error_status: 404` and the text *"There's an issue with the selected
+   model (…). It may not exist or you may not have access to it."* Note that the
+   result's `subtype` is `success`, which is why a refused model used to finish
+   as an ordinary reply with the CLI's error standing in for Claude's answer.
+2. **A usage limit with nowhere else to go.** Only when
+   [account failover](#account-failover) has no other account to offer, meaning
+   a single configured account or every other one already limited. **When
+   another account exists the switch form wins and the chain does not fire**:
+   moving your billing is your decision, moving to a cheaper model is not, and a
+   per-model weekly cap is exactly the case a chain helps with.
+
+An expired login, a billing hold, a network failure, a tool error and every
+other CLI error kind are deliberately excluded: they fail identically on the
+next model, so retrying would spend a spawn per entry to print the same message.
+
+On a trigger the failed attempt is dropped whole (its process killed, its
+session id discarded), a fresh process spawns on the next model with the **same
+account, thinking budget and working directory**, the conversation replays into
+it, and a note goes into the reply:
+
+```
+▌ **model fallback:** "claude-opus-5" was refused by the Claude CLI
+(model_not_found: it is retired, misspelled, or this account cannot use it), so
+this turn is being served by "claude-sonnet-5" instead. The account, the
+thinking budget and the working directory are unchanged.
+```
+
+The refused attempt's output never reaches you and never reaches a rebuilt
+transcript, and neither does the note, which the plugin wrote rather than
+Claude.
+
+The rails: **entries are model names from this plugin's own list** (an unknown
+one is refused with a warning and skipped, exactly as an unknown `forceModel`
+is); **the chain never crosses accounts**, since the `@account` marker is taken
+from the id the turn arrived with and an entry spelling its own is ignored;
+**each model is tried at most once per turn**, and **an exhausted chain surfaces
+the original error unchanged**. Unset (the default) means no chain, so upgrading
+never moves a turn onto a model nobody picked.
+
+Not applied to compaction turns (a second model would rewrite the summary
+opencode stores), to title stubs, or to the
+[interactive transport](#interactive-transport-experimental). `doGenerate`
+(titles and no-tools calls) does not fall back either: it bills the picked model
+once and reports its own error.
+
 ### Options reference
 
 ```json
@@ -361,6 +436,7 @@ model: claude-code-work/claude-opus-5@work
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to headless `claude --permission-mode`. `"plan"` also suppresses `--dangerously-skip-permissions` (see the row above). Not version-gated, so check that your installed CLI accepts the value. The [interactive transport](#interactive-transport-experimental) does not forward it. |
 | `permissionPreset` | `"read-only"` | – | A named permission posture, so you set one option instead of combining five and getting one wrong. Opt-in: unset is exactly today's behaviour. `"read-only"` replaces `skipPermissions`, `permissionMode`, `controlRequestBehavior` and `controlRequestToolBehaviors`, and filters the write and command tools out of `proxyTools`. See [Read-only mode](#read-only-mode). |
 | `defaultSubagentModel` | string | – | Model that plugin-discovered `mode: subagent` agents run on when their own definition pins nothing. The caller's account is kept; only the model name changes. An agent's own `forceModel` wins over it, and an unknown id is refused rather than spawned. Unset means no implicit override at all. See [Subagents: your account, their model](#subagents-your-account-their-model). |
+| `fallbackModels` | string[] | – | Ordered models to try when the one a turn would run on is refused. The default for agents that declare no `fallbackModels` of their own; a per-agent list **replaces** this one rather than extending it. Always the same account, never a different one. Only two things arm it: the CLI refusing the model (`model_not_found`) and a usage limit on an account with no other account to offer. Each model is tried at most once per turn and an exhausted chain surfaces the original error. Unset means no chain at all. See [Fallback model chain](#fallback-model-chain). |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Claude built-in tools to route through opencode's executor + permission UI. Opt-in extras: `"Question"`, `"Compress"`. See [Selective tool proxy](#selective-tool-proxy). |
 | `extraDisallowedTools` | string[] | – | Extra Claude built-ins to switch off with `--disallowedTools`, on top of what `proxyTools` implies. Claude's names, e.g. `["NotebookEdit"]`. See [Closing a tool with no proxy](#closing-a-tool-with-no-proxy). |
 | `proxyToolTimeoutMs` | `Record<string, number>` | – | Optional wall-clock backstop per proxy tool, in ms, keyed by proxy tool name (`bash`, `task`, …). A call normally ends on an event the plugin listens for (result, abort, next message, process exit, chat deletion), not on a timer; see [How a proxied call ends](#how-a-proxied-call-ends). Defaults: 10 min flat, `task` / `task_batch` → none, `question` → 30 min. `0` disables a tool's deadline; negative or non-numeric values are ignored. For `bash`, the call's own `input.timeout` is honoured on top (`max(resolved, input.timeout)`). See [Per-tool proxy timeouts](#per-tool-proxy-timeouts). |
@@ -1318,6 +1394,9 @@ Four checks answer almost everything. Run them in this order, and stop as soon a
 | An MCP server's tools are simply absent | The WARN the plugin logs once per process at session start for each server Claude Code could not connect | Authenticate or repair that server where it is configured. `mcpServers` in the ready block is on-disk discovery, so a server can be listed there and still be unreachable. |
 | A freshly published version does not appear | The `plugin` version in `/claude-code-doctor` against the version you expect | Remove the frozen cache entry and relaunch: see [Nothing in the picker](#nothing-in-the-picker-or-a-version-you-just-upgraded-to-is-missing). If npm itself does not list the version, a local security scanner with a minimum-package-age policy can be filtering it out of the reply, so read that tool's event log before blaming the registry. |
 | `permissionPreset: "read-only"` is set, but reads are not confined or something still prompts | `claude --version` | The preset holds on any CLI, but two of its four layers are version-gated: `--restricted` needs 2.1.258 and `--permission-prompts none` needs 2.1.263. Below those it falls back to `--disallowedTools` plus the plugin's own denial of every permission request, and warns naming what is missing. Below 2.1.258 you lose the working-directory confinement on reads; below 2.1.263 the denial happens in the plugin instead of in the CLI, one layer instead of two. See [Read-only mode](#read-only-mode). |
+| A reply that is only *"There's an issue with the selected model (…). It may not exist or you may not have access to it."* | Whether that model id is in the picker, and `claude -p --model <id> "hi"` | The CLI refused the model: it is retired, misspelled, or this account cannot use it. The result's `subtype` is `success`, so without a chain the turn finishes as an ordinary reply with that sentence as the answer. Fix the id in the agent's `forceModel` or in your picker, or declare a [fallback model chain](#fallback-model-chain) so the turn degrades to the next model instead of dying. |
+| `▌ **model fallback:**` on a turn you expected to run on a specific model | The note itself, which names the model that failed and why | Working as configured: your [`fallbackModels`](#fallback-model-chain) chain moved the turn. `model_not_found` means fix the first id. `out of usage on this account` means that account's cap, and the reason you got a chain rather than the [account failover](#account-failover) form is that no other account was available to offer. The chain never changes account, only model. |
+| A chain is declared but a refused model still kills the turn | Grep `plugin.log` for `fallback model refused: unknown model` | Every entry has to be a model id this plugin registers; an unknown one is skipped with that warning, and a chain whose entries are all unknown is an empty chain. The other empty-chain case is a list containing only the model the turn already runs on, which is dropped from its own chain. Compaction turns, title stubs and the interactive transport never fall back at all. |
 | A config change did nothing | `/claude-code-doctor`, which reports the options in force | Provider options are read once at opencode startup. Quit every opencode window, `serve` and GUI processes included, and relaunch. A `/new` session is not enough. |
 | A question form never renders and the turn hangs | `GET /question` on the same opencode server and workspace | See [A question form never renders](#a-question-form-never-renders-and-the-turn-hangs). |
 

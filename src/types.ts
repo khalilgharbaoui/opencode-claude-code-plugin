@@ -166,6 +166,20 @@ export interface ClaudeCodeProviderSettings {
    * caller's model exactly as opencode intends. See `src/agent-models.ts`.
    */
   defaultSubagentModel?: string
+  /**
+   * Models to try, in order, when the model a turn would have run on is
+   * refused. The default for every agent that declares no `fallbackModels` of
+   * its own; a per-agent list replaces this one rather than extending it.
+   *
+   * Unset means no chain at all, so an upgrade never moves a turn onto a
+   * model nobody picked. Entries are model NAMES from this plugin's own list
+   * (an unknown one is refused with a WARN and skipped) and always run on the
+   * account the turn arrived on: this never crosses accounts, which is what
+   * `accountFailover` is for. Only two things arm it, the CLI refusing the
+   * model outright and a usage limit with no other account to offer. See
+   * README "Fallback model chain" and `src/model-fallback.ts`.
+   */
+  fallbackModels?: string[]
   skipPermissions?: boolean
   permissionMode?: PermissionMode
   /**

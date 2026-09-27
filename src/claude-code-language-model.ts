@@ -21,6 +21,16 @@ import {
   getClaudeUserMessage,
 } from "./message-builder.js"
 import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
+import {
+  type ModelFallbackAttempt,
+  type ModelRefusal,
+  formatModelFallbackNote,
+  modelRefusalFromAssistant,
+  modelRefusalFromResult,
+  nextFallbackModel,
+  provesModelServing,
+  resolveFallbackChain,
+} from "./model-fallback.js"
 import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
 import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
 import {
@@ -1199,15 +1209,144 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   async doStream(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
-    const result = await this.doStreamForHost(options)
+    const result = await this.runModelChain(options)
     return {
       ...result,
       stream: translateStreamForHost(result.stream as any, this.config.hostApi ?? "v1") as any,
     }
   }
 
+  /**
+   * Run the turn, moving to the next model in the fallback chain if the one
+   * it started on is refused. The single wiring point for `src/model-fallback.ts`.
+   *
+   * With no chain declared (the default) this is `doStreamForHost` and one
+   * `await`, so nothing about an existing install changes. With a chain, one
+   * rule carries the whole design: **an attempt's parts are withheld until it
+   * proves the model is serving**, and a refused attempt is then discarded
+   * whole rather than edited. That is what keeps the CLI's "There's an issue
+   * with the selected model" text out of the operator's transcript and out of
+   * any replay, and it costs nothing on a served turn, because the very first
+   * content block commits the attempt and every later part passes straight
+   * through.
+   *
+   * The bound is `tried`: one turn spawns each model at most once, in order,
+   * and an exhausted chain leaves the last attempt un-armed so its error
+   * surfaces exactly as it does today.
+   */
+  private async runModelChain(
+    options: LanguageModelV3CallOptions,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    const agent = this.getOpencodeAgent(options)
+    const chain = this.isCompactionCall(options)
+      ? []
+      : resolveFallbackChain(agent, resolveAgentModel(agent, this.modelId))
+    if (chain.length === 0) return this.doStreamForHost(options)
+
+    const self = this
+    const tried = new Set<string>()
+    let attempt: ModelFallbackAttempt = { armed: true }
+    let inner = await this.doStreamForHost(options, attempt)
+    const request = inner.request
+
+    const stream = new ReadableStream<LanguageModelV3StreamPart>({
+      async start(controller) {
+        let pendingNote: string | null = null
+        try {
+          for (;;) {
+            if (attempt.modelId) tried.add(attempt.modelId)
+
+            const buffered: LanguageModelV3StreamPart[] = []
+            let flushed = false
+            const emitNote = (note: string) => {
+              const id = generateId()
+              controller.enqueue({ type: "text-start", id } as any)
+              controller.enqueue({ type: "text-delta", id, delta: note })
+              controller.enqueue({ type: "text-end", id })
+            }
+            // The note belongs after `stream-start`, which is always the
+            // serving attempt's first part, and in its own text part so
+            // `PLUGIN_NOTE_MARKERS` can strip it from a rebuilt transcript.
+            const flush = () => {
+              if (flushed) return
+              flushed = true
+              for (const part of buffered) {
+                controller.enqueue(part)
+                if (pendingNote && (part as { type?: string }).type === "stream-start") {
+                  emitNote(pendingNote)
+                  pendingNote = null
+                }
+              }
+              buffered.length = 0
+              if (pendingNote) {
+                emitNote(pendingNote)
+                pendingNote = null
+              }
+            }
+
+            const reader = inner.stream.getReader()
+            try {
+              for (;;) {
+                const { done, value } = await reader.read()
+                if (done) break
+                if (flushed) {
+                  controller.enqueue(value)
+                  continue
+                }
+                buffered.push(value)
+                if (attempt.serving) flush()
+              }
+            } finally {
+              reader.releaseLock()
+            }
+
+            const refusal = attempt.refusal
+            const next =
+              refusal && !attempt.serving
+                ? nextFallbackModel(chain, tried)
+                : undefined
+            if (!next || !refusal) {
+              flush()
+              break
+            }
+
+            // Everything the refused model emitted goes in the bin: its only
+            // output was the CLI's own error, which was never Claude's answer.
+            buffered.length = 0
+            pendingNote = formatModelFallbackNote({
+              failed: attempt.modelId ?? self.modelId,
+              serving: next,
+              refusal,
+            })
+            log.notice("falling back to the next model in the chain", {
+              from: attempt.modelId ?? self.modelId,
+              to: next,
+              reason: refusal.kind,
+              tried: [...tried],
+            })
+            tried.add(next)
+            attempt = {
+              modelOverride: next,
+              armed: nextFallbackModel(chain, tried) !== undefined,
+            }
+            inner = await self.doStreamForHost(options, attempt)
+          }
+        } catch (error) {
+          controller.enqueue({ type: "error", error })
+        } finally {
+          try {
+            controller.close()
+          } catch {}
+        }
+      },
+    })
+
+    return { stream, request }
+  }
+
   private async doStreamForHost(
     options: LanguageModelV3CallOptions,
+    attempt?: ModelFallbackAttempt,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
     const skipPermissions = this.config.skipPermissions !== false
@@ -1217,12 +1356,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const compactionMode = this.isCompactionCall(options)
     // Use a separate session key for compaction so its short-lived spawn
     // never collides with the main conversation's claude process.
+    // A fallback attempt replaces the model NAME and nothing else, which is
+    // the same swap `resolveAgentModel` performs and the reason the chain
+    // needs no separate plumbing: the id flows into the session key, the
+    // effort key, the spawn, the logs and the metadata exactly as a
+    // `forceModel` would. Compaction is never given one.
     const effectiveModelId = compactionMode
       ? this.resolveCompactionModel()
-      : resolveAgentModel(
+      : (attempt?.modelOverride ??
+        resolveAgentModel(
           this.getOpencodeAgent(options),
           this.modelId,
-        )
+        ))
+    if (attempt) attempt.modelId = effectiveModelId
     // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
@@ -1256,6 +1402,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const interactiveBypassRequested =
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
+
+    // Whether this attempt may be thrown away and retried on the next model.
+    // Compaction is out because its answer is a stored summary and a second
+    // model would rewrite it; the interactive transport is out because it
+    // drives a TUI over a PTY and has no `result` frame of this shape to read
+    // a refusal from. `doGenerate` has no chain at all, so a title stub or a
+    // no-tools call bills the picked model once and reports its own error.
+    const modelFallbackArmed =
+      attempt?.armed === true && !compactionMode && !useInteractive
 
     // Account failover. When a previous turn hit this account's usage limit
     // and the operator picked another account, every turn from then on spawns
@@ -2397,6 +2552,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // The account itself cannot serve (an expired login, a billing
           // problem), from the `error` kind on the CLI's own failure reply.
           let accountBlock: AccountBlockKind | null = null
+          // The CLI will not run this model. Set only when a fallback is
+          // armed, so a turn with no chain behaves exactly as it does today.
+          let modelRefusal: ModelRefusal | null = null
 
         // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
         // bash calls in one assistant message) end up in a single
@@ -2634,6 +2792,52 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             return
           }
 
+          // Nothing above took the turn, so the chain may. Deliberately below
+          // the form: when another account is on offer a usage limit is the
+          // operator's decision to make, and only an account with nothing to
+          // switch to falls back onto a cheaper model instead. A per-model
+          // weekly cap is the case that makes that worth doing at all, and it
+          // is why the limit is a chain trigger and not only a failover one.
+          //
+          // `accountBlock` is excluded on purpose: an expired login or a
+          // billing hold fails identically on every model in the chain, so
+          // retrying would spend three spawns to print the same error.
+          if (modelFallbackArmed && attempt && msg.is_error === true) {
+            const refusal: ModelRefusal | null =
+              modelRefusal ??
+              (accountLimitHit && !failoverAskActive && !accountBlock
+                ? { kind: "account_limit" as const }
+                : null)
+            if (refusal) {
+              attempt.refusal = refusal
+              log.warn(
+                `Claude will not serve "${effectiveModelId}" (${refusal.kind}); falling back to the next model in the chain.`,
+                { sessionKey: sk, model: effectiveModelId, detail: refusal.detail ?? null },
+              )
+              controller.enqueue({
+                type: "finish",
+                finishReason: { unified: "error" as const, raw: refusal.kind },
+                usage: toUsage(msg.usage),
+                providerMetadata: {
+                  "claude-code": { ...resultMeta, path: "model-fallback" },
+                },
+              })
+              controllerClosed = true
+              cleanupTurn()
+              // The refused model owns this session key, and the next model
+              // gets its own, so nothing here is ever resumed. Dropping both
+              // after `cleanupTurn` has detached the listeners is what makes
+              // the next attempt a fresh session with the thread replayed,
+              // through the same path a failover switch uses.
+              deleteActiveProcess(sk)
+              deleteClaudeSessionId(sk)
+              try {
+                controller.close()
+              } catch {}
+              return
+            }
+          }
+
           const autoDecision = shouldAutoContinueIncompleteTurn(
             autoContinueState,
             {
@@ -2802,6 +3006,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               hasReceivedProgress = true
               clearStartWatchdog()
               startResultFallback()
+            }
+
+            // Read before anything is enqueued for this message, because the
+            // chain runner keys its withhold-or-flush decision on these two
+            // flags and reads them only after the handler has returned.
+            // `modelProgress` above cannot stand in: it counts the CLI's own
+            // synthetic error reply, which is precisely a refusal.
+            if (attempt && !attempt.serving && provesModelServing(msg)) {
+              attempt.serving = true
+            }
+            if (modelFallbackArmed && !modelRefusal) {
+              modelRefusal = modelRefusalFromAssistant(msg)
             }
 
             if (outer.type === "stream_event") {
@@ -3549,6 +3765,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 })
               ) {
                 accountLimitHit = {}
+              }
+
+              // The other half of the refusal signal, for a CLI that reports
+              // no assistant frame. The `result`'s own `subtype` is `success`
+              // even here, so it can never be the thing that is read.
+              if (modelFallbackArmed && !modelRefusal) {
+                modelRefusal = modelRefusalFromResult(msg)
               }
 
               // Say which account and what to run. Without this the only

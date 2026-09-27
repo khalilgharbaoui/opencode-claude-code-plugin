@@ -15,6 +15,7 @@ import {
 } from "./cli-events.js"
 import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
+import { MODEL_FALLBACK_MARKER } from "./model-fallback.js"
 import { parseSideQuestionContent } from "./side-question.js"
 import { TURN_STATS_MARKER } from "./turn-stats.js"
 
@@ -42,6 +43,7 @@ const PLUGIN_NOTE_MARKERS = [
   SILENT_TURN_MARKER,
   FAILOVER_MARKER,
   ACCOUNT_BLOCK_MARKER,
+  MODEL_FALLBACK_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {

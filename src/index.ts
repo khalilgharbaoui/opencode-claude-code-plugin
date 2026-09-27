@@ -21,9 +21,11 @@ import {
   type AgentRecord,
   agentDirectories,
   getDefaultSubagentModel,
+  parseFallbackModelList,
   readAgentMarkdownRecords,
   setAgentRegistry,
   setDefaultSubagentModel,
+  setProviderFallbackModels,
 } from "./agent-models.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
@@ -535,6 +537,7 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
   setDefaultSubagentModel(
     typeof configured === "string" ? configured : undefined,
   )
+  setProviderFallbackModels(parseFallbackModelList(options?.fallbackModels))
 
   // Markdown agents may or may not reach a plugin's config hook (undocumented
   // either way), so they are read from disk and then overlaid with whatever
@@ -553,12 +556,21 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
       return typeof value === "string" ? value : undefined
     }
 
+    // A list, unlike the four scalars, so it cannot go through `pick`, and an
+    // empty declaration must not erase what the markdown file said.
+    const declaredChain = parseFallbackModelList(
+      (agent as Record<string, unknown>).fallbackModels ?? bag.fallbackModels,
+    )
+
     records[name] = {
       mode: pick("mode") ?? records[name]?.mode,
       model: pick("model") ?? records[name]?.model,
       forceModel: pick("forceModel") ?? records[name]?.forceModel,
       reasoningEffort:
         pick("reasoningEffort") ?? records[name]?.reasoningEffort,
+      fallbackModels: declaredChain.length
+        ? declaredChain
+        : records[name]?.fallbackModels,
     }
   }
 
