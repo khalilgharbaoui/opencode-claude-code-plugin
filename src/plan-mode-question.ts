@@ -193,17 +193,22 @@ export function unwrapToolOutput(part: any): unknown {
  * plan-approval question only, so every failover pick arrived as the whole
  * sentence and was refused as unrecognised. Without a known question, the last
  * `"="` is the split, which is right for any single-question form.
+ *
+ * The sentence is trimmed first: measured live on 1.18.32 (2026-09-28, a real
+ * five-hour limit) it arrives with a trailing newline, so an exact `endsWith`
+ * missed it and both failover picks were refused as unrecognised.
  */
 function unwrapOpencodeQuestionResult(value: string, question?: string): string {
+  const sentence = value.trim()
   if (
-    !value.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
-    !value.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
+    !sentence.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
+    !sentence.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
   ) {
     return value
   }
-  const body = value.slice(
+  const body = sentence.slice(
     OPENCODE_QUESTION_RESULT_PREFIX.length,
-    value.length - OPENCODE_QUESTION_RESULT_SUFFIX.length,
+    sentence.length - OPENCODE_QUESTION_RESULT_SUFFIX.length,
   )
   if (!body.startsWith('"') || !body.endsWith('"')) return value
 
