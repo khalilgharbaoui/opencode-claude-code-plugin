@@ -401,9 +401,8 @@ never moves a turn onto a model nobody picked.
 
 Not applied to compaction turns (a second model would rewrite the summary
 opencode stores), to title stubs, or to the
-[interactive transport](#interactive-transport-experimental). `doGenerate`
-(titles and no-tools calls) does not fall back either: it bills the picked model
-once and reports its own error.
+[interactive transport](#interactive-transport-experimental). A title stub never
+reaches the CLI, so there is nothing there to fall back from.
 
 ### Options reference
 
@@ -908,7 +907,7 @@ Use the claude-code-plugin skill to configure a work account and idle worker cle
 
 It covers accounts, models and agent effort, proxy tools, permissions, MCP/skill bridging, timeouts, logging, upgrades and troubleshooting. It directs the agent to preserve JSONC comments, change only requested settings, validate the result, protect credentials and ask before paid probes or broader permissions.
 
-The plugin registers the bundled directory with opencode's `skills.paths`, making it available to other providers too on supporting opencode versions. For Claude turns it also loads through Claude's native Skill tool as `opencode-skills:claude-code-plugin`, even when `bridgeOpencodeSkills` is `false`. This requires CLI `--plugin-dir` support and applies to the headless, interactive and direct `doGenerate` spawns; compaction never loads the native bridge.
+The plugin registers the bundled directory with opencode's `skills.paths`, making it available to other providers too on supporting opencode versions. For Claude turns it also loads through Claude's native Skill tool as `opencode-skills:claude-code-plugin`, even when `bridgeOpencodeSkills` is `false`. This requires CLI `--plugin-dir` support and applies to the headless and interactive spawns; compaction never loads the native bridge.
 
 No separate skill installation or copying is needed. It ships with each package version, so upgrading updates the reference. Fully restart opencode to load it. `test-configure-skill.ts` checks coverage of provider/logging options, model ids, proxy tools and environment variables; maintainers must update behavior and default guidance in the same change as the implementation.
 
@@ -951,7 +950,7 @@ One limitation worth knowing: the plugin scan reads `installed_plugins.json` and
 
 ### Enabling it
 
-The bridge itself is **off by default**: every bridged skill's name and description is also in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Set `bridgeOpencodeSkills: true` when the model tries `Skill("<name>")` for a skill opencode advertises and gets `Unknown skill`; the bundled configuration skill is staged either way. When on, the bridge applies to the headless, interactive and direct `doGenerate` spawns alike, never to compaction, and it is skipped on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
+The bridge itself is **off by default**: every bridged skill's name and description is also in the system prompt opencode already forwards, so a large skill set is paid for twice on every turn. Set `bridgeOpencodeSkills: true` when the model tries `Skill("<name>")` for a skill opencode advertises and gets `Unknown skill`; the bundled configuration skill is staged either way. When on, the bridge applies to the headless and interactive spawns alike, never to compaction, and it is skipped on a Claude CLI without `--plugin-dir` (the plugin probes `claude --help` and logs a notice).
 
 This bridge was written by [@broskees](https://github.com/broskees) (Joseph Roberts) on his fork and absorbed here with credit; see [Credits](#credits).
 

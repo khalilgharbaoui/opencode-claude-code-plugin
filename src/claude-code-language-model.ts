@@ -15,7 +15,7 @@ import type {
   ReasoningEffort,
 } from "./types.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
-import { createHostToolPartTranslator, translateStreamForHost } from "./host-tools.js"
+import { translateStreamForHost } from "./host-tools.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
 import {
   getClaudeUserMessage,
@@ -76,7 +76,6 @@ import {
 import { resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
 import {
-  QUESTION_TOOL_NAME,
   consumeExitPlanModeQuestionResult,
   createExitPlanModeQuestionCall,
   type QuestionToolCall,
@@ -107,7 +106,6 @@ import {
   interruptTurn,
   takeUnattendedLines,
   describeChildCrash,
-  claudeSpawnEnv,
   isClaudeThinkingDisabled,
   sessionKey,
   effortSessionKey,
@@ -205,7 +203,6 @@ import {
   synthesizeTitle,
 } from "./title.js"
 import { toFinishReason, toUsage } from "./usage.js"
-import { unlink } from "node:fs/promises"
 
 // Re-exported so importers that have always reached for these here keep
 // working after the split. The definitions live in the modules named above.
@@ -266,6 +263,17 @@ const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
 const CHILD_EXIT_STATUS_GRACE_MS = 250
+
+/**
+ * Which host method the turn was entered through. There is one turn
+ * implementation and `"generate"` changes exactly one thing inside it: the
+ * account-failover dialog is neither offered nor read back. A `doGenerate`
+ * caller must still follow the account the conversation was moved to, but it
+ * must not put a question in a session the operator is usually not looking at
+ * (the account-failover invariant that says it takes the override with no
+ * dialog of its own).
+ */
+type TurnMode = "stream" | "generate"
 
 export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -529,10 +537,31 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return synthesizeTitle(prompt)
   }
 
+  /**
+   * Aggregates the one turn implementation into a `doGenerate` result.
+   *
+   * `doGenerate` used to carry a second copy of `doStreamForHost`'s line
+   * parser: no inactivity watchdog, no `/claude-code-doctor`, no proxy or MCP
+   * wiring, no auto-continue, no turn stats, and no test of its own. Three of
+   * its own branches (a `/btw` aside, proxied tools, compaction) already bailed
+   * out to this method. The copy is deleted and every `doGenerate` call is now
+   * this aggregation, so a fix to the turn lands once.
+   *
+   * Tool parts arrive already in the host's vocabulary, because `streamTurn`
+   * rewrites them once at the stream's edge (src/host-tools.ts). Nothing is
+   * translated a second time here.
+   */
   private async doGenerateViaStream(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
-    const result = await this.doStream(options)
+    // The deleted copy logged `doGenerate starting`, which is how anyone
+    // reading plugin.log could tell the two paths apart. Keep a line here: it
+    // is the only fingerprint that opencode used this host method at all.
+    log.info("doGenerate aggregating the stream", {
+      scope: this.requestScope(options as any),
+      opencodeAgent: this.getOpencodeAgent(options),
+    })
+    const result = await this.streamTurn(options, "generate")
     const reader = result.stream.getReader()
 
     let text = ""
@@ -579,13 +608,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
     content.push(...toolCalls)
 
+    // The claude session id, when the turn had one, exactly as the deleted
+    // copy reported it: opencode shows this id and a stub has none.
+    const sessionId = (providerMetadata as any)?.["claude-code"]?.sessionId
+
     return {
       content,
       finishReason,
       usage,
       request: result.request,
       response: {
-        id: generateId(),
+        id: typeof sessionId === "string" && sessionId ? sessionId : generateId(),
         timestamp: new Date(),
         modelId: this.modelId,
       },
@@ -594,611 +627,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
   }
 
+  /**
+   * One turn implementation serves both host methods, so this is `doStream`
+   * aggregated. The host's tool vocabulary is applied inside `streamTurn`,
+   * which is why nothing is renamed here.
+   */
   async doGenerate(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
-    const result = await this.doGenerateForHost(options)
-    if (this.config.hostApi !== "v2") return result
-    const translate = createHostToolPartTranslator("v2")
-    return {
-      ...result,
-      content: result.content.flatMap((part) => {
-        const next = translate(part as any)
-        return next ? [next as unknown as LanguageModelV3Content] : []
-      }),
-    }
-  }
-
-  private async doGenerateForHost(
-    options: LanguageModelV3CallOptions,
-  ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
-    if (!this.isCompactionCall(options) && this.requestScope(options as any) !== "no-tools" && parseSideQuestion(options.prompt)) {
-      return this.doGenerateViaStream(options)
-    }
-    const warnings: SharedV3Warning[] = []
-    const scope = this.requestScope(options as any)
-    const affinity = this.sessionAffinity(options)
-    const cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
-    // An agent may run on a different model than the one opencode routed here
-    // (see agent-models.ts). The session key must carry the effective model or
-    // an overridden agent shares a claude process with its caller.
-    const effectiveModelId = resolveAgentModel(
-      this.getOpencodeAgent(options),
-      this.modelId,
-    )
-    const reasoningEffort = resolveAgentEffort(
-      this.getOpencodeAgent(options),
-      this.getReasoningEffort(options.providerOptions),
-    ) as ReasoningEffort | undefined
-    // Keep effort invalidation inside one agent/provider, even when callers
-    // share a model and opencode session (for example switching agents).
-    const baseKey = sessionKey(
-      cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
-    )
-    const sk = effortSessionKey(baseKey, reasoningEffort)
-
-    // When selective proxying is enabled, doGenerate must not bypass the
-    // proxy path. Reuse doStream and aggregate its events so proxied tools
-    // still route through opencode permissions/execution. Same for
-    // opencode MCP proxying — doStream is the only path that wires up the
-    // proxy server with the dynamically-discovered MCP tool defs.
-    const compactionMode = this.isCompactionCall(options)
-
-    if (
-      scope === "tools" &&
-      (this.resolvedProxyTools() ||
-        (this.config.proxyOpencodeMcpTools === true &&
-          this.config.bridgeOpencodeMcp !== false))
-    ) {
-      return this.doGenerateViaStream(options)
-    }
-
-    // Route compaction through doStream so it gets the lean spawn path,
-    // model override, and rich transcript handling. Aggregating a stream
-    // for doGenerate matches what doGenerateViaStream already does for
-    // proxy tools.
-    if (compactionMode) {
-      return this.doGenerateViaStream(options)
-    }
-
-    if (this.isTitleRequest(scope, options)) {
-      log.info("doGenerate no-tools title stub", {
-        compactionMode,
-        opencodeAgent: this.getOpencodeAgent(options),
-        providerOptionsKeys: options.providerOptions
-          ? Object.keys(options.providerOptions)
-          : [],
-      })
-      const text = this.synthesizeTitle(options.prompt)
-      return {
-        content: [{ type: "text", text }] as any,
-        finishReason: this.toFinishReason("stop"),
-        usage: this.toUsage({ input_tokens: 0, output_tokens: 0 }),
-        request: { body: { text: "" } },
-        response: {
-          id: generateId(),
-          timestamp: new Date(),
-          modelId: this.modelId,
-        },
-        providerMetadata: {
-          "claude-code": {
-            synthetic: true,
-            path: "no-tools",
-          },
-        },
-        warnings,
-      }
-    }
-
-    // Short-circuit when opencode iterates the agent loop one more time
-    // after a turn already finished. The prompt ends with an assistant
-    // message and has no fresh user input — spawning Claude here would
-    // just produce a stub like "No input received. Standing by".
-    if (!hasNewUserContent(options.prompt)) {
-      log.info("doGenerate short-circuit: no new user content")
-      return {
-        content: [],
-        finishReason: this.toFinishReason("stop"),
-        usage: this.toUsage({ input_tokens: 0, output_tokens: 0 }),
-        request: { body: { text: "" } },
-        response: {
-          id: generateId(),
-          timestamp: new Date(),
-          modelId: this.modelId,
-        },
-        providerMetadata: {
-          "claude-code": { synthetic: true, path: "no-new-user-content" },
-        },
-        warnings,
-      }
-    }
-
-    invalidateOtherEffortSessions(baseKey, reasoningEffort)
-
-    const hasPriorConversation =
-      options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
-        .length > 1
-
-    // New session — clear any stale state from a previous session.
-    // A compression summary is scoped to one conversation, so this is the
-    // one place it is dropped: the compress restart itself calls
-    // deleteClaudeSessionId, and clearing there would wipe the summary
-    // just before the fresh spawn reads it.
-    if (!hasPriorConversation) {
-      deleteClaudeSessionId(sk)
-      deleteActiveProcess(sk)
-      clearCompression(sk)
-    }
-
-    const hasExistingSession = !!getClaudeSessionId(sk)
-    const includeHistoryContext = !hasExistingSession && hasPriorConversation
-
-    const userMsg =
-      consumeExitPlanModeQuestionResult(sk, options.prompt as any) ??
-      // doGenerate has no proxy wiring, so this process issued no tool calls
-      // at all: every tool result reaching it belongs to opencode and must be
-      // rendered as text rather than an orphaned `tool_result` (issue #29).
-      getClaudeUserMessage(options.prompt, includeHistoryContext, {
-        cliToolCallIds: new Set<string>(),
-        stripContextReminders: this.stripContextRemindersEnabled(),
-      })
-
-    // The same account override doStream applies, with no dialog of its own:
-    // a title or no-tools call must not ask anything, but it must follow the
-    // account the conversation was moved to, or it bills the limited one.
-    const failover = await resolveFailoverSpawn({
-      account: this.config.account ?? DEFAULT_ACCOUNT,
-      baseCliPath: this.config.baseCliPath ?? this.config.cliPath,
-      cliPath: this.config.cliPath,
-      modelId: effectiveModelId,
-    })
-    const cliPath = failover.cliPath
-
-    // doGenerate always spawns a fresh process, never reuse session ID.
-    // Pre-fetch opencode's MCP runtime status so the bridge overlays
-    // UI-toggled state on top of disk config.
-    const [runtimeStatus, cliVersion, planModeQuestionActive] = await Promise.all([
-      getRuntimeMcpStatus(),
-      detectCliVersion(cliPath),
-      this.resolvePlanModeQuestion(compactionMode),
-    ])
-    const systemPromptFile = buildAppendedSystemPrompt(
-      cwd,
-      this.config.multiStepContinuation !== false,
-      extractSystemMessages(options.prompt),
-      // doGenerate has no proxy wiring, so `compress` is not callable here.
-      // An existing summary still carries: it is this key's prior context.
-      { compressEnabled: false, compressionSummary: getCompressionSummary(sk) },
-    )
-    const { model: spawnModelId, fast: fastMode } = parseModelId(failover.modelId)
-    // The same skill bridge as doStream's spawn: Claude's Skill tool is the
-    // only way a Claude-routed turn can load an opencode skill, on this path
-    // as much as on the streaming one.
-    const skillPluginDirs = await resolveSkillPluginDirs({
-      cwd,
-      cliPath,
-      enabled: this.config.bridgeOpencodeSkills === true,
-      ...this.skillBridgeSpawn(failover),
-    })
-    const cliArgs = buildCliArgs({
-      sessionKey: sk,
-      skipPermissions: this.config.skipPermissions !== false,
-      includeSessionId: false,
-      model: spawnModelId,
-      permissionMode: this.config.permissionMode,
-      mcpConfig: this.effectiveMcpConfig(cwd, undefined, runtimeStatus).paths,
-      strictMcpConfig: this.config.strictMcpConfig,
-      disallowedTools:
-        this.config.webSearch === "disabled" ? ["WebSearch"] : undefined,
-      appendSystemPromptFile: systemPromptFile,
-      pluginDirs: skillPluginDirs,
-      ...this.thinkingCliOptions(),
-      fastMode,
-      cliVersion,
-    })
-
-    log.info("doGenerate starting", {
-      cwd,
-      model: effectiveModelId,
-      requestedModel: this.modelId,
-      textLength: userMsg.length,
-      includeHistoryContext,
-    })
-
-    const { spawn } = await import("node:child_process")
-    const { createInterface } = await import("node:readline")
-
-    const proc = spawn(cliPath, cliArgs, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: claudeSpawnEnv({
-        ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey,
-        effort: reasoningEffort,
-      }),
-      shell: process.platform === "win32",
-    })
-
-    if (systemPromptFile) {
-      proc.on("exit", () => {
-        void unlink(systemPromptFile).catch(() => {})
-      })
-    }
-
-    const rl = createInterface({ input: proc.stdout! })
-
-    let responseText = ""
-    let thinkingText = ""
-    let resultMeta: {
-      sessionId?: string
-      costUsd?: number
-      durationMs?: number
-      durationApiMs?: number
-      numTurns?: number
-      usage?: ClaudeStreamMessage["usage"]
-      modelUsage?: ClaudeStreamMessage["modelUsage"]
-      permissionDenials?: ClaudeStreamMessage["permission_denials"]
-    } = {}
-    const toolCalls: Array<{ id: string; name: string; args: unknown }> = []
-    // Streaming tool_use entries keyed by content-block index. We accumulate
-    // partial_json chunks here instead of trying to JSON.parse each chunk
-    // independently, and flush to `toolCalls` at content_block_stop. The
-    // previous code indexed `toolCalls` by `msg.index` directly, which is
-    // wrong whenever non-tool blocks (text, thinking) precede a tool_use.
-    const toolCallStreams = new Map<
-      number,
-      { id: string; name: string; inputJson: string }
-    >()
-
-    // Set true once we observe a `stream_event` envelope. When on, the
-    // top-level `assistant` message is a duplicate of content already
-    // accumulated via the inner content_block_* events — skip it.
-    let gotPartialEvents = false
-
-    const result = await new Promise<
-      typeof resultMeta & {
-        text: string
-        thinking: string
-        toolCalls: typeof toolCalls
-      }
-    >((resolve, reject) => {
-      const cleanup = () => {
-        try {
-          if (!proc.killed && proc.exitCode === null) proc.kill()
-        } catch {}
-      }
-
-      rl.on("line", (line) => {
-        if (!line.trim()) return
-        try {
-          const outer: ClaudeStreamMessage = JSON.parse(line)
-
-          // Unwrap stream_event envelope (--include-partial-messages).
-          // Inner event uses the same content_block_* / message_* shape.
-          const msg: ClaudeStreamMessage =
-            outer.type === "stream_event" && outer.event
-              ? { ...outer.event, session_id: outer.session_id }
-              : outer
-
-          if (outer.type === "stream_event") {
-            gotPartialEvents = true
-          }
-
-          if (this.handleControlRequest(msg, proc)) {
-            return
-          }
-
-          if (msg.type === "system" && msg.subtype === "init") {
-            if (msg.session_id) {
-              setClaudeSessionId(sk, msg.session_id)
-            }
-            reportFastModeState(msg, fastMode)
-            reportSystemInit(msg, {
-              ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey,
-            })
-          }
-
-          if (msg.type === "rate_limit_event") {
-            reportRateLimitEvent(msg)
-            return
-          }
-
-          if (
-            msg.type === "assistant" &&
-            msg.message?.content &&
-            !gotPartialEvents
-          ) {
-            for (const block of msg.message.content) {
-              if (block.type === "text" && block.text) {
-                responseText += block.text
-              }
-              if (block.type === "thinking" && block.thinking) {
-                thinkingText += block.thinking
-              }
-              if (block.type === "tool_use" && block.id && block.name) {
-                if (isAskUserQuestionTool(block.name)) {
-                  // Render the full question + options as visible text so
-                  // the user can actually see and answer it.
-                  const parsedInput = (block.input ?? {}) as Record<
-                    string,
-                    unknown
-                  >
-                  responseText += formatAskUserQuestion(parsedInput)
-                  continue
-                }
-
-                if (block.name === "ExitPlanMode") {
-                  const parsedInput = (block.input ?? {}) as Record<
-                    string,
-                    unknown
-                  >
-                  const plan = (parsedInput?.plan as string) || ""
-                  if (planModeQuestionActive) {
-                    const questionCall = createExitPlanModeQuestionCall(
-                      sk,
-                      block.id,
-                      plan,
-                    )
-                    responseText += questionCall.text
-                    toolCalls.push({
-                      id: questionCall.toolCallId,
-                      name: questionCall.toolName,
-                      args: questionCall.input,
-                    })
-                    continue
-                  }
-                  responseText += `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`
-                  continue
-                }
-
-                toolCalls.push({
-                  id: block.id,
-                  name: block.name,
-                  args: block.input ?? {},
-                })
-              }
-            }
-          }
-
-          if (
-            msg.type === "content_block_start" &&
-            msg.content_block &&
-            msg.index !== undefined
-          ) {
-            if (
-              msg.content_block.type === "tool_use" &&
-              msg.content_block.id &&
-              msg.content_block.name
-            ) {
-              toolCallStreams.set(msg.index, {
-                id: msg.content_block.id,
-                name: msg.content_block.name,
-                inputJson: "",
-              })
-            }
-          }
-
-          if (
-            msg.type === "content_block_delta" &&
-            msg.delta &&
-            msg.index !== undefined
-          ) {
-            if (msg.delta.type === "text_delta" && msg.delta.text) {
-              responseText += msg.delta.text
-            }
-            if (msg.delta.type === "thinking_delta" && msg.delta.thinking) {
-              thinkingText += msg.delta.thinking
-            }
-            if (
-              msg.delta.type === "input_json_delta" &&
-              msg.delta.partial_json
-            ) {
-              const tc = toolCallStreams.get(msg.index)
-              if (tc) tc.inputJson += msg.delta.partial_json
-            }
-          }
-
-          if (msg.type === "content_block_stop" && msg.index !== undefined) {
-            const tc = toolCallStreams.get(msg.index)
-            if (tc) {
-              let args: unknown = {}
-              try {
-                args = tc.inputJson ? JSON.parse(tc.inputJson) : {}
-              } catch (err) {
-                log.warn("tool input JSON parse failed", {
-                  name: tc.name,
-                  error: String(err),
-                })
-              }
-              if (tc.name === "ExitPlanMode" && planModeQuestionActive) {
-                const parsedInput = args as Record<string, unknown>
-                const plan = (parsedInput?.plan as string) || ""
-                const questionCall = createExitPlanModeQuestionCall(sk, tc.id, plan)
-                responseText += questionCall.text
-                toolCalls.push({
-                  id: questionCall.toolCallId,
-                  name: questionCall.toolName,
-                  args: questionCall.input,
-                })
-              } else {
-                toolCalls.push({ id: tc.id, name: tc.name, args })
-              }
-              toolCallStreams.delete(msg.index)
-            }
-          }
-
-          if (msg.type === "result") {
-            if (msg.session_id) {
-              setClaudeSessionId(sk, msg.session_id)
-            }
-
-            // Some CLI failures only surface user-readable text on the final
-            // `result` message (without prior assistant text blocks). Preserve
-            // that so callers don't receive an empty response.
-            if (
-              !responseText &&
-              msg.is_error &&
-              typeof msg.result === "string" &&
-              msg.result.trim().length > 0
-            ) {
-              responseText = msg.result
-            }
-
-            resultMeta = {
-              sessionId: msg.session_id,
-              costUsd: msg.total_cost_usd,
-              durationMs: msg.duration_ms,
-              durationApiMs: msg.duration_api_ms,
-              numTurns: msg.num_turns,
-              usage: msg.usage,
-              modelUsage: msg.modelUsage,
-              permissionDenials: msg.permission_denials?.map((denial) => ({
-                tool_name: denial.tool_name,
-                tool_use_id: denial.tool_use_id,
-              })),
-            }
-            log.info("conversation result", {
-              sessionId: msg.session_id,
-              isError: msg.is_error,
-              subtype: msg.subtype,
-              ...turnStatsLogPayload(extractTurnStats(msg)),
-            })
-            cleanup()
-            resolve({
-              ...resultMeta,
-              text: responseText,
-              thinking: thinkingText,
-              toolCalls,
-            })
-          }
-        } catch {
-          // Ignore non-JSON lines
-        }
-      })
-
-      rl.on("close", () => {
-        cleanup()
-        resolve({
-          ...resultMeta,
-          text: responseText,
-          thinking: thinkingText,
-          toolCalls,
-        })
-      })
-
-      proc.on("error", (err) => {
-        log.error("process error", { error: err.message })
-        cleanup()
-        reject(err)
-      })
-
-      proc.stderr?.on("data", (data: Buffer) => {
-        log.debug("stderr", { data: data.toString().slice(0, 200) })
-      })
-
-      proc.stdin?.write(userMsg + "\n")
-    })
-
-    const content: LanguageModelV3Content[] = []
-
-    if (result.thinking) {
-      content.push({
-        type: "reasoning",
-        text: result.thinking,
-      } as any)
-    }
-
-    if (result.text) {
-      content.push({
-        type: "text",
-        text: result.text,
-        providerMetadata: {
-          "claude-code": {
-            sessionId: result.sessionId ?? null,
-            costUsd: result.costUsd ?? null,
-            durationMs: result.durationMs ?? null,
-          },
-          ...(typeof result.usage?.cache_creation_input_tokens === "number"
-            ? {
-                anthropic: {
-                  cacheCreationInputTokens:
-                    result.usage.cache_creation_input_tokens,
-                },
-              }
-            : {}),
-        },
-      })
-    }
-
-    for (const tc of result.toolCalls) {
-      if (tc.name === QUESTION_TOOL_NAME) {
-        content.push({
-          type: "tool-call",
-          toolCallId: tc.id,
-          toolName: tc.name,
-          input: JSON.stringify(tc.args),
-          providerExecuted: false,
-        } as any)
-        continue
-      }
-
-      const {
-        name: mappedName,
-        input: mappedInput,
-        executed,
-        skip,
-      } = mapTool(tc.name, tc.args, {
-        webSearch: this.config.webSearch,
-        sessionId: getClaudeSessionId(sk),
-        toolUseId: tc.id,
-      })
-      if (skip) continue
-      content.push({
-        type: "tool-call",
-        toolCallId: tc.id,
-        toolName: mappedName,
-        input: JSON.stringify(mappedInput),
-        providerExecuted: executed,
-      } as any)
-    }
-
-    const usage = this.toUsage(result.usage)
-
-    return {
-      content,
-      // Claude CLI's `result` message normally signals a fully-completed turn:
-      // tools have already been executed internally and final assistant text
-      // has been produced. ExitPlanMode is the exception: we surface it as
-      // opencode's native question tool so the outer loop must run that tool.
-      finishReason: this.toFinishReason(
-        result.toolCalls.some((tc) => tc.name === QUESTION_TOOL_NAME)
-          ? "tool-calls"
-          : "stop",
-      ),
-      usage,
-      request: { body: { text: userMsg } },
-      response: {
-        id: result.sessionId ?? generateId(),
-        timestamp: new Date(),
-        modelId: this.modelId,
-      },
-      providerMetadata: {
-        "claude-code": {
-          sessionId: result.sessionId ?? null,
-          costUsd: result.costUsd ?? null,
-          durationMs: result.durationMs ?? null,
-        },
-        ...(typeof result.usage?.cache_creation_input_tokens === "number"
-          ? {
-              anthropic: {
-                cacheCreationInputTokens:
-                  result.usage.cache_creation_input_tokens,
-              },
-            }
-          : {}),
-      },
-      warnings,
-    }
+    return this.doGenerateViaStream(options)
   }
 
   /**
@@ -1209,7 +646,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   async doStream(
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
-    const result = await this.runModelChain(options)
+    return this.streamTurn(options, "stream")
+  }
+
+  /**
+   * The turn, for both host methods. `mode` is documented on `TurnMode`; it is
+   * threaded down to `doStreamForHost` rather than read from the call options,
+   * because which method opencode used is not in them.
+   */
+  private async streamTurn(
+    options: LanguageModelV3CallOptions,
+    mode: TurnMode,
+  ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    const result = await this.runModelChain(options, mode)
     return {
       ...result,
       stream: translateStreamForHost(result.stream as any, this.config.hostApi ?? "v1") as any,
@@ -1236,17 +685,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
    */
   private async runModelChain(
     options: LanguageModelV3CallOptions,
+    mode: TurnMode,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const agent = this.getOpencodeAgent(options)
     const chain = this.isCompactionCall(options)
       ? []
       : resolveFallbackChain(agent, resolveAgentModel(agent, this.modelId))
-    if (chain.length === 0) return this.doStreamForHost(options)
+    if (chain.length === 0) return this.doStreamForHost(options, undefined, mode)
 
     const self = this
     const tried = new Set<string>()
     let attempt: ModelFallbackAttempt = { armed: true }
-    let inner = await this.doStreamForHost(options, attempt)
+    let inner = await this.doStreamForHost(options, attempt, mode)
     const request = inner.request
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
@@ -1329,7 +779,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               modelOverride: next,
               armed: nextFallbackModel(chain, tried) !== undefined,
             }
-            inner = await self.doStreamForHost(options, attempt)
+            inner = await self.doStreamForHost(options, attempt, mode)
           }
         } catch (error) {
           controller.enqueue({ type: "error", error })
@@ -1347,6 +797,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private async doStreamForHost(
     options: LanguageModelV3CallOptions,
     attempt?: ModelFallbackAttempt,
+    mode: TurnMode = "stream",
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
     const skipPermissions = this.config.skipPermissions !== false
@@ -1407,8 +858,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Compaction is out because its answer is a stored summary and a second
     // model would rewrite it; the interactive transport is out because it
     // drives a TUI over a PTY and has no `result` frame of this shape to read
-    // a refusal from. `doGenerate` has no chain at all, so a title stub or a
-    // no-tools call bills the picked model once and reports its own error.
+    // a refusal from. A `doGenerate` turn is armed like any other now that it
+    // is this same code: a title stub returns before reaching here, so what a
+    // chain can reach is a real spawn, and a refusal there is worth retrying.
     const modelFallbackArmed =
       attempt?.armed === true && !compactionMode && !useInteractive
 
@@ -1617,8 +1069,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // The operator's answer to a failover form this session asked on an
     // earlier turn. Consumed before the session/process state below is read,
     // because a switch changes which account those belong to.
+    // A `doGenerate` turn asks nothing (see `TurnMode`), so it has no answer of
+    // its own to read either: it follows the account override and no more.
     const failoverAnswer =
-      compactionMode || useInteractive
+      compactionMode || useInteractive || mode === "generate"
         ? null
         : consumeAccountFailoverAnswer(sk, options.prompt as any, {
             sourceAccount,
@@ -1805,6 +1259,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.config.accountFailover !== "off" &&
       !compactionMode &&
       !useInteractive &&
+      // A `doGenerate` caller takes the override and reports the plain
+      // rate-limit error, never the form. See `TurnMode`.
+      mode !== "generate" &&
       isAccountFailoverQuestionActive({
         configured: this.config.accountFailover,
         candidates: failoverAccounts,
