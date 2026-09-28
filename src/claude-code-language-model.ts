@@ -171,6 +171,7 @@ import {
   synthesizeTitle,
 } from "./title.js"
 import {
+  lastCallContextUsage,
   toFinishReason,
   toUsage,
 } from "./usage.js"
@@ -1831,7 +1832,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               controller.enqueue({
                 type: "finish",
                 finishReason: { unified: "error" as const, raw: refusal.kind },
-                usage: toUsage(msg.usage),
+                usage: toUsage(lastCallContextUsage(state.lastCallUsage, msg.usage)),
                 providerMetadata: {
                   "claude-code": { ...state.resultMeta, path: "model-fallback" },
                 },
@@ -1897,12 +1898,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             state.endTextBlock()
           }
 
+          // opencode reads this usage as the context the conversation
+          // occupies, and `msg.usage` is summed over every call of the turn.
+          const usage = toUsage(lastCallContextUsage(state.lastCallUsage, msg.usage))
           controller.enqueue({
             type: "finish",
             finishReason: state.resultFailure
               ? { unified: "error" as const, raw: state.resultFailure }
               : toFinishReason("stop"),
-            usage: toUsage(msg.usage),
+            usage,
             providerMetadata: {
               "claude-code": {
                 ...state.resultMeta,
@@ -1911,11 +1915,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   ? { compactionModel: effectiveModelId }
                   : {}),
               },
+              // opencode falls back to this when the usage has no cache
+              // write (0 is sent as none), so it must match the usage, never
+              // the turn total.
               ...(typeof msg.usage?.cache_creation_input_tokens === "number"
                 ? {
                     anthropic: {
                       cacheCreationInputTokens:
-                        msg.usage.cache_creation_input_tokens,
+                        usage.inputTokens.cacheWrite ?? 0,
                     },
                   }
                 : {}),

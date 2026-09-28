@@ -195,6 +195,14 @@ export interface TurnState {
 
   /** Filled by the `result` frame; the close handler's finish reads it too. */
   resultMeta: TurnResultMeta
+  /**
+   * Usage of the newest `assistant` frame that was a real API call, for the
+   * whole stream. A finish's usage is read by opencode as context occupancy,
+   * and `result.usage` is summed over the turn, so every finish that reports
+   * a result's usage goes through `lastCallContextUsage` with this. A
+   * zero-usage (`<synthetic>`) frame must never overwrite it.
+   */
+  lastCallUsage: ClaudeStreamMessage["usage"]
   /** Subtype of a failing `result`, so the finish reports an error not a stop. */
   resultFailure: string | undefined
   /** Set only by a REJECTED rate-limit event or a known account-limit text. */
@@ -348,6 +356,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     toolCallsById: new Map<string, { id: string; name: string; input: unknown }>(),
 
     resultMeta: {},
+    lastCallUsage: undefined,
     resultFailure: undefined,
     accountLimitHit: null,
     accountBlock: null,

@@ -544,6 +544,22 @@ export function createLineHandler(
       ) {
         state.lastStopReason = (msg.message as any).stop_reason
       }
+      // An API call arrives as one `assistant` frame per content block (with
+      // or without partial messages), all sharing that call's usage, so the
+      // newest frame is the newest call. Its input and cache counters are
+      // final; its `output_tokens` is a placeholder, which is why output
+      // comes from the `result`. The CLI's `<synthetic>` frames carry all
+      // zeros and are not a call.
+      const callUsage = msg.type === "assistant" ? msg.message?.usage : undefined
+      if (
+        callUsage &&
+        (callUsage.input_tokens ?? 0) +
+          (callUsage.cache_read_input_tokens ?? 0) +
+          (callUsage.cache_creation_input_tokens ?? 0) >
+          0
+      ) {
+        state.lastCallUsage = callUsage
+      }
       // Fallback: extract thinking from the complete assistant
       // message. opus-4-7's CLI strips thinking_delta from stream
       // events but may include thinking in the final message.

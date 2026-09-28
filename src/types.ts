@@ -672,6 +672,8 @@ export interface ClaudeStreamMessage {
       /** On a `tool_result` block: the CLI-executed tool failed. */
       is_error?: boolean
     }>
+    /** On an `assistant` frame: that one API call's usage, not the turn's. */
+    usage?: ClaudeStreamMessage["usage"]
   }
 
   // `system`/`init` fields. Read by `reportSystemInit` in `cli-events.ts`;
