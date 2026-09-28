@@ -1,5 +1,5 @@
 import { log } from "./logger.js"
-import type { ClaudeStreamMessage } from "./types.js"
+import { PROXY_MCP_SERVER_NAME, type ClaudeStreamMessage } from "./types.js"
 
 /**
  * Claude CLI stream events the plugin used to drop on the floor.
@@ -236,6 +236,83 @@ export interface SystemInitInfo {
   cliVersion?: string
   toolCount: number
   mcpServers: Array<{ name: string; status: string }>
+  /** `--mcp-config` entries the CLI refused. Empty when the key was omitted. */
+  mcpServerErrors: McpServerError[]
+}
+
+/**
+ * One `--mcp-config` entry Claude Code refused to load, from the optional
+ * `mcp_server_errors` key on the `system`/`init` frame.
+ *
+ * Read out of the CLI's own zod schema on 2.1.280 (`rg -a -o
+ * 'mcp_server_errors:k\(u\(\{name:o\(\),type:o\(\),message:o\(\)\}\)\).{0,1400}'`),
+ * which documents it as "MCP server config entries from --mcp-config that
+ * failed validation and were skipped (e.g. a `url` entry with no `type`).
+ * Affected servers are absent from `mcp_servers[]`."
+ *
+ * That last sentence is the whole reason this needs its own reporter:
+ * `reportSystemInit` already warns about a server that came up broken, but a
+ * server the CLI skipped is simply not in the list, so until now it was
+ * invisible. The plugin writes its own `--mcp-config`, so the entry that goes
+ * missing can be the proxy every proxied tool call depends on.
+ */
+export interface McpServerError {
+  name: string
+  type: string
+  message: string
+}
+
+/**
+ * The schema calls `type` "a stable category from an open set", names five
+ * general categories plus the Remote Control `bridge_carrier_*` family, and
+ * says to "treat values you do not recognize as a generic skip". So this maps
+ * only what is documented and falls back to the CLI's own sentence, which is
+ * already written for a human.
+ */
+const MCP_SERVER_ERROR_TYPES: Record<string, string> = {
+  unknown_type: "its `type` is not one Claude Code knows",
+  url_missing_type: "it has a `url` but no `type`",
+  invalid_config: "its configuration did not validate",
+  reserved_name: "its name is reserved",
+}
+
+export function parseMcpServerErrors(msg: ClaudeStreamMessage): McpServerError[] {
+  const raw = (msg as unknown as Record<string, unknown>).mcp_server_errors
+  if (!Array.isArray(raw)) return []
+  const errors: McpServerError[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    errors.push({
+      name: str(entry.name) ?? "unknown",
+      type: str(entry.type) ?? "unknown",
+      message: str(entry.message) ?? "",
+    })
+  }
+  return errors
+}
+
+/**
+ * What the user has to do about a skipped server. The plugin's own proxy gets
+ * its own sentence because the consequence is categorically different: a
+ * missing third-party server costs the model some tools, while a missing
+ * `opencode_proxy` means every proxied tool call in the session fails and the
+ * fix is not in the user's MCP config at all.
+ */
+export function describeMcpServerError(error: McpServerError): string {
+  const why = MCP_SERVER_ERROR_TYPES[error.type]
+  const reason = why ? ` because ${why}` : ""
+  const detail = error.message ? ` Claude Code said: ${error.message}` : ""
+  if (error.name === PROXY_MCP_SERVER_NAME) {
+    return (
+      `Claude Code skipped the plugin's own MCP server "${error.name}" (${error.type})${reason}, ` +
+      "so every proxied tool call this session will fail. This is a plugin bug or a corrupted " +
+      `scratch config rather than something in your own MCP settings: report it with this line.${detail}`
+    )
+  }
+  return (
+    `Claude Code skipped MCP server "${error.name}" (${error.type})${reason}, so its tools are ` +
+    `not available to the model this session. Fix the entry in your MCP config.${detail}`
+  )
 }
 
 /**
@@ -272,6 +349,7 @@ export function parseSystemInit(msg: ClaudeStreamMessage): SystemInitInfo | null
     cliVersion: str(raw.claude_code_version),
     toolCount: Array.isArray(raw.tools) ? raw.tools.length : 0,
     mcpServers: servers,
+    mcpServerErrors: parseMcpServerErrors(msg),
   }
 }
 
@@ -297,11 +375,30 @@ export function apiKeySourceWarning(
 
 const warnedApiKeySources = new Set<string>()
 const warnedMcpFailures = new Set<string>()
+const warnedMcpSkips = new Set<string>()
+
+/**
+ * The skipped entries this process has seen, newest wins per name, for
+ * `/claude-code-doctor`.
+ *
+ * The WARN below goes to stderr and the log file, and the log file is off by
+ * default, so without this the one diagnostic that explains a session full of
+ * failing proxy calls is the one nobody can retrieve. Kept keyed by name so a
+ * respawn that fixed the config does not leave a stale row.
+ */
+const lastMcpServerErrors = new Map<string, McpServerError>()
 
 /** Test-only. */
 export function _resetSystemInitReports(): void {
   warnedApiKeySources.clear()
   warnedMcpFailures.clear()
+  warnedMcpSkips.clear()
+  lastMcpServerErrors.clear()
+}
+
+/** Read-only view for the doctor. Never touches the dedup sets. */
+export function snapshotMcpServerErrors(): McpServerError[] {
+  return [...lastMcpServerErrors.values()]
 }
 
 /**
@@ -323,7 +420,22 @@ export function reportSystemInit(
     cliVersion: info.cliVersion ?? null,
     tools: info.toolCount,
     mcpServers: info.mcpServers,
+    mcpServerErrors: info.mcpServerErrors,
   })
+
+  // A skipped entry first, because it is the one failure mode with no other
+  // trace: the server is missing from `mcp_servers` rather than listed broken.
+  for (const error of info.mcpServerErrors) {
+    lastMcpServerErrors.set(error.name, error)
+    const key = `${error.name}:${error.type}`
+    const message = describeMcpServerError(error)
+    if (warnedMcpSkips.has(key)) {
+      log.debug(message, { server: error.name, type: error.type })
+      continue
+    }
+    warnedMcpSkips.add(key)
+    log.warn(message, { server: error.name, type: error.type })
+  }
 
   for (const server of info.mcpServers) {
     if (server.status === "connected") continue

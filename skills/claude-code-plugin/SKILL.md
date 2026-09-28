@@ -390,6 +390,17 @@ The proxy's loopback endpoint has bearer, Host, Origin and Content-Type guards.
 Never weaken them, publish its token or relax the generated MCP file's `0600` mode.
 Restart all old processes after a security upgrade; changing files cannot patch them.
 
+Proxying a tool costs **one extra Claude Code API call per `claude` process**: a proxied
+tool is an MCP tool, Claude Code 2.1.280 defers MCP tools behind `ToolSearch`, so the
+model spends a request finding it before the first proxied call. Built-ins are never
+deferred. Measured on 2.1.280 (`docs/agents-history.md`, `#g166`): 3 API calls with
+`Bash` proxied against 2 without, and it is paid once per process, not per call (two
+commands measured 4 against 3, one `ToolSearch` either way). It is not caused by a large
+tool list. Never suggest `ENABLE_TOOL_SEARCH=0` to avoid it: that inlines every tool
+definition into each prompt and measured 2.5 to 4 times the cost. Say the extra call is
+inherent to the CLI's MCP flow and weigh it against the permission prompts and audit log
+proxying buys.
+
 ### Make a provider read-only
 
 ```json
@@ -649,13 +660,29 @@ proxy URL (`401, good`; anything else is flagged unsafe). Prefer it over asking 
 prompt. A user-defined `claude-code-doctor` command is never overwritten. The name has
 no space in it: opencode would read the second word as an argument.
 
+It also prints an **MCP config entries Claude Code skipped** section, but only when the
+CLI refused an entry in an `--mcp-config` it was given. Read it whenever MCP tools are
+missing: a skipped server is absent from the CLI's server list rather than listed
+broken, so nothing else hints at it. A skipped `opencode_proxy` is the plugin's own
+server, not the user's config, and means every proxied tool call in the session fails.
+
+`/claude-code-doctor usage` adds a **Plan usage** section: the CLI's own `/cost` answer
+(subscription vs API key, 5-hour and 7-day window use, reset times, what is driving
+them). Measured free on 2.1.280 (`num_turns: 0`, `$0`, no API call), so suggest it for
+"how much have I used" and limit questions. It is opt-in only because it starts a
+short-lived `claude`, which runs the user's `SessionStart` hooks and takes a few
+seconds; say that when suggesting it. The plain command stays instant and says how to
+ask. Do not propose `--bare` to skip the hooks: it never reads OAuth, so it reports
+nothing about a subscription.
+
 Claude Code stream events the plugin now surfaces without debug logging: a rate-limit
 rejection, a context compaction the CLI did on its own, a `result` subtype other than
 `success` (which now finishes the turn as an error, not a clean stop), and a failed
 CLI-executed tool (forwarded with the error flag, so the row renders as failed). A
-failed MCP server at session start and an `apiKeySource` that means API-key billing
-each warn once per process. None of these are actions the plugin may take on the user's
-behalf; enabling paid usage or changing auth still needs approval.
+failed MCP server at session start, an `--mcp-config` entry the CLI skipped, and an
+`apiKeySource` that means API-key billing each warn once per identity per process.
+None of these are actions the plugin may take on the user's behalf; enabling paid
+usage or changing auth still needs approval.
 
 `/btw <question>` needs an existing headless Claude conversation and CLI 2.1.258+.
 It asks through the side channel and keeps the answer in the conversation (inline

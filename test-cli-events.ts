@@ -27,11 +27,14 @@ import {
   isRateLimitRejected,
   parseCompactBoundary,
   parseRateLimitEvent,
+  parseMcpServerErrors,
   parseSystemInit,
   rateLimitKey,
   reportCompactBoundary,
   reportRateLimitEvent,
   reportSystemInit,
+  describeMcpServerError,
+  snapshotMcpServerErrors,
 } from "./src/cli-events.js"
 import { _resetLoggerForTests, configureLogger } from "./src/logger.js"
 import type { ClaudeStreamMessage } from "./src/types.js"
@@ -186,6 +189,111 @@ test("parseSystemInit reads the init fields worth reporting", () => {
     { name: "slack", status: "failed" },
   ])
   assert.equal(parseSystemInit({ type: "system", subtype: "compact_boundary" }), null)
+  assert.deepEqual(info?.mcpServerErrors, [], "the key is omitted when nothing was skipped")
+})
+
+/**
+ * Verbatim from a live 2.1.280 probe: `claude -p --output-format stream-json
+ * --verbose --mcp-config bad-mcp.json --strict-mcp-config`, where bad-mcp.json
+ * declared a `url` entry with no `type` and an entry with an invented `type`.
+ * Both servers were absent from `mcp_servers`, which was `[]`.
+ */
+const initWithSkips: ClaudeStreamMessage = {
+  type: "system",
+  subtype: "init",
+  apiKeySource: "none",
+  claude_code_version: "2.1.280",
+  tools: ["Bash"],
+  mcp_servers: [],
+  mcp_server_errors: [
+    {
+      name: "no_type_entry",
+      type: "url_missing_type",
+      message:
+        'Skipped - MCP server "no_type_entry" has a "url" but no "type"; add "type": "http" (or "sse" / "ws") to this entry',
+    },
+    { name: "bogus", type: "unknown_type", message: 'Skipped - unknown MCP server type "nonsense_type" for server "bogus"' },
+  ],
+}
+
+test("mcp_server_errors is parsed off the init frame and survives junk", () => {
+  const errors = parseMcpServerErrors(initWithSkips)
+  assert.equal(errors.length, 2)
+  assert.deepEqual(
+    errors.map((error) => [error.name, error.type]),
+    [
+      ["no_type_entry", "url_missing_type"],
+      ["bogus", "unknown_type"],
+    ],
+  )
+  // The key is optional, so its absence is the common case and never an error.
+  assert.deepEqual(parseMcpServerErrors(init), [])
+  assert.deepEqual(parseMcpServerErrors({ type: "system", subtype: "init" }), [])
+  // Defensive: a future CLI that changes the element shape must not throw.
+  assert.deepEqual(
+    parseMcpServerErrors({ type: "system", subtype: "init", mcp_server_errors: "nope" as never }),
+    [],
+  )
+  const partial = parseMcpServerErrors({
+    type: "system",
+    subtype: "init",
+    mcp_server_errors: [{}, null as never, { name: "x" }],
+  })
+  assert.deepEqual(partial, [
+    { name: "unknown", type: "unknown", message: "" },
+    { name: "x", type: "unknown", message: "" },
+  ])
+})
+
+test("a skipped server says what to fix, and the plugin's own proxy says more", () => {
+  const theirs = describeMcpServerError({
+    name: "github",
+    type: "url_missing_type",
+    message: "Skipped - ...",
+  })
+  assert.match(theirs, /skipped MCP server "github"/)
+  assert.match(theirs, /has a `url` but no `type`/)
+  assert.match(theirs, /Fix the entry in your MCP config/)
+
+  // The plugin writes its own --mcp-config, so this one is never the user's
+  // fault and the consequence is every proxied tool call, not a few tools.
+  const ours = describeMcpServerError({
+    name: "opencode_proxy",
+    type: "invalid_config",
+    message: "Skipped - ...",
+  })
+  assert.match(ours, /plugin's own MCP server/)
+  assert.match(ours, /every proxied tool call this session will fail/)
+  assert.doesNotMatch(ours, /your own MCP settings\./)
+
+  // An unrecognised category is a generic skip, as the CLI's schema instructs.
+  const unknown = describeMcpServerError({ name: "x", type: "brand_new_thing", message: "" })
+  assert.match(unknown, /\(brand_new_thing\)/)
+  assert.doesNotMatch(unknown, /because/)
+})
+
+test("a skipped server warns once per identity per process and is kept for the doctor", () => {
+  _resetLoggerForTests()
+  _resetSystemInitReports()
+  configureLogger({ file: false, mode: "silent", level: "info" })
+
+  const first = captureStderr(() => reportSystemInit(initWithSkips, {}))
+  assert.equal(first.lines.length, 2, "one warning per skipped entry, and no MCP-status noise")
+  assert.ok(first.lines.some((line) => line.includes("no_type_entry")))
+  assert.ok(first.lines.some((line) => line.includes("bogus")))
+
+  const second = captureStderr(() => reportSystemInit(initWithSkips, {}))
+  assert.equal(second.lines.length, 0, "a respawn must not repeat the warning")
+
+  // The WARN only reaches stderr and a log file that is off by default, so the
+  // doctor needs its own copy or the diagnostic is unretrievable.
+  assert.deepEqual(
+    snapshotMcpServerErrors().map((error) => error.name),
+    ["no_type_entry", "bogus"],
+  )
+  _resetSystemInitReports()
+  assert.deepEqual(snapshotMcpServerErrors(), [])
+  _resetLoggerForTests()
 })
 
 test("apiKeySourceWarning fires for a key and stays quiet for the subscription", () => {

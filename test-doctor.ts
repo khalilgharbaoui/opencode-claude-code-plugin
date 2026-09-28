@@ -16,6 +16,12 @@ import {
   parseDoctorCommandContent,
   type DoctorReport,
 } from "./src/doctor.js"
+import {
+  PLAN_USAGE_MAX_CHARS,
+  parsePlanUsage,
+  wantsPlanUsage,
+  fetchPlanUsage,
+} from "./src/plan-usage.js"
 import { EventEmitter } from "node:events"
 import { registerDoctorCommand } from "./src/index.js"
 import { filterSideQuestionHistory } from "./src/message-builder.js"
@@ -67,6 +73,8 @@ const report: DoctorReport = {
     { sessionKey: "sk", toolCallId: "call_1", toolName: "task", ageMs: 30_000, deadlineMs: 3_600_000, emitted: true, channelClosed: false },
   ],
   proxyServers: [{ url: "http://127.0.0.1:51234/mcp", auth: { status: "ok", code: 401 } }],
+  mcpServerErrors: [],
+  planUsage: { status: "not-requested" },
 }
 
 test("the report names every field a bug report needs, and nothing secret", () => {
@@ -96,6 +104,167 @@ test("the report names every field a bug report needs, and nothing secret", () =
 
   // Nothing that identifies a credential may appear, by value or by name.
   assert.equal(/authToken|bearer|sk-ant|Authorization/i.test(text), false)
+})
+
+test("skipped MCP entries get their own section, and only when there are some", () => {
+  // The clean case must not print an empty table: a skipped entry is an
+  // exception, and a permanent empty section trains people to skip the report.
+  assert.equal(formatDoctorReport(report).includes("Claude Code skipped"), false)
+
+  const text = formatDoctorReport({
+    ...report,
+    mcpServerErrors: [
+      { name: "github", type: "url_missing_type", message: "Skipped - no type" },
+      { name: "opencode_proxy", type: "invalid_config", message: "" },
+    ],
+  })
+  assert.ok(text.includes("**MCP config entries Claude Code skipped**"), text)
+  assert.ok(text.includes("| github | `url_missing_type` | Skipped - no type |"), text)
+  assert.ok(text.includes("| opencode_proxy | `invalid_config` | no detail |"), text)
+})
+
+test("plan usage is off unless asked for, and says how to ask", () => {
+  const text = formatDoctorReport(report)
+  assert.ok(text.includes("**Plan usage**"), text)
+  assert.ok(text.includes("/claude-code-doctor usage"), "the default must say how to get it")
+  // The cost that is not tokens has to be stated, or nobody can consent to it.
+  assert.ok(text.includes("SessionStart"), text)
+})
+
+test("plan usage renders the CLI's own text, and a failure does not eat the report", () => {
+  const ok = formatDoctorReport({
+    ...report,
+    planUsage: {
+      status: "ok",
+      text: "Current session: 82% used\nCurrent week (all models): 57% used",
+      costUsd: 0,
+      numTurns: 0,
+    },
+  })
+  assert.ok(ok.includes("Current session: 82% used"), ok)
+  assert.ok(ok.includes("```text"), "quoted, not reinterpreted")
+
+  const failed = formatDoctorReport({
+    ...report,
+    planUsage: { status: "failed", error: "spawn claude ENOENT" },
+  })
+  assert.ok(failed.includes("Could not read it from the CLI: spawn claude ENOENT"), failed)
+  // The rest of the report still has to be there.
+  assert.ok(failed.includes("| plugin | 0.18.3 |"), failed)
+})
+
+test("only the documented argument asks for plan usage", () => {
+  for (const argument of ["usage", "cost", "stats", "limits", " USAGE ", "Cost"]) {
+    assert.equal(wantsPlanUsage(argument), true, argument)
+  }
+  for (const argument of ["", "everything", "usages", "plan usage"]) {
+    assert.equal(wantsPlanUsage(argument), false, argument)
+  }
+})
+
+/**
+ * The reply shape measured on 2.1.280: `num_turns: 0`, `total_cost_usd: 0` and
+ * `local_command: "cost"`, which is what makes the probe free.
+ */
+const planUsageReply = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  num_turns: 0,
+  duration_api_ms: 0,
+  total_cost_usd: 0,
+  local_command: "cost",
+  result: "You are currently using your subscription\n\nCurrent session: 82% used",
+})
+
+test("parsePlanUsage reads the free reply and refuses anything it cannot trust", () => {
+  const parsed = parsePlanUsage(planUsageReply)
+  assert.equal(parsed.status, "ok")
+  assert.ok(parsed.status === "ok" && parsed.text.includes("Current session: 82% used"))
+  assert.equal(parsed.status === "ok" && parsed.costUsd, 0)
+  assert.equal(parsed.status === "ok" && parsed.numTurns, 0)
+
+  // Leading noise on its own lines is tolerated: the result object is last.
+  const noisy = parsePlanUsage(`some warning\n${planUsageReply}`)
+  assert.equal(noisy.status, "ok")
+
+  for (const bad of ["", "   ", "not json at all", "{}", '{"type":"result"}']) {
+    assert.equal(parsePlanUsage(bad).status, "failed", JSON.stringify(bad))
+  }
+
+  const errored = parsePlanUsage(
+    JSON.stringify({ type: "result", is_error: true, result: "not logged in" }),
+  )
+  assert.equal(errored.status, "failed")
+  assert.ok(errored.status === "failed" && errored.error.includes("not logged in"))
+})
+
+test("a runaway reply is truncated rather than filling the report", () => {
+  const huge = JSON.stringify({ type: "result", result: "x".repeat(PLAN_USAGE_MAX_CHARS + 500) })
+  const parsed = parsePlanUsage(huge)
+  assert.equal(parsed.status, "ok")
+  assert.ok(parsed.status === "ok" && parsed.text.endsWith("[truncated]"))
+  assert.ok(parsed.status === "ok" && parsed.text.length < PLAN_USAGE_MAX_CHARS + 100)
+})
+
+test("fetchPlanUsage asks for /cost as json and never throws", async () => {
+  const calls: Array<{ cliPath: string; args: string[] }> = []
+  const ok = await fetchPlanUsage("/usr/local/bin/claude", {
+    runImpl: async (cliPath, args) => {
+      calls.push({ cliPath, args })
+      return planUsageReply
+    },
+  })
+  assert.equal(ok.status, "ok")
+  assert.deepEqual(calls, [
+    {
+      cliPath: "/usr/local/bin/claude",
+      args: ["-p", "/cost", "--output-format", "json"],
+    },
+  ])
+
+  // A CLI that is missing, wedged or killed by the timeout is a row, not a crash.
+  const thrown = await fetchPlanUsage("/nope", {
+    runImpl: async () => {
+      throw new Error("spawn /nope ENOENT")
+    },
+  })
+  assert.equal(thrown.status, "failed")
+  assert.ok(thrown.status === "failed" && thrown.error.includes("ENOENT"))
+})
+
+test("fetchPlanUsage spawns with the turn spawn's env, key strip included", async () => {
+  // `-p` is a full CLI start, so it must not auto-update the binary behind the
+  // version cache, and `ignoreAnthropicApiKey` must hold here as on a turn.
+  const saved = {
+    DISABLE_AUTOUPDATER: process.env.DISABLE_AUTOUPDATER,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  }
+  delete process.env.DISABLE_AUTOUPDATER
+  process.env.ANTHROPIC_API_KEY = "sk-test-not-a-real-key"
+  try {
+    const envs: Array<Record<string, string | undefined>> = []
+    const runImpl = async (
+      _cliPath: string,
+      _args: string[],
+      _timeoutMs: number,
+      env: Record<string, string | undefined>,
+    ) => {
+      envs.push(env)
+      return planUsageReply
+    }
+    await fetchPlanUsage("claude", { runImpl })
+    await fetchPlanUsage("claude", { runImpl, ignoreAnthropicApiKey: true })
+    assert.equal(envs[0].DISABLE_AUTOUPDATER, "1")
+    assert.equal(envs[0].ANTHROPIC_API_KEY, "sk-test-not-a-real-key", "kept unless asked")
+    assert.equal(envs[1].DISABLE_AUTOUPDATER, "1")
+    assert.equal(envs[1].ANTHROPIC_API_KEY, undefined, "stripped like a turn's spawn")
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
 })
 
 test("an applied preset lists the options it replaced", () => {
