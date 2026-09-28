@@ -233,6 +233,40 @@ test("fetchPlanUsage asks for /cost as json and never throws", async () => {
   assert.ok(thrown.status === "failed" && thrown.error.includes("ENOENT"))
 })
 
+test("fetchPlanUsage spawns with the turn spawn's env, key strip included", async () => {
+  // `-p` is a full CLI start, so it must not auto-update the binary behind the
+  // version cache, and `ignoreAnthropicApiKey` must hold here as on a turn.
+  const saved = {
+    DISABLE_AUTOUPDATER: process.env.DISABLE_AUTOUPDATER,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  }
+  delete process.env.DISABLE_AUTOUPDATER
+  process.env.ANTHROPIC_API_KEY = "sk-test-not-a-real-key"
+  try {
+    const envs: Array<Record<string, string | undefined>> = []
+    const runImpl = async (
+      _cliPath: string,
+      _args: string[],
+      _timeoutMs: number,
+      env: Record<string, string | undefined>,
+    ) => {
+      envs.push(env)
+      return planUsageReply
+    }
+    await fetchPlanUsage("claude", { runImpl })
+    await fetchPlanUsage("claude", { runImpl, ignoreAnthropicApiKey: true })
+    assert.equal(envs[0].DISABLE_AUTOUPDATER, "1")
+    assert.equal(envs[0].ANTHROPIC_API_KEY, "sk-test-not-a-real-key", "kept unless asked")
+    assert.equal(envs[1].DISABLE_AUTOUPDATER, "1")
+    assert.equal(envs[1].ANTHROPIC_API_KEY, undefined, "stripped like a turn's spawn")
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+})
+
 test("an applied preset lists the options it replaced", () => {
   const text = formatDoctorReport(report)
   assert.ok(text.includes("**Permission preset overrides**"), text)

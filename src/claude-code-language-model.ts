@@ -876,6 +876,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliPath,
         interactive: !!useInteractive,
         turnStats: this.config.turnStats === true,
+        ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
         // `/claude-code-doctor usage` opts into the CLI's own plan-usage
         // report; anything else here is ignored, as it always has been.
         argument: doctor.rest,

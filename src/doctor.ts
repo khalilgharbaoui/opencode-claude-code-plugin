@@ -366,6 +366,8 @@ export interface GatherDoctorOptions {
   argument?: string
   /** Seam for tests, threaded to `fetchPlanUsage`. */
   planUsageImpl?: typeof fetchPlanUsage
+  /** The provider option, so the `usage` spawn strips a key like a turn does. */
+  ignoreAnthropicApiKey?: boolean
 }
 
 /** Assemble the live report. Never throws: a broken field reads as unknown. */
@@ -396,7 +398,9 @@ export async function gatherDoctorReport(
   // Opt-in, and after the cheap fields so a slow or wedged CLI cannot stop the
   // rest of the report being assembled.
   const planUsage: PlanUsage = wantsPlanUsage(options.argument ?? "")
-    ? await (options.planUsageImpl ?? fetchPlanUsage)(cliPath)
+    ? await (options.planUsageImpl ?? fetchPlanUsage)(cliPath, {
+        ignoreAnthropicApiKey: options.ignoreAnthropicApiKey,
+      })
     : { status: "not-requested" }
 
   return {

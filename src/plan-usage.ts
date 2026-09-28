@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { log } from "./logger.js"
+import { claudeSpawnEnv } from "./session-manager.js"
 
 /**
  * The Claude CLI's own plan-usage report, read for `/claude-code-doctor`.
@@ -96,18 +97,30 @@ export function parsePlanUsage(stdout: string): PlanUsage {
 
 export interface FetchPlanUsageOptions {
   timeoutMs?: number
+  /** The provider option: strip a stray API key, as every turn's spawn does. */
+  ignoreAnthropicApiKey?: boolean
   /** Seam for tests; defaults to spawning the real CLI. */
-  runImpl?: (cliPath: string, args: string[], timeoutMs: number) => Promise<string>
+  runImpl?: (
+    cliPath: string,
+    args: string[],
+    timeoutMs: number,
+    env: Record<string, string | undefined>,
+  ) => Promise<string>
 }
 
-function runCli(cliPath: string, args: string[], timeoutMs: number): Promise<string> {
+function runCli(
+  cliPath: string,
+  args: string[],
+  timeoutMs: number,
+  env: Record<string, string | undefined>,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       cliPath,
       args,
       // `killSignal` so a CLI wedged on a hook is actually gone, and a generous
       // buffer because the reply is prose of unbounded length.
-      { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 },
+      { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024, env },
       (error, stdout) => {
         // A non-zero exit that still printed a result is usable, so stdout wins
         // over the exit code and only an empty failure rejects.
@@ -131,7 +144,17 @@ export async function fetchPlanUsage(
   const timeoutMs = options.timeoutMs ?? 20_000
   const run = options.runImpl ?? runCli
   try {
-    const stdout = await run(cliPath, ["-p", "/cost", "--output-format", "json"], timeoutMs)
+    // The turn spawn's env, not the bare inherited one: unlike `--version`,
+    // `-p` is a full CLI start, so without the hygiene vars it may auto-update
+    // the binary behind the version cache, and without the key strip a stray
+    // `ANTHROPIC_API_KEY` reports pay-as-you-go usage instead of the plan's.
+    const env = claudeSpawnEnv({ ignoreAnthropicApiKey: options.ignoreAnthropicApiKey })
+    const stdout = await run(
+      cliPath,
+      ["-p", "/cost", "--output-format", "json"],
+      timeoutMs,
+      env,
+    )
     const usage = parsePlanUsage(stdout)
     if (usage.status === "ok") {
       log.info("read claude plan usage", { costUsd: usage.costUsd, numTurns: usage.numTurns })
