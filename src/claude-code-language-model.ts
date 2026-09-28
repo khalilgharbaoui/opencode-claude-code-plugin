@@ -14,70 +14,59 @@ import type {
   ClaudeStreamMessage,
   ReasoningEffort,
 } from "./types.js"
-import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { translateStreamForHost } from "./host-tools.js"
-import { applyTaskCreateToolResult } from "./todo-ledger.js"
+import { getClaudeUserMessage } from "./message-builder.js"
 import {
-  getClaudeUserMessage,
-} from "./message-builder.js"
-import { resolveAgentEffort, resolveAgentModel } from "./agent-models.js"
+  resolveAgentEffort,
+  resolveAgentModel,
+} from "./agent-models.js"
 import {
   type ModelFallbackAttempt,
   type ModelRefusal,
   formatModelFallbackNote,
-  modelRefusalFromAssistant,
-  modelRefusalFromResult,
   nextFallbackModel,
-  provesModelServing,
   resolveFallbackChain,
 } from "./model-fallback.js"
-import { parseSideQuestion, requestSideQuestion, collectSideQuestionHistory, SIDE_QUESTION_USAGE, type SideQuestionResult } from "./side-question.js"
-import { BTW_NO_SESSION_MESSAGE, registerAsideSink, takeSideQuestionAnswer } from "./btw-command.js"
 import {
-  describeResultFailure,
-  formatResultFailureNote,
-  formatSilentTurnNote,
-  isRateLimitRejected,
-  parseRateLimitEvent,
-  reportCompactBoundary,
-  reportConversationReset,
-  reportRateLimitEvent,
-  reportSystemInit,
-} from "./cli-events.js"
+  parseSideQuestion,
+  requestSideQuestion,
+  collectSideQuestionHistory,
+  SIDE_QUESTION_USAGE,
+  type SideQuestionResult,
+} from "./side-question.js"
+import {
+  BTW_NO_SESSION_MESSAGE,
+  registerAsideSink,
+  takeSideQuestionAnswer,
+} from "./btw-command.js"
+import { formatSilentTurnNote } from "./cli-events.js"
 import {
   DEFAULT_ACCOUNT,
   normalizeAccountName,
 } from "./accounts.js"
 import {
-  accountBlockKind,
   buildFailoverContinuationPrompt,
   consumeAccountFailoverAnswer,
   createAccountFailoverQuestionCall,
   describeAccountBlock,
   failoverCandidates,
   failoverUntil,
-  formatAccountBlockNote,
   formatFailoverNote,
   formatFailoverStopNote,
   isAccountFailoverQuestionActive,
-  isAccountLimitError,
   resolveFailoverSpawn,
   setAccountOverride,
   type FailoverSpawn,
 } from "./account-failover.js"
-import { DOCTOR_COMMAND, buildDoctorReport, parseDoctorCommand } from "./doctor.js"
 import {
-  extractTurnStats,
-  formatTurnStatsBlock,
-  turnStatsLogPayload,
-} from "./turn-stats.js"
+  DOCTOR_COMMAND,
+  buildDoctorReport,
+  parseDoctorCommand,
+} from "./doctor.js"
 import { resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
-import {
-  consumeExitPlanModeQuestionResult,
-  createExitPlanModeQuestionCall,
-} from "./plan-mode-question.js"
-import type { RuntimeMcpStatus } from "./mcp-bridge.js"
+import { consumeExitPlanModeQuestionResult } from "./plan-mode-question.js"
+import { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
   fetchSessionParentId,
@@ -122,7 +111,6 @@ import {
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
-  PROXY_TOOL_PREFIX,
   setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
@@ -151,21 +139,13 @@ import {
   isSilentTurn,
 } from "./auto-continue.js"
 import {
-  denyMessageForTool,
-  formatAskUserQuestion,
-  isAskUserQuestionTool,
-} from "./ask-user-question.js"
-import { reportFastModeState } from "./fast-mode.js"
-import {
   describeAbortReason,
   hasNewUserContent,
   resolveCompactionModel,
   resolveOpencodeAgent,
   resolveSessionAffinity,
 } from "./call-options.js"
-import {
-  extractPendingProxyResultForCall,
-} from "./proxy-results.js"
+import { extractPendingProxyResultForCall } from "./proxy-results.js"
 import {
   controlRequestBehaviorForTool,
   handleControlRequest,
@@ -189,8 +169,12 @@ import {
   requestScope,
   synthesizeTitle,
 } from "./title.js"
-import { toFinishReason, toUsage } from "./usage.js"
+import {
+  toFinishReason,
+  toUsage,
+} from "./usage.js"
 import { createTurnState } from "./turn-state.js"
+import { createLineHandler } from "./stream-parser.js"
 import {
   DRAIN_QUIET_MS,
   armStartWatchdog,
@@ -200,13 +184,9 @@ import {
   drainNow,
   finishWithQuestionCall,
   noteProxyActivity,
-  noteReasoning,
   noteResultBoundaryCall,
   noteToolActivity,
-  noteVisibleText,
-  resetLastVisibleTextBlock,
   runAutoContinue,
-  scheduleResultBoundary,
   startResultFallback,
 } from "./turn-controller.js"
 
@@ -252,20 +232,6 @@ export async function isProxyCallStillServed(callId: string): Promise<boolean> {
 
 setProxyDeadlineGuard(({ callId }) => isProxyCallStillServed(callId))
 
-/**
- * Stream delta types we handle explicitly. `signature_delta` is listed as
- * known-and-silent: it carries encrypted thinking-block signatures that
- * are opaque to clients (the server uses them to reconstitute thinking
- * across turns), so there's nothing for us to do but ignore it.
- */
-const KNOWN_DELTA_TYPES = new Set([
-  "thinking_delta",
-  "text_delta",
-  "input_json_delta",
-  "signature_delta",
-])
-
-const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
 const CHILD_EXIT_STATUS_GRACE_MS = 250
@@ -1823,7 +1789,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // weekly cap is the case that makes that worth doing at all, and it
           // is why the limit is a chain trigger and not only a failover one.
           //
-          // `state.accountBlock` is excluded on purpose: an expired login or a
+          // `accountBlock` is excluded on purpose: an expired login or a
           // billing hold fails identically on every model in the chain, so
           // retrying would spend three spawns to print the same error.
           if (modelFallbackArmed && attempt && msg.is_error === true) {
@@ -1950,939 +1916,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // top-level `assistant` message is a duplicate of what we already
         // streamed via content_block_* deltas — skip its content.
 
-        const lineHandler = (line: string) => {
-          if (!line.trim()) return
-          if (state.controllerClosed) return
-
-          // Any line from the CLI counts as activity — reset the inactivity
-          // watchdog so mid-turn pauses between blocks don't get killed.
-          startResultFallback(state)
-
-          try {
-            const outer: ClaudeStreamMessage = JSON.parse(line)
-
-            // Unwrap stream_event envelope (--include-partial-messages).
-            // Inner event uses the same content_block_* / message_* shape.
-            const msg: ClaudeStreamMessage =
-              outer.type === "stream_event" && outer.event
-                ? { ...outer.event, session_id: outer.session_id }
-                : outer
-
-            const modelProgress =
-              (msg.type === "assistant" && !!msg.message?.content?.length) ||
-              (msg.type === "content_block_start" && msg.content_block?.type === "tool_use") ||
-              (msg.type === "content_block_delta" &&
-                ((msg.delta?.type === "text_delta" && !!msg.delta.text) ||
-                 (msg.delta?.type === "thinking_delta" && !!msg.delta.thinking)))
-            if (modelProgress) {
-              state.hasReceivedProgress = true
-              clearStartWatchdog(state)
-              startResultFallback(state)
-            }
-
-            // Read before anything is enqueued for this message, because the
-            // chain runner keys its withhold-or-flush decision on these two
-            // flags and reads them only after the handler has returned.
-            // `modelProgress` above cannot stand in: it counts the CLI's own
-            // synthetic error reply, which is precisely a refusal.
-            if (attempt && !attempt.serving && provesModelServing(msg)) {
-              attempt.serving = true
-            }
-            if (modelFallbackArmed && !state.modelRefusal) {
-              state.modelRefusal = modelRefusalFromAssistant(msg)
-            }
-
-            if (outer.type === "stream_event") {
-              state.gotPartialEvents = true
-            }
-
-            if (handleControlRequest(msg, state.proc)) {
-              return
-            }
-
-            log.debug("stream message", {
-              type: msg.type,
-              subtype: msg.subtype,
-            })
-
-            // Handle system init
-            if (msg.type === "system" && msg.subtype === "init") {
-              if (msg.session_id) {
-                setClaudeSessionId(sk, msg.session_id)
-                log.info("session initialized", {
-                  claudeSessionId: msg.session_id,
-                })
-              }
-              reportFastModeState(msg, fastMode)
-              reportSystemInit(msg, {
-                ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
-              })
-            }
-
-            // The CLI compacted its own context. Nothing else tells the user
-            // that everything before this point is now a summary.
-            if (msg.type === "system" && msg.subtype === "compact_boundary") {
-              const note = reportCompactBoundary(msg)
-              if (note) {
-                controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
-                state.endTextBlock()
-              }
-            }
-
-            // Claude Code started a new conversation (`/clear`, plan-mode
-            // exit). Content-block indices restart with it, so nothing keyed
-            // by index may survive: a stale `state.toolCallMap` entry re-emits a
-            // finished tool call on the new conversation's first block, the
-            // failure fixed on 2026-09-06. The Claude session id needs nothing
-            // here; the `system/init` that follows carries the new one.
-            if (msg.type === "conversation_reset") {
-              const note = reportConversationReset(msg)
-              if (note) {
-                state.toolCallMap.clear()
-                state.reasoningIds.clear()
-                state.reasoningStarted.clear()
-                state.textBlockIndices.clear()
-                controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
-                state.endTextBlock()
-              }
-              return
-            }
-
-            // Not returned from: the reply's own text still renders below.
-            const block = accountBlockKind(msg)
-            if (block) state.accountBlock = block
-
-            // A rejection is why the turn is about to fail. Put it in the
-            // transcript so the reason does not live only in a log file that
-            // is off by default.
-            if (msg.type === "rate_limit_event") {
-              // Parsed separately from the reporter, which dedupes per
-              // process and returns null on a repeat: the second rejection in
-              // a session is still a rejection this turn has to act on.
-              const info = parseRateLimitEvent(msg)
-              if (info && isRateLimitRejected(info)) {
-                state.accountLimitHit = {
-                  resetsAt: info.resetsAt ?? info.overageResetsAt,
-                  window: info.rateLimitType,
-                }
-              }
-              const note = reportRateLimitEvent(msg)
-              if (note) {
-                controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
-                state.endTextBlock()
-              }
-              return
-            }
-
-            // content_block_start
-            if (
-              msg.type === "content_block_start" &&
-              msg.content_block &&
-              msg.index !== undefined
-            ) {
-              const block = msg.content_block
-              const idx = msg.index
-
-              if (block.type === "thinking") {
-                noteReasoning(state)
-                const reasoningId = generateId()
-                state.reasoningIds.set(idx, reasoningId)
-              }
-
-              if (block.type === "text") {
-                state.textBlockIndices.add(idx)
-                // New text block — clear last-block buffer so final-answer
-                // detection only considers this block's contents, not earlier
-                // mid-task narration.
-                resetLastVisibleTextBlock(state)
-                if (block.text) {
-                  if (!state.currentTextId) state.startTextBlock()
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: state.currentTextId!,
-                    delta: block.text,
-                  })
-                  noteVisibleText(state, block.text)
-                  state.hasReceivedContent = true
-                }
-              }
-
-              if (block.type === "tool_use" && block.id && block.name) {
-                noteToolActivity(state)
-                const entry = {
-                  id: block.id,
-                  name: block.name,
-                  inputJson: "",
-                  started: false,
-                }
-                state.toolCallMap.set(idx, entry)
-
-                if (
-                  block.name !== "AskUserQuestion" &&
-                  block.name !== "ask_user_question" &&
-                  block.name !== "ExitPlanMode" &&
-                  !block.name.startsWith(PROXY_TOOL_PREFIX)
-                ) {
-                  const { name: mappedName, skip, executed } = mapTool(
-                    block.name,
-                    undefined,
-                    {
-                      webSearch: self.config.webSearch,
-                      sessionId: getClaudeSessionId(sk),
-                      toolUseId: block.id,
-                    },
-                  )
-                  if (!skip) {
-                    entry.started = true
-                    controller.enqueue({
-                      type: "tool-input-start",
-                      id: block.id,
-                      toolName: mappedName,
-                      providerExecuted: executed,
-                    } as any)
-                    log.info("tool started", {
-                      name: block.name,
-                      mappedName,
-                      id: block.id,
-                    })
-                  }
-                }
-              }
-            }
-
-            // content_block_delta
-            if (
-              msg.type === "content_block_delta" &&
-              msg.delta &&
-              msg.index !== undefined
-            ) {
-              const delta = msg.delta
-              const idx = msg.index
-
-              if (delta.type === "thinking_delta" && delta.thinking) {
-                noteReasoning(state)
-                state.hadThinkingTextFromStream = true
-                const reasoningId = state.reasoningIds.get(idx)
-                if (reasoningId) {
-                  if (!state.reasoningStarted.get(idx)) {
-                    controller.enqueue({
-                      type: "reasoning-start",
-                      id: reasoningId,
-                    } as any)
-                    state.reasoningStarted.set(idx, true)
-                  }
-                  controller.enqueue({
-                    type: "reasoning-delta",
-                    id: reasoningId,
-                    delta: delta.thinking,
-                  } as any)
-                }
-              }
-
-              if (delta.type === "text_delta" && delta.text) {
-                if (!state.currentTextId) state.startTextBlock()
-                controller.enqueue({
-                  type: "text-delta",
-                  id: state.currentTextId!,
-                  delta: delta.text,
-                })
-                noteVisibleText(state, delta.text)
-                state.hasReceivedContent = true
-              }
-
-              if (delta.type === "input_json_delta" && delta.partial_json) {
-                const tc = state.toolCallMap.get(idx)
-                if (tc) {
-                  tc.inputJson += delta.partial_json
-                  // Only forward deltas for tool calls whose tool-input-start
-                  // was actually emitted. Skipped tools (CLAUDE_INTERNAL_TOOLS,
-                  // TaskCreate/TaskUpdate, CLI-internal WebSearch, AskUserQuestion,
-                  // ExitPlanMode, proxy tools) never get a named start part, so
-                  // forwarding their deltas makes opencode's AI SDK bridge fall
-                  // back to a nameless pending part rendered as `⚙ unknown`.
-                  if (tc.started) {
-                    controller.enqueue({
-                      type: "tool-input-delta",
-                      id: tc.id,
-                      delta: delta.partial_json,
-                    } as any)
-                  }
-                }
-              }
-
-              if (!KNOWN_DELTA_TYPES.has(delta.type)) {
-                log.debug("unrecognized content_block_delta type", {
-                  type: delta.type,
-                  idx,
-                  keys: Object.keys(delta),
-                })
-              }
-            }
-
-            // content_block_stop
-            if (
-              msg.type === "content_block_stop" &&
-              msg.index !== undefined
-            ) {
-              const idx = msg.index
-
-              const reasoningId = state.reasoningIds.get(idx)
-              if (reasoningId && state.reasoningStarted.get(idx)) {
-                controller.enqueue({
-                  type: "reasoning-end",
-                  id: reasoningId,
-                } as any)
-                state.reasoningStarted.delete(idx)
-              }
-
-              if (state.textBlockIndices.has(idx)) {
-                state.endTextBlock()
-                state.textBlockIndices.delete(idx)
-              }
-
-              const tc = state.toolCallMap.get(idx)
-              if (tc) {
-                // Block indices restart at 0 on every assistant message, and a
-                // turn can hold several (tool_use -> tool_result -> answer).
-                // Without this delete the entry outlives its message, so the
-                // next message's block at the same index re-emits a tool-call
-                // for an id opencode already completed. That second part never
-                // gets a result, opencode aborts it at stream end, and a
-                // subagent's `task` call reports "Tool execution aborted"
-                // even though the child answered correctly.
-                state.toolCallMap.delete(idx)
-                let parsedInput: any = {}
-                try {
-                  parsedInput = JSON.parse(tc.inputJson || "{}")
-                } catch {}
-
-                if (isAskUserQuestionTool(tc.name)) {
-                  // Latch: the model handed control to the operator. Block any
-                  // auto-continue nudge for the rest of the turn so it can't
-                  // proceed on its own before the operator replies.
-                  state.autoContinueState.sawAskUserQuestion = true
-                  const askId = state.startTextBlock()
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: askId,
-                    delta: formatAskUserQuestion(parsedInput),
-                  })
-                  state.endTextBlock()
-                } else if (tc.name === "ExitPlanMode") {
-                  const plan = (parsedInput?.plan as string) || ""
-
-                  if (planModeQuestionActive) {
-                    // Approval bridge: render the plan, then hand the
-                    // yes/no back to opencode's own `question` tool and end
-                    // the turn on "tool-calls" so the outer loop runs it.
-                    const questionCall = createExitPlanModeQuestionCall(
-                      sk,
-                      tc.id,
-                      plan,
-                    )
-                    const planId = state.startTextBlock()
-                    controller.enqueue({
-                      type: "text-delta",
-                      id: planId,
-                      delta: questionCall.text,
-                    })
-                    finishWithQuestionCall(state, questionCall)
-                    return
-                  }
-
-                  const planId = state.startTextBlock()
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: planId,
-                    delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
-                  })
-                  state.endTextBlock()
-                } else if (
-                  isWebSearchTool(tc.name) &&
-                  isWebSearchHandledByCli(self.config.webSearch)
-                ) {
-                  // Claude CLI runs WebSearch internally. Forwarding the
-                  // "WebSearch" tool-call part would render an invalid tool
-                  // row in opencode (no registry entry), so show the query
-                  // as a text line instead. The result stays CLI-internal.
-                  const query =
-                    typeof parsedInput?.query === "string"
-                      ? parsedInput.query
-                      : JSON.stringify(parsedInput)
-                  const searchId = state.startTextBlock()
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: searchId,
-                    delta: `\n> **Web search:** ${query}\n`,
-                  })
-                  state.endTextBlock()
-                } else if (tc.name.startsWith(PROXY_TOOL_PREFIX)) {
-                  noteProxyActivity(state)
-                  log.debug("ignoring proxy tool_use block; broker handles it", {
-                    name: tc.name,
-                    id: tc.id,
-                  })
-                } else {
-                  const {
-                    name: mappedName,
-                    input: mappedInput,
-                    executed,
-                    skip,
-                  } = mapTool(tc.name, parsedInput, {
-                    webSearch: self.config.webSearch,
-                    sessionId: getClaudeSessionId(sk),
-                    toolUseId: tc.id,
-                  })
-
-                  if (!skip) {
-                    state.toolCallsById.set(tc.id, {
-                      id: tc.id,
-                      name: mappedName,
-                      input: parsedInput,
-                    })
-                    if (!executed) state.skipResultForIds.add(tc.id)
-
-                    controller.enqueue({
-                      type: "tool-call",
-                      toolCallId: tc.id,
-                      toolName: mappedName,
-                      input: JSON.stringify(mappedInput),
-                      providerExecuted: executed,
-                    } as any)
-                  }
-                  log.info("tool call complete", {
-                    name: tc.name,
-                    mappedName,
-                    id: tc.id,
-                    executed,
-                  })
-                }
-              }
-            }
-
-            // Capture protocol-level stop_reason from the streaming
-            // `message_delta` event (sent right before the final
-            // `message_stop`). Any non-empty value is the source-of-truth
-            // for why the turn ended — used to bypass the keyword heuristic.
-            if (
-              state.gotPartialEvents &&
-              msg.type === "message_delta" &&
-              typeof (msg as any).delta?.stop_reason === "string"
-            ) {
-              state.lastStopReason = (msg as any).delta.stop_reason
-            }
-
-            // assistant message (complete, not streaming).
-            // When --include-partial-messages is on, this is a duplicate of
-            // what we already streamed via content_block_* events. Skip it
-            // for content, but still capture stop_reason from it for the
-            // non-partial path.
-            if (
-              msg.type === "assistant" &&
-              msg.message &&
-              typeof (msg.message as any).stop_reason === "string"
-            ) {
-              state.lastStopReason = (msg.message as any).stop_reason
-            }
-            // Fallback: extract thinking from the complete assistant
-            // message. opus-4-7's CLI strips thinking_delta from stream
-            // events but may include thinking in the final message.
-            if (
-              msg.type === "assistant" &&
-              msg.message?.content &&
-              state.gotPartialEvents
-            ) {
-              const thinkingBlocks = (msg.message.content as any[]).filter(
-                (b) => b.type === "thinking",
-              )
-              if (thinkingBlocks.length > 0) {
-                log.info("assistant message thinking blocks", {
-                  count: thinkingBlocks.length,
-                  hasText: thinkingBlocks.some(
-                    (b) => typeof b.thinking === "string" && b.thinking.length > 0,
-                  ),
-                  hadStreamThinking: state.hadThinkingTextFromStream,
-                })
-                if (!state.hadThinkingTextFromStream) {
-                  for (const block of thinkingBlocks) {
-                    if (block.thinking && block.thinking.length > 0) {
-                      noteReasoning(state)
-                      state.hadThinkingTextFromStream = true
-                      const thinkingId = generateId()
-                      controller.enqueue({
-                        type: "reasoning-start",
-                        id: thinkingId,
-                      } as any)
-                      controller.enqueue({
-                        type: "reasoning-delta",
-                        id: thinkingId,
-                        delta: block.thinking,
-                      } as any)
-                      controller.enqueue({
-                        type: "reasoning-end",
-                        id: thinkingId,
-                      } as any)
-                    }
-                  }
-                }
-              }
-            }
-            if (
-              msg.type === "assistant" &&
-              msg.message?.content &&
-              !state.gotPartialEvents
-            ) {
-              const hasText = msg.message.content.some(
-                (b: any) => b.type === "text" && b.text,
-              )
-              const hasToolUse = msg.message.content.some(
-                (b: any) => b.type === "tool_use",
-              )
-
-              if (hasText) {
-                state.hasReceivedContent = true
-              }
-
-              if (hasText && !hasToolUse) {
-                startResultFallback(state)
-              }
-              if (hasToolUse) {
-                clearFallbackTimer(state)
-              }
-
-              for (const block of msg.message.content) {
-                if (block.type === "text" && block.text) {
-                  // New text block — keep only this block's text in the
-                  // last-block buffer for final-answer detection.
-                  resetLastVisibleTextBlock(state)
-                  const blockId = state.startTextBlock()
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: blockId,
-                    delta: block.text,
-                  })
-                  state.endTextBlock()
-                  noteVisibleText(state, block.text)
-                  state.hasReceivedContent = true
-                }
-
-                if (block.type === "thinking" && block.thinking) {
-                  noteReasoning(state)
-                  const thinkingId = generateId()
-                  controller.enqueue({
-                    type: "reasoning-start",
-                    id: thinkingId,
-                  } as any)
-                  controller.enqueue({
-                    type: "reasoning-delta",
-                    id: thinkingId,
-                    delta: block.thinking,
-                  } as any)
-                  controller.enqueue({
-                    type: "reasoning-end",
-                    id: thinkingId,
-                  } as any)
-                }
-
-                if (block.type === "tool_use" && block.id && block.name) {
-                  noteToolActivity(state)
-                  const parsedInput = (block.input ?? {}) as Record<
-                    string,
-                    unknown
-                  >
-
-                  if (isAskUserQuestionTool(block.name)) {
-                    const askId = state.startTextBlock()
-                    controller.enqueue({
-                      type: "text-delta",
-                      id: askId,
-                      delta: formatAskUserQuestion(parsedInput),
-                    })
-                    state.endTextBlock()
-                  } else if (block.name === "ExitPlanMode") {
-                    const plan = (parsedInput?.plan as string) || ""
-
-                    if (planModeQuestionActive) {
-                      const questionCall = createExitPlanModeQuestionCall(
-                        sk,
-                        block.id,
-                        plan,
-                      )
-                      const planId = state.startTextBlock()
-                      controller.enqueue({
-                        type: "text-delta",
-                        id: planId,
-                        delta: questionCall.text,
-                      })
-                      finishWithQuestionCall(state, questionCall)
-                      return
-                    }
-
-                    const planId = state.startTextBlock()
-                    controller.enqueue({
-                      type: "text-delta",
-                      id: planId,
-                      delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
-                    })
-                    state.endTextBlock()
-                  } else if (
-                    isWebSearchTool(block.name) &&
-                    isWebSearchHandledByCli(self.config.webSearch)
-                  ) {
-                    // CLI-internal WebSearch: render the query as text and
-                    // drop the call/result parts (no opencode registry entry
-                    // for "WebSearch" — would render as an invalid tool row).
-                    state.toolCallsById.delete(block.id)
-                    const query =
-                      typeof parsedInput?.query === "string"
-                        ? parsedInput.query
-                        : JSON.stringify(parsedInput)
-                    const searchId = state.startTextBlock()
-                    controller.enqueue({
-                      type: "text-delta",
-                      id: searchId,
-                      delta: `\n> **Web search:** ${query}\n`,
-                    })
-                    state.endTextBlock()
-                  } else if (block.name.startsWith(PROXY_TOOL_PREFIX)) {
-                    noteProxyActivity(state)
-                    log.debug("ignoring proxy tool_use from assistant message", {
-                      name: block.name,
-                      id: block.id,
-                    })
-                  } else {
-                    const {
-                      name: mappedName,
-                      input: mappedInput,
-                      executed,
-                      skip,
-                    } = mapTool(block.name, parsedInput, {
-                      webSearch: self.config.webSearch,
-                      sessionId: getClaudeSessionId(sk),
-                      toolUseId: block.id,
-                    })
-
-                    if (!skip) {
-                      state.toolCallsById.set(block.id, {
-                        id: block.id,
-                        name: mappedName,
-                        input: parsedInput,
-                      })
-                      if (!executed) state.skipResultForIds.add(block.id)
-                      controller.enqueue({
-                        type: "tool-input-start",
-                        id: block.id,
-                        toolName: mappedName,
-                        providerExecuted: executed,
-                      } as any)
-                      controller.enqueue({
-                        type: "tool-call",
-                        toolCallId: block.id,
-                        toolName: mappedName,
-                        input: JSON.stringify(mappedInput),
-                        providerExecuted: executed,
-                      } as any)
-                    }
-                    log.info("tool_use from assistant message", {
-                      name: block.name,
-                      mappedName,
-                      id: block.id,
-                      executed,
-                    })
-                  }
-                }
-
-                if (block.type === "tool_result") {
-                  log.debug("tool_result", {
-                    toolUseId: block.tool_use_id,
-                  })
-                }
-              }
-            }
-
-            // user message (tool results from Claude CLI)
-            if (msg.type === "user" && msg.message?.content) {
-              for (const block of msg.message.content) {
-                if (block.type === "tool_result" && block.tool_use_id) {
-                  if (state.skipResultForIds.has(block.tool_use_id)) {
-                    log.debug("skipping tool-result (opencode runs it)", {
-                      toolUseId: block.tool_use_id,
-                    })
-                    continue
-                  }
-
-                  let resultText = ""
-                  if (typeof block.content === "string") {
-                    resultText = block.content
-                  } else if (Array.isArray(block.content)) {
-                    resultText = block.content
-                      .filter(
-                        (
-                          c,
-                        ): c is { type: string; text: string } =>
-                          c.type === "text" &&
-                          typeof c.text === "string",
-                      )
-                      .map((c) => c.text)
-                      .join("\n")
-                  }
-
-                  // Ledger hook: commit pending TaskCreate to opencode's todo
-                  // panel via a synthetic todowrite emission. Pass-through —
-                  // returns null for non-TaskCreate ids, so cheap and silent.
-                  const claudeSessionId = getClaudeSessionId(sk)
-                  if (claudeSessionId) {
-                    const list = applyTaskCreateToolResult(
-                      claudeSessionId,
-                      block.tool_use_id,
-                      resultText,
-                    )
-                    if (list) {
-                      const synthId = `todowrite_${block.tool_use_id}`
-                      controller.enqueue({
-                        type: "tool-input-start",
-                        id: synthId,
-                        toolName: "todowrite",
-                        providerExecuted: false,
-                      } as any)
-                      controller.enqueue({
-                        type: "tool-call",
-                        toolCallId: synthId,
-                        toolName: "todowrite",
-                        input: JSON.stringify({
-                          todos: list.map((t) => ({
-                            id: t.id,
-                            content: t.content,
-                            status: t.status,
-                            priority: "medium",
-                          })),
-                        }),
-                        providerExecuted: false,
-                      } as any)
-                      noteToolActivity(state)
-                    }
-                  }
-
-                  const toolCall = state.toolCallsById.get(block.tool_use_id)
-                  if (toolCall) {
-                    // A CLI-executed tool that failed carries `is_error`. The
-                    // AI SDK turns a `tool-result` with `isError` into a
-                    // `tool-error` part, which is what makes opencode render
-                    // the row as failed; without the flag every failed CLI
-                    // tool was forwarded as a success whose output happened
-                    // to be an error message.
-                    const isError = block.is_error === true
-                    controller.enqueue({
-                      type: "tool-result",
-                      toolCallId: block.tool_use_id,
-                      toolName: toolCall.name,
-                      result: {
-                        output: resultText,
-                        title: toolCall.name,
-                        metadata: isError ? { error: true } : {},
-                      },
-                      ...(isError ? { isError: true } : {}),
-                      providerExecuted: true,
-                    } as any)
-                    noteToolActivity(state)
-                    log.info("tool result emitted", {
-                      toolUseId: block.tool_use_id,
-                      name: toolCall.name,
-                      isError,
-                    })
-                    state.toolCallsById.delete(block.tool_use_id)
-                  }
-                }
-              }
-            }
-
-            // result - end of conversation turn
-            if (msg.type === "result") {
-              clearFallbackTimer(state)
-
-              if (msg.session_id) {
-                setClaudeSessionId(sk, msg.session_id)
-              }
-
-              if (deliverPendingCompletions(state)) {
-                // Finish the abandoned turn before submitting its late result.
-                // Otherwise this result could close the stream for the new turn.
-                return
-              }
-
-              // Some CLI failures only include user-readable text in
-              // `result.result` (no prior assistant text blocks). Emit it so
-              // opencode users don't see a blank turn.
-              if (
-                !state.currentTextId &&
-                msg.is_error &&
-                typeof msg.result === "string" &&
-                msg.result.trim().length > 0
-              ) {
-                const errId = state.startTextBlock()
-                controller.enqueue({
-                  type: "text-delta",
-                  id: errId,
-                  delta: msg.result,
-                })
-              }
-
-              // The other half of the limit signal: some rejections only ever
-              // reach us as the error text of the terminal result.
-              if (
-                !state.accountLimitHit &&
-                msg.is_error &&
-                isAccountLimitError({
-                  resultText: typeof msg.result === "string" ? msg.result : null,
-                })
-              ) {
-                state.accountLimitHit = {}
-              }
-
-              // The other half of the refusal signal, for a CLI that reports
-              // no assistant frame. The `result`'s own `subtype` is `success`
-              // even here, so it can never be the thing that is read.
-              if (modelFallbackArmed && !state.modelRefusal) {
-                state.modelRefusal = modelRefusalFromResult(msg)
-              }
-
-              // Say which account and what to run. Without this the only
-              // thing on screen was the CLI's "Failed to authenticate: OAuth
-              // session expired", which names neither.
-              if (state.accountBlock && msg.is_error) {
-                // The CLI labels this result `success` with `is_error: true`,
-                // so nothing else marks the turn failed; without this it
-                // finished as an ordinary `stop` with the error as its answer.
-                state.resultFailure ??= state.accountBlock
-                const offeringSwitch = failoverAskActive
-                controller.enqueue({
-                  type: "text-delta",
-                  id: state.startTextBlock(),
-                  delta: formatAccountBlockNote({
-                    kind: state.accountBlock,
-                    account: sourceAccount,
-                    configDir: self.config.configDir,
-                    offeringSwitch,
-                  }),
-                })
-                state.endTextBlock()
-                log.warn(`Claude account "${sourceAccount}" cannot serve requests`, {
-                  sessionKey: sk,
-                  kind: state.accountBlock,
-                  offeringSwitch,
-                })
-              }
-
-              // A non-`success` subtype is a failed turn. Name it in the
-              // transcript and finish as an error, rather than letting it be
-              // recorded as an ordinary reply with the subtype only in a
-              // debug log line.
-              const failure = describeResultFailure(msg)
-              if (failure) {
-                state.resultFailure = msg.subtype
-                controller.enqueue({
-                  type: "text-delta",
-                  id: state.startTextBlock(),
-                  delta: formatResultFailureNote(failure),
-                })
-                log.warn(failure, { sessionKey: sk, subtype: msg.subtype })
-              }
-
-              const turnStats = extractTurnStats(msg)
-              state.resultMeta = {
-                sessionId: msg.session_id,
-                costUsd: msg.total_cost_usd,
-                durationMs: msg.duration_ms,
-                durationApiMs: msg.duration_api_ms,
-                numTurns: msg.num_turns,
-                usage: msg.usage,
-                modelUsage: msg.modelUsage,
-                // Names and ids only: a denial's `tool_input` can be a whole
-                // file write payload and has no business in metadata.
-                permissionDenials: msg.permission_denials?.map((denial) => ({
-                  tool_name: denial.tool_name,
-                  tool_use_id: denial.tool_use_id,
-                })),
-              }
-
-              // Logged whatever `turnStats` is set to: the footer is a
-              // display preference, the numbers are diagnostics.
-              log.info("conversation result", {
-                sessionId: msg.session_id,
-                numTurns: msg.num_turns,
-                isError: msg.is_error,
-                subtype: msg.subtype,
-                ...turnStatsLogPayload(turnStats),
-              })
-
-              // Never on a compaction turn (the footer would be appended to
-              // what opencode stores as the summary) and never on a failed
-              // one (the error is the thing to read, not the bill).
-              if (self.config.turnStats && !compactionMode && !msg.is_error && !failure) {
-                const footer = formatTurnStatsBlock(turnStats)
-                if (footer) {
-                  controller.enqueue({
-                    type: "text-delta",
-                    id: state.startTextBlock(),
-                    delta: footer,
-                  })
-                }
-              }
-
-              state.turnCompleted = true
-
-              state.endTextBlock()
-
-              const shouldDeferResult =
-                !msg.is_error &&
-                !state.autoContinueState.aborted &&
-                !state.autoContinueState.sawAskUserQuestion
-
-              if (state.drainBuffer.length > 0 && shouldDeferResult) {
-                log.info(
-                  "waiting for parallel proxy calls at turn-result boundary",
-                  {
-                    sessionKey: sk,
-                    count: state.drainBuffer.length,
-                  },
-                )
-                scheduleResultBoundary(
-                  state,
-                  () => completeResult(msg),
-                  DRAIN_QUIET_MS,
-                )
-                return
-              }
-
-              if (
-                state.drainBuffer.length === 0 &&
-                state.hadProxyActivitySinceContinue &&
-                shouldDeferResult
-              ) {
-                log.info(
-                  "waiting for delayed proxy call at turn-result boundary",
-                  {
-                    sessionKey: sk,
-                    graceMs: PROXY_RESULT_BOUNDARY_GRACE_MS,
-                  },
-                )
-                scheduleResultBoundary(
-                  state,
-                  () => completeResult(msg),
-                  PROXY_RESULT_BOUNDARY_GRACE_MS,
-                )
-                return
-              }
-
-              completeResult(msg)
-            }
-          } catch (e) {
-            log.debug("failed to parse line", {
-              error:
-                e instanceof Error ? e.message : String(e),
-            })
-          }
-        }
+        const lineHandler = createLineHandler(state, {
+          config: self.config,
+          compactionMode,
+          fastMode,
+          planModeQuestionActive,
+          sourceAccount,
+          failoverAskActive,
+          modelFallbackArmed,
+          attempt,
+          handleControlRequest,
+          completeResult,
+        })
 
         const closeHandler = () => {
           log.debug("readline closed")
