@@ -110,6 +110,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
+| `defaultSubagentCacheTtl` | string | unset | Prompt cache TTL (`5m` / `1h`) for discovered `mode: subagent` agents that declare no `cacheTtl`; the agent's own value takes precedence. Unset leaves the CLI's default (1 hour on a subscription). Unknown values warn and change nothing. |
 | `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when `accountFailover` has no other account to offer; with another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction, title stubs or the interactive transport. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. Ignored when `permissionMode` is `"plan"`, which always drops the flag. |
@@ -292,13 +293,17 @@ description: Designs and builds UI work
 mode: subagent
 forceModel: claude-haiku-4-5
 reasoningEffort: high
+cacheTtl: 5m
 ---
 ```
 
 Or once for every discovered subagent without a full provider/model pin:
 
 ```json
-{ "provider": { "claude-code": { "options": { "defaultSubagentModel": "claude-opus-5" } } } }
+{ "provider": { "claude-code": { "options": {
+  "defaultSubagentModel": "claude-opus-5",
+  "defaultSubagentCacheTtl": "5m"
+} } } }
 ```
 
 Rules, in order: `forceModel` wins; else `mode: subagent` with `defaultSubagentModel`
@@ -307,8 +312,19 @@ account and all (`model: claude-code-work/claude-opus-5@work` pins the account t
 Undeclared built-ins are not discovered; a user definition with a built-in name can
 enter the registry and is subject to these rules. This is not a built-in-name denylist.
 `reasoningEffort` in the agent file beats the effort the call arrived with; compaction is
-exempt. Effort and model are part of the CLI session key, so a changed agent respawns
-rather than sharing a process.
+exempt. Effort, model and cache TTL are part of the CLI session key, so a changed agent
+respawns rather than sharing a process.
+
+`cacheTtl` sets the prompt cache TTL of that agent's own `claude` process, as
+`CLAUDE_CODE_PROMPT_CACHE_TTL` at spawn. Unset (the default) leaves the CLI deciding,
+which is 1 hour on a subscription. Claude Code also has a per-agent
+`experimental.cacheTtl` and a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`: neither does
+anything here, because both apply only to subagents the CLI runs through its own `Task`
+tool, and this plugin disallows that tool by default so opencode runs the subagent
+instead. An opencode subagent is a separate `claude --print` process, which the CLI
+counts as a main conversation. Use `cacheTtl: 5m` on short-lived workers that never
+re-read the cache they wrote, since a 1-hour write is billed above a 5-minute one and
+both come out of the same usage limit; leave a long-lived main session at the default.
 
 Only grant `permission.task` for approved target agents if delegation is wanted.
 `permission.todowrite: "allow"` is needed for subagent todos; opencode otherwise denies
@@ -324,6 +340,7 @@ the opencode schema requires it. Markdown fallback reads top-level scalar fields
 | `model` | Full `provider/model` pins bypass plugin model overrides, not the separate effort override. |
 | `forceModel` | Registered bare model id, preserving the caller's account even if an account suffix is supplied. Works for any discovered agent mode. |
 | `reasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid declarations warn and keep inherited effort. `minimal` maps to CLI `low`. Compaction skips this override. |
+| `cacheTtl` | `5m` or `1h`; anything else warns and leaves the CLI's default alone. Exported as `CLAUDE_CODE_PROMPT_CACHE_TTL`, beating a shell export of the same name. Works for any discovered agent mode; compaction skips it. |
 | `fallbackModels` | Ordered registered bare model ids to try when this agent's model is refused. Both YAML spellings (`[a, b]` or a `- ` block). Replaces the provider-level `fallbackModels` rather than extending it. Keeps the caller's account; an entry carrying `@account` has it stripped. Unknown ids warn and are skipped. |
 
 ### Degrade to another model instead of failing

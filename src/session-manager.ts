@@ -42,6 +42,8 @@ export interface ActiveProcess {
   systemPromptFile?: string
   /** Effort the process was spawned with, so a respawn keeps it. */
   effort?: ReasoningEffort
+  /** Prompt cache TTL the process was spawned with, so a respawn keeps it. */
+  promptCacheTtl?: string
   /** When the child was spawned, so `/claude-code-doctor` can report its age. */
   startedAt?: number
   /**
@@ -236,6 +238,8 @@ export function claudeSpawnEnv(opts?: {
   ignoreAnthropicApiKey?: boolean
   /** Reasoning effort for this spawn; wins over a shell-level override. */
   effort?: ReasoningEffort
+  /** Prompt cache TTL (`5m` / `1h`) for this spawn; wins over the shell. */
+  promptCacheTtl?: string
 }): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -254,6 +258,17 @@ export function claudeSpawnEnv(opts?: {
   // agent's `reasoningEffort` are per-request choices, a shell export is not.
   if (opts?.effort) {
     env.CLAUDE_CODE_EFFORT_LEVEL = cliEffortLevel(opts.effort)
+  }
+
+  // Prompt cache TTL travels as CLAUDE_CODE_PROMPT_CACHE_TTL, the CLI's
+  // MAIN-conversation setting, because every process this plugin spawns is a
+  // main conversation even when it is serving an opencode subagent
+  // (`resolveAgentCacheTtl` has the measurement). An env var rather than a
+  // flag for the same reason as effort: a CLI too old to know it ignores it
+  // instead of refusing to start, so there is nothing to version-gate. Only
+  // set when an agent actually asked, so the CLI's own default survives.
+  if (opts?.promptCacheTtl) {
+    env.CLAUDE_CODE_PROMPT_CACHE_TTL = opts.promptCacheTtl
   }
 
   // Force subscription auth: with an API key in the env, Claude Code bills
@@ -724,6 +739,7 @@ export function spawnClaudeProcess(
   systemPromptFile?: string,
   ignoreAnthropicApiKey?: boolean,
   effort?: ReasoningEffort,
+  promptCacheTtl?: string,
 ): ActiveProcess {
   evictIfNeeded()
   log.info("spawning new claude process", {
@@ -732,12 +748,13 @@ export function spawnClaudeProcess(
     cwd,
     sessionKey,
     effort,
+    promptCacheTtl,
   })
 
   const proc = spawn(cliPath, cliArgs, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort }),
+    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort, promptCacheTtl }),
     shell: process.platform === "win32",
   })
 
@@ -750,6 +767,7 @@ export function spawnClaudeProcess(
     mcpHash,
     systemPromptFile,
     effort,
+    promptCacheTtl,
     startedAt: Date.now(),
     cliPath,
     cliArgs: [...cliArgs],
@@ -941,6 +959,7 @@ export function respawnActiveProcess(
     old.systemPromptFile,
     ignoreAnthropicApiKey,
     old.effort,
+    old.promptCacheTtl,
   )
   replacement.pendingProxyCompletions = old.pendingProxyCompletions
   delete old.pendingProxyCompletions

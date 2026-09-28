@@ -324,6 +324,24 @@ That beats whatever effort the call arrived with. It has to, because opencode re
 
 An agent that declares nothing keeps the inherited effort, so this changes nothing until a file asks for it. An unrecognised level is refused and the inherited one kept, since the CLI rejects a level it does not know. Compaction is exempt: its summary always gets the full budget.
 
+### The prompt cache an agent writes
+
+The third thing a turn costs is the prompt cache it writes, and the same file can state that too:
+
+```yaml
+cacheTtl: 5m
+```
+
+Or once, for every subagent that declares nothing, as `defaultSubagentCacheTtl` in the provider options. Values are `5m` and `1h`; anything else warns and leaves the CLI alone.
+
+Claude Code's automatic default is a 1-hour cache on a subscription, and a 1-hour cache write is billed above a 5-minute one. That trade pays off for a long-lived main session, which re-reads the cache it wrote. It does not pay off for a fan-out of short workers: each one writes an hour-long cache, finishes, and never reads it again, and all of it comes out of the same weekly limit. Declaring `cacheTtl: 5m` on the workers while the main session keeps the default is the point of the knob.
+
+**It is unset by default**, for the same reason `defaultSubagentModel` is: an upgrade must not quietly change how anybody's turns are cached.
+
+One piece of Claude Code trivia is worth stating plainly, because it is the opposite of what the names suggest. The CLI has a per-agent `experimental.cacheTtl` and a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`, and **neither of them does anything to this plugin.** Both apply only to subagents the CLI runs itself, through its own `Task` tool, which this plugin disallows by default so that opencode runs the subagent instead. An opencode subagent arrives here as its own `doStream` and its own `claude --print` process, and the CLI counts that as a main conversation. So the knob that reaches every process this plugin spawns is the main-conversation one, `CLAUDE_CODE_PROMPT_CACHE_TTL`, which is what `cacheTtl` sets. Measured on CLI 2.1.280 by reading `usage.cache_creation` back off a real turn: the main variable moved the writes to `ephemeral_5m_input_tokens`; the subagent variable left them at 1 hour.
+
+Like model and effort, the TTL is part of the Claude session key, so changing it respawns rather than sharing a process. Compaction is exempt.
+
 To force an **account** rather than a model, pin the full string. This only applies if you declared [`accounts`](#multiple-claude-code-accounts) in the first place; with the default single-account setup there is nothing to pin. Both halves are needed, because the provider selects the account's config dir and the `@account` marker is what the model was registered under for that provider:
 
 ```yaml
@@ -434,6 +452,7 @@ reaches the CLI, so there is nothing there to fall back from.
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to `claude`. It is still passed when `proxyTools` is set: proxied calls go through opencode's permission system regardless, but unproxied CLI built-ins do not. The one case where the flag is dropped is `permissionMode: "plan"`, because the CLI lets the skip flag override plan mode outright. See [Plan mode](#plan-mode). |
 | `permissionMode` | `acceptEdits` \| `auto` \| `bypassPermissions` \| `default` \| `dontAsk` \| `plan` | – | Forwarded to headless `claude --permission-mode`. `"plan"` also suppresses `--dangerously-skip-permissions` (see the row above). Not version-gated, so check that your installed CLI accepts the value. The [interactive transport](#interactive-transport-experimental) does not forward it. |
 | `permissionPreset` | `"read-only"` | – | A named permission posture, so you set one option instead of combining five and getting one wrong. Opt-in: unset is exactly today's behaviour. `"read-only"` replaces `skipPermissions`, `permissionMode`, `controlRequestBehavior` and `controlRequestToolBehaviors`, and filters the write and command tools out of `proxyTools`. See [Read-only mode](#read-only-mode). |
+| `defaultSubagentCacheTtl` | string | – | Prompt cache TTL (`5m` or `1h`) for plugin-discovered `mode: subagent` agents whose own definition states no `cacheTtl`. Reaches the CLI as `CLAUDE_CODE_PROMPT_CACHE_TTL`. Unset means the CLI keeps choosing, which is 1 hour on a subscription. An unrecognised value warns and changes nothing. See [The prompt cache an agent writes](#the-prompt-cache-an-agent-writes). |
 | `defaultSubagentModel` | string | – | Model that plugin-discovered `mode: subagent` agents run on when their own definition pins nothing. The caller's account is kept; only the model name changes. An agent's own `forceModel` wins over it, and an unknown id is refused rather than spawned. Unset means no implicit override at all. See [Subagents: your account, their model](#subagents-your-account-their-model). |
 | `fallbackModels` | string[] | – | Ordered models to try when the one a turn would run on is refused. The default for agents that declare no `fallbackModels` of their own; a per-agent list **replaces** this one rather than extending it. Always the same account, never a different one. Only two things arm it: the CLI refusing the model (`model_not_found`) and a usage limit on an account with no other account to offer. Each model is tried at most once per turn and an exhausted chain surfaces the original error. Unset means no chain at all. See [Fallback model chain](#fallback-model-chain). |
 | `proxyTools` | string[] | `["Bash", "Edit", "Write", "WebFetch", "Task"]` | Claude built-in tools to route through opencode's executor + permission UI. Opt-in extras: `"Question"`, `"Compress"`. See [Selective tool proxy](#selective-tool-proxy). |
@@ -1205,6 +1224,7 @@ The plugin respects the standard Claude Code thinking env vars. If you set them 
 | Env var | Effect |
 |---|---|
 | `CLAUDE_CODE_EFFORT_LEVEL=<level>` | Session effort override. Passes through when no effort was requested; a variant or an agent's `reasoningEffort` replaces it for that spawn. |
+| `CLAUDE_CODE_PROMPT_CACHE_TTL=5m\|1h` | Prompt cache TTL for the whole machine. Passes through when no agent asked; an agent's `cacheTtl` or `defaultSubagentCacheTtl` replaces it for that spawn. |
 | `CLAUDE_CODE_DISABLE_THINKING=1` | Disable thinking entirely. |
 | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` | Disable adaptive thinking only. |
 | `CLAUDE_CODE_SHOW_THINKING_SUMMARIES=0` | Suppress summaries (the plugin sets this to `1` by default when unset). |

@@ -25,6 +25,7 @@ import {
   parseFallbackModelList,
   readAgentMarkdownRecords,
   setAgentRegistry,
+  setDefaultSubagentCacheTtl,
   setDefaultSubagentModel,
   setProviderFallbackModels,
 } from "./agent-models.js"
@@ -578,6 +579,10 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
   setDefaultSubagentModel(
     typeof configured === "string" ? configured : undefined,
   )
+  const configuredTtl = options?.defaultSubagentCacheTtl
+  setDefaultSubagentCacheTtl(
+    typeof configuredTtl === "string" ? configuredTtl : undefined,
+  )
   setProviderFallbackModels(parseFallbackModelList(options?.fallbackModels))
 
   // Markdown agents may or may not reach a plugin's config hook (undocumented
@@ -609,6 +614,7 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
       forceModel: pick("forceModel") ?? records[name]?.forceModel,
       reasoningEffort:
         pick("reasoningEffort") ?? records[name]?.reasoningEffort,
+      cacheTtl: pick("cacheTtl") ?? records[name]?.cacheTtl,
       fallbackModels: declaredChain.length
         ? declaredChain
         : records[name]?.fallbackModels,

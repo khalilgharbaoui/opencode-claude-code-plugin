@@ -83,6 +83,51 @@ test("a requested effort wins over a shell-level CLAUDE_CODE_EFFORT_LEVEL", () =
   })
 })
 
+// Prompt cache TTL. CLAUDE_CODE_PROMPT_CACHE_TTL is the CLI's MAIN-conversation
+// setting, and that is the one this plugin needs: a `claude --print` spawn is a
+// main conversation even when it is serving an opencode subagent. Measured on
+// 2.1.280 by reading `usage.cache_creation` back off a real turn: the main var
+// moved the writes to `ephemeral_5m_input_tokens`, while the sibling
+// CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL left them at 1h.
+
+test("claudeSpawnEnv exports a requested TTL as CLAUDE_CODE_PROMPT_CACHE_TTL", () => {
+  withEnv({ CLAUDE_CODE_PROMPT_CACHE_TTL: undefined }, () => {
+    assert.equal(
+      claudeSpawnEnv({ promptCacheTtl: "5m" }).CLAUDE_CODE_PROMPT_CACHE_TTL,
+      "5m",
+    )
+    assert.equal(
+      claudeSpawnEnv({ promptCacheTtl: "1h" }).CLAUDE_CODE_PROMPT_CACHE_TTL,
+      "1h",
+    )
+    // Nothing requested: the var is absent and the CLI's own default stands.
+    assert.equal("CLAUDE_CODE_PROMPT_CACHE_TTL" in claudeSpawnEnv(), false)
+  })
+})
+
+test("a requested TTL wins over a shell-level CLAUDE_CODE_PROMPT_CACHE_TTL", () => {
+  withEnv({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }, () => {
+    // An agent's declaration is a per-request choice; a shell export is not.
+    assert.equal(
+      claudeSpawnEnv({ promptCacheTtl: "5m" }).CLAUDE_CODE_PROMPT_CACHE_TTL,
+      "5m",
+    )
+    assert.equal(claudeSpawnEnv().CLAUDE_CODE_PROMPT_CACHE_TTL, "1h")
+  })
+})
+
+test("the subagent-only cache TTL var is never written", () => {
+  // It exists on the CLI and does nothing for us, because none of our spawns
+  // is a CLI subagent. Writing it would only look like it worked.
+  withEnv({ CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: undefined }, () => {
+    assert.equal(
+      "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL" in
+        claudeSpawnEnv({ promptCacheTtl: "5m" }),
+      false,
+    )
+  })
+})
+
 // CLI hygiene. Both names were verified against the Claude Code 2.1.263 bundle;
 // the point is to stop the CLI autoupdating out from under the version
 // `detectCliVersion` cached, which several flag gates are keyed on.

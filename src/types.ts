@@ -167,6 +167,14 @@ export interface ClaudeCodeProviderSettings {
    */
   defaultSubagentModel?: string
   /**
+   * Prompt cache TTL (`"5m"` or `"1h"`) for subagents whose own definition
+   * states no `cacheTtl`. Unset (the default) means the plugin sets nothing
+   * and the CLI keeps choosing, which is 1 hour on a subscription. Setting
+   * `"5m"` is the cheaper trade for short-lived workers that never re-read
+   * the cache they wrote. See `resolveAgentCacheTtl` in `src/agent-models.ts`.
+   */
+  defaultSubagentCacheTtl?: string
+  /**
    * Models to try, in order, when the model a turn would have run on is
    * refused. The default for every agent that declares no `fallbackModels` of
    * its own; a per-agent list replaces this one rather than extending it.

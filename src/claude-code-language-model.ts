@@ -17,6 +17,7 @@ import type {
 import { translateStreamForHost } from "./host-tools.js"
 import { getClaudeUserMessage } from "./message-builder.js"
 import {
+  resolveAgentCacheTtl,
   resolveAgentEffort,
   resolveAgentModel,
 } from "./agent-models.js"
@@ -799,9 +800,27 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           this.getOpencodeAgent(options),
           this.getReasoningEffort(options.providerOptions),
         ) as ReasoningEffort | undefined)
+    // Compaction keeps the CLI's own cache default, exactly as it skips
+    // effort: its spawn is short-lived and its cost belongs to no agent.
+    const promptCacheTtl = compactionMode
+      ? undefined
+      : resolveAgentCacheTtl(this.getOpencodeAgent(options))
+    // The TTL changes the spawn, so it has to be in the session key. Two
+    // deliberate shape choices. It rides inside the existing context blob
+    // rather than as another `::` tail, because `invalidateOtherEffortSessions`
+    // rebuilds keys from `baseKey` plus an effort tail and a second tail would
+    // make it miss them. And it is appended only when set, so a default
+    // install's key is byte-identical to what it was before this option
+    // existed: an upgrade must not strand every live conversation's process
+    // behind a key nobody will look up again.
+    const context: (string | null)[] = [
+      this.config.provider,
+      this.getOpencodeAgent(options) ?? null,
+    ]
+    if (promptCacheTtl) context.push(promptCacheTtl)
     const baseKey = sessionKey(
       cwd,
-      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify([this.config.provider, this.getOpencodeAgent(options) ?? null])}`,
+      `${effectiveModelId}::${scope}::${affinity}::context=${JSON.stringify(context)}`,
     )
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
@@ -1684,6 +1703,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               spawnSystemPromptFile,
               self.config.ignoreAnthropicApiKey,
               reasoningEffort,
+              promptCacheTtl,
             )
             state.proc = ap.proc
             state.lineEmitter = ap.lineEmitter

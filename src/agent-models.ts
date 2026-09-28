@@ -20,8 +20,10 @@
  * Nothing needs a per-agent entry in opencode.json.
  *
  * The same file can state `reasoningEffort:`, which beats the effort opencode
- * inherited from the caller's picker (see `resolveAgentEffort`). Model and
- * effort together are what a turn costs, so both belong with the agent.
+ * inherited from the caller's picker (see `resolveAgentEffort`), and
+ * `cacheTtl:`, which sets the prompt cache TTL of the agent's own `claude`
+ * process (see `resolveAgentCacheTtl`). Model, effort and cache TTL together
+ * are what a turn costs, so all three belong with the agent.
  *
  * Two deliberate silences, because this rewrites what a user's model picker
  * said it would run:
@@ -40,6 +42,15 @@ import { defaultModels } from "./models.js"
 
 /** Directory names opencode reads agent markdown from, current form first. */
 export const AGENT_DIR_NAMES = ["agents", "agent"]
+
+/**
+ * Prompt cache TTLs the Claude CLI accepts for the main conversation.
+ *
+ * Measured on 2.1.280: an unrecognised value is not an error, the CLI just
+ * falls back to its automatic default, so a typo would be silent. Refusing it
+ * here buys the operator a WARN naming the agent instead.
+ */
+const PROMPT_CACHE_TTLS = ["5m", "1h"]
 
 /** Levels the Claude CLI accepts; anything else is refused, not forwarded. */
 const REASONING_EFFORTS = [
@@ -60,6 +71,12 @@ export type AgentRecord = {
   /** Thinking budget this agent wants, whatever the caller's picker says. */
   reasoningEffort?: string
   /**
+   * Prompt cache TTL for this agent's own `claude` process, `5m` or `1h`.
+   * See `resolveAgentCacheTtl` for why this is a main-conversation setting
+   * and not the CLI's per-agent `experimental.cacheTtl`.
+   */
+  cacheTtl?: string
+  /**
    * Models to try, in order, when the one this agent would have run is
    * refused. Same account throughout; see `src/model-fallback.ts`.
    */
@@ -68,6 +85,7 @@ export type AgentRecord = {
 
 let registry: Record<string, AgentRecord> = {}
 let defaultSubagentModel: string | undefined
+let defaultSubagentCacheTtl: string | undefined
 let providerFallbackModels: string[] = []
 
 export function setAgentRegistry(records: Record<string, AgentRecord>): void {
@@ -88,6 +106,18 @@ export function getDefaultSubagentModel(): string | undefined {
 }
 
 /**
+ * The prompt cache TTL every discovered subagent falls back to. `undefined`
+ * (the default) means the plugin sets nothing and the CLI keeps deciding.
+ */
+export function setDefaultSubagentCacheTtl(ttl: string | undefined): void {
+  defaultSubagentCacheTtl = ttl?.trim() || undefined
+}
+
+export function getDefaultSubagentCacheTtl(): string | undefined {
+  return defaultSubagentCacheTtl
+}
+
+/**
  * The chain every agent that declares none falls back along. Empty (the
  * default) means no chain at all, for the same reason `defaultSubagentModel`
  * is unset by default: an upgrade must not silently start running somebody's
@@ -104,6 +134,7 @@ export function getProviderFallbackModels(): string[] {
 export function _resetAgentRegistryForTests(): void {
   registry = {}
   defaultSubagentModel = undefined
+  defaultSubagentCacheTtl = undefined
   providerFallbackModels = []
 }
 
@@ -245,7 +276,72 @@ export function resolveAgentEffort(
 }
 
 /**
- * Read the five fields that matter out of an agent markdown file's YAML
+ * The prompt cache TTL a request should actually spawn with, or `undefined`
+ * to leave the CLI's own default alone.
+ *
+ * Why this is a MAIN-conversation setting. Claude Code has a per-agent
+ * `experimental.cacheTtl` in agent-definition frontmatter, and it is useless
+ * here: it only applies to subagents the CLI itself runs through its `Task`
+ * tool, and this plugin disallows that tool by default (`Task` is in
+ * `DEFAULT_PROXY_TOOL_NAMES`) so opencode can run the subagent instead. An
+ * opencode subagent arrives as its own `doStream` and its own `claude
+ * --print` process, which the CLI counts as a main conversation, not a
+ * subagent. Measured on 2.1.280: `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` moves a
+ * `-p` turn's writes to `ephemeral_5m_input_tokens`, while
+ * `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m` leaves them at 1h. So the
+ * main-conversation knob is the one that reaches every process this plugin
+ * spawns, and the subagent knob reaches none of them.
+ *
+ * Why an operator wants it per agent. The CLI's automatic default is 1 hour
+ * on a subscription, and a 1-hour cache write is billed above a 5-minute one.
+ * A long-lived main session re-reads that cache and comes out ahead; a fan-out
+ * of short subagents writes a 1-hour cache each and never reads it again,
+ * which is pure cost against the same weekly limit. Declaring `cacheTtl: 5m`
+ * on the workers while the main session keeps 1h is the whole point.
+ *
+ * Order, first match wins, mirroring `resolveAgentModel`:
+ *   1. The agent declared `cacheTtl`.
+ *   2. The agent is a discovered subagent and `defaultSubagentCacheTtl` is set.
+ *   3. Anything else: nothing, and the CLI decides as it always did.
+ *
+ * Unknown values are refused rather than forwarded, for the same reason as
+ * `resolveAgentEffort`: see `PROMPT_CACHE_TTLS`.
+ */
+export function resolveAgentCacheTtl(
+  agent: string | undefined,
+  overrides?: {
+    records?: Record<string, AgentRecord>
+    defaultSubagentCacheTtl?: string
+  },
+): string | undefined {
+  if (!agent) return undefined
+
+  const record = (overrides?.records ?? registry)[agent]
+  if (!record) return undefined
+
+  const fallback = overrides
+    ? overrides.defaultSubagentCacheTtl
+    : defaultSubagentCacheTtl
+  const declared = record.cacheTtl?.trim()
+  const wanted =
+    declared || (record.mode === "subagent" ? fallback?.trim() : undefined)
+  if (!wanted) return undefined
+
+  if (!PROMPT_CACHE_TTLS.includes(wanted)) {
+    log.warn("agent prompt cache ttl refused: unknown value", {
+      agent,
+      wanted,
+      allowed: PROMPT_CACHE_TTLS.join(", "),
+    })
+    return undefined
+  }
+
+  log.debug("agent prompt cache ttl", { agent, ttl: wanted })
+  return wanted
+}
+
+/**
+ * Read the fields that matter out of an agent markdown file's YAML
  * frontmatter. Hand-parsed rather than pulling a YAML dependency in for four
  * scalars and one list, and deliberately top-level only: `permission:` has
  * nested keys (`bash:`, `edit:`) that must not be mistaken for agent fields.
@@ -299,6 +395,7 @@ export function parseAgentFrontmatter(text: string): AgentRecord {
     else if (key === "model") record.model = value
     else if (key === "forceModel") record.forceModel = value
     else if (key === "reasoningEffort") record.reasoningEffort = value
+    else if (key === "cacheTtl") record.cacheTtl = value
   }
 
   return record

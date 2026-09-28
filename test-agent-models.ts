@@ -10,9 +10,11 @@ import {
   getDefaultSubagentModel,
   parseAgentFrontmatter,
   readAgentMarkdownRecords,
+  resolveAgentCacheTtl,
   resolveAgentEffort,
   resolveAgentModel,
   setAgentRegistry,
+  setDefaultSubagentCacheTtl,
   setDefaultSubagentModel,
 } from "./src/agent-models.js"
 
@@ -239,6 +241,88 @@ test("parseAgentFrontmatter reads reasoningEffort", () => {
       ),
     ),
     { mode: "subagent", reasoningEffort: "xhigh" },
+  )
+})
+
+// --- prompt cache TTL ------------------------------------------------------
+
+const ttlRecords: Record<string, AgentRecord> = {
+  worker: { mode: "subagent" },
+  thrifty: { mode: "subagent", cacheTtl: "5m" },
+  patient: { mode: "subagent", cacheTtl: "1h" },
+  typo: { mode: "subagent", cacheTtl: "1hr" },
+  boss: { mode: "primary" },
+}
+
+test("with no cacheTtl anywhere the CLI keeps deciding", () => {
+  // Same safety property as defaultSubagentModel: an upgrade must not start
+  // changing how anybody's turns are cached without being asked.
+  assert.equal(resolveAgentCacheTtl("worker", { records: ttlRecords }), undefined)
+})
+
+test("an agent's own cacheTtl wins", () => {
+  assert.equal(
+    resolveAgentCacheTtl("thrifty", {
+      records: ttlRecords,
+      defaultSubagentCacheTtl: "1h",
+    }),
+    "5m",
+  )
+  assert.equal(
+    resolveAgentCacheTtl("patient", {
+      records: ttlRecords,
+      defaultSubagentCacheTtl: "5m",
+    }),
+    "1h",
+  )
+})
+
+test("defaultSubagentCacheTtl covers discovered subagents only", () => {
+  const withFiveMinutes = {
+    records: ttlRecords,
+    defaultSubagentCacheTtl: "5m",
+  }
+  assert.equal(resolveAgentCacheTtl("worker", withFiveMinutes), "5m")
+  // A primary agent is not a worker, so the budget argument does not apply.
+  assert.equal(resolveAgentCacheTtl("boss", withFiveMinutes), undefined)
+  // An agent this plugin never discovered is never rewritten.
+  assert.equal(resolveAgentCacheTtl("explore", withFiveMinutes), undefined)
+  assert.equal(resolveAgentCacheTtl(undefined, withFiveMinutes), undefined)
+})
+
+test("an unknown cacheTtl is refused, not forwarded", () => {
+  // Measured on CLI 2.1.280: the CLI accepts a bogus value silently and falls
+  // back to its automatic default, so refusing here is what makes the typo
+  // visible. Either way the spawn must not carry it.
+  assert.equal(resolveAgentCacheTtl("typo", { records: ttlRecords }), undefined)
+  assert.equal(
+    resolveAgentCacheTtl("typo", {
+      records: ttlRecords,
+      defaultSubagentCacheTtl: "5m",
+    }),
+    undefined,
+  )
+})
+
+test("cacheTtl resolves off the module registry too", () => {
+  try {
+    setAgentRegistry(ttlRecords)
+    setDefaultSubagentCacheTtl("1h")
+    assert.equal(resolveAgentCacheTtl("worker"), "1h")
+    assert.equal(resolveAgentCacheTtl("thrifty"), "5m")
+    setDefaultSubagentCacheTtl(undefined)
+    assert.equal(resolveAgentCacheTtl("worker"), undefined)
+  } finally {
+    _resetAgentRegistryForTests()
+  }
+})
+
+test("parseAgentFrontmatter reads cacheTtl", () => {
+  assert.deepEqual(
+    parseAgentFrontmatter(
+      ["---", "mode: subagent", "cacheTtl: 5m", "---", "body"].join("\n"),
+    ),
+    { mode: "subagent", cacheTtl: "5m" },
   )
 })
 
