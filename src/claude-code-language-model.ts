@@ -37,7 +37,6 @@ import {
   describeResultFailure,
   formatResultFailureNote,
   formatSilentTurnNote,
-  formatStreamTimeoutNote,
   isRateLimitRejected,
   parseRateLimitEvent,
   reportCompactBoundary,
@@ -64,7 +63,6 @@ import {
   isAccountLimitError,
   resolveFailoverSpawn,
   setAccountOverride,
-  type AccountBlockKind,
   type FailoverSpawn,
 } from "./account-failover.js"
 import { DOCTOR_COMMAND, buildDoctorReport, parseDoctorCommand } from "./doctor.js"
@@ -78,7 +76,6 @@ import { parseModelId } from "./models.js"
 import {
   consumeExitPlanModeQuestionResult,
   createExitPlanModeQuestionCall,
-  type QuestionToolCall,
 } from "./plan-mode-question.js"
 import type { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
@@ -98,7 +95,6 @@ import {
   deleteClaudeSessionId,
   deleteActiveProcess,
   deleteActiveProcessAndWait,
-  respawnActiveProcess,
   resolveIdleProcessTimeoutMs,
   scheduleIdleProcessEviction,
   noteTurnStarted,
@@ -127,9 +123,6 @@ import {
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
   PROXY_TOOL_PREFIX,
-  TASK_BATCH_TOOL_NAME,
-  taskBatchTasks,
-  taskBatchChildToolCallId,
   setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
@@ -141,7 +134,6 @@ import {
   findPendingProxyCall,
   getPendingProxyCalls,
   isPendingProxyCallChannelClosed,
-  markPendingProxyCallEmitted,
   onPendingProxyCall,
   rejectAllPendingProxyCallsForSession,
   rejectPendingProxyCallById,
@@ -156,11 +148,7 @@ import {
 } from "./prompts.js"
 import {
   autoContinueEnabledFor,
-  continuationSignature,
   isSilentTurn,
-  makeAutoContinueMessage,
-  shouldAutoContinueIncompleteTurn,
-  type AutoContinueState,
 } from "./auto-continue.js"
 import {
   denyMessageForTool,
@@ -177,7 +165,6 @@ import {
 } from "./call-options.js"
 import {
   extractPendingProxyResultForCall,
-  makeLateProxyResultMessage,
 } from "./proxy-results.js"
 import {
   controlRequestBehaviorForTool,
@@ -204,6 +191,24 @@ import {
 } from "./title.js"
 import { toFinishReason, toUsage } from "./usage.js"
 import { createTurnState } from "./turn-state.js"
+import {
+  DRAIN_QUIET_MS,
+  armStartWatchdog,
+  clearFallbackTimer,
+  clearStartWatchdog,
+  deliverPendingCompletions,
+  drainNow,
+  finishWithQuestionCall,
+  noteProxyActivity,
+  noteReasoning,
+  noteResultBoundaryCall,
+  noteToolActivity,
+  noteVisibleText,
+  resetLastVisibleTextBlock,
+  runAutoContinue,
+  scheduleResultBoundary,
+  startResultFallback,
+} from "./turn-controller.js"
 
 // Re-exported so importers that have always reached for these here keep
 // working after the split. The definitions live in the modules named above.
@@ -261,9 +266,6 @@ const KNOWN_DELTA_TYPES = new Set([
 ])
 
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
-// Quiet window the batched drain and the result boundary share, so claude
-// CLI's parallel tool_use blocks leave in one tool-calls finish.
-const DRAIN_QUIET_MS = 100
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
 const CHILD_EXIT_STATUS_GRACE_MS = 250
@@ -1740,7 +1742,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           controller.enqueue({ type: "stream-start", warnings })
 
-
           // Its own text part, led by FAILOVER_MARKER, so a later transcript
           // rebuild strips it exactly: it was never Claude's output.
           if (failoverNote) {
@@ -1757,363 +1758,20 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // it at creation, which on a fresh spawn is earlier.
           state.autoContinueState.startedAt = Date.now()
 
-          const clearFallbackTimer = () => {
-            if (state.resultFallbackTimer) {
-              clearTimeout(state.resultFallbackTimer)
-              state.resultFallbackTimer = null
-            }
-          }
-
-          // Wire-inactivity watchdog. Resets on every line received from the
-          // CLI; only fires if the CLI has emitted content and then gone
-          // silent on stdout for `delayMs` without sending a `result`. The
-          // previous design armed this on every text content_block_stop,
-          // which killed legitimate mid-turn think pauses (most visibly
-          // with sonnet between text-end and the next tool_use_start).
-          // Tunable for reproduces and for the regression test, the same seam
-          // CLAUDE_CODE_state.startWatchdogMs gives the start watchdog below.
-          const startResultFallback = (delayMs = state.resultFallbackMs) => {
-            clearFallbackTimer()
-            if ((!state.hasReceivedContent && !state.hasReceivedProgress) || state.controllerClosed) return
-            state.resultFallbackTimer = setTimeout(() => {
-              if (state.controllerClosed) return
-              log.warn("result fallback timer fired — closing stream without result event", {
-                delayMs,
-              })
-              // Closing on a log line alone left the operator with a reply that
-              // just stopped. An abort is exempt: they asked for it, and the
-              // short grace period there is not a silent CLI.
-              if (!state.autoContinueState.aborted) {
-                controller.enqueue({
-                  type: "text-delta",
-                  id: state.startTextBlock(),
-                  delta: formatStreamTimeoutNote(delayMs),
-                })
-                state.endTextBlock()
-              }
-              closeHandler()
-            }, delayMs)
-          }
-
-          // Start watchdog: complementary to the inactivity watchdog above.
-          // That one only arms once content has arrived; this one covers the
-          // gap the other explicitly skips — a reused process that produces
-          // NO stdout at all after a fresh-turn envelope write. Seen after a
-          // very long proxy-blocked tool call resumed successfully (the child
-          // stays silent on stdout). On first fire we respawn the child with
-          // --session-id to resume the conversation transparently; on a
-          // second fire (respawn also silent) we end the turn cleanly so the
-          // next opencode turn spawns fresh. Tunable via env for reproduces.
-          const clearStartWatchdog = () => {
-            if (state.startWatchdog) {
-              clearTimeout(state.startWatchdog)
-              state.startWatchdog = null
-            }
-          }
-          const onStartWatchdogFire = () => {
-            state.startWatchdog = null
-            if (state.controllerClosed || state.hasReceivedContent || state.hasReceivedProgress) return
-            if (state.respawnAttempted) {
-              log.error(
-                "claude process still silent after respawn; ending turn",
-                { sessionKey: sk },
-              )
-              deleteActiveProcess(sk)
-              deleteClaudeSessionId(sk)
-              state.controllerClosed = true
-              cleanupTurn()
-              controller.enqueue({
-                type: "error",
-                error: new Error(
-                  "Claude process produced no output after the envelope write (start watchdog timeout).",
-                ),
-              })
-              try {
-                controller.close()
-              } catch {}
-              return
-            }
-            state.respawnAttempted = true
-            log.warn(
-              "no stdout after envelope write; respawning claude process to resume conversation",
-              { sessionKey: sk, startWatchdogMs: state.startWatchdogMs },
-            )
-            state.lineEmitter.off("line", lineHandler)
-            state.lineEmitter.off("close", closeHandler)
-            state.proc.off("error", procErrorHandler)
-            const newAp = respawnActiveProcess(
-              sk,
-              cliPath,
-              state.cliArgs,
-              cwd,
-              self.config.ignoreAnthropicApiKey,
-            )
-            if (!newAp) {
-              log.error(
-                "no active process to respawn (start watchdog); ending turn",
-                { sessionKey: sk },
-              )
-              state.controllerClosed = true
-              cleanupTurn()
-              controller.enqueue({
-                type: "error",
-                error: new Error(
-                  "No active claude process to respawn after start watchdog timeout.",
-                ),
-              })
-              try {
-                controller.close()
-              } catch {}
-              return
-            }
-            state.proc = newAp.proc
-            state.lineEmitter = newAp.lineEmitter
-            state.activeProcess = newAp
-            state.lineEmitter.on("line", lineHandler)
-            state.lineEmitter.on("close", closeHandler)
-            state.proc.on("error", procErrorHandler)
-            try {
-              if (!deliverPendingCompletions(true)) {
-                noteTurnStarted(newAp)
-                state.proc.stdin?.write(state.watchdogMessage + "\n")
-              }
-              log.debug("re-sent user message after respawn", {
-                textLength: state.watchdogMessage.length,
-              })
-            } catch (err) {
-              log.error("failed to re-send envelope after respawn", {
-                error: err instanceof Error ? err.message : String(err),
-              })
-            }
-            armStartWatchdog()
-          }
-          const armStartWatchdog = () => {
-            clearStartWatchdog()
-            if (state.controllerClosed) return
-            state.startWatchdog = setTimeout(onStartWatchdogFire, state.startWatchdogMs)
-          }
-
-          // Both buffered/live terminal boundaries and respawn consume through
-          // this path. Open-channel results remain available for a later close.
-          const deliverPendingCompletions = (force = false): boolean => {
-            const pending = state.activeProcess?.pendingProxyCompletions
-            const entries = [...(pending?.values() ?? [])].filter(
-              (entry) => force || entry.recoveryRequired || isPendingProxyCallChannelClosed(entry.call),
-            )
-            if (entries.length === 0) return false
-            state.endTextBlock()
-            state.watchdogMessage = makeLateProxyResultMessage(entries)
-            // This write asks the CLI for work like any fresh envelope, so
-            // abort, LRU eviction and the idle timer must see it as busy.
-            if (state.activeProcess) noteTurnStarted(state.activeProcess)
-            state.proc.stdin!.write(state.watchdogMessage + "\n")
-            for (const { call } of entries) pending!.delete(call.toolCallId)
-            log.warn("delivering proxy results after interrupted continuation", {
-              sessionKey: sk,
-              toolCallIds: entries.map(({ call }) => call.toolCallId),
-              respawn: force,
-            })
-            state.gotPartialEvents = false
-            state.hasReceivedContent = false
-            state.hasReceivedProgress = false
-            state.turnCompleted = false
-            resetAutoContinueWindow()
-            clearFallbackTimer()
-            armStartWatchdog()
-            return true
-          }
-
-
-
-        // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
-        // bash calls in one assistant message) end up in a single
-        // tool-calls finish event. Without this, the broker would reject
-        // every overlapping call and claude would see spurious tool errors.
-
-        const finishWithToolCalls = (calls: PendingProxyCall[]) => {
-          if (state.controllerClosed) return
-          if (calls.length === 0) return
-          const enqueueToolCall = (
-            toolCallId: string,
-            toolName: string,
-            input: Record<string, unknown>,
-          ) => {
-            controller.enqueue({
-              type: "tool-input-start",
-              id: toolCallId,
-              toolName,
-            } as any)
-            controller.enqueue({
-              type: "tool-call",
-              toolCallId,
-              toolName,
-              input: JSON.stringify(input),
-              providerExecuted: false,
-            } as any)
-            state.skipResultForIds.add(toolCallId)
-          }
-          for (const call of calls) {
-            if (call.toolName === TASK_BATCH_TOOL_NAME) {
-              // One MCP call from the CLI becomes N opencode `task` calls in
-              // this single tool boundary, which is what makes them run at the
-              // same time: the CLI serialises MCP calls, opencode runs the
-              // tool calls of one step concurrently. Their results are
-              // gathered back onto the parent id in
-              // extractPendingProxyResultForCall.
-              for (const [index, task] of taskBatchTasks(call.input).entries()) {
-                enqueueToolCall(
-                  taskBatchChildToolCallId(call.toolCallId, index),
-                  "task",
-                  task,
-                )
-              }
-              state.skipResultForIds.add(call.toolCallId)
-            } else {
-              enqueueToolCall(call.toolCallId, call.toolName, call.input)
-            }
-            markPendingProxyCallEmitted(call.toolCallId)
-          }
-          controller.enqueue({
-            type: "finish",
-            finishReason: toFinishReason("tool-calls"),
-            usage: toUsage(state.resultMeta.usage),
-            providerMetadata: {
-              "claude-code": state.resultMeta,
-            },
-          })
-          state.controllerClosed = true
-          cleanupTurn()
-          try {
-            controller.close()
-          } catch {}
-        }
-
-        /**
-         * End the turn on a synthetic call to opencode's native `question`
-         * tool. opencode runs the tool, and the operator's answer arrives on
-         * the NEXT doStream as a `tool-result` carrying this same id, which
-         * is what keeps the whole exchange inside one opencode turn. Shared
-         * by the plan-mode approval bridge and the account-failover form.
-         */
-        const finishWithQuestionCall = (call: QuestionToolCall) => {
-          if (state.controllerClosed) return
-          state.endTextBlock()
-          controller.enqueue({
-            type: "tool-input-start",
-            id: call.toolCallId,
-            toolName: call.toolName,
-            providerExecuted: false,
-          } as any)
-          controller.enqueue({
-            type: "tool-call",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            input: JSON.stringify(call.input),
-            providerExecuted: false,
-          } as any)
-          controller.enqueue({
-            type: "finish",
-            finishReason: toFinishReason("tool-calls"),
-            usage: toUsage(state.resultMeta.usage),
-            providerMetadata: {
-              "claude-code": state.resultMeta,
-            },
-          })
-          state.controllerClosed = true
-          cleanupTurn()
-          try {
-            controller.close()
-          } catch {}
-        }
-
-        const drainNow = () => {
-          if (state.drainTimer) {
-            clearTimeout(state.drainTimer)
-            state.drainTimer = null
-          }
-          if (state.drainBuffer.length === 0) return
-          if (state.controllerClosed) return
-          const batch = state.drainBuffer.splice(0, state.drainBuffer.length)
-          log.info("draining pending proxy calls into stream finish", {
-            sessionKey: sk,
-            count: batch.length,
-            toolCallIds: batch.map((c) => c.toolCallId),
-          })
-          finishWithToolCalls(batch)
-        }
-
-        const settleResultBoundary = () => {
-          state.drainTimer = null
-          const completeResult = state.pendingResultCompletion
-          state.pendingResultCompletion = null
-          if (!completeResult || state.controllerClosed) return
-          if (state.drainBuffer.length > 0) {
-            drainNow()
-            return
-          }
-          completeResult()
-        }
-
-        const scheduleResultBoundary = (
-          completeResult: () => void,
-          delayMs: number,
-        ) => {
-          state.pendingResultCompletion = completeResult
-          if (state.drainTimer) clearTimeout(state.drainTimer)
-          state.drainTimer = setTimeout(settleResultBoundary, delayMs)
-        }
-
-        const noteResultBoundaryCall = (): boolean => {
-          if (!state.pendingResultCompletion) return false
-          if (state.drainTimer) clearTimeout(state.drainTimer)
-          state.drainTimer = setTimeout(settleResultBoundary, DRAIN_QUIET_MS)
-          return true
-        }
-
-        const noteVisibleText = (text: string) => {
-          state.visibleTextSinceContinue += text
-          state.lastVisibleTextSinceContinue += text
-          if (text.length > 0) state.sawVisibleText = true
-        }
-
-        const resetLastVisibleTextBlock = () => {
-          state.lastVisibleTextSinceContinue = ""
-        }
-
-        const noteReasoning = () => {
-          state.hadReasoningSinceContinue = true
-          state.sawReasoning = true
-        }
-
-        const noteToolActivity = () => {
-          state.hadToolActivitySinceContinue = true
-          state.sawToolActivity = true
-        }
-
-        const noteProxyActivity = () => {
-          state.hadProxyActivitySinceContinue = true
-          state.sawProxyActivity = true
-        }
-
-        const resetAutoContinueWindow = () => {
-          state.visibleTextSinceContinue = ""
-          state.lastVisibleTextSinceContinue = ""
-          state.hadReasoningSinceContinue = false
-          state.hadToolActivitySinceContinue = false
-          state.hadProxyActivitySinceContinue = false
-          state.lastStopReason = null
-        }
-
+        // The turn's timers, its batched drain and its auto-continue window
+        // live in src/turn-controller.ts now, taking the `TurnState` they used
+        // to close over. What stayed is what also reads the turn's prologue:
+        // the line handler, the close handler and `completeResult` below.
         const completeResult = (msg: ClaudeStreamMessage) => {
           if (state.controllerClosed) return
           // The socket may have closed after the tool-result prompt was matched,
           // or while the result-boundary grace timer was running.
-          if (deliverPendingCompletions()) {
-            if (state.drainBuffer.length > 0) drainNow()
+          if (deliverPendingCompletions(state)) {
+            if (state.drainBuffer.length > 0) drainNow(state)
             return
           }
           if (state.drainBuffer.length > 0) {
-            drainNow()
+            drainNow(state)
             return
           }
 
@@ -2154,7 +1812,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 resetsAt: state.accountLimitHit?.resetsAt ?? null,
               },
             )
-            finishWithQuestionCall(call)
+            finishWithQuestionCall(state, call)
             return
           }
 
@@ -2204,61 +1862,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          const autoDecision = shouldAutoContinueIncompleteTurn(
-            state.autoContinueState,
-            {
-              text: state.visibleTextSinceContinue,
-              lastVisibleText: state.lastVisibleTextSinceContinue,
-              hadReasoning: state.hadReasoningSinceContinue,
-              hadToolActivity: state.hadToolActivitySinceContinue,
-              hadProxyActivity: state.hadProxyActivitySinceContinue,
-              isError: msg.is_error,
-              stopReason: state.lastStopReason,
-            },
-          )
-          if (autoDecision.continue) {
-            const signature = continuationSignature({
-              text: state.visibleTextSinceContinue,
-              lastVisibleText: state.lastVisibleTextSinceContinue,
-              hadReasoning: state.hadReasoningSinceContinue,
-              hadToolActivity: state.hadToolActivitySinceContinue,
-              hadProxyActivity: state.hadProxyActivitySinceContinue,
-              isError: msg.is_error,
-            })
-            state.autoContinueState.noProgressCount =
-              signature === state.autoContinueState.lastSignature
-                ? state.autoContinueState.noProgressCount + 1
-                : 0
-            state.autoContinueState.lastSignature = signature
-            state.autoContinueState.attempts++
-            log.notice("auto-continuing incomplete claude result", {
-              sessionKey: sk,
-              reason: autoDecision.reason,
-              attempts: state.autoContinueState.attempts,
-              textLength: state.visibleTextSinceContinue.length,
-              lastTextLength: state.lastVisibleTextSinceContinue.length,
-              hadReasoning: state.hadReasoningSinceContinue,
-              hadToolActivity: state.hadToolActivitySinceContinue,
-              hadProxyActivity: state.hadProxyActivitySinceContinue,
-            })
-            state.turnCompleted = false
-            resetAutoContinueWindow()
-            // The `result` just consumed marked the CLI idle; this puts it back to work.
-            if (state.activeProcess) noteTurnStarted(state.activeProcess)
-            state.proc.stdin?.write(makeAutoContinueMessage() + "\n")
-            return
-          }
-          log.notice("auto-continuation stopped", {
-            sessionKey: sk,
-            reason: autoDecision.reason,
-            stopReason: state.lastStopReason,
-            attempts: state.autoContinueState.attempts,
-            textLength: state.visibleTextSinceContinue.length,
-            lastTextLength: state.lastVisibleTextSinceContinue.length,
-            hadReasoning: state.hadReasoningSinceContinue,
-            hadToolActivity: state.hadToolActivitySinceContinue,
-            hadProxyActivity: state.hadProxyActivitySinceContinue,
-          })
+          // The nudge and the one line that says the nudging stopped, both
+          // in src/turn-controller.ts. True means the turn was put back to
+          // work and must not finish here.
+          if (runAutoContinue(state, msg)) return
 
           for (const [idx, reasoningId] of state.reasoningIds) {
             if (state.reasoningStarted.get(idx)) {
@@ -2349,7 +1956,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           // Any line from the CLI counts as activity — reset the inactivity
           // watchdog so mid-turn pauses between blocks don't get killed.
-          startResultFallback()
+          startResultFallback(state)
 
           try {
             const outer: ClaudeStreamMessage = JSON.parse(line)
@@ -2369,8 +1976,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                  (msg.delta?.type === "thinking_delta" && !!msg.delta.thinking)))
             if (modelProgress) {
               state.hasReceivedProgress = true
-              clearStartWatchdog()
-              startResultFallback()
+              clearStartWatchdog(state)
+              startResultFallback(state)
             }
 
             // Read before anything is enqueued for this message, because the
@@ -2477,7 +2084,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               const idx = msg.index
 
               if (block.type === "thinking") {
-                noteReasoning()
+                noteReasoning(state)
                 const reasoningId = generateId()
                 state.reasoningIds.set(idx, reasoningId)
               }
@@ -2487,7 +2094,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 // New text block — clear last-block buffer so final-answer
                 // detection only considers this block's contents, not earlier
                 // mid-task narration.
-                resetLastVisibleTextBlock()
+                resetLastVisibleTextBlock(state)
                 if (block.text) {
                   if (!state.currentTextId) state.startTextBlock()
                   controller.enqueue({
@@ -2495,13 +2102,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     id: state.currentTextId!,
                     delta: block.text,
                   })
-                  noteVisibleText(block.text)
+                  noteVisibleText(state, block.text)
                   state.hasReceivedContent = true
                 }
               }
 
               if (block.type === "tool_use" && block.id && block.name) {
-                noteToolActivity()
+                noteToolActivity(state)
                 const entry = {
                   id: block.id,
                   name: block.name,
@@ -2553,7 +2160,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               const idx = msg.index
 
               if (delta.type === "thinking_delta" && delta.thinking) {
-                noteReasoning()
+                noteReasoning(state)
                 state.hadThinkingTextFromStream = true
                 const reasoningId = state.reasoningIds.get(idx)
                 if (reasoningId) {
@@ -2579,7 +2186,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   id: state.currentTextId!,
                   delta: delta.text,
                 })
-                noteVisibleText(delta.text)
+                noteVisibleText(state, delta.text)
                 state.hasReceivedContent = true
               }
 
@@ -2679,7 +2286,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       id: planId,
                       delta: questionCall.text,
                     })
-                    finishWithQuestionCall(questionCall)
+                    finishWithQuestionCall(state, questionCall)
                     return
                   }
 
@@ -2710,7 +2317,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   })
                   state.endTextBlock()
                 } else if (tc.name.startsWith(PROXY_TOOL_PREFIX)) {
-                  noteProxyActivity()
+                  noteProxyActivity(state)
                   log.debug("ignoring proxy tool_use block; broker handles it", {
                     name: tc.name,
                     id: tc.id,
@@ -2799,7 +2406,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 if (!state.hadThinkingTextFromStream) {
                   for (const block of thinkingBlocks) {
                     if (block.thinking && block.thinking.length > 0) {
-                      noteReasoning()
+                      noteReasoning(state)
                       state.hadThinkingTextFromStream = true
                       const thinkingId = generateId()
                       controller.enqueue({
@@ -2837,17 +2444,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }
 
               if (hasText && !hasToolUse) {
-                startResultFallback()
+                startResultFallback(state)
               }
               if (hasToolUse) {
-                clearFallbackTimer()
+                clearFallbackTimer(state)
               }
 
               for (const block of msg.message.content) {
                 if (block.type === "text" && block.text) {
                   // New text block — keep only this block's text in the
                   // last-block buffer for final-answer detection.
-                  resetLastVisibleTextBlock()
+                  resetLastVisibleTextBlock(state)
                   const blockId = state.startTextBlock()
                   controller.enqueue({
                     type: "text-delta",
@@ -2855,12 +2462,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     delta: block.text,
                   })
                   state.endTextBlock()
-                  noteVisibleText(block.text)
+                  noteVisibleText(state, block.text)
                   state.hasReceivedContent = true
                 }
 
                 if (block.type === "thinking" && block.thinking) {
-                  noteReasoning()
+                  noteReasoning(state)
                   const thinkingId = generateId()
                   controller.enqueue({
                     type: "reasoning-start",
@@ -2878,7 +2485,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 }
 
                 if (block.type === "tool_use" && block.id && block.name) {
-                  noteToolActivity()
+                  noteToolActivity(state)
                   const parsedInput = (block.input ?? {}) as Record<
                     string,
                     unknown
@@ -2907,7 +2514,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                         id: planId,
                         delta: questionCall.text,
                       })
-                      finishWithQuestionCall(questionCall)
+                      finishWithQuestionCall(state, questionCall)
                       return
                     }
 
@@ -2938,7 +2545,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     })
                     state.endTextBlock()
                   } else if (block.name.startsWith(PROXY_TOOL_PREFIX)) {
-                    noteProxyActivity()
+                    noteProxyActivity(state)
                     log.debug("ignoring proxy tool_use from assistant message", {
                       name: block.name,
                       id: block.id,
@@ -3052,7 +2659,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                         }),
                         providerExecuted: false,
                       } as any)
-                      noteToolActivity()
+                      noteToolActivity(state)
                     }
                   }
 
@@ -3077,7 +2684,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       ...(isError ? { isError: true } : {}),
                       providerExecuted: true,
                     } as any)
-                    noteToolActivity()
+                    noteToolActivity(state)
                     log.info("tool result emitted", {
                       toolUseId: block.tool_use_id,
                       name: toolCall.name,
@@ -3091,13 +2698,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
             // result - end of conversation turn
             if (msg.type === "result") {
-              clearFallbackTimer()
+              clearFallbackTimer(state)
 
               if (msg.session_id) {
                 setClaudeSessionId(sk, msg.session_id)
               }
 
-              if (deliverPendingCompletions()) {
+              if (deliverPendingCompletions(state)) {
                 // Finish the abandoned turn before submitting its late result.
                 // Otherwise this result could close the stream for the new turn.
                 return
@@ -3240,6 +2847,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   },
                 )
                 scheduleResultBoundary(
+                  state,
                   () => completeResult(msg),
                   DRAIN_QUIET_MS,
                 )
@@ -3259,6 +2867,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   },
                 )
                 scheduleResultBoundary(
+                  state,
                   () => completeResult(msg),
                   PROXY_RESULT_BOUNDARY_GRACE_MS,
                 )
@@ -3369,9 +2978,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const cleanupTurn = () => {
           if (state.cleanedUp) return
           state.cleanedUp = true
-          clearFallbackTimer()
+          clearFallbackTimer(state)
           state.pendingResultCompletion = null
-          clearStartWatchdog()
+          clearStartWatchdog(state)
           if (state.drainTimer) {
             clearTimeout(state.drainTimer)
             state.drainTimer = null
@@ -3409,6 +3018,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             controller.close()
           } catch {}
         }
+
+        // The four handlers go onto the state as soon as all four exist, and
+        // before anything can call one. The start watchdog's respawn detaches
+        // and re-attaches all three listeners from src/turn-controller.ts, and
+        // the inactivity watchdog ends the turn through `closeHandler`: both
+        // run on a timer armed at the end of this function, so they read the
+        // same function objects `cleanupTurn` below detaches.
+        state.lineHandler = lineHandler
+        state.closeHandler = closeHandler
+        state.procErrorHandler = procErrorHandler
+        state.cleanupTurn = cleanupTurn
 
         // Whatever the child said while no turn was listening comes first:
         // the operator gets to see it, and a turn that already ended on the
@@ -3459,7 +3079,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             state.endTextBlock()
             // Replayed lines are history, not liveness: the watchdogs below
             // must judge the child on what it does from here on.
-            clearFallbackTimer()
+            clearFallbackTimer(state)
             state.hasReceivedContent = false
           }
         }
@@ -3510,12 +3130,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             toolCallId: call.toolCallId,
             toolName: call.toolName,
           })
-          noteProxyActivity()
-          noteToolActivity()
+          noteProxyActivity(state)
+          noteToolActivity(state)
           state.drainBuffer.push(call)
-          if (noteResultBoundaryCall()) return
+          if (noteResultBoundaryCall(state)) return
           if (state.drainTimer) clearTimeout(state.drainTimer)
-          state.drainTimer = setTimeout(drainNow, DRAIN_QUIET_MS)
+          state.drainTimer = setTimeout(() => drainNow(state), DRAIN_QUIET_MS)
         })
 
         state.proc.on("error", procErrorHandler)
@@ -3621,7 +3241,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               "Provider stream was aborted while proxy tool calls were pending",
             )
             // Abort grace period — short, since the user already asked to stop.
-            startResultFallback(5_000)
+            startResultFallback(state, 5_000)
           })
         }
 
@@ -3664,7 +3284,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          if (state.unattendedTurnEnded) deliverPendingCompletions()
+          if (state.unattendedTurnEnded) deliverPendingCompletions(state)
 
           // Calls queued while no turn was attached were never handed to
           // opencode; the child is blocked on them right now.
@@ -3677,12 +3297,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               toolCallIds: unemitted.map((call) => call.toolCallId),
             })
             state.drainBuffer.push(...unemitted)
-            drainNow()
+            drainNow(state)
             return
           }
 
           if (getPendingProxyCalls(sk).length === 0) {
-            armStartWatchdog()
+            armStartWatchdog(state)
           }
           return
         }
@@ -3709,7 +3329,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // Arm the start watchdog so a reused child that goes silent after
         // the envelope write (seen after a long proxy-blocked tool call)
         // is respawned with --session-id instead of hanging the turn.
-        armStartWatchdog()
+        armStartWatchdog(state)
         }
 
         void setup().catch((err) => {
