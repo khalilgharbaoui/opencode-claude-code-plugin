@@ -1,5 +1,7 @@
 import { detectCliVersion } from "./cli-version.js"
+import { snapshotMcpServerErrors, type McpServerError } from "./cli-events.js"
 import { log } from "./logger.js"
+import { fetchPlanUsage, wantsPlanUsage, type PlanUsage } from "./plan-usage.js"
 import {
   snapshotPendingProxyCalls,
   type PendingProxyCallSnapshot,
@@ -31,6 +33,12 @@ import {
  * as assistant text at zero tokens, and the whole exchange is stripped from
  * any transcript rebuilt for the CLI.
  *
+ * "No CLI inference" is the invariant, not "no CLI process": the version row
+ * has always come from `detectCliVersion`, which spawns. `/claude-code-doctor
+ * usage` adds one more such spawn, `claude -p /cost`, which the CLI answers
+ * locally at `num_turns: 0` and `$0` (see `plan-usage.ts`). Nothing here ever
+ * sends a prompt to a model.
+ *
  * The name is `claude-code-doctor`, not `claude-code doctor`: opencode
  * commands are invoked as `/<key>` with everything after the first space taken
  * as `$ARGUMENTS`, so a space in the name would make the second word an
@@ -43,7 +51,7 @@ import {
 export const DOCTOR_COMMAND = "claude-code-doctor"
 
 export const DOCTOR_COMMAND_DESCRIPTION =
-  "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls"
+  "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls. Add `usage` for plan windows"
 
 /** Leading marker of the report block, so `message-builder` can strip it. */
 export const DOCTOR_MARKER = "▌ **claude-code doctor**"
@@ -116,6 +124,10 @@ export interface DoctorReport {
   processes: ActiveProcessSnapshot[]
   pendingCalls: PendingProxyCallSnapshot[]
   proxyServers: DoctorProxyRow[]
+  /** `--mcp-config` entries Claude Code skipped this process. */
+  mcpServerErrors: McpServerError[]
+  /** The CLI's own plan-usage report, only when `usage` was asked for. */
+  planUsage: PlanUsage
 }
 
 function formatAge(ms: number | undefined): string {
@@ -249,6 +261,42 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
   }
 
+  // Only when there is something wrong to show. A skipped entry is absent from
+  // `mcp_servers` entirely, so nothing else in this report would hint at it.
+  if (report.mcpServerErrors.length > 0) {
+    lines.push("")
+    lines.push("**MCP config entries Claude Code skipped**")
+    lines.push("")
+    lines.push("| server | category | Claude Code said |")
+    lines.push("|---|---|---|")
+    for (const error of report.mcpServerErrors) {
+      lines.push(`| ${error.name} | \`${error.type}\` | ${error.message || "no detail"} |`)
+    }
+    lines.push("")
+    lines.push("A skipped server is missing from the model's tools with no other sign of it.")
+  }
+
+  lines.push("")
+  lines.push("**Plan usage**")
+  lines.push("")
+  switch (report.planUsage.status) {
+    case "ok":
+      lines.push("```text")
+      lines.push(report.planUsage.text)
+      lines.push("```")
+      break
+    case "failed":
+      lines.push(`Could not read it from the CLI: ${report.planUsage.error}`)
+      break
+    case "not-requested":
+      lines.push(
+        "Not checked. Run `/claude-code-doctor usage` for the account's plan windows and " +
+          "reset times, straight from the CLI. It costs no tokens, but it does start a " +
+          "`claude` process, so it runs your `SessionStart` hooks and takes a few seconds.",
+      )
+      break
+  }
+
   const stderr = report.processes.filter((proc) => proc.lastStderr)
   if (stderr.length > 0) {
     lines.push("")
@@ -314,6 +362,10 @@ export interface GatherDoctorOptions {
   interactive: boolean
   turnStats: boolean
   fetchImpl?: typeof fetch
+  /** Whatever followed `/claude-code-doctor`; `usage` asks for plan usage. */
+  argument?: string
+  /** Seam for tests, threaded to `fetchPlanUsage`. */
+  planUsageImpl?: typeof fetchPlanUsage
 }
 
 /** Assemble the live report. Never throws: a broken field reads as unknown. */
@@ -341,6 +393,12 @@ export async function gatherDoctorReport(
     })
   }
 
+  // Opt-in, and after the cheap fields so a slow or wedged CLI cannot stop the
+  // rest of the report being assembled.
+  const planUsage: PlanUsage = wantsPlanUsage(options.argument ?? "")
+    ? await (options.planUsageImpl ?? fetchPlanUsage)(cliPath)
+    : { status: "not-requested" }
+
   return {
     plugin: base.plugin,
     opencode: base.opencode,
@@ -358,6 +416,8 @@ export async function gatherDoctorReport(
     processes,
     pendingCalls: snapshotPendingProxyCalls(),
     proxyServers,
+    mcpServerErrors: snapshotMcpServerErrors(),
+    planUsage,
   }
 }
 
@@ -372,6 +432,8 @@ export async function buildDoctorReport(options: GatherDoctorOptions): Promise<s
       processes: report.processes.length,
       pendingCalls: report.pendingCalls.length,
       proxyServers: report.proxyServers.map((server) => server.auth.status),
+      mcpServerErrors: report.mcpServerErrors.length,
+      planUsage: report.planUsage.status,
     })
     return formatDoctorReport(report)
   } catch (error) {

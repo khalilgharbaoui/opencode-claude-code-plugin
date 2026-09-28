@@ -766,6 +766,9 @@ sqlite3 ~/.local/share/opencode/opencode.db \
 
 - A small per-call latency hop through `127.0.0.1:<random>/mcp`.
 - Batched-edit ergonomics: with `Edit` proxied, Claude can no longer use `MultiEdit`, so a refactor that would have been one tool call becomes N single `Edit` calls.
+- **One extra Claude Code API call per `claude` process**, and it is a `ToolSearch`. A proxied tool reaches the model as an MCP tool, and Claude Code 2.1.280 defers MCP tools behind its own `ToolSearch` tool, so before the first proxied call of a session the model spends one request finding the tool. Claude's built-in `Bash` is never deferred, so an unproxied tool goes straight to the call.
+
+  Measured on 2.1.280 with `claude-haiku-4-5`, three runs a side, one `echo` command: 3 CLI API calls with `Bash` proxied against 2 with the CLI running it, and roughly twice the cache reads. It is paid **once per process, not once per call**: the same task with two sequential commands measured 4 calls against 3, with a single `ToolSearch` either way. It is also not a function of how many tools you have, since a run with `strictMcpConfig: true` and 28 tools still spent it. Setting `ENABLE_TOOL_SEARCH=0` does remove it, and costs far more than it saves (all ~164 tool definitions then sit in every prompt, which measured 2.5 to 4 times the total cost and tripped a compaction), so that is not a fix and the plugin does not do it. `ToolSearch` is one of Claude's internal tools, so you never see the call, only the cost. Full numbers: `docs/agents-history.md` under `#g166`.
 
 ### How a proxied call ends
 
@@ -862,6 +865,14 @@ It carries the startup-diagnostics fields (plugin version, opencode version, `cl
 - every live `claude` child, by opencode session id and model, with its pid, whether a turn is in flight, how long it has been up, and the effort it was spawned at,
 - every pending proxy call, with the tool, the call id, how long it has waited, and its deadline,
 - each proxy server's URL with one unauthenticated `initialize` posted to it: `401, good` is the patched behaviour, and anything else is flagged unsafe with the fix (restart every opencode window, since a window opened before 0.13.2 keeps serving an open port). See [Proxy endpoint security](#proxy-endpoint-security).
+
+When Claude Code refused an entry in an `--mcp-config` it was handed, an **MCP config entries Claude Code skipped** section names each one with the CLI's own category and sentence. That section only appears when there is something in it. It matters because a skipped server is absent from the CLI's server list entirely rather than listed as broken, so the model silently does not have those tools; if the skipped name is `opencode_proxy` the report says so plainly, because then it is the plugin's own server and every proxied tool call in the session fails. The same thing is a warning in your terminal when it happens.
+
+```text
+/claude-code-doctor usage
+```
+
+adds a **Plan usage** section: the CLI's own answer to `/cost`, which is the subscription-or-API-key line, how much of the 5-hour and 7-day windows is used, when each resets, and what has been contributing to them. It is measured free (`num_turns: 0`, `$0`, no API call: the CLI answers it locally), so it costs no tokens and nothing is billed. It is opt-in anyway because reading it starts a short-lived `claude` process, which runs your `SessionStart` hooks and takes a few seconds. Without the argument the section says so and the report stays instant. A CLI that cannot answer leaves one line saying why and the rest of the report is unaffected.
 
 The `permissionPreset` row reads `provider: preset` for every registered provider, `none` where none is set, so two accounts configured with different postures are not collapsed into one answer. When a preset is in force, a **Permission preset overrides** block under the table lists the options it replaced, in the same words the log uses. A name the plugin does not recognise is reported as `readonly (unknown, nothing applied)` rather than shown as if it took effect: a typo'd safety option runs at full permissions, and the report is where you find that out. See [Read-only mode](#read-only-mode).
 

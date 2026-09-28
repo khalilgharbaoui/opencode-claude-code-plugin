@@ -590,6 +590,17 @@ export const DEFAULT_PROXY_TOOL_NAMES = [
   "Task",
 ]
 
+/**
+ * The MCP server name the plugin registers its proxy under, and the stem of
+ * `PROXY_TOOL_PREFIX` in `proxy-mcp.ts`.
+ *
+ * It lives here for the same reason `DEFAULT_PROXY_TOOL_NAMES` does:
+ * `cli-events.ts` has to recognise the plugin's own server in the CLI's
+ * `mcp_server_errors` list, and importing `proxy-mcp.ts` from there would be a
+ * cycle.
+ */
+export const PROXY_MCP_SERVER_NAME = "opencode_proxy"
+
 export interface ClaudeCodeCallOptions {
   reasoningEffort?: ReasoningEffort
 }
@@ -663,6 +674,13 @@ export interface ClaudeStreamMessage {
   claude_code_version?: string
   tools?: string[]
   mcp_servers?: Array<{ name?: string; status?: string }>
+  /**
+   * `--mcp-config` entries the CLI refused to load. Omitted entirely when
+   * there are none, and an affected server is absent from `mcp_servers` too,
+   * which is why it needs its own field: a skipped server is invisible in the
+   * list. See `parseMcpServerErrors` in `cli-events.ts`.
+   */
+  mcp_server_errors?: Array<{ name?: string; type?: string; message?: string }>
 
   // `system`/`compact_boundary`. The stream schema emits `compact_metadata`;
   // the CLI's own transcript reader uses `compactMetadata`.

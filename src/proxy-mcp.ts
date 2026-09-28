@@ -6,6 +6,7 @@ import * as crypto from "node:crypto"
 import { EventEmitter } from "node:events"
 import { log } from "./logger.js"
 import { pluginTmpDir } from "./tmp.js"
+import { PROXY_MCP_SERVER_NAME } from "./types.js"
 
 /**
  * Minimal MCP HTTP server embedded in-process. Exposes a set of "proxy"
@@ -123,7 +124,7 @@ export function isExpectedCleanupError(message: string): boolean {
 }
 
 const PROTOCOL_VERSION = "2024-11-05"
-const SERVER_NAME = "opencode_proxy"
+const SERVER_NAME = PROXY_MCP_SERVER_NAME
 export const PROXY_TOOL_PREFIX = `mcp__${SERVER_NAME}__`
 
 // Flat fallback cap on how long a proxy tool call may wait for opencode to

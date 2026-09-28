@@ -150,6 +150,54 @@ const endTurn = {
   event: { type: "message_delta", delta: { stop_reason: "end_turn" } },
 }
 
+/** Only warn and error reach stderr unconditionally, which is the point here. */
+async function captureStderr<T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> {
+  const lines: string[] = []
+  const original = process.stderr.write
+  process.stderr.write = ((chunk: any) => {
+    lines.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  try {
+    return { value: await run(), lines }
+  } finally {
+    process.stderr.write = original
+  }
+}
+
+test("an MCP entry the CLI skipped warns through a real doStream and changes nothing else", async () => {
+  const initWithSkip = {
+    ...init,
+    mcp_servers: [],
+    mcp_server_errors: [
+      {
+        name: "opencode_proxy",
+        type: "invalid_config",
+        message: "Skipped - MCP server \"opencode_proxy\" failed validation",
+      },
+    ],
+  }
+
+  const captured = await captureStderr(() =>
+    streamParts([initWithSkip, text("hello"), endTurn, successResult]),
+  )
+
+  const warning = captured.lines.join("")
+  assert.match(warning, /skipped the plugin's own MCP server "opencode_proxy"/)
+  assert.match(warning, /every proxied tool call this session will fail/)
+
+  // The diagnostic is a warning and nothing more: the turn still finishes as an
+  // ordinary stop with the model's text, and no `▌` note is injected.
+  const parts = captured.value
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.equal(body, "hello")
+  const finish = parts.find((part) => part.type === "finish")
+  assert.equal(finish.finishReason.unified, "stop")
+})
+
 test("a CLI tool that failed reaches opencode flagged as an error", async () => {
   const parts = await streamParts([
     init,
