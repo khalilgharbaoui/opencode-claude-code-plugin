@@ -332,7 +332,7 @@ The third thing a turn costs is the prompt cache it writes, and the same file ca
 cacheTtl: 5m
 ```
 
-Or once, for every subagent that declares nothing, as `defaultSubagentCacheTtl` in the provider options. Values are `5m` and `1h`; anything else warns and leaves the CLI alone.
+Or once, for every subagent that declares nothing, as `defaultSubagentCacheTtl` in the provider options. Values are `5m` and `1h`; anything else warns and leaves the CLI alone. It applies to headless spawns only: `/compact` and the experimental interactive transport keep the CLI's own default.
 
 Claude Code's automatic default is a 1-hour cache on a subscription, and a 1-hour cache write is billed above a 5-minute one. That trade pays off for a long-lived main session, which re-reads the cache it wrote. It does not pay off for a fan-out of short workers: each one writes an hour-long cache, finishes, and never reads it again, and all of it comes out of the same weekly limit. Declaring `cacheTtl: 5m` on the workers while the main session keeps the default is the point of the knob.
 
