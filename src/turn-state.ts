@@ -1,0 +1,366 @@
+import type {
+  LanguageModelV3FinishReason,
+  LanguageModelV3StreamPart,
+  LanguageModelV3Usage,
+} from "@ai-sdk/provider"
+import { generateId } from "@ai-sdk/provider-utils"
+import type { ClaudeStreamMessage } from "./types.js"
+import type { ActiveProcess } from "./session-manager.js"
+import type { ProxyMcpServer } from "./proxy-mcp.js"
+import type { PendingProxyCall } from "./proxy-broker.js"
+import type { AutoContinueState } from "./auto-continue.js"
+import type { ModelRefusal } from "./model-fallback.js"
+import type { AccountBlockKind } from "./account-failover.js"
+
+/**
+ * The turn's own mutable state, lifted out of `doStreamForHost`'s `start()`
+ * closure verbatim.
+ *
+ * Nothing here is new. Every field was a `let` or a `const` collection shared
+ * by the line handler, the close handler, the batched drain, the two
+ * watchdogs, the result fallback, auto-continue, the failover and
+ * fallback-chain branches and `completeResult`, all of which closed over one
+ * scope. Naming that scope is the whole change: the handlers can now be read,
+ * and moved, one at a time, and the comment on each field says which invariant
+ * owns it so a later edit knows what it is standing on.
+ *
+ * One `TurnState` per turn, created inside `start()` so the env-derived
+ * timings below are re-read per turn exactly as they were.
+ */
+
+/**
+ * Metadata the terminal `result` frame contributes to `providerMetadata`.
+ * A type alias, not an interface: the AI SDK's `JSONObject` needs an implicit
+ * index signature, which TypeScript grants an anonymous object type (what this
+ * was inline) and refuses an interface.
+ */
+export type TurnResultMeta = {
+  sessionId?: string
+  costUsd?: number
+  durationMs?: number
+  durationApiMs?: number
+  numTurns?: number
+  usage?: ClaudeStreamMessage["usage"]
+  modelUsage?: ClaudeStreamMessage["modelUsage"]
+  permissionDenials?: ClaudeStreamMessage["permission_denials"]
+}
+
+/** One entry of the content-block-index keyed tool table. */
+export interface TurnToolCallEntry {
+  id: string
+  name: string
+  inputJson: string
+  started: boolean
+}
+
+export interface TurnState {
+  // ---- Facts fixed for the whole turn -------------------------------------
+
+  /** The stream every handler writes into. One controller per turn. */
+  readonly controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>
+  /** The plugin's session key (`sk`): every session-manager and broker call keys on it. */
+  readonly sessionKey: string
+  /** Spawn cwd, as resolved by `resolveSpawnCwdForSession`; a respawn reuses it. */
+  readonly cwd: string
+  /** The binary this turn spawned; a respawn must reuse it or it crosses accounts. */
+  readonly cliPath: string
+  /** Passed to a respawn so `claudeSpawnEnv` strips the key the same way. */
+  readonly ignoreAnthropicApiKey?: boolean
+  /** Bound `this.toUsage`, so a moved handler keeps the model's own conversion. */
+  readonly toUsage: (raw?: ClaudeStreamMessage["usage"]) => LanguageModelV3Usage
+  /** Bound `this.toFinishReason`, same reason. */
+  readonly toFinishReason: (
+    reason?: "stop" | "tool-calls" | "error",
+  ) => LanguageModelV3FinishReason
+  /** Wire-inactivity delay; `CLAUDE_CODE_RESULT_FALLBACK_MS` is the test seam. */
+  readonly resultFallbackMs: number
+  /** Start-watchdog delay; `CLAUDE_CODE_START_WATCHDOG_MS` is the test seam. */
+  readonly startWatchdogMs: number
+
+  // ---- Spawn slots --------------------------------------------------------
+  // Filled by the spawn block before any handler is attached, and replaced
+  // together by the start watchdog's respawn. Declared non-optional because
+  // every reader runs after that point, exactly as the `let proc:
+  // ChildProcess` they replaced did.
+
+  /** The `ActiveProcess` this turn is attached to; a respawn swaps it. */
+  activeProcess: ActiveProcess | undefined
+  /** The child. Every stdin write asking for work pairs with `noteTurnStarted`. */
+  proc: import("child_process").ChildProcess
+  /** The child's line emitter. `cleanupTurn` must detach from this exact object. */
+  lineEmitter: import("events").EventEmitter
+  /** argv the child was spawned with; the respawn path appends `--resume` to it. */
+  cliArgs: string[]
+  /** The turn's proxy MCP server, reused across a respawn rather than rebuilt. */
+  proxyServer: ProxyMcpServer | null
+
+  // ---- Text blocks --------------------------------------------------------
+
+  /** The open text part, or null. Every `▌` note needs a part of its own. */
+  currentTextId: string | null
+  /** Content-block indices that are text, so `content_block_stop` closes the part. */
+  readonly textBlockIndices: Set<number>
+  /** Open a text part, closing any open one first. */
+  startTextBlock(): string
+  /** Close the open text part, if there is one. */
+  endTextBlock(): void
+
+  // ---- Reasoning ----------------------------------------------------------
+
+  /** Content-block index to reasoning part id. Cleared by `conversation_reset`. */
+  readonly reasoningIds: Map<number, string>
+  /** Whether `reasoning-start` was emitted for that index: only a non-empty `thinking_delta` starts one. */
+  readonly reasoningStarted: Map<number, boolean>
+  /** Whether the stream already carried thinking text, so the assistant-frame fallback stays quiet. */
+  hadThinkingTextFromStream: boolean
+
+  // ---- Turn lifecycle -----------------------------------------------------
+
+  /** A terminal `result` was seen. A close without one is a crash, not a stop. */
+  turnCompleted: boolean
+  /** The stream is finished. Every handler returns early on it. */
+  controllerClosed: boolean
+  /** `cleanupTurn` ran; it is idempotent so every exit path may call it. */
+  cleanedUp: boolean
+  /** A buffered `result` from between turns: its late proxy results need recovery. */
+  unattendedTurnEnded: boolean
+  /** What a respawn re-sends: this turn's envelope, or the late-result message. */
+  watchdogMessage: string
+  /** Broker subscription for this turn; `cleanupTurn` drops it. */
+  pendingProxyUnsubscribe: (() => void) | null
+  /** `/btw` inline sink; its unregister deletes only its own sink. */
+  asideSinkUnregister: (() => void) | null
+
+  // ---- Watchdogs ----------------------------------------------------------
+
+  /** Wire-inactivity timer. Reset by every line; never arms before content. */
+  resultFallbackTimer: ReturnType<typeof setTimeout> | null
+  /** Start watchdog timer, armed only on the fresh-turn write path. */
+  startWatchdog: ReturnType<typeof setTimeout> | null
+  /** First fire respawns, a second ends the turn. */
+  respawnAttempted: boolean
+
+  // ---- Progress -----------------------------------------------------------
+
+  /** The operator has seen text. Gates the inactivity watchdog and the abort grace. */
+  hasReceivedContent: boolean
+  /** The model did something, text or a tool block. Disarms the start watchdog. */
+  hasReceivedProgress: boolean
+  /** A `stream_event` envelope was seen, so the whole `assistant` frame is a duplicate. */
+  gotPartialEvents: boolean
+
+  // ---- The auto-continue window -------------------------------------------
+  // `resetAutoContinueWindow` clears these on every nudge, which is why they
+  // can never answer the silent-turn question.
+
+  /** All visible text since the last nudge. */
+  visibleTextSinceContinue: string
+  /** Visible text of the current block only, for final-answer detection. */
+  lastVisibleTextSinceContinue: string
+  /** Reasoning since the last nudge. */
+  hadReasoningSinceContinue: boolean
+  /** CLI tool activity since the last nudge. */
+  hadToolActivitySinceContinue: boolean
+  /** Proxy tool activity since the last nudge; also gates the result-boundary grace. */
+  hadProxyActivitySinceContinue: boolean
+
+  // ---- Stream-scoped snapshot ---------------------------------------------
+  // The same four signals for the whole stream. `isSilentTurn` reads these,
+  // never the counters above.
+
+  /** Any visible text this whole stream. */
+  sawVisibleText: boolean
+  /** Any reasoning this whole stream; the silent-turn note says so. */
+  sawReasoning: boolean
+  /** Any CLI tool activity this whole stream. */
+  sawToolActivity: boolean
+  /** Any proxy tool activity this whole stream. */
+  sawProxyActivity: boolean
+
+  /** The CLI's own stop reason, which `shouldAutoContinueIncompleteTurn` treats as authoritative. */
+  lastStopReason: string | null
+  /** Attempts, elapsed, abort and the AskUserQuestion latch. */
+  readonly autoContinueState: AutoContinueState
+
+  // ---- Tool bookkeeping ---------------------------------------------------
+
+  /** Keyed by content-block index and MUST be deleted at `content_block_stop`. */
+  readonly toolCallMap: Map<number, TurnToolCallEntry>
+  /** Ids opencode runs itself, so the CLI's own `tool_result` must not be forwarded. */
+  readonly skipResultForIds: Set<string>
+  /** Tool call id to its MAPPED name: a `tool-result` must carry the name its `tool-call` did. */
+  readonly toolCallsById: Map<string, { id: string; name: string; input: unknown }>
+
+  // ---- The terminal result ------------------------------------------------
+
+  /** Filled by the `result` frame; the close handler's finish reads it too. */
+  resultMeta: TurnResultMeta
+  /** Subtype of a failing `result`, so the finish reports an error not a stop. */
+  resultFailure: string | undefined
+  /** Set only by a REJECTED rate-limit event or a known account-limit text. */
+  accountLimitHit: { resetsAt?: number; window?: string } | null
+  /** Read from the `error` kind on the CLI's failure reply, never from its text. */
+  accountBlock: AccountBlockKind | null
+  /** Set only when a fallback is armed, so a turn with no chain is unchanged. */
+  modelRefusal: ModelRefusal | null
+
+  // ---- The batched drain --------------------------------------------------
+
+  /** Proxy calls waiting to leave in one `tool-calls` finish. */
+  readonly drainBuffer: PendingProxyCall[]
+  /** Quiet timer for the drain and for the result boundary; they share it. */
+  drainTimer: ReturnType<typeof setTimeout> | null
+  /** The `result` whose completion the boundary is holding, or null. */
+  pendingResultCompletion: (() => void) | null
+
+  // ---- Handler slots ------------------------------------------------------
+  // Assigned once the handlers exist. Held here rather than closed over so the
+  // respawn path, which detaches and re-attaches all three, can read them out
+  // of the state instead of out of a scope above it.
+
+  lineHandler: (line: string) => void
+  closeHandler: () => void
+  procErrorHandler: (err: Error) => void
+  /** Centralised per-turn teardown; idempotent. */
+  cleanupTurn: () => void
+}
+
+export interface TurnStateInit {
+  controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>
+  sessionKey: string
+  cwd: string
+  cliPath: string
+  ignoreAnthropicApiKey?: boolean
+  /** This turn's envelope, which is also what a respawn re-sends. */
+  userMsg: string
+  /** `autoContinueEnabledFor(compactionMode, configured)`, resolved by the caller. */
+  autoContinueEnabled: AutoContinueState["enabled"]
+  toUsage: (raw?: ClaudeStreamMessage["usage"]) => LanguageModelV3Usage
+  toFinishReason: (
+    reason?: "stop" | "tool-calls" | "error",
+  ) => LanguageModelV3FinishReason
+}
+
+/**
+ * Wire-inactivity watchdog delay. Read per turn, because the regression test
+ * sets the env var between runs.
+ */
+function resolveResultFallbackMs(): number {
+  const env = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
+  const parsed = env ? Number.parseInt(env, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000
+}
+
+/** Start watchdog delay, read per turn for the same reason. */
+function resolveStartWatchdogMs(): number {
+  const env = process.env.CLAUDE_CODE_START_WATCHDOG_MS
+  const parsed = env ? Number.parseInt(env, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90_000
+}
+
+/**
+ * A slot the spawn block fills before anything reads it. The closure this
+ * replaced declared `let proc: ChildProcess` with no initialiser and relied on
+ * the same guarantee, so the cast keeps every call site identical rather than
+ * spreading `!` through code that was moved verbatim.
+ */
+function unassigned<T>(): T {
+  return undefined as unknown as T
+}
+
+export function createTurnState(init: TurnStateInit): TurnState {
+  const state: TurnState = {
+    controller: init.controller,
+    sessionKey: init.sessionKey,
+    cwd: init.cwd,
+    cliPath: init.cliPath,
+    ignoreAnthropicApiKey: init.ignoreAnthropicApiKey,
+    toUsage: init.toUsage,
+    toFinishReason: init.toFinishReason,
+    resultFallbackMs: resolveResultFallbackMs(),
+    startWatchdogMs: resolveStartWatchdogMs(),
+
+    activeProcess: undefined,
+    proc: unassigned(),
+    lineEmitter: unassigned(),
+    cliArgs: unassigned(),
+    proxyServer: null,
+
+    currentTextId: null,
+    textBlockIndices: new Set<number>(),
+    startTextBlock(): string {
+      if (state.currentTextId) {
+        state.controller.enqueue({ type: "text-end", id: state.currentTextId })
+      }
+      const id = generateId()
+      state.currentTextId = id
+      state.controller.enqueue({ type: "text-start", id } as any)
+      return id
+    },
+    endTextBlock(): void {
+      if (state.currentTextId) {
+        state.controller.enqueue({ type: "text-end", id: state.currentTextId })
+        state.currentTextId = null
+      }
+    },
+
+    reasoningIds: new Map<number, string>(),
+    reasoningStarted: new Map<number, boolean>(),
+    hadThinkingTextFromStream: false,
+
+    turnCompleted: false,
+    controllerClosed: false,
+    cleanedUp: false,
+    unattendedTurnEnded: false,
+    watchdogMessage: init.userMsg,
+    pendingProxyUnsubscribe: null,
+    asideSinkUnregister: null,
+
+    resultFallbackTimer: null,
+    startWatchdog: null,
+    respawnAttempted: false,
+
+    hasReceivedContent: false,
+    hasReceivedProgress: false,
+    gotPartialEvents: false,
+
+    visibleTextSinceContinue: "",
+    lastVisibleTextSinceContinue: "",
+    hadReasoningSinceContinue: false,
+    hadToolActivitySinceContinue: false,
+    hadProxyActivitySinceContinue: false,
+
+    sawVisibleText: false,
+    sawReasoning: false,
+    sawToolActivity: false,
+    sawProxyActivity: false,
+
+    lastStopReason: null,
+    autoContinueState: {
+      enabled: init.autoContinueEnabled,
+      attempts: 0,
+      startedAt: Date.now(),
+      noProgressCount: 0,
+    },
+
+    toolCallMap: new Map<number, TurnToolCallEntry>(),
+    skipResultForIds: new Set<string>(),
+    toolCallsById: new Map<string, { id: string; name: string; input: unknown }>(),
+
+    resultMeta: {},
+    resultFailure: undefined,
+    accountLimitHit: null,
+    accountBlock: null,
+    modelRefusal: null,
+
+    drainBuffer: [],
+    drainTimer: null,
+    pendingResultCompletion: null,
+
+    lineHandler: unassigned(),
+    closeHandler: unassigned(),
+    procErrorHandler: unassigned(),
+    cleanupTurn: unassigned(),
+  }
+  return state
+}
