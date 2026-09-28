@@ -165,6 +165,36 @@ test("opencode's formatted question output approves the original ExitPlanMode ca
   )
 })
 
+test("a trailing newline on opencode's question output still approves", () => {
+  // The same unwrapper reads the account-failover form, where opencode 1.18.32
+  // was measured returning the sentence with a trailing "\n" (2026-09-28).
+  clearExitPlanModeQuestions("session-a")
+  createExitPlanModeQuestionCall("session-a", "exit-plan-1", "Plan", "question-1")
+
+  const userMessage = consumeExitPlanModeQuestionResult("session-a", [
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "question-1",
+          output: {
+            type: "text",
+            value:
+              `User has answered your questions: "Do you want to proceed with this plan?"="yes". ` +
+              `You can now continue with the user's answers in mind.\n`,
+          },
+        },
+      ],
+    } as any,
+  ])
+
+  assert.equal(
+    JSON.parse(userMessage!).message.content[0].content,
+    APPROVED_EXIT_PLAN_MODE_MESSAGE,
+  )
+})
+
 test("question answer no becomes rejection tool_result", () => {
   clearExitPlanModeQuestions("session-a")
   createExitPlanModeQuestionCall("session-a", "exit-plan-1", "Plan", "question-1")

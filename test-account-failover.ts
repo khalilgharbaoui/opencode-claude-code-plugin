@@ -440,6 +440,48 @@ test("opencode's own answer sentence switches, although the question has quotes"
   )
 })
 
+test("the answer opencode really returned, trailing newline included, switches", () => {
+  // Measured 2026-09-28 on opencode 1.18.32 with a real five-hour limit: the
+  // result ends in "\n", so an exact `endsWith` on the suffix missed it and
+  // both picks ("appical", then "stop") were refused as unrecognised.
+  const call = createAccountFailoverQuestionCall("sk-live", {
+    sourceAccount: "default",
+    candidates: ["appical"],
+    resetsAt: 1_790_577_000,
+    window: "five_hour",
+  })
+  const question = call.input.questions[0].question
+  assert.equal(
+    question,
+    'The Claude account "default" is out of usage in five_hour, which resets at 2026-09-28T06:30:00.000Z. Continue this task on another configured account? Leaving this unanswered waits, at no cost.',
+    "the fixture must be the question the live form asked",
+  )
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-live",
+      answer(call.toolCallId, { type: "text", value: `${opencodeAnswer(question, "appical")}\n` }) as any,
+    ),
+    { kind: "switch", target: "appical", sourceAccount: "default", resetsAt: 1_790_577_000 },
+  )
+
+  const stopCall = createAccountFailoverQuestionCall("sk-live-stop", {
+    sourceAccount: "default",
+    candidates: ["appical"],
+    resetsAt: 1_790_577_000,
+    window: "five_hour",
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-live-stop",
+      answer(stopCall.toolCallId, {
+        type: "text",
+        value: `${opencodeAnswer(stopCall.input.questions[0].question, "stop")}\n`,
+      }) as any,
+    ),
+    { kind: "stop", reason: "the operator chose to stop" },
+  )
+})
+
 test("an answer to a form asked before an opencode restart still switches", () => {
   // No createAccountFailoverQuestionCall here: the process that asked is gone.
   const toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}fromlastrun`
