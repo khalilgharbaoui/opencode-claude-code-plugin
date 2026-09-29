@@ -208,8 +208,24 @@ export function spawnInteractiveProcess(
     void (async () => {
       try {
         await ensureStarted()
-        const { stopReason, usage } = await session.tailTurn(userMsg, (raw) => {
-          lineEmitter.emit("line", raw)
+        const { stopReason, usage, lastCallUsage, callCount } =
+          await session.tailTurn(userMsg, (raw) => {
+            lineEmitter.emit("line", raw)
+          })
+        // The synthesized `result` below carries the TURN totals, as a
+        // headless one does, so `turnStats` matches the bill. The finish's
+        // own usage is narrowed to the last call's context by
+        // `lastCallContextUsage`, off the same `assistant` records the line
+        // handler already saw. Logged because the two differ on every
+        // multi-call turn and only the log says by how much.
+        log.info("interactive turn usage", {
+          apiCalls: callCount,
+          turnOutputTokens: usage?.output_tokens,
+          turnInputTokens: usage?.input_tokens,
+          turnCacheReadTokens: usage?.cache_read_input_tokens,
+          lastCallInputTokens: lastCallUsage?.input_tokens,
+          lastCallCacheReadTokens: lastCallUsage?.cache_read_input_tokens,
+          lastCallCacheWriteTokens: lastCallUsage?.cache_creation_input_tokens,
         })
         // Synthesize the `result` line the headless transport would have
         // emitted, so doStream's existing finish branch runs verbatim. A turn

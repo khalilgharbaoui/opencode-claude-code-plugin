@@ -206,6 +206,7 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 4. There is no `can_use_tool` channel, so permissions are pre-allowed via `--settings` (MCP wildcards from the live bridge config, built-ins from `interactiveAllowTools`). Do NOT pass `--permission-mode bypassPermissions`, whose confirmation defaults to "No, exit".
 5. The spawn must use the configured `cliPath` and the JSONL tail the same `configDir`, or opencode hangs while Claude writes transcripts elsewhere.
 6. The `Bun.Terminal` gate falls back to headless silently, compaction always takes the headless path, and `turnTimeoutMs` defaults to 30 min.
+7. **Usage is counted per API CALL, not per transcript record** (`TurnUsageAccumulator`). The JSONL writes one record per content block and every record of a call repeats that call's FINAL usage, so summing records doubled a turn (1,306 against a true 653, the truth from the CLI's own `cost-state`). This is the transcript's shape, NOT the stream's, where a frame's output is a placeholder and only the `result` is true: measure, never port one to the other. `tailTurn` and `ask` return the turn summed over distinct `message.id`s, which is exactly what a headless `result` carries, so the synthesized `result` needs **no second convention**: `turnStats` keeps the turn totals and matches the bill, and the finish narrows to the last call through `lastCallContextUsage` off the parser's own `lastCallUsage`. An all-zero `<synthetic>` record is not a call (it is how the CLI writes "Login expired" or a session limit into the transcript, with a terminal `stop_reason`), and the turn total carries no `iterations` while `lastCall` keeps its own. `test-interactive-usage.ts`. (h #g174)
 
 ### Diagnostics and CLI events
 
@@ -278,6 +279,7 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 - Config-path model metadata (`configModelsForProvider`), display names, limits and costs: `test-config-models.ts`.
 - The fallback model chain (`modelRefusalFromAssistant` and its twelve negative kinds, `modelRefusalFromResult`, `provesModelServing`, `resolveFallbackChain`'s precedence, `nextFallbackModel`, the note and its strip, plus a fake CLI that refuses the first model and serves the second through a real `doStream`): `test-model-fallback.ts`.
 - Interactive transport (`decodeUserEnvelope`, the `spawnInteractiveProcess` shim, `interactiveExtraArgs`): `test-claude-session-wrapper.ts`.
+- What the interactive transport counts (`TurnUsageAccumulator`, `isApiCallRecord`, and the real `tailTurn` driven over redacted transcripts in `test-fixtures/` with only the PTY stubbed): `test-interactive-usage.ts`.
 - Spawn-env API-key stripping and CLI hygiene vars (`claudeSpawnEnv`, `cliHygieneEnv`): `test-spawn-env.ts`.
 - Startup diagnostics (`collectStartupDiagnostics`, `describeSpawnCwd`, `detectOpencodeVersion`, `claudeCodeProviders`): `test-startup-diagnostics.ts`.
 - Per-turn cost/cache stats (`extractTurnStats`, `formatTurnStatsLine`, the default, the transcript strip): `test-turn-stats.ts`.
