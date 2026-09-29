@@ -457,10 +457,47 @@ Names below become `mcp__opencode_proxy__<name>`; input config is case-insensiti
 | `edit` | `"Edit"`, default; replaces CLI Edit. |
 | `write` | `"Write"`, default; replaces CLI Write. |
 | `webfetch` | `"WebFetch"`, default; replaces CLI WebFetch. |
-| `task` | `"Task"`, default; disables CLI Agent and dispatches opencode subagents under its permissions. No proxy deadline by default; a positive `proxyToolTimeoutMs` entry adds one. |
+| `task` | `"Task"`, default; disables CLI Agent and dispatches opencode subagents under its permissions. No proxy deadline by default; a positive `proxyToolTimeoutMs` entry adds one. Takes `background: true` only on a host that runs background subagents (see below). |
 | `task_batch` | Included with Task; one MCP call fans out two or more independent task inputs concurrently. Separate task calls were measured serial on CLI 2.1.258. |
+| `task_status` | Included with Task, and only on a host that runs background subagents. Reads a background subagent's state by `task_id` and collects its result. A recovery path for a completion notification that never arrived, not a progress poll; a result is handed over once. Answered in-process (opencode has no such tool) and refuses any session that is not this conversation's subagent. Not nameable in `proxyTools`. |
+| `task_cancel` | Included with Task, same host gate as `task_status`. Aborts a background subagent's child session; a cancelled subagent sends no completion notification. |
 | `question` | `"Question"`, opt-in; replaces AskUserQuestion only if the live opencode registry has question. Round-trip verified on plugin 0.18.0 / CLI 2.1.258 / opencode 1.18.29, headless and as a real TUI form, with no `permission` block; grant `permission.question` only if a subagent's form is refused. Opt-in because it disables Claude's own AskUserQuestion. |
 | `compress` | `"Compress"`, opt-in; in-process summary/reset interceptor, no opencode permission prompt and no built-in replacement. Discards prior CLI detail on a later eligible turn, retaining the summary, not the full transcript. Keep off unless explicitly requested. Reset round-trip verified live on CLI 2.1.263 / opencode 1.18.31. Not the same tool as a forwarded opencode `compress` (see `proxyOpencodeTools`): this one resets the Claude session, that one compresses opencode's transcript. Enabling both leaves this one holding the name. |
+
+### Background subagents (fire-and-collect)
+
+Off unless the **opencode process** has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`
+(or `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x; unconditional on
+opencode 2.x. It is opencode's feature, not this plugin's: the plugin only surfaces it.
+There is no provider option, and nothing in `opencode.json` can turn it on, because the
+flag is read by opencode itself at startup.
+
+```sh
+OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true opencode
+```
+
+With it set, `task` takes `background: true` and returns at once with
+`<task id="ses_..." state="running">` instead of the subagent's answer. The model keeps
+working and ends its turn; when the child finishes, opencode prompts the same
+conversation with `<task ... state="completed"><task_result>...</task_result></task>` as
+a new message. Delivery is automatic, so polling is wrong and the tool descriptions say
+so. `task_status` and `task_cancel` join the tool list, keyed on the `id` from that
+envelope (the child's opencode session id).
+
+Without it, opencode rejects a `background: true` call outright
+(`Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`), losing
+the dispatch, so the plugin strips `background` from the `task` and `task_batch` schemas
+on such a host and registers neither extra tool. Which way it went is in `plugin.log`:
+
+```
+background subagent gate {"supported":false,"registryResolved":true,"hostApi":"v1","note":"`background` stripped ..."}
+```
+
+Troubleshooting: `background` missing from the tool schema, or a refusal naming the env
+var, means the flag is not set on the opencode process (setting it in a shell after
+opencode started does nothing, and a plugin upgrade cannot change it). A `task_status`
+that answers `not a subagent of this conversation` means the id came from a different
+conversation.
 
 A proxied call is held open until an event ends it, and the plugin listens to the
 `claude` process, the stream and the control protocol for those events rather than

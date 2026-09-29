@@ -70,6 +70,26 @@ Subagent dispatch in this environment goes through exactly two tools: \`mcp__ope
 - Do not verify a subagent's existence by searching config files — the tool's description lists the available agent types, and invalid types fail fast with a clear error.`
 
 /**
+ * Appended to the system prompt only on a host that actually runs background
+ * subagents (`liveTaskSupportsBackground`). Same reasoning as
+ * `SUBAGENT_DISPATCH_HINT`: the tool description alone loses to Claude Code's
+ * own habits. Two failure modes this addresses, both of them things models do
+ * with an async dispatch they were not told the shape of: ending the turn
+ * while insisting the operator "let it run" (the notification is automatic, so
+ * ending the turn is correct and needs no ceremony), and polling the status
+ * tool in a loop, which spends a Claude turn per check and learns nothing a
+ * healthy task would not have delivered on its own.
+ */
+export const BACKGROUND_SUBAGENT_HINT = `## Background subagents
+
+This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` takes \`background: true\`.
+
+- A background dispatch returns at once with \`<task id="ses_..." state="running">\` instead of the subagent's answer. That is success, not a truncated result.
+- After starting one, keep working on something that does not overlap it, then end your turn normally. When the subagent finishes, opencode delivers its result into this conversation as a new message on its own. Do not sleep, poll, or ask the operator to wait.
+- The \`id\` in that envelope is the task_id. \`mcp__opencode_proxy__task_status\` reads a result back if the automatic delivery did not arrive (an interrupted or errored turn); \`mcp__opencode_proxy__task_cancel\` stops a background subagent you no longer want. Neither is a progress poll.
+- Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
+
+/**
  * Appended to the system prompt whenever the `question` proxy tool is
  * enabled. Live testing (2026-07-05, haiku) showed the model's reasoning
  * correctly identified `mcp__opencode_proxy__question` as the tool to use,

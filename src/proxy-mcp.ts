@@ -388,12 +388,31 @@ export const TASK_PROXY_NOTE =
   " (including user @-mentions). Claude Code's built-in TaskCreate/TaskUpdate" +
   " manage a local todo list and cannot dispatch subagents. Do not search" +
   " config files to verify a subagent type exists: invalid types fail fast" +
-  " with a clear error. Foreground calls block until the subagent finishes;" +
-  " set `background` to request opencode's background execution mode. For" +
+  " with a clear error. Calls block until the subagent finishes. For" +
   " two or more independent subagents in one response use task_batch, not" +
   " several task calls: those run one after another. Task calls have no" +
   " proxy deadline by default: the call waits for the subagent to finish" +
   " (a positive proxyToolTimeoutMs override adds a deadline)."
+
+/**
+ * Appended to `task` and `task_batch` only on a host that actually runs
+ * background subagents. Everything in it was measured on opencode 1.18.33
+ * (see `docs/agents-history.md` #g172): the immediate `state="running"`
+ * envelope, the child session id doubling as the `task_id`, and the result
+ * arriving later as its own turn rather than as this call's result. The
+ * "do not poll" line is opencode's own instruction, kept because the
+ * notification really is automatic and a polling loop spends Claude turns
+ * on nothing.
+ */
+export const TASK_BACKGROUND_NOTE =
+  "Fire-and-collect: set `background: true` and the call returns at once" +
+  ' with `<task id="ses_..." state="running">` instead of the subagent\'s' +
+  " answer. Keep working on something that does not overlap it, then end" +
+  " your turn: when the subagent finishes, opencode delivers its result to" +
+  " this conversation on its own as a new message. Do NOT poll, sleep or" +
+  " loop waiting for it. The `id` in that envelope is the task_id: pass it" +
+  " to task_status to read a result the notification did not deliver, or" +
+  " to task_cancel to stop a background subagent you no longer want."
 
 /**
  * `task_batch`: one MCP call that opencode runs as N parallel `task` calls.
@@ -603,6 +622,152 @@ export function overlayQuestionProxyDescription(
 }
 
 /**
+ * Whether the host will actually run a background subagent, read off the same
+ * single `client.tool.list()` fetch every other live gate uses.
+ *
+ * Measured, not assumed (`docs/agents-history.md` #g172). opencode 1.18.33
+ * defines its `task` tool with TWO schemas and publishes the gate in the one
+ * it advertises: `parameters: zs` (which has `background`) but
+ * `jsonSchema: n.experimentalBackgroundSubagents ? void 0 : tr.fromSchema(Ss)`
+ * (which does not). So the registry's `task.parameters.properties.background`
+ * is present exactly when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` (or the
+ * blanket `OPENCODE_EXPERIMENTAL`) is set, and `TaskTool.execute` fails a call
+ * that sets `background` on any other host with "Background subagents require
+ * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true". Both halves were confirmed
+ * live on 1.18.33.
+ *
+ * V2 is the exception and is answered without the registry: opencode 2.0.16's
+ * `subagent` tool carries `background` unconditionally (there is no
+ * `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` string in that binary at all),
+ * and the V1-shaped client shim reports `parameters: {}` for every V2 tool
+ * because V2 describes inputs with Effect schemas rather than JSON Schema.
+ * Reading the shim would say "unsupported" on the one host where it always is.
+ */
+export function liveTaskSupportsBackground(
+  taskParameters: Record<string, unknown> | undefined,
+  dialect: "v1" | "v2" = "v1",
+): boolean {
+  if (dialect === "v2") return true
+  const properties = taskParameters?.properties
+  if (!properties || typeof properties !== "object") return false
+  return "background" in (properties as Record<string, unknown>)
+}
+
+/**
+ * The two tools that make opencode's native background dispatch usable rather
+ * than merely available: read a result back, and stop a subagent.
+ *
+ * They are NOT in `DEFAULT_PROXY_TOOL_NAMES` and cannot be named in
+ * `proxyTools`. They ride with `task`, the way `task_batch` does, and only on
+ * a host that advertises background support, so an upgrade adds nothing to
+ * what the model can do or spend on a default install: there, the host has the
+ * flag off, `background` is stripped from the schema and neither tool is
+ * registered. An operator who has set the env var has already opted into
+ * background subagents, and a start with no cancel is the worse default.
+ */
+export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
+  {
+    name: "task_status",
+    description:
+      "Read the current state of a background subagent started with" +
+      " `task` and `background: true`, and collect its result if it has" +
+      " finished. Use this only to recover a result opencode's automatic" +
+      " completion notification did not deliver (the turn was interrupted," +
+      " errored, or was compacted across). It is NOT a progress poll: a" +
+      " healthy background task delivers its own result, so calling this in" +
+      " a loop spends turns and learns nothing. A result is handed over" +
+      " once; asking again reports the state without repeating the output.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            'The id from the `<task id="..." state="running">` envelope the' +
+            " background dispatch returned.",
+        },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "task_cancel",
+    description:
+      "Stop a background subagent started with `task` and" +
+      " `background: true`. Use it when the work is no longer wanted, has" +
+      " been superseded, or is running away. A cancelled subagent sends no" +
+      " completion notification. This cannot stop a foreground task call:" +
+      " those block this conversation and end on their own.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            'The id from the `<task id="..." state="running">` envelope the' +
+            " background dispatch returned.",
+        },
+      },
+      required: ["task_id"],
+    },
+  },
+]
+
+/**
+ * Make the proxy tool list match what the host can actually do with a
+ * background subagent.
+ *
+ * Supported: `task` and `task_batch` gain `TASK_BACKGROUND_NOTE`, and the
+ * collect/cancel pair joins the list.
+ *
+ * Unsupported: `background` is stripped from the `task` schema and from every
+ * `task_batch` item, because leaving it advertised is not harmless. Measured
+ * live on a default 1.18.33: the model set it, opencode rejected the call
+ * outright with `Background subagents require
+ * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, and the dispatch was lost.
+ * No-op when `task` is not among the tools.
+ */
+export function applyBackgroundSubagentSupport(
+  tools: ProxyToolDef[],
+  supported: boolean,
+): ProxyToolDef[] {
+  if (!tools.some((t) => t.name === "task")) return tools
+  const adjusted = tools.map((t) => {
+    if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
+    if (supported) {
+      return { ...t, description: `${t.description}\n\n${TASK_BACKGROUND_NOTE}` }
+    }
+    return { ...t, inputSchema: stripBackgroundFromSchema(t.name, t.inputSchema) }
+  })
+  return supported ? [...adjusted, ...BACKGROUND_TASK_TOOL_DEFS] : adjusted
+}
+
+/** `background` removed from a `task` schema, or from each `task_batch` item. */
+function stripBackgroundFromSchema(
+  toolName: string,
+  schema: ProxyToolDef["inputSchema"],
+): ProxyToolDef["inputSchema"] {
+  if (toolName === TASK_BATCH_TOOL_NAME) {
+    return {
+      ...schema,
+      properties: {
+        tasks: {
+          type: "array",
+          minItems: 2,
+          description: "Independent subagent tasks to run concurrently",
+          items: {
+            type: "object",
+            properties: TASK_INPUT_PROPERTIES_NO_BACKGROUND,
+            required: TASK_INPUT_REQUIRED,
+          },
+        },
+      },
+    }
+  }
+  return { ...schema, properties: TASK_INPUT_PROPERTIES_NO_BACKGROUND }
+}
+
+/**
  * Version gate for the `question` proxy. opencode added a built-in
  * `question` tool (registry id `question`) — on older builds that entry
  * is absent and a forwarded `mcp__opencode_proxy__question` call would
@@ -645,9 +810,17 @@ export const TASK_INPUT_PROPERTIES = {
   background: {
     type: "boolean",
     description:
-      "Run the task in the background when supported by opencode",
+      "Run the subagent in the background and return immediately with a" +
+      ' `<task id="..." state="running">` envelope instead of its answer.' +
+      " You are notified automatically when it completes. Do NOT sleep," +
+      " poll or proactively check on its progress.",
   },
 }
+
+/** Input fields of a `task` on a host that cannot run background subagents. */
+export const TASK_INPUT_PROPERTIES_NO_BACKGROUND = Object.fromEntries(
+  Object.entries(TASK_INPUT_PROPERTIES).filter(([name]) => name !== "background"),
+)
 
 export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
   {

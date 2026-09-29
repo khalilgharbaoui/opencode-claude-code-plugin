@@ -25,6 +25,16 @@ type OpencodeClient = {
     }) => Promise<{ data?: unknown; error?: unknown }>
     /** `GET /session/status`: sessions missing from the map are idle. */
     status?: () => Promise<{ data?: unknown; error?: unknown }>
+    /** `GET /session/{id}/message`: the child session's transcript. */
+    messages?: (options: {
+      path: { id: string }
+      query?: { directory?: string }
+    }) => Promise<{ data?: unknown; error?: unknown }>
+    /** `POST /session/{id}/abort`: stop whatever the session is running. */
+    abort?: (options: {
+      path: { id: string }
+      query?: { directory?: string }
+    }) => Promise<{ data?: unknown; error?: unknown }>
   }
 }
 
@@ -332,5 +342,102 @@ export async function fetchOpencodeToolList(
       error: err instanceof Error ? err.message : String(err),
     })
     return undefined
+  }
+}
+
+/**
+ * One assistant reply in an opencode session, flattened to what a background
+ * collect needs: whether it finished, whether it failed, and its text.
+ */
+export interface SessionReply {
+  role: string
+  completed: boolean
+  error: string | undefined
+  text: string
+}
+
+/**
+ * An opencode session's transcript via `GET /session/{id}/message`, flattened.
+ * Returns `undefined` on any failure (no client, missing route, rejected call,
+ * malformed response) so every caller keeps its no-client path. Deliberately
+ * keeps only role, completion, error and text: a background collect reports a
+ * subagent's answer, never its tool inputs, which can be whole files.
+ */
+export async function fetchSessionReplies(
+  sessionID: string,
+): Promise<SessionReply[] | undefined> {
+  if (!sessionID || sessionID === "default") return undefined
+  const client = opencodeClient
+  if (!client?.session?.messages) return undefined
+  try {
+    const res = await client.session.messages({ path: { id: sessionID } })
+    const data = (res as { data?: unknown }).data
+    if (!Array.isArray(data)) return undefined
+    const out: SessionReply[] = []
+    for (const entry of data as unknown[]) {
+      if (!entry || typeof entry !== "object") continue
+      const info = (entry as { info?: unknown }).info
+      if (!info || typeof info !== "object") continue
+      const record = info as {
+        role?: unknown
+        time?: { completed?: unknown }
+        error?: { name?: unknown; data?: { message?: unknown } }
+      }
+      const parts = (entry as { parts?: unknown }).parts
+      const text = Array.isArray(parts)
+        ? (parts as unknown[])
+            .flatMap((part) => {
+              if (!part || typeof part !== "object") return []
+              const p = part as { type?: unknown; text?: unknown; synthetic?: unknown }
+              if (p.type !== "text" || typeof p.text !== "string") return []
+              return p.synthetic === true ? [] : [p.text]
+            })
+            .join("\n")
+            .trim()
+        : ""
+      const error = record.error
+      const message =
+        error && typeof error === "object"
+          ? typeof error.data?.message === "string"
+            ? error.data.message
+            : typeof error.name === "string"
+              ? error.name
+              : undefined
+          : undefined
+      out.push({
+        role: typeof record.role === "string" ? record.role : "",
+        completed: typeof record.time?.completed === "number",
+        error: message,
+        text,
+      })
+    }
+    return out
+  } catch (err) {
+    log.warn("failed to fetch opencode session messages", {
+      sessionID,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return undefined
+  }
+}
+
+/**
+ * Stop whatever an opencode session is running, via `POST /session/{id}/abort`.
+ * Returns false when there is no client, the route is missing, or the call
+ * threw: a cancel that did not happen must never read as one that did.
+ */
+export async function abortSession(sessionID: string): Promise<boolean> {
+  if (!sessionID || sessionID === "default") return false
+  const client = opencodeClient
+  if (!client?.session?.abort) return false
+  try {
+    await client.session.abort({ path: { id: sessionID } })
+    return true
+  } catch (err) {
+    log.warn("failed to abort opencode session", {
+      sessionID,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return false
   }
 }

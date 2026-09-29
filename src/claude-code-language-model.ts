@@ -112,6 +112,8 @@ import {
   overlayTaskProxyDescription,
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
+  applyBackgroundSubagentSupport,
+  liveTaskSupportsBackground,
   setProxyDeadlineGuard,
   type McpProxyToolResolution,
   type ModelToolEntry,
@@ -134,6 +136,7 @@ import {
   extractSystemMessages,
   QUESTION_PROXY_HINT,
   SUBAGENT_DISPATCH_HINT,
+  BACKGROUND_SUBAGENT_HINT,
 } from "./prompts.js"
 import {
   autoContinueEnabledFor,
@@ -198,6 +201,7 @@ export {
   buildAppendedSystemPrompt,
   QUESTION_PROXY_HINT,
   SUBAGENT_DISPATCH_HINT,
+  BACKGROUND_SUBAGENT_HINT,
 } from "./prompts.js"
 export type { AppendedSystemPromptOptions } from "./prompts.js"
 export {
@@ -385,12 +389,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
     interceptCompress: boolean,
+    callerSessionId?: string,
   ): Promise<ProxyMcpServer> {
     return ensureProxyServer(
       this.config,
       tools,
       sessionKeyForCalls,
       interceptCompress,
+      callerSessionId,
     )
   }
 
@@ -1525,10 +1531,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 : {
                     resolved: false,
                     taskDescription: undefined,
+                    taskParameters: undefined,
                     questionDescription: undefined,
                     hasQuestion: false,
                   }
             let enrichedProxy = resolvedProxy
+            let backgroundSubagentsSupported = false
             if (enrichedProxy && taskProxyEnabled) {
               enrichedProxy = overlayTaskProxyDescription(
                 enrichedProxy,
@@ -1545,6 +1553,30 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     "Available agent types",
                   ),
                 ),
+              })
+              // Background dispatch is the host's to allow, and both answers
+              // change the tool surface: supported adds the collect/cancel
+              // pair and the note, unsupported strips `background` from the
+              // schema so the model cannot burn a call on opencode's hard
+              // refusal. Spawn-time only, like every other overlay here.
+              backgroundSubagentsSupported = liveTaskSupportsBackground(
+                liveToolInfo.taskParameters,
+                self.config.hostApi === "v2" ? "v2" : "v1",
+              )
+              enrichedProxy = applyBackgroundSubagentSupport(
+                enrichedProxy,
+                backgroundSubagentsSupported,
+              )
+              // Say which way it went: with the gate closed the model simply
+              // never sees the field, which from the outside is
+              // indistinguishable from the plugin ignoring the feature.
+              log.info("background subagent gate", {
+                supported: backgroundSubagentsSupported,
+                registryResolved: liveToolInfo.resolved,
+                hostApi: self.config.hostApi ?? "v1",
+                note: backgroundSubagentsSupported
+                  ? "task accepts `background`; task_status and task_cancel are registered"
+                  : "`background` stripped from the task schema; set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in opencode's environment to enable it",
               })
             }
             if (enrichedProxy && questionProxyEnabled) {
@@ -1615,6 +1647,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 combinedProxyTools,
                 sk,
                 pluginCompressEnabled,
+                affinity,
               )
             }
 
@@ -1654,6 +1687,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   [
                     ...extractSystemMessages(options.prompt),
                     ...(taskProxyEnabled ? [SUBAGENT_DISPATCH_HINT] : []),
+                    ...(backgroundSubagentsSupported
+                      ? [BACKGROUND_SUBAGENT_HINT]
+                      : []),
                     ...(questionProxyActive ? [QUESTION_PROXY_HINT] : []),
                   ],
                   {

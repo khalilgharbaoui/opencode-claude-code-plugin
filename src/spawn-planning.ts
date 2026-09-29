@@ -21,6 +21,12 @@ import {
 } from "./runtime-status.js"
 import { storeCompressionSummary } from "./compression-store.js"
 import {
+  cancelBackgroundTask,
+  collectBackgroundTask,
+  TASK_CANCEL_TOOL_NAME,
+  TASK_STATUS_TOOL_NAME,
+} from "./background-tasks.js"
+import {
   createProxyMcpServer,
   resolveMcpProxyToolDefs,
   DEFAULT_PROXY_TOOLS,
@@ -40,6 +46,12 @@ export interface LiveToolInfo {
   /** False when nothing answered (no SDK client, fetch failed). */
   resolved: boolean
   taskDescription: string | undefined
+  /**
+   * opencode's JSON Schema for its own `task` tool. The background gate reads
+   * it (`liveTaskSupportsBackground`): the presence of a `background` property
+   * is how a 1.x host publishes whether it will run one.
+   */
+  taskParameters: Record<string, unknown> | undefined
   questionDescription: string | undefined
   hasQuestion: boolean
   /**
@@ -221,9 +233,11 @@ export async function fetchLiveToolInfo(
     config.cwd,
   )
   const question = items?.find((item) => item.id === "question")
+  const task = items?.find((item) => item.id === "task")
   return {
     resolved: items !== undefined,
-    taskDescription: items?.find((item) => item.id === "task")?.description,
+    taskDescription: task?.description,
+    taskParameters: task?.parameters,
     questionDescription: question?.description,
     hasQuestion: !!question,
     items,
@@ -324,9 +338,22 @@ export async function ensureProxyServer(
   // never see the call: the same name, the wrong tool, silently. The
   // caller knows which list the def came from, so it decides.
   interceptCompress: boolean,
+  // The opencode session this Claude conversation serves, so a background
+  // collect or cancel can refuse a task that is not this conversation's.
+  // Undefined outside a real opencode turn (direct AI-SDK use, tests).
+  callerSessionId?: string,
 ): Promise<ProxyMcpServer> {
   const timeoutOverrides = config.proxyToolTimeoutMs
   const interceptors = new Map<string, ProxyToolInterceptor>()
+  // Background collect/cancel act on opencode's session state, not on the
+  // workspace, and opencode has no tools of these names to execute, so they
+  // are answered in-process like `compress` rather than queued for the host.
+  // Registered only when the def survived the capability gate.
+  if (tools.some((t) => t.name === TASK_STATUS_TOOL_NAME)) {
+    const opts = { sessionKey: sessionKeyForCalls, callerSessionId }
+    interceptors.set(TASK_STATUS_TOOL_NAME, (input) => collectBackgroundTask(input, opts))
+    interceptors.set(TASK_CANCEL_TOOL_NAME, (input) => cancelBackgroundTask(input, opts))
+  }
   if (interceptCompress && tools.some((t) => t.name === "compress")) {
     interceptors.set("compress", (input) => {
       const summary = typeof input.summary === "string" ? input.summary.trim() : ""

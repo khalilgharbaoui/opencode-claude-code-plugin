@@ -596,7 +596,7 @@ By default, the plugin proxies `Bash`, `Edit`, `Write`, `WebFetch`, and `Task`. 
 | `"Edit"` | `Edit`, `MultiEdit` | `mcp__opencode_proxy__edit` |
 | `"Write"` | `Write` | `mcp__opencode_proxy__write` |
 | `"WebFetch"` | `WebFetch` | `mcp__opencode_proxy__webfetch` |
-| `"Task"` | `Agent` | `mcp__opencode_proxy__task`, `mcp__opencode_proxy__task_batch` |
+| `"Task"` | `Agent` | `mcp__opencode_proxy__task`, `mcp__opencode_proxy__task_batch`, and on a host that runs background subagents `mcp__opencode_proxy__task_status`, `mcp__opencode_proxy__task_cancel` |
 | `"Question"` | `AskUserQuestion` | `mcp__opencode_proxy__question` |
 | `"Compress"` | none | `mcp__opencode_proxy__compress` |
 
@@ -607,7 +607,7 @@ By default, the plugin proxies `Bash`, `Edit`, `Write`, `WebFetch`, and `Task`. 
 - **Permissions:** the calling agent's `permission.task` rule applies to the target `subagent_type`. Grant `task: "allow"` on agents that should delegate without a prompt; an `ask` or `deny` rule remains authoritative. The plugin never bypasses this decision.
 - **Resume:** pass the child session ID back as `task_id` to continue that subagent session. Omit it to create a fresh child.
 - **Nested tasks:** current opencode defaults `subagent_depth` to `1`, so a first-level child cannot launch another child. Increase top-level `subagent_depth` to permit deeper nesting, and explicitly grant `permission.task` on every subagent that should delegate; opencode otherwise adds a task deny to spawned subagent sessions.
-- **Background:** `background: true` returns after starting the child and lets opencode notify the parent when it finishes. Current opencode requires `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in the environment of the opencode process. Foreground is the default.
+- **Background:** see [Background subagents](#background-subagents) below. Foreground is the default.
 - **Several at once:** `mcp__opencode_proxy__task_batch` takes a `tasks` array of ordinary task inputs and runs them concurrently. It exists because Claude Code sends MCP requests one at a time: when the model emits two `task` calls in one response, the second only leaves the CLI after the first has returned (measured live, 2026-09-06), so "launch two subagents" was always serial. The plugin turns one `task_batch` call into N opencode `task` calls inside a single tool boundary, which opencode executes in parallel, then hands the model every result together, labelled in task order. Same permissions, same no-deadline default, same `subagent_type` list. Enabled whenever `Task` is proxied. Designed and first implemented by [@broskees](https://github.com/broskees) on his fork.
 
 **Steering models to it.** Headless Claude Code CLIs expose no `Agent`/`Task`
@@ -623,6 +623,42 @@ appends a system-prompt note naming
 recovery step for harnesses that defer MCP tool schemas. Both apply per Claude
 process at spawn, and provider options are read once at opencode startup, so
 `proxyTools` changes need a full opencode restart.
+
+### Background subagents
+
+A foreground `task` call blocks the conversation until the subagent finishes, and so does `task_batch`. Background dispatch is the other shape: start a subagent, keep working, collect the result later. opencode owns it, this plugin surfaces it, and it is **off unless the opencode process has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`** (or the blanket `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x. On opencode 2.x it is unconditional.
+
+```sh
+OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true opencode
+```
+
+With it set, `mcp__opencode_proxy__task` takes `background: true` and the call comes straight back:
+
+```xml
+<task id="ses_f10789724ffes9OfQApCB04IRe" state="running">
+<summary>Background task started</summary>
+<task_result>
+The task is working in the background. You will be notified automatically when it finishes.
+</task_result>
+</task>
+```
+
+Claude keeps working. When the subagent finishes, opencode prompts the same conversation with the result as a new message, so it arrives as its own turn rather than as that call's result. Measured end to end on opencode 1.18.33 with claude-haiku-4-5: the dispatch returned in 14 s while the child's 30-second command was still running, Claude ran another tool and ended its turn 18 s in, and the `<task ... state="completed">` message landed 43 s later. That notification is automatic, so the right thing after a background dispatch is to end the turn, not to wait or poll.
+
+**The gate is enforced at the schema, not at the call.** On a host without the flag opencode rejects `background: true` outright with `Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, which costs a whole dispatch. So the plugin reads the host's own `task` schema (the same registry fetch that supplies the agent-type list) and, when it has no `background` property, strips the field before Claude ever sees it. Nothing about a default install changes: the model is shown exactly `description`, `prompt`, `subagent_type`, `task_id`, `command`. Either way `plugin.log` says which:
+
+```
+background subagent gate {"supported":true,"registryResolved":true,"hostApi":"v1", ...}
+```
+
+**Collect and cancel.** opencode delivers a background result by pushing it into the conversation and offers nothing else: no route reads a result back, and nothing stops a background child. A notification that never lands (an interrupted turn, an errored turn, a compaction across it) would lose the work, and a subagent running away could only be stopped from another pane. So on a host that runs background subagents, and only there, two more proxy tools ride along with `Task` in the same way `task_batch` does:
+
+| Tool | What it does |
+| --- | --- |
+| `mcp__opencode_proxy__task_status` | Reads the state of a background subagent by its `task_id` and returns its result if it has finished. A recovery path, not a progress poll: a healthy background task delivers its own result. A result is handed over once, so asking again reports the state without repeating the output. |
+| `mcp__opencode_proxy__task_cancel` | Stops a background subagent. A cancelled subagent sends no completion notification. |
+
+The `task_id` is the `id` in the `<task …>` envelope, which is the child's own opencode session id. Both tools are answered inside the plugin rather than executed by opencode, because opencode has no tools of these names, and both refuse any session whose parent is not the conversation doing the asking. Neither can be named in `proxyTools`: they appear only when the host advertises background support, so upgrading changes nothing about what the model can do or spend on a default install.
 
 ### Proxy endpoint security
 

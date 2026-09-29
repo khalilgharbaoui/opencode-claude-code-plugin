@@ -15,6 +15,7 @@ import { clearLedger } from "./todo-ledger.js"
 import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mode-question.js"
 import { clearAccountFailoverQuestions } from "./account-failover.js"
 import { clearCompression } from "./compression-store.js"
+import { clearBackgroundTasks } from "./background-tasks.js"
 import {
   cliHygieneEnv,
   cliSupportsFastMode,
@@ -539,6 +540,9 @@ export function deleteActiveProcessesForSession(sessionID: string): string[] {
     clearCompression(key)
     if (!released.includes(key)) released.push(key)
   }
+  // Every key this call released, whether it had a live process or only a
+  // remembered session id: a deleted opencode session must leave no ledger.
+  for (const key of released) clearBackgroundTasks(key)
   return released
 }
 
@@ -551,6 +555,11 @@ export function deleteActiveProcessesForSession(sessionID: string): string[] {
 export function killAllActiveProcesses(): string[] {
   const keys = [...activeProcesses.keys()]
   for (const key of keys) deleteActiveProcess(key)
+  // The background-task ledgers are plain in-process maps, so the exit hook
+  // is where they go. The child opencode sessions themselves are not touched:
+  // a background subagent outliving a `claude` process is opencode's design,
+  // and opencode owns reaping them.
+  for (const key of keys) clearBackgroundTasks(key)
   return keys
 }
 
@@ -727,6 +736,7 @@ export function invalidateOtherEffortSessions(
     deleteActiveProcess(key)
     deleteClaudeSessionId(key)
     clearCompression(key)
+    clearBackgroundTasks(key)
   }
 }
 
