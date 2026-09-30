@@ -55,7 +55,12 @@ export function encodeCwd(cwd: string): string {
 export interface TurnResult {
   text: string
   stopReason: string | null
+  /** The turn summed over DISTINCT API calls, shaped like a headless
+   *  `result` frame's usage. The flat counters below are the same totals. */
   usage: any | null
+  /** The newest real call's usage: the conversation's context occupancy,
+   *  which is NOT the turn sum on a multi-call turn. */
+  lastCallUsage: any | null
   cacheReadTokens: number
   cacheCreationTokens: number
   ephemeral1hTokens: number
@@ -131,6 +136,117 @@ export function interactiveSpawnEnv(opts: {
       ? { ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined }
       : {}),
     ...(opts.effort ? { CLAUDE_CODE_EFFORT_LEVEL: opts.effort } : {}),
+  }
+}
+
+function usageInputSide(usage: any): number {
+  return (
+    (usage?.input_tokens ?? 0) +
+    (usage?.cache_read_input_tokens ?? 0) +
+    (usage?.cache_creation_input_tokens ?? 0)
+  )
+}
+
+/**
+ * A transcript record that represents a real API call this turn made.
+ *
+ * An all-zero record is not one, and that is not a hypothetical:
+ * `model: "<synthetic>"` with every counter at 0 is how the CLI writes
+ * "Login expired", an unavailable model and a session limit INTO the
+ * transcript, carrying a terminal `stop_reason` as it goes. The guard is the
+ * same one `stream-parser.ts` applies to `assistant` frames when it builds
+ * `lastCallUsage`, so the two agree about what a call is.
+ */
+export function isApiCallRecord(rec: any): boolean {
+  if (!rec || rec.type !== "assistant" || !rec.message) return false
+  return usageInputSide(rec.message.usage) > 0
+}
+
+/**
+ * Per-API-call usage aggregation over session-transcript records.
+ *
+ * The JSONL writes ONE record per content block, so a single API call appears
+ * two or three times (thinking, text, tool_use), each record repeating that
+ * call's FINAL usage verbatim. Measured on Claude Code 2.1.280 (2026-09-30):
+ * over 240,000 records on this machine no two records of one `message.id`
+ * ever disagreed, and summing `output_tokens` per RECORD instead of per CALL
+ * doubled the turn (1,306 against a true 653 on a four-tool interactive turn,
+ * the 653 confirmed by the CLI's own `cost-state` record). So count a call
+ * once, keyed by `message.id`.
+ *
+ * This is the transcript's own shape, NOT the headless stream's: there a
+ * call's frames carry a streaming placeholder (8, 3, 1, 1, 1 for calls whose
+ * real output was 180, 93, 95, 92, 30) and only the `result` frame has the
+ * truth. The transcript records are written after the call completes, so each
+ * one already holds the final count. Measure a path, never port one to it.
+ */
+export class TurnUsageAccumulator {
+  private readonly calls = new Map<string, any>()
+  private lastKey: string | null = null
+
+  /** Feed every transcript record of the turn, in file order. */
+  add(rec: any): void {
+    if (!isApiCallRecord(rec)) return
+    const id = rec.message.id
+    // Records of one call repeat identical usage, so the newest wins and the
+    // first would do just as well. A record with no id cannot be collapsed
+    // with anything, so it keys on its own uuid rather than on "".
+    const key =
+      typeof id === "string" && id.length > 0
+        ? id
+        : `uuid:${rec.uuid ?? this.calls.size}`
+    this.calls.set(key, rec.message.usage)
+    this.lastKey = key
+  }
+
+  /** Distinct API calls seen, for diagnostics. */
+  get callCount(): number {
+    return this.calls.size
+  }
+
+  /**
+   * The newest real call's usage, verbatim (its own `iterations` included):
+   * the conversation's context occupancy, which is what a finish must report.
+   * See `lastCallContextUsage` in `usage.ts`, the one convention for this.
+   */
+  get lastCall(): any | null {
+    return this.lastKey === null ? null : (this.calls.get(this.lastKey) ?? null)
+  }
+
+  /**
+   * The turn summed over DISTINCT calls: the shape and the meaning of a
+   * headless `result` frame's usage, which is what `total_cost_usd` and
+   * `turnStats` are about. Deliberately carries no `iterations`: that is one
+   * response's server-side field and a sum of calls has no such list, so
+   * `toUsage` falls back to these flat counters, while `lastCall` keeps its
+   * own for `lastCallContextUsage` to read.
+   */
+  get turnTotal(): any | null {
+    if (this.calls.size === 0) return null
+    const total: any = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_creation: {
+        ephemeral_1h_input_tokens: 0,
+        ephemeral_5m_input_tokens: 0,
+      },
+      output_tokens_details: { thinking_tokens: 0 },
+    }
+    for (const u of this.calls.values()) {
+      total.input_tokens += u.input_tokens ?? 0
+      total.output_tokens += u.output_tokens ?? 0
+      total.cache_read_input_tokens += u.cache_read_input_tokens ?? 0
+      total.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0
+      total.cache_creation.ephemeral_1h_input_tokens +=
+        u.cache_creation?.ephemeral_1h_input_tokens ?? 0
+      total.cache_creation.ephemeral_5m_input_tokens +=
+        u.cache_creation?.ephemeral_5m_input_tokens ?? 0
+      total.output_tokens_details.thinking_tokens +=
+        u.output_tokens_details?.thinking_tokens ?? 0
+    }
+    return total
   }
 }
 
@@ -375,7 +491,7 @@ export class ClaudeSession {
     await this.submitTurn()
 
     const collected: string[] = []
-    let lastUsage: any = null
+    const usage = new TurnUsageAccumulator()
     let stopReason: string | null = null
     const deadline = Date.now() + timeout
 
@@ -401,11 +517,13 @@ export class ClaudeSession {
           continue
         }
         if (rec.type === "assistant" && rec.message) {
+          // Each record carries DIFFERENT content blocks of the same call, so
+          // text is collected per record while usage is counted per call.
           for (const b of rec.message.content ?? []) {
             if (b?.type === "text" && typeof b.text === "string")
               collected.push(b.text)
           }
-          if (rec.message.usage) lastUsage = rec.message.usage
+          usage.add(rec)
           if (
             rec.message.stop_reason &&
             TERMINAL_STOP.has(rec.message.stop_reason)
@@ -426,11 +544,13 @@ export class ClaudeSession {
       )
     }
 
-    const u = lastUsage ?? {}
+    const turnTotal = usage.turnTotal
+    const u = turnTotal ?? {}
     return {
       text: collected.join("\n").trim(),
       stopReason,
-      usage: lastUsage,
+      usage: turnTotal,
+      lastCallUsage: usage.lastCall,
       cacheReadTokens: u.cache_read_input_tokens ?? 0,
       cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
       ephemeral1hTokens: u.cache_creation?.ephemeral_1h_input_tokens ?? 0,
@@ -444,15 +564,26 @@ export class ClaudeSession {
   /**
    * Like ask(), but instead of collecting the reply text it re-emits each NEW
    * raw JSONL transcript line via onLine (verbatim) until a terminal
-   * stop_reason. Returns the terminal stop_reason + the last assistant usage.
-   * Used by the opencode plugin transport shim, which feeds these raw lines
-   * into the existing stream-json line handler unchanged.
+   * stop_reason. Used by the opencode plugin transport shim, which feeds
+   * these raw lines into the existing stream-json line handler unchanged.
+   *
+   * `usage` is the turn summed over DISTINCT API calls, which is exactly what
+   * a headless `result` frame reports, so the shim can synthesize one and
+   * every downstream consumer (the finish's `lastCallContextUsage`,
+   * `turnStats`) behaves as it does on the headless path. `lastCallUsage` is
+   * the newest real call, returned because a caller with no stream parser
+   * (`askOnce`) has no other way to get the context side.
    */
   async tailTurn(
     prompt: string,
     onLine: (rawLine: string) => void,
     perTurnTimeoutMs?: number
-  ): Promise<{ stopReason: string | null; usage: any | null }> {
+  ): Promise<{
+    stopReason: string | null
+    usage: any | null
+    lastCallUsage: any | null
+    callCount: number
+  }> {
     if (this.aborted) throw new Error("aborted")
     if (!this.proc || this.exited)
       throw new Error("session not started or already exited")
@@ -465,8 +596,7 @@ export class ClaudeSession {
     }
     await this.submitTurn()
 
-    let lastUsage: any = null
-    let totalOutput = 0
+    const usage = new TurnUsageAccumulator()
     let stopReason: string | null = null
     const deadline = Date.now() + timeout
 
@@ -493,11 +623,8 @@ export class ClaudeSession {
         } catch {
           continue
         }
+        usage.add(rec)
         if (rec.type === "assistant" && rec.message) {
-          if (rec.message.usage) {
-            lastUsage = rec.message.usage
-            totalOutput += rec.message.usage.output_tokens ?? 0
-          }
           if (
             rec.message.stop_reason &&
             TERMINAL_STOP.has(rec.message.stop_reason)
@@ -510,22 +637,6 @@ export class ClaudeSession {
       if (stopReason) break
     }
 
-    // Context (input/cache) = the LAST record's full conversation state; output
-    // = SUM across all assistant records this turn (each generation), else
-    // multi-record tool turns undercount output. toUsage() prefers
-    // iterations[last], so patch that entry's output too.
-    let usage: any = lastUsage
-    if (lastUsage) {
-      usage = { ...lastUsage, output_tokens: totalOutput }
-      if (Array.isArray(lastUsage.iterations) && lastUsage.iterations.length > 0) {
-        const iters = lastUsage.iterations.map((it: any) => ({ ...it }))
-        iters[iters.length - 1] = {
-          ...iters[iters.length - 1],
-          output_tokens: totalOutput,
-        }
-        usage.iterations = iters
-      }
-    }
     if (!stopReason) {
       throw new Error(
         this.failureMessage(
@@ -534,7 +645,12 @@ export class ClaudeSession {
       )
     }
 
-    return { stopReason, usage }
+    return {
+      stopReason,
+      usage: usage.turnTotal,
+      lastCallUsage: usage.lastCall,
+      callCount: usage.callCount,
+    }
   }
 
   dispose(): void {

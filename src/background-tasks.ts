@@ -123,16 +123,23 @@ const MISSING_TASK_ID =
   " background dispatch returned."
 
 /**
- * Whether this conversation is allowed to touch that session. `undefined` for
- * the calling session means the turn never learned its opencode id (direct
- * AI-SDK use, tests), in which case the guard cannot be evaluated and is
- * skipped; every real opencode turn carries one.
+ * Whether this conversation is allowed to touch that session. It fails
+ * CLOSED: when the turn never learned its opencode id (`undefined`, or the
+ * `"default"` affinity bucket, as in direct AI-SDK use), the parent cannot be
+ * checked, and letting the call through would let the model inspect or abort
+ * any session id it names. A background task only exists under a real
+ * opencode session, so refusing there costs nothing.
  */
 async function guardParent(
   taskId: string,
   callerSessionId: string | undefined,
 ): Promise<string | null> {
-  if (!callerSessionId || callerSessionId === "default") return null
+  if (!callerSessionId || callerSessionId === "default") {
+    return (
+      `Cannot check that task_id ${taskId} belongs to this conversation (this` +
+      " turn has no opencode session id), so it is not inspected or cancelled."
+    )
+  }
   const parent = await fetchSessionParentId(taskId)
   if (parent === callerSessionId) return null
   return (

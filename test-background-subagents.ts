@@ -308,6 +308,32 @@ test("a cancel opencode refused never reads as one that happened", async () => {
   assert.match((result as { message: string }).message, /Could not cancel/)
 })
 
+// A turn that does not know its own opencode session cannot check the parent,
+// so the guard fails closed: otherwise the model could abort any session id.
+test("with no caller session id neither tool reads or aborts anything", async () => {
+  for (const callerSessionId of [undefined, "default"]) {
+    _resetBackgroundTasks()
+    const { client, calls } = fakeClient({
+      parentID: PARENT,
+      status: {},
+      messages: [assistantMessage("secret")],
+    })
+    setOpencodeClient(client)
+    const options = { sessionKey: "k", callerSessionId }
+
+    const collected = await collectBackgroundTask({ task_id: CHILD }, options)
+    assert.equal(collected.kind, "error", String(callerSessionId))
+    assert.match((collected as { message: string }).message, /Cannot check that task_id/)
+    const cancelled = await cancelBackgroundTask({ task_id: CHILD }, options)
+    assert.equal(cancelled.kind, "error", String(callerSessionId))
+    assert.equal(
+      calls.some((c) => c.startsWith("messages:") || c.startsWith("abort:")),
+      false,
+      "refused before reading or aborting anything",
+    )
+  }
+})
+
 // Without this guard any session id the model could name would read back
 // another conversation's transcript.
 test("neither tool touches a session that is not this conversation's subagent", async () => {
