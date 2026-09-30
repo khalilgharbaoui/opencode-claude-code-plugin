@@ -84,15 +84,19 @@ test("decodeUserEnvelope passes non-user JSON through verbatim", () => {
 
 // ---------------------------------------------------------------------------
 // encodeCwd — transcript dir name: every non-alphanumeric char becomes "-".
+// Symlink resolution (the other half of the rule) lives in
+// test-interactive-result.ts, which needs real directories on disk.
 // ---------------------------------------------------------------------------
 
 test("encodeCwd replaces every non-alphanumeric char with a dash", () => {
-  // Use a relative-free absolute path so path.resolve is a no-op on POSIX.
+  // These paths do not exist, so there is nothing to realpath and the
+  // character rule is what is under test. Absolute, so path.resolve is a
+  // no-op on POSIX.
   if (process.platform === "win32") {
     assert.equal(encodeCwd("C:\\dev\\My Project"), "C--dev-My-Project")
   } else {
-    assert.equal(encodeCwd("/Users/me/my-app"), "-Users-me-my-app")
-    assert.equal(encodeCwd("/tmp/My Project"), "-tmp-My-Project")
+    assert.equal(encodeCwd("/Users/me/does-not-exist-my-app"), "-Users-me-does-not-exist-my-app")
+    assert.equal(encodeCwd("/tmp/does-not-exist/My Project"), "-tmp-does-not-exist-My-Project")
   }
 })
 
