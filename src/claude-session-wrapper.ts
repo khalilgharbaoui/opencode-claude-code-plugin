@@ -183,21 +183,44 @@ export function spawnInteractiveProcess(
     return startPromise
   }
 
-  const emitResult = (
-    subtype: string,
-    isError: boolean,
-    result?: string,
-    usage?: unknown,
-  ): void => {
+  /**
+   * Synthesize the terminal `result` frame in the shape a headless turn emits.
+   *
+   * Measured verbatim on Claude Code 2.1.280 (`claude -p ... --output-format
+   * stream-json --verbose`), both for a clean reply and for a turn the CLI
+   * failed on its own max-output-tokens guard:
+   *
+   *   clean:  "stop_reason":"end_turn",    ... "terminal_reason":"completed",
+   *           "is_error":false, "subtype":"success"
+   *   failed: "stop_reason":"stop_sequence", ... "terminal_reason":"api_error",
+   *           "is_error":true,  "subtype":"success"
+   *
+   * So the CLI NEVER encodes a stop reason in `subtype`: `subtype` stayed
+   * `success` even on the failing turn, and the stop reason rides in a
+   * TOP-LEVEL `stop_reason` field. Putting the stop reason in `subtype` (which
+   * is what this did) made every completed interactive turn trip
+   * `describeResultFailure` (h #g113), so it finished as
+   * `{unified:"error"}` and `turnStats` was suppressed (h #g109).
+   */
+  const emitResult = (opts: {
+    subtype: string
+    isError: boolean
+    stopReason: string | null
+    terminalReason: string
+    result?: string
+    usage?: unknown
+  }): void => {
     lineEmitter.emit(
       "line",
       JSON.stringify({
         type: "result",
-        subtype,
-        is_error: isError,
-        result,
+        subtype: opts.subtype,
+        is_error: opts.isError,
+        stop_reason: opts.stopReason,
+        terminal_reason: opts.terminalReason,
+        result: opts.result,
         session_id: session.sessionId,
-        usage: usage ?? {},
+        usage: opts.usage ?? {},
         total_cost_usd: null,
         duration_ms: 0,
       }),
@@ -229,26 +252,40 @@ export function spawnInteractiveProcess(
         })
         // Synthesize the `result` line the headless transport would have
         // emitted, so doStream's existing finish branch runs verbatim. A turn
-        // with no terminal stop_reason (timeout / session exit mid-turn) is
-        // reported HONESTLY as an error result — not a clean end_turn — so
-        // truncation is visible to the user and to auto-continue.
+        // with no terminal stop_reason (turn timeout / session exit mid-turn)
+        // is still reported HONESTLY as an error result, so truncation stays
+        // visible to the user and to auto-continue.
+        //
+        // `max_tokens` is deliberately NOT an error here. It is a terminal
+        // stop_reason, so the turn did complete an API call and did bill, and
+        // the headless CLI reports the same situation with `is_error:false`.
+        // Marking it an error would suppress `turnStats` on a turn that cost
+        // money, and would skip the auto-continue nudge that is the one
+        // handling truncation deserves: `shouldDeferResult` in the stream
+        // parser requires `!msg.is_error`, and `isTruncationStopReason`
+        // (h #g104) reads the assistant record's own `stop_reason`, which
+        // `tailTurn` already forwards verbatim.
         const timedOut = !stopReason
-        emitResult(
-          timedOut ? "error_during_execution" : stopReason,
-          timedOut,
-          timedOut
+        emitResult({
+          subtype: timedOut ? "error_during_execution" : "success",
+          isError: timedOut,
+          stopReason: timedOut ? null : stopReason,
+          terminalReason: timedOut ? "error_during_execution" : "completed",
+          result: timedOut
             ? "Interactive transport: the turn ended without a terminal stop_reason (turn timeout or claude exit). Output above may be incomplete."
             : undefined,
           usage,
-        )
+        })
       } catch (err) {
         const e = err instanceof Error ? err : new Error(String(err))
         log.error("interactive turn failed", { error: e.message })
-        emitResult(
-          "error_during_execution",
-          true,
-          `Interactive transport failed: ${e.message}`,
-        )
+        emitResult({
+          subtype: "error_during_execution",
+          isError: true,
+          stopReason: null,
+          terminalReason: "error_during_execution",
+          result: `Interactive transport failed: ${e.message}`,
+        })
         if (errorHandlers.size > 0) {
           for (const h of errorHandlers) h(e)
         } else {

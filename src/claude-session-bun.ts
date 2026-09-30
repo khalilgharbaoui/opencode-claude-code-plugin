@@ -43,13 +43,36 @@ function resolveClaude(cmd = "claude"): string {
   throw new Error(`Could not resolve command on PATH: ${cmd}`)
 }
 
-/** Claude encodes the absolute cwd into the transcript dir name by replacing
- *  EVERY non-alphanumeric char with `-` (no collapsing of runs). Verified on
- *  Windows against ~/.claude/projects, e.g.:
- *    C:\code\my-app    -> C--code-my-app
- *    C:\dev\My Project -> C--dev-My-Project   (the space also becomes `-`). */
+/**
+ * Claude names the transcript dir from the cwd's REAL path, then replaces
+ * EVERY non-alphanumeric char with `-` (no collapsing of runs). Verified on
+ * Windows against ~/.claude/projects, e.g.:
+ *   C:\code\my-app    -> C--code-my-app
+ *   C:\dev\My Project -> C--dev-My-Project   (the space also becomes `-`).
+ *
+ * The realpath half was measured on macOS with Claude Code 2.1.280: a headless
+ * turn run from `/tmp/cc-probe-endturn` wrote
+ * `~/.claude/projects/-private-tmp-cc-probe-endturn/<session>.jsonl`, and one
+ * run from the symlink `/private/tmp/ccp-alias-a` wrote to
+ * `-private-tmp-ccp-target-a`. So this is not a `/tmp` special case: the CLI
+ * resolves symlinks anywhere in the path. Resolving with `path.resolve` alone
+ * (which does not follow symlinks) pointed this at a directory the CLI never
+ * writes, so the interactive transport could never tail a /tmp cwd's turn.
+ *
+ * A path that does not exist cannot be realpath'd, so it falls back to
+ * `path.resolve`, which is also what every pre-existing caller assumed.
+ */
 export function encodeCwd(cwd: string): string {
-  return path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-")
+  const resolved = path.resolve(cwd)
+  let real = resolved
+  try {
+    real = fs.realpathSync.native(resolved)
+  } catch {
+    // ENOENT (the dir is not created yet) or a permission error: the literal
+    // resolved path is the best guess available and matches the CLI whenever
+    // no symlink is involved.
+  }
+  return real.replace(/[^a-zA-Z0-9]/g, "-")
 }
 
 export interface TurnResult {
