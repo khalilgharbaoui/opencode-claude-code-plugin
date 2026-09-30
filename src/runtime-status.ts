@@ -425,14 +425,21 @@ export async function fetchSessionReplies(
  * Stop whatever an opencode session is running, via `POST /session/{id}/abort`.
  * Returns false when there is no client, the route is missing, or the call
  * threw: a cancel that did not happen must never read as one that did.
+ *
+ * Both majors answer with a boolean saying whether anything was stopped (V1's
+ * route is documented `200: boolean`; V2's `session.interrupt` returns
+ * `{ interrupted: boolean }`, which the V2 client shim puts in the same slot),
+ * so an explicit `false` is reported as a refused cancel. Anything else,
+ * including a build that answers with no body at all, keeps the old
+ * "it did not throw, so it happened" reading.
  */
 export async function abortSession(sessionID: string): Promise<boolean> {
   if (!sessionID || sessionID === "default") return false
   const client = opencodeClient
   if (!client?.session?.abort) return false
   try {
-    await client.session.abort({ path: { id: sessionID } })
-    return true
+    const res = await client.session.abort({ path: { id: sessionID } })
+    return (res as { data?: unknown }).data !== false
   } catch (err) {
     log.warn("failed to abort opencode session", {
       sessionID,

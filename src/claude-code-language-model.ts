@@ -106,6 +106,7 @@ import {
 } from "./compression-store.js"
 import { log } from "./logger.js"
 import { detectCliVersion } from "./cli-version.js"
+import { recordBackgroundSubagentGate } from "./background-tasks.js"
 import {
   resolveDisallowedTools,
   resolveProxyOpencodeToolDefs,
@@ -1559,21 +1560,30 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // pair and the note, unsupported strips `background` from the
               // schema so the model cannot burn a call on opencode's hard
               // refusal. Spawn-time only, like every other overlay here.
+              const hostDialect = self.config.hostApi === "v2" ? "v2" : "v1"
               backgroundSubagentsSupported = liveTaskSupportsBackground(
                 liveToolInfo.taskParameters,
-                self.config.hostApi === "v2" ? "v2" : "v1",
+                hostDialect,
               )
               enrichedProxy = applyBackgroundSubagentSupport(
                 enrichedProxy,
                 backgroundSubagentsSupported,
+                hostDialect,
               )
+              // The doctor answers without a turn, so the gate has to be
+              // remembered here rather than recomputed there.
+              recordBackgroundSubagentGate({
+                supported: backgroundSubagentsSupported,
+                hostApi: hostDialect,
+                registryResolved: liveToolInfo.resolved,
+              })
               // Say which way it went: with the gate closed the model simply
               // never sees the field, which from the outside is
               // indistinguishable from the plugin ignoring the feature.
               log.info("background subagent gate", {
                 supported: backgroundSubagentsSupported,
                 registryResolved: liveToolInfo.resolved,
-                hostApi: self.config.hostApi ?? "v1",
+                hostApi: hostDialect,
                 note: backgroundSubagentsSupported
                   ? "task accepts `background`; task_status and task_cancel are registered"
                   : "`background` stripped from the task schema; set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in opencode's environment to enable it",

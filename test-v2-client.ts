@@ -8,7 +8,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { extractAgentTypeList } from "./src/proxy-mcp.js"
-import { createV1ClientShim, formatAgentTypeList, toV1Session } from "./src/v2-client.js"
+import {
+  createV1ClientShim,
+  formatAgentTypeList,
+  toV1Messages,
+  toV1Session,
+} from "./src/v2-client.js"
+import { abortSession, fetchSessionReplies, setOpencodeClient } from "./src/runtime-status.js"
 
 test("a V2 session becomes a V1 one with directory and parentID", () => {
   assert.deepEqual(
@@ -98,4 +104,110 @@ test("session.get calls V2 with its sessionID input and returns a V1 envelope", 
 
 test("domains V2 does not offer stay absent, so callers take their no-client path", () => {
   assert.deepEqual(createV1ClientShim({}), {})
+})
+
+// --- session.context / session.interrupt, for background subagents -------
+
+// V2 has no `role`: the message kind IS the discriminator, and an assistant's
+// text lives in `content` rather than in `parts`.
+test("V2 context messages become V1 `{ info, parts }` records", () => {
+  assert.deepEqual(
+    toV1Messages([
+      { id: "msg_1", type: "user", time: { created: 1 }, text: "go" },
+      {
+        id: "msg_2",
+        type: "assistant",
+        time: { created: 2, completed: 3 },
+        content: [
+          { type: "reasoning", text: "hmm" },
+          { type: "text", text: "done" },
+          { type: "tool", tool: "read" },
+        ],
+      },
+    ]),
+    [
+      { info: { role: "user", time: { created: 1 } }, parts: [{ type: "text", text: "go" }] },
+      {
+        info: { role: "assistant", time: { created: 2, completed: 3 } },
+        parts: [{ type: "text", text: "done" }],
+      },
+    ],
+  )
+  assert.deepEqual(toV1Messages(undefined), [])
+  assert.deepEqual(toV1Messages("nope"), [])
+})
+
+test("a V2 structured error lands where fetchSessionReplies looks for it", async () => {
+  const client: any = createV1ClientShim({
+    session: {
+      context: async () => [
+        {
+          id: "msg_1",
+          type: "assistant",
+          time: { created: 1 },
+          content: [],
+          error: { type: "ProviderError", message: "boom", status: 500 },
+        },
+      ],
+    },
+  })
+  setOpencodeClient(client)
+  const replies = await fetchSessionReplies("ses_child")
+  assert.deepEqual(replies, [
+    { role: "assistant", completed: false, error: "boom", text: "" },
+  ])
+})
+
+// V2's synthetic messages are their own kind, so V1's synthetic-part filter
+// needs no counterpart: they simply never match an assistant lookup.
+test("a V2 synthetic message is not an assistant reply", () => {
+  const [record] = toV1Messages([
+    { id: "msg_1", type: "synthetic", time: { created: 1 }, text: "<subagent .../>" },
+  ])
+  assert.equal((record!.info as { role: string }).role, "synthetic")
+})
+
+test("session.messages and session.abort ride on V2's context and interrupt", async () => {
+  const seen: unknown[] = []
+  const client: any = createV1ClientShim({
+    session: {
+      context: async (input) => {
+        seen.push(["context", input])
+        return [{ id: "m", type: "assistant", time: { created: 1, completed: 2 }, content: [] }]
+      },
+      interrupt: async (input) => {
+        seen.push(["interrupt", input])
+        return { interrupted: true }
+      },
+    },
+  })
+  assert.equal(typeof client.session.messages, "function")
+  await client.session.messages({ path: { id: "ses_child" } })
+  assert.deepEqual(await client.session.abort({ path: { id: "ses_child" } }), { data: true })
+  assert.deepEqual(seen, [
+    ["context", { sessionID: "ses_child" }],
+    ["interrupt", { sessionID: "ses_child" }],
+  ])
+  // V2's session domain has no `get` unless it offers one; the shim must still
+  // publish the two routes it can answer.
+  assert.equal(client.session.get, undefined)
+})
+
+// `interrupted: false` is opencode saying nothing was stopped. A cancel that
+// did not happen must never read as one that did.
+test("an interrupt that stopped nothing is reported as a refused abort", async () => {
+  const client: any = createV1ClientShim({
+    session: { interrupt: async () => ({ interrupted: false }) },
+  })
+  setOpencodeClient(client)
+  assert.equal(await abortSession("ses_child"), false)
+
+  setOpencodeClient(
+    createV1ClientShim({ session: { interrupt: async () => ({ interrupted: true }) } }),
+  )
+  assert.equal(await abortSession("ses_child"), true)
+
+  // A build that answers with no body at all keeps the old reading.
+  setOpencodeClient(createV1ClientShim({ session: { interrupt: async () => undefined } }))
+  assert.equal(await abortSession("ses_child"), true)
 })

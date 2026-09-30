@@ -484,6 +484,14 @@ a new message. Delivery is automatic, so polling is wrong and the tool descripti
 so. `task_status` and `task_cancel` join the tool list, keyed on the `id` from that
 envelope (the child's opencode session id).
 
+opencode 2 uses different envelopes and the plugin's tool descriptions follow the host:
+there a background dispatch answers in prose,
+`The subagent is working in the background (sessionID: ses_...)`, and the completion
+arrives as `<subagent sessionID="..." state="completed" description="...">`. The
+`sessionID` is the `task_id`. Both extra tools work on both majors (on opencode 2 over
+`session.context` and `session.interrupt`, the session routes a plugin is given there);
+verified live on 2.0.16.
+
 Without it, opencode rejects a `background: true` call outright
 (`Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`), losing
 the dispatch, so the plugin strips `background` from the `task` and `task_batch` schemas
@@ -498,6 +506,13 @@ var, means the flag is not set on the opencode process (setting it in a shell af
 opencode started does nothing, and a plugin upgrade cannot change it). A `task_status`
 that answers `not a subagent of this conversation` means the id came from a different
 conversation.
+
+`/claude-code-doctor` has a **Background subagents** section answering the same question
+without reading the log: whether `background` was offered and the two tools registered,
+the opencode major, what decided it (the live `task` schema, a registry that did not
+answer, or opencode 2 offering it unconditionally), and the background tasks this
+process has collected or cancelled. The gate is read while a turn plans its proxy tools,
+so a fresh process reports `Not read yet this process` until one message has been sent.
 
 A proxied call is held open until an event ends it, and the plugin listens to the
 `claude` process, the stream and the control protocol for those events rather than
@@ -711,6 +726,14 @@ demoted a Claude plugin at load time (`plugin_errors`, e.g. `dependency-unsatisf
 warned about content that did not load. Read it whenever bridged skills are missing: an
 `opencode-skills@...` row is the skill bridge itself, which is a plugin bug to report,
 not something to fix in the user's config.
+
+A **Background subagents** section is always printed: whether `background` was offered
+to Claude and `task_status` / `task_cancel` registered, the opencode major, what decided
+it, and the background tasks this process collected or cancelled. It reads
+`Not read yet this process` until a turn has planned its proxy tools, which is not the
+same as "no": on a fresh process, send a message and run it again before concluding
+anything. Only a 1.x host that said no is told about
+`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
 
 `/claude-code-doctor usage` adds a **Plan usage** section: the CLI's own `/cost` answer
 (subscription vs API key, 5-hour and 7-day window use, reset times, what is driving

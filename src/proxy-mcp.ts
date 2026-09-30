@@ -415,6 +415,28 @@ export const TASK_BACKGROUND_NOTE =
   " to task_cancel to stop a background subagent you no longer want."
 
 /**
+ * The same note for opencode 2, where both envelopes are different and the
+ * model is the one that has to find the id in them. Read off the `subagent`
+ * tool and the background job reporter in the 2.0.16 binary: a background
+ * dispatch answers with the prose `The subagent is working in the background
+ * (sessionID: ses_...)` (no XML at all, because only a *completed* subagent
+ * call is wrapped in `<subagent ...>`), and the completion is delivered to the
+ * parent session as a synthetic `<subagent sessionID="..." state="completed"
+ * description="...">` message. Telling a V2 model to look for `<task id=...>`
+ * would leave it with no task_id to pass to either tool.
+ */
+export const TASK_BACKGROUND_NOTE_V2 =
+  "Fire-and-collect: set `background: true` and the call returns at once with" +
+  " `The subagent is working in the background (sessionID: ses_...)` instead" +
+  " of the subagent's answer. Keep working on something that does not overlap" +
+  " it, then end your turn: when the subagent finishes, opencode delivers its" +
+  " result to this conversation on its own, as a" +
+  ' `<subagent sessionID="..." state="completed">` message. Do NOT poll,' +
+  " sleep or loop waiting for it. That sessionID is the task_id: pass it to" +
+  " task_status to read a result the notification did not deliver, or to" +
+  " task_cancel to stop a background subagent you no longer want."
+
+/**
  * `task_batch`: one MCP call that opencode runs as N parallel `task` calls.
  *
  * Design and first implementation by Joseph Roberts (@broskees) on his fork
@@ -683,8 +705,10 @@ export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
         task_id: {
           type: "string",
           description:
-            'The id from the `<task id="..." state="running">` envelope the' +
-            " background dispatch returned.",
+            "The background subagent's own opencode session id: the `id` in" +
+            ' the `<task id="..." state="running">` envelope on opencode 1.x,' +
+            " or the `sessionID` the background dispatch reported on" +
+            " opencode 2.",
         },
       },
       required: ["task_id"],
@@ -704,8 +728,10 @@ export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
         task_id: {
           type: "string",
           description:
-            'The id from the `<task id="..." state="running">` envelope the' +
-            " background dispatch returned.",
+            "The background subagent's own opencode session id: the `id` in" +
+            ' the `<task id="..." state="running">` envelope on opencode 1.x,' +
+            " or the `sessionID` the background dispatch reported on" +
+            " opencode 2.",
         },
       },
       required: ["task_id"],
@@ -730,12 +756,14 @@ export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
 export function applyBackgroundSubagentSupport(
   tools: ProxyToolDef[],
   supported: boolean,
+  dialect: "v1" | "v2" = "v1",
 ): ProxyToolDef[] {
   if (!tools.some((t) => t.name === "task")) return tools
+  const note = dialect === "v2" ? TASK_BACKGROUND_NOTE_V2 : TASK_BACKGROUND_NOTE
   const adjusted = tools.map((t) => {
     if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
     if (supported) {
-      return { ...t, description: `${t.description}\n\n${TASK_BACKGROUND_NOTE}` }
+      return { ...t, description: `${t.description}\n\n${note}` }
     }
     return { ...t, inputSchema: stripBackgroundFromSchema(t.name, t.inputSchema) }
   })

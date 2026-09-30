@@ -44,6 +44,7 @@ import {
   fetchSessionReplies,
   fetchSessionRunState,
   type SessionReply,
+  type SessionRunState,
 } from "./runtime-status.js"
 import type { ProxyToolResult } from "./proxy-mcp.js"
 import { log } from "./logger.js"
@@ -61,30 +62,47 @@ export const TASK_CANCEL_TOOL_NAME = "task_cancel"
 const MAX_LEDGERS = 32
 const MAX_COLLECTED_PER_SESSION = 64
 const collected = new Map<string, Set<string>>()
+/**
+ * The same bookkeeping for cancels, kept only so the doctor can say what this
+ * process did. It is never read by either tool: a cancelled task is dropped
+ * from `collected` so nothing can later claim it was delivered.
+ */
+const cancelled = new Map<string, Set<string>>()
 
-function ledgerFor(sessionKey: string): Set<string> {
-  let ids = collected.get(sessionKey)
+function ledgerIn(
+  ledgers: Map<string, Set<string>>,
+  sessionKey: string,
+): Set<string> {
+  let ids = ledgers.get(sessionKey)
   if (!ids) {
     ids = new Set()
-    collected.set(sessionKey, ids)
+    ledgers.set(sessionKey, ids)
     // Insertion order: the oldest conversation's ledger goes first.
-    while (collected.size > MAX_LEDGERS) {
-      const oldest = collected.keys().next()
+    while (ledgers.size > MAX_LEDGERS) {
+      const oldest = ledgers.keys().next()
       if (oldest.done) break
-      collected.delete(oldest.value)
+      ledgers.delete(oldest.value)
     }
   }
   return ids
 }
 
-function markCollected(sessionKey: string, taskId: string): void {
-  const ids = ledgerFor(sessionKey)
+function mark(
+  ledgers: Map<string, Set<string>>,
+  sessionKey: string,
+  taskId: string,
+): void {
+  const ids = ledgerIn(ledgers, sessionKey)
   ids.add(taskId)
   while (ids.size > MAX_COLLECTED_PER_SESSION) {
     const oldest = ids.values().next()
     if (oldest.done) break
     ids.delete(oldest.value)
   }
+}
+
+function markCollected(sessionKey: string, taskId: string): void {
+  mark(collected, sessionKey, taskId)
 }
 
 export function hasCollectedBackgroundTask(
@@ -104,11 +122,68 @@ export function hasCollectedBackgroundTask(
  */
 export function clearBackgroundTasks(sessionKey: string): void {
   collected.delete(sessionKey)
+  cancelled.delete(sessionKey)
 }
 
-/** Test seam: forget every ledger. */
+/** Test seam: forget every ledger and the recorded gate. */
 export function _resetBackgroundTasks(): void {
   collected.clear()
+  cancelled.clear()
+  lastGate = undefined
+}
+
+/**
+ * What the plugin last decided about background subagents on this host, for
+ * `/claude-code-doctor`. Recorded rather than recomputed because the gate is
+ * read off opencode's live tool registry while a turn plans its proxy tools,
+ * and the doctor answers without a turn.
+ */
+export interface BackgroundSubagentGate {
+  /** Whether `background` was offered to Claude and the two tools registered. */
+  supported: boolean
+  /** Which opencode major that model serves. */
+  hostApi: "v1" | "v2"
+  /** Whether opencode's live tool registry answered at all. */
+  registryResolved: boolean
+  /** `Date.now()` of the read. */
+  at: number
+}
+
+let lastGate: BackgroundSubagentGate | undefined
+
+export function recordBackgroundSubagentGate(
+  gate: Omit<BackgroundSubagentGate, "at">,
+  now = Date.now(),
+): void {
+  lastGate = { ...gate, at: now }
+}
+
+/** Read-only copy, or undefined when no turn has planned its tools yet. */
+export function snapshotBackgroundSubagentGate(): BackgroundSubagentGate | undefined {
+  return lastGate ? { ...lastGate } : undefined
+}
+
+/** One Claude conversation's background-task bookkeeping, for the doctor. */
+export interface BackgroundTaskLedger {
+  sessionKey: string
+  collected: string[]
+  cancelled: string[]
+}
+
+/**
+ * Every conversation this process has collected or cancelled a background task
+ * for. Read-only: it copies the sets and touches no ledger, the same contract
+ * `snapshotActiveProcesses` and `snapshotPendingProxyCalls` hold. Task ids are
+ * opencode session ids, which the model was already handed and which the
+ * doctor already prints as session affinities, so nothing secret is added.
+ */
+export function snapshotBackgroundTasks(): BackgroundTaskLedger[] {
+  const keys = new Set([...collected.keys(), ...cancelled.keys()])
+  return [...keys].map((sessionKey) => ({
+    sessionKey,
+    collected: [...(collected.get(sessionKey) ?? [])],
+    cancelled: [...(cancelled.get(sessionKey) ?? [])],
+  }))
 }
 
 function readTaskId(input: Record<string, unknown>): string | null {
@@ -119,8 +194,9 @@ function readTaskId(input: Record<string, unknown>): string | null {
 }
 
 const MISSING_TASK_ID =
-  "task_id is required: pass the id from the `<task id=\"...\">` envelope the" +
-  " background dispatch returned."
+  "task_id is required: pass the background subagent's own opencode session" +
+  ' id, from the `<task id="...">` envelope on opencode 1.x or the' +
+  " `sessionID` the background dispatch reported on opencode 2."
 
 /**
  * Whether this conversation is allowed to touch that session. It fails
@@ -144,9 +220,31 @@ async function guardParent(
   if (parent === callerSessionId) return null
   return (
     `task_id ${taskId} is not a subagent of this conversation, so it cannot` +
-    " be inspected or cancelled from here. Use the id from a `<task" +
-    ' id="...">` envelope this conversation received.'
+    " be inspected or cancelled from here. Use the session id from a" +
+    " background dispatch this conversation itself made."
   )
+}
+
+/**
+ * Whether the child is still working.
+ *
+ * `fetchSessionRunState` is authoritative when it answers, but it cannot
+ * answer on opencode 2: V2's all-sessions run-state map is `session.active`,
+ * and the `SessionDomain` a plugin is handed there does not include it (read
+ * off `@opencode/plugin@2.0.16`). So `unknown` falls back to the transcript,
+ * where an assistant message without `time.completed` is one still streaming.
+ * `idle` stays authoritative in the other direction: an interrupted turn
+ * leaves an assistant message that never completed, and calling that "running"
+ * would park the model on a task nothing will finish.
+ */
+export function isBackgroundTaskRunning(
+  runState: SessionRunState,
+  replies: SessionReply[],
+): boolean {
+  if (runState === "busy") return true
+  if (runState === "idle") return false
+  const reply = lastAssistantReply(replies)
+  return reply !== undefined && !reply.completed && reply.error === undefined
 }
 
 /** One reply's text, or "" when the subagent produced none. */
@@ -193,7 +291,7 @@ export async function collectBackgroundTask(
   }
 
   const runState = await fetchSessionRunState(taskId)
-  if (runState === "busy") {
+  if (isBackgroundTaskRunning(runState, replies)) {
     return {
       kind: "text",
       text:
@@ -261,7 +359,10 @@ export async function cancelBackgroundTask(
   const refused = await guardParent(taskId, options.callerSessionId)
   if (refused) return { kind: "error", message: refused }
 
-  const before = await fetchSessionRunState(taskId)
+  const running = isBackgroundTaskRunning(
+    await fetchSessionRunState(taskId),
+    (await fetchSessionReplies(taskId)) ?? [],
+  )
   const aborted = await abortSession(taskId)
   if (!aborted) {
     return {
@@ -275,16 +376,17 @@ export async function cancelBackgroundTask(
   // A cancelled task will never deliver, so nothing must later claim it was
   // already delivered.
   collected.get(options.sessionKey)?.delete(taskId)
+  mark(cancelled, options.sessionKey, taskId)
   log.info("cancelled background subagent", {
     sessionKey: options.sessionKey,
     taskId,
-    wasRunning: before === "busy",
+    wasRunning: running,
   })
   return {
     kind: "text",
     text:
       `<task id="${taskId}" state="cancelled">\n` +
-      (before === "busy"
+      (running
         ? "Stopped. No completion notification will arrive for it."
         : "It was not running when the cancel was sent, so nothing was" +
           " interrupted. No completion notification will arrive for it.") +

@@ -1,3 +1,9 @@
+import {
+  snapshotBackgroundSubagentGate,
+  snapshotBackgroundTasks,
+  type BackgroundSubagentGate,
+  type BackgroundTaskLedger,
+} from "./background-tasks.js"
 import { detectCliVersion } from "./cli-version.js"
 import {
   snapshotMcpServerErrors,
@@ -16,6 +22,7 @@ import {
   type PermissionPresetSummary,
 } from "./permission-presets.js"
 import {
+  describeSessionKey,
   snapshotActiveProcesses,
   type ActiveProcessSnapshot,
 } from "./session-manager.js"
@@ -135,6 +142,11 @@ export interface DoctorReport {
   pluginLoadFailures: PluginLoadFailure[]
   /** The CLI's own plan-usage report, only when `usage` was asked for. */
   planUsage: PlanUsage
+  /** Background subagents: the gate as last read, and what this process did. */
+  backgroundSubagents: {
+    gate: BackgroundSubagentGate | undefined
+    ledgers: BackgroundTaskLedger[]
+  }
 }
 
 function formatAge(ms: number | undefined): string {
@@ -299,6 +311,11 @@ export function formatDoctorReport(report: DoctorReport): string {
   }
 
   lines.push("")
+  lines.push("**Background subagents**")
+  lines.push("")
+  lines.push(...formatBackgroundSubagents(report.backgroundSubagents))
+
+  lines.push("")
   lines.push("**Plan usage**")
   lines.push("")
   switch (report.planUsage.status) {
@@ -334,6 +351,84 @@ export function formatDoctorReport(report: DoctorReport): string {
   }
 
   return lines.join("\n")
+}
+
+/**
+ * Why Claude does or does not offer `background` on this host, plus what this
+ * process has collected or cancelled.
+ *
+ * The gate is a recorded read, not a recompute: it comes off opencode's live
+ * tool registry while a turn plans its proxy tools (`liveTaskSupportsBackground`),
+ * and the doctor may well run before any turn has. "Not read yet" is therefore
+ * a real answer and says so rather than guessing `false`, which would read as
+ * "your host cannot do this".
+ */
+function formatBackgroundSubagents(state: {
+  gate: BackgroundSubagentGate | undefined
+  ledgers: BackgroundTaskLedger[]
+}): string[] {
+  const lines: string[] = []
+  const gate = state.gate
+  if (!gate) {
+    lines.push(
+      "Not read yet this process. The gate is resolved the first time a turn plans its " +
+        "proxy tools, so send one message and run this again.",
+    )
+  } else {
+    lines.push("| Field | Value |")
+    lines.push("|---|---|")
+    lines.push(`| \`background\` offered to Claude | ${gate.supported ? "yes" : "no"} |`)
+    lines.push(
+      `| \`task_status\` / \`task_cancel\` | ${gate.supported ? "registered" : "not registered"} |`,
+    )
+    lines.push(`| opencode API | ${gate.hostApi} |`)
+    lines.push(`| decided from | ${describeBackgroundGateSource(gate)} |`)
+    lines.push(`| read | ${formatAge(Math.max(0, Date.now() - gate.at))} ago |`)
+    if (!gate.supported && gate.hostApi === "v1") {
+      lines.push("")
+      lines.push(
+        "opencode 1.x keeps background subagents behind a flag on its OWN process: set " +
+          "`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the blanket " +
+          "`OPENCODE_EXPERIMENTAL`) in opencode's environment and restart it. The plugin " +
+          "never reads that variable itself; it reads whether opencode's advertised `task` " +
+          "schema carries a `background` property, which is how opencode publishes the flag.",
+      )
+    }
+  }
+
+  const active = state.ledgers.filter(
+    (ledger) => ledger.collected.length > 0 || ledger.cancelled.length > 0,
+  )
+  lines.push("")
+  if (active.length === 0) {
+    lines.push("No background task has been collected or cancelled by this process.")
+  } else {
+    lines.push("| session | collected | cancelled |")
+    lines.push("|---|---|---|")
+    for (const ledger of active) {
+      lines.push(
+        `| ${describeSessionKey(ledger.sessionKey).session} | ${list(ledger.collected)} | ${list(
+          ledger.cancelled,
+        )} |`,
+      )
+    }
+    lines.push("")
+    lines.push(
+      "A collected task is one this conversation read back with `task_status`, or was told " +
+        "about by opencode's own completion notification; a result is handed over once.",
+    )
+  }
+  return lines
+}
+
+/** The one sentence that explains the gate's answer on this major. */
+function describeBackgroundGateSource(gate: BackgroundSubagentGate): string {
+  if (gate.hostApi === "v2") {
+    return "opencode 2 offers `background` unconditionally, so the registry is not consulted"
+  }
+  return gate.registryResolved
+    ? "opencode's live `task` schema"
+    : "opencode's live tool registry did not answer, so the answer defaulted to no"
 }
 
 /**
@@ -445,6 +540,10 @@ export async function gatherDoctorReport(
     mcpServerErrors: snapshotMcpServerErrors(),
     pluginLoadFailures: snapshotPluginLoadFailures(),
     planUsage,
+    backgroundSubagents: {
+      gate: snapshotBackgroundSubagentGate(),
+      ledgers: snapshotBackgroundTasks(),
+    },
   }
 }
 
@@ -462,6 +561,7 @@ export async function buildDoctorReport(options: GatherDoctorOptions): Promise<s
       mcpServerErrors: report.mcpServerErrors.length,
       pluginLoadFailures: report.pluginLoadFailures.length,
       planUsage: report.planUsage.status,
+      backgroundSubagents: report.backgroundSubagents.gate?.supported ?? "not read",
     })
     return formatDoctorReport(report)
   } catch (error) {

@@ -76,6 +76,7 @@ const report: DoctorReport = {
   mcpServerErrors: [],
   pluginLoadFailures: [],
   planUsage: { status: "not-requested" },
+  backgroundSubagents: { gate: undefined, ledgers: [] },
 }
 
 test("the report names every field a bug report needs, and nothing secret", () => {
@@ -104,6 +105,98 @@ test("the report names every field a bug report needs, and nothing secret", () =
   }
 
   // Nothing that identifies a credential may appear, by value or by name.
+  assert.equal(/authToken|bearer|sk-ant|Authorization/i.test(text), false)
+})
+
+// --- background subagents ------------------------------------------------
+
+test("background subagents: not read yet is an answer, not a no", () => {
+  const text = formatDoctorReport(report)
+  assert.ok(text.includes("**Background subagents**"), text)
+  assert.ok(text.includes("Not read yet this process"), text)
+  // A gate nobody has read must never print as if the host refused.
+  assert.equal(text.includes("| `background` offered to Claude | no |"), false)
+  assert.ok(
+    text.includes("No background task has been collected or cancelled by this process."),
+    text,
+  )
+})
+
+test("an unsupported 1.x host is told the flag is opencode's, not the plugin's", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: false, hostApi: "v1", registryResolved: true, at: Date.now() - 5_000 },
+      ledgers: [],
+    },
+  })
+  assert.ok(text.includes("| `background` offered to Claude | no |"), text)
+  assert.ok(text.includes("| `task_status` / `task_cancel` | not registered |"), text)
+  assert.ok(text.includes("| decided from | opencode's live `task` schema |"), text)
+  assert.ok(text.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"), text)
+  assert.ok(text.includes("restart"), "the variable is read at opencode's own startup")
+})
+
+// A registry that never answered is not the same as a host that said no, and
+// the difference is exactly what an operator needs to debug it.
+test("a registry that did not answer says so rather than blaming the host", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: false, hostApi: "v1", registryResolved: false, at: Date.now() },
+      ledgers: [],
+    },
+  })
+  assert.ok(text.includes("did not answer"), text)
+})
+
+test("on opencode 2 the report says the registry is not consulted", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: true, hostApi: "v2", registryResolved: false, at: Date.now() },
+      ledgers: [],
+    },
+  })
+  assert.ok(text.includes("| opencode API | v2 |"), text)
+  assert.ok(text.includes("| `background` offered to Claude | yes |"), text)
+  assert.ok(text.includes("unconditionally"), text)
+  // The 1.x env-var advice must never appear on a host that has no such flag.
+  assert.equal(text.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"), false)
+})
+
+test("collected and cancelled tasks are listed per opencode session", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: true, hostApi: "v1", registryResolved: true, at: Date.now() },
+      ledgers: [
+        {
+          sessionKey: "/Users/you/code/app::claude-opus-5::full::ses_abc::context=[]",
+          collected: ["ses_child1"],
+          cancelled: ["ses_child2"],
+        },
+        // A key with nothing on it must not take a row.
+        { sessionKey: "/x::m::full::ses_empty::context=[]", collected: [], cancelled: [] },
+      ],
+    },
+  })
+  assert.ok(text.includes("| ses_abc | ses_child1 | ses_child2 |"), text)
+  assert.equal(text.includes("ses_empty"), false)
+})
+
+// The report is pasted into bug reports, so the whole-report secret check has
+// to hold with the new section populated too.
+test("the background section adds nothing secret", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: true, hostApi: "v2", registryResolved: true, at: Date.now() },
+      ledgers: [
+        { sessionKey: "/x::m::full::ses_abc::context=[]", collected: ["ses_c"], cancelled: [] },
+      ],
+    },
+  })
   assert.equal(/authToken|bearer|sk-ant|Authorization/i.test(text), false)
 })
 

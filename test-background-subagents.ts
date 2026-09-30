@@ -29,6 +29,7 @@ import {
   BACKGROUND_TASK_TOOL_DEFS,
   DEFAULT_PROXY_TOOLS,
   TASK_BACKGROUND_NOTE,
+  TASK_BACKGROUND_NOTE_V2,
   TASK_BATCH_TOOL_NAME,
   TASK_PROXY_NOTE,
   type ProxyMcpServer,
@@ -40,10 +41,15 @@ import {
   clearBackgroundTasks,
   collectBackgroundTask,
   hasCollectedBackgroundTask,
+  isBackgroundTaskRunning,
+  recordBackgroundSubagentGate,
+  snapshotBackgroundSubagentGate,
+  snapshotBackgroundTasks,
   _resetBackgroundTasks,
   TASK_CANCEL_TOOL_NAME,
   TASK_STATUS_TOOL_NAME,
 } from "./src/background-tasks.js"
+import { createV1ClientShim } from "./src/v2-client.js"
 import { ensureProxyServer } from "./src/spawn-planning.js"
 import { setOpencodeClient } from "./src/runtime-status.js"
 import {
@@ -63,6 +69,10 @@ function fakeClient(options: {
   messages?: unknown[]
   onAbort?: (id: string) => void
   abortThrows?: boolean
+  /** What opencode's abort route answered; `false` means nothing was stopped. */
+  abortResult?: boolean
+  /** Leave `session.status` out entirely, the way the V2 client shim does. */
+  noStatusRoute?: boolean
 }) {
   const calls: string[] = []
   return {
@@ -73,10 +83,14 @@ function fakeClient(options: {
           calls.push(`get:${path.id}`)
           return { data: { id: path.id, parentID: options.parentID, directory: "/tmp" } }
         },
-        status: async () => {
-          calls.push("status")
-          return { data: options.status ?? {} }
-        },
+        ...(options.noStatusRoute
+          ? {}
+          : {
+              status: async () => {
+                calls.push("status")
+                return { data: options.status ?? {} }
+              },
+            }),
         messages: async ({ path }: { path: { id: string } }) => {
           calls.push(`messages:${path.id}`)
           return { data: options.messages ?? [] }
@@ -85,7 +99,7 @@ function fakeClient(options: {
           calls.push(`abort:${path.id}`)
           if (options.abortThrows) throw new Error("nope")
           options.onAbort?.(path.id)
-          return { data: true }
+          return { data: options.abortResult ?? true }
         },
       },
     },
@@ -398,6 +412,208 @@ test("a deleted opencode session and a host exit both clear the ledger", async (
   clearBackgroundTasks(key)
   assert.equal(hasCollectedBackgroundTask(key, CHILD), false)
   killAllActiveProcesses()
+})
+
+// --- opencode 2 ----------------------------------------------------------
+
+// V2's `subagent` answers a background dispatch in prose and delivers the
+// completion as `<subagent sessionID=...>`, so a note telling the model to
+// look for `<task id=...>` would leave it with no id to pass to either tool.
+test("the V2 note describes V2's own envelopes", () => {
+  const tools = applyBackgroundSubagentSupport(DEFAULT_PROXY_TOOLS, true, "v2")
+  assert.ok(taskDef(tools, "task").description.includes(TASK_BACKGROUND_NOTE_V2))
+  assert.ok(taskDef(tools, TASK_BATCH_TOOL_NAME).description.includes(TASK_BACKGROUND_NOTE_V2))
+  assert.equal(taskDef(tools, "task").description.includes(TASK_BACKGROUND_NOTE), false)
+  assert.match(TASK_BACKGROUND_NOTE_V2, /background: true/)
+  assert.match(TASK_BACKGROUND_NOTE_V2, /sessionID: ses_/)
+  assert.match(TASK_BACKGROUND_NOTE_V2, /<subagent sessionID/)
+  assert.match(TASK_BACKGROUND_NOTE_V2, /task_status/)
+  assert.match(TASK_BACKGROUND_NOTE_V2, /task_cancel/)
+  // V1 is the default and must be untouched by the new argument.
+  assert.ok(
+    taskDef(applyBackgroundSubagentSupport(DEFAULT_PROXY_TOOLS, true), "task").description.includes(
+      TASK_BACKGROUND_NOTE,
+    ),
+  )
+})
+
+// Neither envelope is the same on both majors, so the id's own description
+// cannot name only one of them.
+test("the task_id description names where the id comes from on both majors", () => {
+  for (const def of BACKGROUND_TASK_TOOL_DEFS) {
+    const taskId = (def.inputSchema.properties as Record<string, { description: string }>).task_id
+    assert.match(taskId.description, /opencode 1\.x/)
+    assert.match(taskId.description, /opencode 2/)
+  }
+})
+
+// V2's plugin session domain is a `Pick` of the HTTP client that does not
+// include `active`, so `fetchSessionRunState` can only answer `unknown` there.
+// The transcript is then the only signal, and reading it wrong would report a
+// half-written answer as the subagent's result.
+test("with no run-state route the transcript decides whether it is running", () => {
+  const running = [{ role: "assistant", completed: false, error: undefined, text: "half" }]
+  const done = [{ role: "assistant", completed: true, error: undefined, text: "all" }]
+  const failed = [{ role: "assistant", completed: false, error: "boom", text: "" }]
+
+  assert.equal(isBackgroundTaskRunning("unknown", running), true)
+  assert.equal(isBackgroundTaskRunning("unknown", done), false)
+  assert.equal(isBackgroundTaskRunning("unknown", failed), false, "an error is a finished task")
+  assert.equal(isBackgroundTaskRunning("unknown", []), false, "nothing to read yet")
+
+  // `busy` and `idle` stay authoritative in both directions: an interrupted
+  // turn leaves an assistant message that never completed, and calling that
+  // running would park the model on a task nothing will finish.
+  assert.equal(isBackgroundTaskRunning("busy", done), true)
+  assert.equal(isBackgroundTaskRunning("idle", running), false)
+})
+
+test("a V2 host collects, reports running, and cancels through the client shim", async () => {
+  _resetBackgroundTasks()
+  const interrupted: string[] = []
+  let completed = false
+  const client = createV1ClientShim({
+    session: {
+      get: async ({ sessionID }) => ({
+        id: sessionID,
+        parentID: PARENT,
+        location: { directory: "/tmp" },
+      }),
+      context: async () => [
+        { id: "m1", type: "user", time: { created: 1 }, text: "go" },
+        {
+          id: "m2",
+          type: "assistant",
+          time: { created: 2, ...(completed ? { completed: 3 } : {}) },
+          content: [{ type: "text", text: "V2_BACKGROUND_RESULT" }],
+        },
+      ],
+      interrupt: async ({ sessionID }) => {
+        interrupted.push(sessionID)
+        return { interrupted: true }
+      },
+    },
+  })
+  setOpencodeClient(client)
+  const options = { sessionKey: "k", callerSessionId: PARENT }
+
+  const running = await collectBackgroundTask({ task_id: CHILD }, options)
+  assert.match((running as { text: string }).text, /state="running"/)
+  assert.equal(
+    /V2_BACKGROUND_RESULT/.test((running as { text: string }).text),
+    false,
+    "a half-written answer must never be handed over as the result",
+  )
+
+  completed = true
+  const collected = await collectBackgroundTask({ task_id: CHILD }, options)
+  assert.match((collected as { text: string }).text, /V2_BACKGROUND_RESULT/)
+  assert.equal(hasCollectedBackgroundTask("k", CHILD), true)
+
+  const cancelled = await cancelBackgroundTask({ task_id: CHILD }, options)
+  assert.deepEqual(interrupted, [CHILD])
+  assert.match((cancelled as { text: string }).text, /state="cancelled"/)
+  assert.equal(hasCollectedBackgroundTask("k", CHILD), false)
+})
+
+// The parent guard is the thing that keeps one conversation out of another's
+// transcript, and on V2 it runs off the shimmed `session.get`.
+test("the parent guard still fails closed on a V2 client shim", async () => {
+  _resetBackgroundTasks()
+  const client = createV1ClientShim({
+    session: {
+      get: async ({ sessionID }) => ({ id: sessionID, parentID: "ses_somebody_else" }),
+      context: async () => [
+        { id: "m", type: "assistant", time: { created: 1, completed: 2 }, content: [{ type: "text", text: "secret" }] },
+      ],
+      interrupt: async () => ({ interrupted: true }),
+    },
+  })
+  setOpencodeClient(client)
+  const options = { sessionKey: "k", callerSessionId: PARENT }
+  const collected = await collectBackgroundTask({ task_id: CHILD }, options)
+  assert.equal(collected.kind, "error")
+  assert.equal(/secret/.test(JSON.stringify(collected)), false)
+  assert.equal((await cancelBackgroundTask({ task_id: CHILD }, options)).kind, "error")
+})
+
+// A host whose abort route answers `false` stopped nothing.
+test("a cancel opencode answered false never reads as one that happened", async () => {
+  _resetBackgroundTasks()
+  const { client } = fakeClient({ parentID: PARENT, status: {}, abortResult: false })
+  setOpencodeClient(client)
+  const result = await cancelBackgroundTask(
+    { task_id: CHILD },
+    { sessionKey: "k", callerSessionId: PARENT },
+  )
+  assert.equal(result.kind, "error")
+  assert.match((result as { message: string }).message, /Could not cancel/)
+})
+
+// A V1 host with no status route at all takes the same fallback as V2.
+test("a 1.x client without session.status still tells running from finished", async () => {
+  _resetBackgroundTasks()
+  const { client } = fakeClient({
+    parentID: PARENT,
+    noStatusRoute: true,
+    messages: [assistantMessage("NOT_DONE_YET", false)],
+  })
+  setOpencodeClient(client)
+  const result = await collectBackgroundTask(
+    { task_id: CHILD },
+    { sessionKey: "k", callerSessionId: PARENT },
+  )
+  assert.match((result as { text: string }).text, /state="running"/)
+  assert.equal(/NOT_DONE_YET/.test((result as { text: string }).text), false)
+})
+
+// --- what the doctor reads ----------------------------------------------
+
+test("the gate is recorded for the doctor, and read-only", () => {
+  _resetBackgroundTasks()
+  assert.equal(snapshotBackgroundSubagentGate(), undefined, "nothing until a turn plans tools")
+  recordBackgroundSubagentGate(
+    { supported: true, hostApi: "v2", registryResolved: false },
+    1_000,
+  )
+  assert.deepEqual(snapshotBackgroundSubagentGate(), {
+    supported: true,
+    hostApi: "v2",
+    registryResolved: false,
+    at: 1_000,
+  })
+  const snapshot = snapshotBackgroundSubagentGate()!
+  snapshot.supported = false
+  assert.equal(snapshotBackgroundSubagentGate()!.supported, true, "a copy, not the record")
+})
+
+test("the doctor's ledger snapshot names collected and cancelled tasks", async () => {
+  _resetBackgroundTasks()
+  const { client } = fakeClient({
+    parentID: PARENT,
+    status: {},
+    messages: [assistantMessage("done")],
+  })
+  setOpencodeClient(client)
+  const options = { sessionKey: "k", callerSessionId: PARENT }
+
+  await collectBackgroundTask({ task_id: "ses_a" }, options)
+  await cancelBackgroundTask({ task_id: "ses_b" }, options)
+  assert.deepEqual(snapshotBackgroundTasks(), [
+    { sessionKey: "k", collected: ["ses_a"], cancelled: ["ses_b"] },
+  ])
+
+  // A cancel drops the collected mark, so nothing can later claim delivery,
+  // but the doctor still shows the cancel.
+  await collectBackgroundTask({ task_id: "ses_b" }, options)
+  await cancelBackgroundTask({ task_id: "ses_b" }, options)
+  const [ledger] = snapshotBackgroundTasks()
+  assert.deepEqual(ledger!.collected, ["ses_a"])
+  assert.deepEqual(ledger!.cancelled, ["ses_b"])
+
+  // And a released conversation leaves neither behind.
+  clearBackgroundTasks("k")
+  assert.deepEqual(snapshotBackgroundTasks(), [])
 })
 
 // --- over a real proxy MCP server ---------------------------------------
