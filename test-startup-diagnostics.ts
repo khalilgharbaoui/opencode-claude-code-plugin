@@ -238,8 +238,17 @@ test("detectOpencodeVersion reads the version from the opencode binary", async (
   fs.writeFileSync(fake, '#!/bin/sh\necho "1.18.5"\n')
   fs.chmodSync(fake, 0o755)
   try {
-    resetOpencodeVersionProbe()
-    assert.equal(await detectOpencodeVersion(fake), "1.18.5")
+    // The probe spawns under a 5s deadline and caches whatever it got, so on
+    // a loaded machine a killed spawn reads as "unknown" and this spec would
+    // be deciding a race rather than what the probe reports (measured
+    // 2026-10-01: a 5s overrun is reachable at a load average of 66+). Ask
+    // again, from a clean probe, until the script answers.
+    let version: string | undefined
+    for (let attempt = 1; attempt <= 4 && version === undefined; attempt++) {
+      resetOpencodeVersionProbe()
+      version = await detectOpencodeVersion(fake)
+    }
+    assert.equal(version, "1.18.5")
     // Cached: a second call with a different path reuses the first probe.
     assert.equal(await detectOpencodeVersion("/nonexistent/opencode"), "1.18.5")
   } finally {

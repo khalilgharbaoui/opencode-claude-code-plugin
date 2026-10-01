@@ -27,6 +27,7 @@ import {
   type BtwSdkMessage,
   type BtwToast,
 } from "./src/btw-command.js"
+import { detectCliVersion } from "./src/cli-version.js"
 import { filterSideQuestionHistory } from "./src/message-builder.js"
 import { createClaudeCode, registerSideQuestionCommand } from "./src/index.js"
 import type { OpenCodeConfig } from "./src/opencode-types.js"
@@ -407,6 +408,14 @@ test("registerSideQuestionCommand reports ownership so a user-defined btw comman
   assert.equal(theirs.command?.btw?.template, "mine $ARGUMENTS")
 })
 
+/**
+ * A hang-stop for a provider turn, not a deadline: see the same constant in
+ * `test-side-question.ts`. The 5s this replaced was within reach of a real
+ * spawn on a loaded machine, and one of these turns deliberately holds its
+ * stream open for 1.5s on top of that.
+ */
+const TURN_HANG_STOP_MS = 30_000
+
 function createAsideCli() {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-btw-"))
   const cliPath = join(cwd, "fake-claude.cjs")
@@ -480,7 +489,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         prompt,
         tools,
         providerOptions: { "claude-code": { opencodeSessionID: sessionID } },
-        abortSignal: AbortSignal.timeout(5_000),
+        abortSignal: AbortSignal.timeout(TURN_HANG_STOP_MS),
       })
       const parts: LanguageModelV3StreamPart[] = []
       for await (const part of response.stream) parts.push(part)
@@ -488,6 +497,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       const answer = parts.filter((part) => part.type === "text-delta").map((part) => part.delta).join("")
       const finish = parts.find((part) => part.type === "finish")
       return { parts, answer, errors, finish }
+    },
+    /**
+     * Resolve the fake CLI's version before the turns need it. `/btw` is
+     * gated on it and `detectCliVersion` bounds each probe at 5s, which a
+     * loaded machine overruns (measured 2026-10-01); a deadline-killed probe
+     * is no longer cached, so asking again is the recovery.
+     */
+    async warmCliVersion() {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const version = await detectCliVersion(cliPath)
+        if (version) return version
+      }
+      throw new Error("the fake CLI never answered --version")
     },
     async cleanup(sessionIDs: string[]) {
       for (const sessionID of sessionIDs) {
@@ -503,12 +525,15 @@ const user = (text: string) => ({ role: "user" as const, content: [{ type: "text
 const assistant = (text: string) => ({ role: "assistant" as const, content: [{ type: "text" as const, text }] })
 
 test("the hook asks early while the turn is busy, and the queued /btw turn answers from that without asking again", {
-  timeout: 20_000,
+  // Room for more than one 5s version probe on a busy machine; nothing here
+  // should be decided by which attempt wins.
+  timeout: 60_000,
 }, async () => {
   clearPendingSideQuestionAnswers()
   const fake = createAsideCli()
   const fakeSdk = fakeClient()
   try {
+    assert.equal((await fake.warmCliVersion()).raw, "2.1.258")
     const first = await fake.turn("ses_main", [user("Start.")])
     assert.equal(first.answer, "Main answer")
     const active = getActiveProcess(fake.keyFor("ses_main"))
@@ -596,13 +621,14 @@ test("the hook asks early while the turn is busy, and the queued /btw turn answe
 })
 
 test("an answer that arrives while a turn is streaming is written into that turn's own reply", {
-  timeout: 30_000,
+  timeout: 60_000,
 }, async () => {
   clearPendingSideQuestionAnswers()
   clearAsideSinks()
   const fake = createAsideCli()
   const fakeSdk = fakeClient()
   try {
+    assert.equal((await fake.warmCliVersion()).raw, "2.1.258")
     // A first turn only so the conversation has a live process to ask.
     assert.equal((await fake.turn("ses_inline", [user("Start.")])).answer, "Main answer")
     fakeSdk.status.ses_inline = { type: "busy" }
