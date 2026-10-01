@@ -6,12 +6,19 @@ import {
 } from "./background-tasks.js"
 import { detectCliVersion } from "./cli-version.js"
 import {
+  buildLogBundleSection,
+  createRedactionContext,
+  redactForPaste,
+  wantsDiagnosticBundle,
+  type RedactionContext,
+} from "./diagnostic-bundle.js"
+import {
   snapshotMcpServerErrors,
   snapshotPluginLoadFailures,
   type McpServerError,
   type PluginLoadFailure,
 } from "./cli-events.js"
-import { log } from "./logger.js"
+import { describeLogFile, log } from "./logger.js"
 import { fetchPlanUsage, wantsPlanUsage, type PlanUsage } from "./plan-usage.js"
 import {
   snapshotPendingProxyCalls,
@@ -58,12 +65,18 @@ import {
  *
  * Nothing secret goes in it. Not the proxy bearer token, not the value of
  * `ANTHROPIC_API_KEY`, not the system prompt, not a pending call's arguments.
+ *
+ * `/claude-code-doctor bundle` extends that rule to the log: the same report,
+ * plus the recent NOTICE/WARN/ERROR lines run through the allowlist in
+ * `diagnostic-bundle.ts`, so a contributor filing an issue has one thing to
+ * paste instead of a `plugin.log` that has no redaction guarantee at all. It
+ * starts no process, unlike `usage`.
  */
 
 export const DOCTOR_COMMAND = "claude-code-doctor"
 
 export const DOCTOR_COMMAND_DESCRIPTION =
-  "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls. Add `usage` for plan windows"
+  "Report what the Claude Code plugin sees: versions, cwd, live processes, pending proxy calls. Add `usage` for plan windows, or `bundle` for a redacted log you can paste into an issue"
 
 /** Leading marker of the report block, so `message-builder` can strip it. */
 export const DOCTOR_MARKER = "▌ **claude-code doctor**"
@@ -485,6 +498,12 @@ export interface GatherDoctorOptions {
   planUsageImpl?: typeof fetchPlanUsage
   /** The provider option, so the `usage` spawn strips a key like a turn does. */
   ignoreAnthropicApiKey?: boolean
+  /** Seam for tests: where the log is and whether it is on. */
+  logFileImpl?: typeof describeLogFile
+  /** Seam for tests: reads the tail of the log file. */
+  readLogTailImpl?: (path: string, maxBytes: number) => string
+  /** Seam for tests: fixes the per-bundle id salt and the home directory. */
+  redactionContextImpl?: RedactionContext
 }
 
 /** Assemble the live report. Never throws: a broken field reads as unknown. */
@@ -547,6 +566,33 @@ export async function gatherDoctorReport(
   }
 }
 
+/**
+ * `/claude-code-doctor bundle`: the same report, plus the recent warnings,
+ * redacted so the whole thing can be pasted into a GitHub issue.
+ *
+ * The bundle is appended rather than woven in, and the two whole-report
+ * rewrites (home to `~`, session ids to a per-bundle hash) run over the
+ * joined text on purpose: the doctor table is what gets pasted along with the
+ * log, so leaving `/Users/<name>/...` in the cwd row would defeat the section
+ * below it. A plain `/claude-code-doctor`, and `usage`, are untouched.
+ *
+ * No new provider option and no new spawn: `bundle` reads the `argument` that
+ * `usage` already parses (#g167), and unlike `usage` it starts no process at
+ * all, so the report stays instant.
+ */
+export function decorateDoctorReport(report: string, options: GatherDoctorOptions): string {
+  if (!wantsDiagnosticBundle(options.argument ?? "")) return report
+  const context = options.redactionContextImpl ?? createRedactionContext()
+  const logFile = (options.logFileImpl ?? describeLogFile)()
+  const section = buildLogBundleSection({
+    logPath: logFile.path,
+    fileLogging: logFile.enabled,
+    context,
+    readTailImpl: options.readLogTailImpl,
+  })
+  return redactForPaste(`${report}\n\n${section}`, context)
+}
+
 /** The whole command: gather, format, and never let a failure eat the answer. */
 export async function buildDoctorReport(options: GatherDoctorOptions): Promise<string> {
   try {
@@ -563,7 +609,7 @@ export async function buildDoctorReport(options: GatherDoctorOptions): Promise<s
       planUsage: report.planUsage.status,
       backgroundSubagents: report.backgroundSubagents.gate?.supported ?? "not read",
     })
-    return formatDoctorReport(report)
+    return decorateDoctorReport(formatDoctorReport(report), options)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     log.warn("claude-code doctor failed to build its report", { error: message })
