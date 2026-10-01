@@ -99,6 +99,19 @@ function resolvedLogFile(): string {
   return join(activeConfig.dir ?? DEFAULT_DIR, "plugin.log")
 }
 
+/**
+ * Where this process writes, and whether it is writing. Read-only, in the
+ * sense `snapshotActiveProcesses` is: `/claude-code-doctor bundle` needs the
+ * path the running process resolved, including an `OPENCODE_CLAUDE_CODE_LOG_DIR`
+ * override, and must not create or touch the file to find out.
+ *
+ * `enabled` reports what is actually happening, so a log that was disabled
+ * mid-process by a write failure reads as off rather than as an empty bundle.
+ */
+export function describeLogFile(): { path: string; enabled: boolean } {
+  return { path: resolvedLogFile(), enabled: activeConfig.file && !fileLoggingDisabled }
+}
+
 function rotateIfNeeded(logFile: string): void {
   try {
     const stat = statSync(logFile)

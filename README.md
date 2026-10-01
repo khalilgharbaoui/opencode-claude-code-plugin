@@ -956,6 +956,34 @@ The `permissionPreset` row reads `provider: preset` for every registered provide
 
 Nothing secret goes in it: not the proxy bearer token, not the value of `ANTHROPIC_API_KEY`, not the system prompt, not a pending call's arguments. A `claude-code-doctor` command you defined yourself is never overwritten. The name has no space in it because opencode reads everything after the first space as the command's arguments. The whole exchange is kept out of any transcript replayed to the CLI, like a `/btw` pair.
 
+### Filing an issue: /claude-code-doctor bundle
+
+```text
+/claude-code-doctor bundle
+```
+
+**When filing an issue, paste `/claude-code-doctor bundle`.** It returns the report above plus the recent `NOTICE`, `WARN` and `ERROR` lines from this process's plugin log, redacted so the whole thing is safe to put in a public issue. It starts no process and costs no tokens, so unlike `usage` it stays instant.
+
+The point is `plugin.log` itself. It is off by default, and when it is on it has no redaction guarantee at all: it holds spawn argv with `--settings` JSON and absolute paths, the bridged MCP config target, your skill directories, opencode and Claude session ids, and error prose the CLI wrote. Nobody can safely attach it to a GitHub issue, so bug reports arrive as screenshots and guesses instead.
+
+The redaction is an **allowlist**, not a filter, because a filter fails silently the first time someone logs a new field. Per line, what survives is:
+
+- the timestamp and the level,
+- the message text **only** when it is one of the 112 `NOTICE`/`WARN`/`ERROR` message literals extracted from the plugin's own source. A message built at runtime, including every CLI error string the plugin re-logs, becomes `[redacted message, N chars]` and only its data fields remain,
+- data fields whose key is on an explicit allowlist **and** whose value is then the kind that entry declares: versions, counts, booleans, enums, durations, exit codes, model and tool and server names, paths, and the loopback proxy URL with its query dropped. The allowlist applies at every nesting depth.
+
+Everything else, including every key the allowlist does not name, becomes `[redacted, N chars]`, which keeps the shape so you can see a field was there without seeing it. Session ids become a short hash salted per bundle, so two lines about one conversation still correlate in the paste and nowhere else, and your home directory becomes `~` across the whole report, the table included.
+
+Never in a bundle: prompt or reply text, system prompts or the appended prompt file, tool inputs or outputs, file contents, environment values, bearer tokens, the proxy `authToken`, API keys, `Authorization` headers, MCP server env or headers, URL credentials or query strings, or the raw spawn argv. The argv is kept as option names with every value replaced, which is what a spawn bug report actually needs.
+
+It is capped at 120 lines and 24,000 bytes, newest first, and says how many lines it left out. With file logging off it says so, tells you how to turn it on, and still returns the report:
+
+```sh
+OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode
+```
+
+The plain `/claude-code-doctor` output is unchanged by any of this.
+
 ## Per-turn stats
 
 Off by default. With `turnStats: true`:
@@ -1519,7 +1547,8 @@ Four checks answer almost everything. Run them in this order, and stop as soon a
 | Check | What it tells you |
 |---|---|
 | `/claude-code-doctor` in the session | The plugin version actually loaded, the `claude` path and version, which providers and accounts registered, `proxyTools`, the `permissionPreset` per provider and what it replaced, the working directory and which rule picked it, every live `claude` child, and every pending proxy call. No model is called and nothing is billed. Start here. |
-| `OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode`, then grep `~/.local/share/opencode-claude-code/plugin.log` | Whether the plugin loaded at all, and every warning it emitted. The log file is off by default, so turning it on needs a relaunch. |
+| `/claude-code-doctor bundle` in the session | The same report plus this process's recent `NOTICE`/`WARN`/`ERROR` log lines, redacted by allowlist so you can paste the lot into a public issue. **This is what to attach to a bug report.** See [Filing an issue](#filing-an-issue-claude-code-doctor-bundle). |
+| `OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode`, then grep `~/.local/share/opencode-claude-code/plugin.log` | Whether the plugin loaded at all, and every warning it emitted. The log file is off by default, so turning it on needs a relaunch. The raw log is **not** safe to attach to an issue: it has no redaction guarantee and can hold whole system prompts. Use `/claude-code-doctor bundle` for that. |
 | `claude --version` | Whether a version-gated feature can work at all. Version floors: 2.1.142 thinking summaries, 2.1.220 fast mode, 2.1.258 `/btw` and `--restricted`, 2.1.263 `--permission-prompts none`, 2.1.280 `claude-opus-5-5`. |
 | `claude auth status`, or `CLAUDE_CONFIG_DIR=~/.claude-<name> claude auth status` | Which account is signed in, and whether its login is still valid. |
 
