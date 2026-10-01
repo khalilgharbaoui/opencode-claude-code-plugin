@@ -333,19 +333,25 @@ async function fetchRuntimeMcpStatus(): Promise<RuntimeMcpStatus | undefined> {
  * moment to reach a decision. Nothing is pending on an ordinary turn, so the
  * wait costs one status call exactly as before; it only engages while a
  * conversation's first turn races the host's own MCP startup.
+ *
+ * `signal` ends that wait early. It is the turn's own abort signal: a stopped
+ * turn plans no spawn, so holding a 100 ms poll timer open for up to three
+ * seconds after the operator pressed stop is pure delay. The snapshot already
+ * in hand is returned, exactly as a status call that stops answering does.
  */
 export async function getRuntimeMcpStatus(
-  options: { waitForPendingMs?: number } = {},
+  options: { waitForPendingMs?: number; signal?: AbortSignal } = {},
 ): Promise<RuntimeMcpStatus | undefined> {
   const current = await fetchRuntimeMcpStatus()
   const budgetMs = options.waitForPendingMs ?? 0
   if (!current || budgetMs <= 0) return current
-  return waitForPendingMcpServers(current, budgetMs)
+  return waitForPendingMcpServers(current, budgetMs, options.signal)
 }
 
 async function waitForPendingMcpServers(
   first: RuntimeMcpStatus,
   budgetMs: number,
+  signal?: AbortSignal,
 ): Promise<RuntimeMcpStatus> {
   let current = first
   const waitedFor = pendingMcpServers(current)
@@ -354,7 +360,9 @@ async function waitForPendingMcpServers(
   const started = Date.now()
   for (;;) {
     if (Date.now() - started >= budgetMs) break
+    if (signal?.aborted) break
     await new Promise((resolve) => setTimeout(resolve, MCP_CONNECT_POLL_MS))
+    if (signal?.aborted) break
     // A status call that stops answering mid-wait is not a reason to throw
     // away the snapshot we already have: keep it and plan the spawn.
     const next = await fetchRuntimeMcpStatus()
@@ -369,6 +377,7 @@ async function waitForPendingMcpServers(
     stillPending,
     budgetMs,
     elapsedMs: Date.now() - started,
+    aborted: signal?.aborted === true,
   })
   return current
 }

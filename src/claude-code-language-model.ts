@@ -190,6 +190,7 @@ import {
   toUsage,
 } from "./usage.js"
 import { createTurnState } from "./turn-state.js"
+import { watchTurnAbort } from "./turn-abort.js"
 import { createLineHandler } from "./stream-parser.js"
 import {
   DRAIN_QUIET_MS,
@@ -791,6 +792,35 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     mode: TurnMode = "stream",
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
+    // Created before the prologue's first await, because
+    // `addEventListener("abort")` on a signal that already aborted never
+    // fires: the stream's own abort handler cannot exist until this prologue
+    // has finished, so a stop that landed in here used to be observed by
+    // nobody and the turn spawned, wrote and billed anyway.
+    // src/turn-abort.ts, (h #g182).
+    const turnAbort = watchTurnAbort(options.abortSignal)
+    // How an abort observed before the CLI was ever asked for work ends the
+    // turn: nothing spawned, nothing written, no `interrupt` for a turn this
+    // doStream did not start, and proxy calls an earlier step left pending
+    // are not touched, so the next message's orphan sweep still owns them
+    // (h #g26, h #g82). The stream closes with no `finish` and no `error`,
+    // which is how the abort branch already ends a turn that had no content.
+    const abortedBeforeWork = (
+      stage: string,
+    ): Awaited<ReturnType<LanguageModelV3["doStream"]>> => {
+      log.info("abort before the turn asked claude for work; nothing spawned", {
+        stage,
+        reason: describeAbortReason(turnAbort.reason),
+      })
+      turnAbort.dispose()
+      const aborted = new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          controller.close()
+        },
+      })
+      return { stream: aborted, request: { body: { text: "" } } }
+    }
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
@@ -896,6 +926,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             modelId: effectiveModelId,
           })
     let cliPath = failover.cliPath
+
+    // First checkpoint: the two awaits above both talk to opencode and both
+    // can be slow. Taken here, before the doctor, `/btw` and title branches
+    // do any work of their own and before this turn consumes a stored
+    // failover or plan-approval answer.
+    if (turnAbort.aborted) return abortedBeforeWork("resolving the spawn cwd and account")
 
     // Tagged onto the process each turn so the /btw command hook, which only
     // knows the opencode session id, can find it and ask it early
@@ -1253,7 +1289,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // the SDK client routes through `Server.app.fetch` (no socket).
     // Detect the Claude CLI version in parallel so the spawn can decide
     // which optional flags it supports without crashing older binaries.
-    const [runtimeStatus, cliVersion] = await Promise.all([
+    //
+    // This is the longest wait in the prologue (up to 3 s of MCP connect wait
+    // plus up to the probe's own 5 s deadline), so it is the one an operator
+    // is most likely to stop inside: it races the abort rather than running to
+    // completion. The work itself is left running on purpose. `detectCliVersion`
+    // caches its answer per `cliPath` for the whole process and three flag
+    // gates read it, so cancelling the probe because THIS turn was stopped
+    // would withhold every version-gated flag from the next one (h #g181); the
+    // MCP wait is given the signal instead, since its poll loop is ours and
+    // holds a timer.
+    const prologueWork = Promise.all([
       compactionMode
         ? Promise.resolve(undefined)
         : getRuntimeMcpStatus({
@@ -1264,9 +1310,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             waitForPendingMs: resolveMcpConnectWaitMs(
               this.config.mcpConnectWaitMs,
             ),
+            signal: options.abortSignal,
           }),
       detectCliVersion(cliPath),
     ])
+    // The abort can win the race below and leave nobody awaiting this promise.
+    // A rejection then needs an owner here, or it surfaces as an unhandled
+    // rejection inside opencode's process; the `await` below still sees it.
+    prologueWork.catch(() => undefined)
+    const prologue = await Promise.race([
+      prologueWork.then((value) => ({ value })),
+      turnAbort.whenAborted.then(() => undefined),
+    ])
+    if (!prologue) {
+      return abortedBeforeWork("waiting for opencode's MCP status and the CLI version")
+    }
+    const [runtimeStatus, cliVersion] = prologue.value
 
     // Whether a usage limit on this account should end the turn with the
     // switch form. Resolved here, in the prologue, for the same reason the
@@ -1312,6 +1371,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         ? Object.keys(options.providerOptions)
         : [],
     })
+
+    // Last checkpoint before the stream exists, covering the plan-mode gate,
+    // the live tool registry and the parent-session lookup above. From here on
+    // the turn has a `TurnState` and the abort handler registered against it,
+    // so an abort is handled rather than returned.
+    if (turnAbort.aborted) return abortedBeforeWork("planning the spawn")
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
@@ -1363,7 +1428,180 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         state.activeProcess = getActiveProcess(sk)
         state.proxyServer = state.activeProcess?.proxyServer ?? null
 
+        // A proxy MCP server this turn created but never handed to a child is
+        // a listening socket nothing will ever close. Only ours: the server on
+        // a reused process belongs to that process and outlives this turn.
+        const discardUnattachedProxyServer = () => {
+          const own = state.proxyServer
+          if (!own || own === state.activeProcess?.proxyServer) return
+          state.proxyServer = null
+          void own.close().catch((error: unknown) => {
+            log.warn("failed to close the proxy server of an aborted turn", {
+              sessionKey: sk,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          })
+        }
+
+        // On abort, keep process alive for next message.
+        //
+        // Registered HERE, in the synchronous part of `start()`, and through
+        // the watch created before the prologue's first await rather than
+        // through `addEventListener` on the signal: every await above and every
+        // await in `setup()` below is a window the operator can stop the turn
+        // in, and a listener attached afterwards never hears an abort that has
+        // already happened. `onAbort` runs this immediately in that case.
+        // (h #g182).
+        //
+        // Proxy calls this turn handed to opencode will never get a result
+        // once the operator aborts: opencode stops its tool runs with the
+        // turn. Release them now, so the CLI's parked requests return and
+        // nothing waits for the next message to find out. Late-result
+        // recovery is untouched: it holds results that already arrived.
+        const releaseAbandonedProxyCalls = (reason: string) => {
+          if (state.drainBuffer.length === 0 && getPendingProxyCalls(sk).length === 0) return
+          rejectAllPendingProxyCallsForSession(sk, new Error(reason))
+          state.drainBuffer.length = 0
+        }
+        turnAbort.onAbort(() => {
+          state.autoContinueState.aborted = true
+
+          // Nothing has been asked of the CLI yet: this turn is still being
+          // prepared. End it here, and leave everything else alone. No
+          // `interrupt`, because the process in `state.activeProcess` is a
+          // reused one whose last turn this doStream never started, and
+          // interrupting that would stop work that is not ours. No release of
+          // pending proxy calls either: they belong to the previous step, and
+          // an abort of a new step changes nothing about how they end
+          // (h #g26, h #g82).
+          if (!state.cliAskedForWork) {
+            if (state.controllerClosed) return
+            state.controllerClosed = true
+            log.info("abort while the turn was still being prepared; nothing was sent to claude", {
+              sessionKey: sk,
+              // A process here was spawned by this turn or reused from an
+              // earlier one; either way nothing was asked of it.
+              attachedProcess: !!state.activeProcess,
+              reason: describeAbortReason(turnAbort.reason),
+            })
+            discardUnattachedProxyServer()
+            state.cleanupTurn?.()
+            if (!state.streamStarted) {
+              state.streamStarted = true
+              controller.enqueue({ type: "stream-start", warnings })
+            }
+            try {
+              controller.close()
+            } catch {}
+            return
+          }
+
+          if (state.turnCompleted || state.controllerClosed) {
+            // This stream already ended on a proxy tool boundary. An abort
+            // here is NOT necessarily the operator: opencode 1.18.32 aborts
+            // the signal of every step that ends in tool calls, about a
+            // second after the finish, while it runs the tool (measured:
+            // 348 of 938 proxied calls on 2026-09-23, and every call in a
+            // plugin-only scratch config). Releasing on that rejected calls
+            // that were working, told Claude "the user doesn't want to
+            // proceed", and pushed each result into the next turn as text.
+            // The abort reason is the same `AbortError` either way, so
+            // opencode's session status decides: still busy means it is
+            // running the tool, idle means the operator stopped the turn.
+            // Unknown keeps the call, which at worst leaves a real abort
+            // waiting for the next message, as it did before release-on-
+            // abort existed.
+            const stoppedProcess = state.activeProcess
+            if (
+              stoppedProcess &&
+              stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
+              getPendingProxyCalls(sk).length > 0
+            ) {
+              const reason = describeAbortReason(options.abortSignal?.reason)
+              void settleSessionRunState(affinity).then((stopped) => {
+                // Re-checked after the wait: a later turn that attached in
+                // the meantime owns these calls now.
+                const stillParked =
+                  stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
+                  getPendingProxyCalls(sk).length > 0
+                // Only a positive `busy` keeps the call. `unknown` (no SDK
+                // client, no status route, a failed read) releases exactly
+                // as it did before this check existed, so a build that
+                // cannot ask is never left worse off.
+                if (stopped === "busy" || !stillParked) {
+                  log.debug("abort at a tool boundary while opencode is still running the turn; keeping pending calls", {
+                    sk,
+                    session: stopped,
+                    stillParked,
+                    reason,
+                  })
+                  return
+                }
+                log.info("abort between proxy tool boundaries; releasing pending calls", { sk, reason })
+                void interruptTurn(stoppedProcess).then((idle) => {
+                  log.info("interrupt sent for aborted turn", { sk, idle })
+                })
+                releaseAbandonedProxyCalls(
+                  "Provider stream was aborted while opencode was running its proxy tool calls",
+                )
+              })
+            }
+            return
+          }
+
+          // Stop the CLI's turn, not just our end of the stream: it would
+          // otherwise run the abandoned turn to completion, billing tokens
+          // and executing tools, with its late output landing in the next
+          // turn. The process itself stays alive for the next message.
+          if (state.activeProcess) {
+            void interruptTurn(state.activeProcess).then((idle) => {
+              log.info("interrupt sent for aborted turn", { sk, idle })
+            })
+          }
+
+          if (!state.hasReceivedContent) {
+            log.info(
+              "abort signal received before content, closing stream immediately",
+              { cwd },
+            )
+            releaseAbandonedProxyCalls(
+              "Provider stream was aborted before pending proxy calls were emitted",
+            )
+            state.controllerClosed = true
+            state.cleanupTurn?.()
+            try {
+              controller.close()
+            } catch {}
+            return
+          }
+
+          log.info(
+            "abort signal received mid-turn, starting grace period",
+            { cwd },
+          )
+          releaseAbandonedProxyCalls(
+            "Provider stream was aborted while proxy tool calls were pending",
+          )
+          // Abort grace period, short since the user already asked to stop.
+          startResultFallback(state, 5_000)
+        })
+
+        // Every await in `setup()` is a window the handler above can fire in,
+        // and when it does the stream is already closed by the time control
+        // comes back. Checked where it matters: before a child is spawned, and
+        // before anything is written to one.
+        const stoppedBeforeWork = () => {
+          if (!state.controllerClosed || state.cliAskedForWork) return false
+          // A proxy server whose `ensureProxyServer` resolved after the handler
+          // ran was not on the state for it to discard, so the discard belongs
+          // here too. Idempotent: the second call finds nothing of ours.
+          discardUnattachedProxyServer()
+          return true
+        }
+
         const setup = async () => {
+          if (stoppedBeforeWork()) return
+
           // A server opencode connected after this conversation's process was
           // spawned reaches the model by moving the conversation onto a fresh
           // process with the new `--mcp-config` and `--resume`. The boundary
@@ -1465,6 +1703,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 enabled: self.config.bridgeOpencodeSkills === true,
                 ...self.skillBridgeSpawn(failover),
               })
+              if (stoppedBeforeWork()) return
               const ap = spawnInteractiveProcess({
                 cwd,
                 cliPath,
@@ -1782,6 +2021,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             spawnMcpServers = mcp.allEnabledServerNames
           }
 
+          if (stoppedBeforeWork()) return
           if (state.activeProcess && !compactionMode) {
             state.proc = state.activeProcess.proc
             state.lineEmitter = state.activeProcess.lineEmitter
@@ -1821,6 +2061,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
+          // The `interruptTurn` above is the last await before this turn asks
+          // the CLI for work, so this is the last chance to stop without one.
+          if (stoppedBeforeWork()) return
+          state.streamStarted = true
           controller.enqueue({ type: "stream-start", warnings })
 
           // Its own text part, led by FAILOVER_MARKER, so a later transcript
@@ -2306,112 +2550,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         state.proc.on("error", procErrorHandler)
 
-        // On abort, keep process alive for next message
-        if (options.abortSignal) {
-          // Proxy calls this turn handed to opencode will never get a result
-          // once the operator aborts: opencode stops its tool runs with the
-          // turn. Release them now, so the CLI's parked requests return and
-          // nothing waits for the next message to find out. Late-result
-          // recovery is untouched: it holds results that already arrived.
-          const releaseAbandonedProxyCalls = (reason: string) => {
-            if (state.drainBuffer.length === 0 && getPendingProxyCalls(sk).length === 0) return
-            rejectAllPendingProxyCallsForSession(sk, new Error(reason))
-            state.drainBuffer.length = 0
-          }
-          options.abortSignal.addEventListener("abort", () => {
-            state.autoContinueState.aborted = true
-            if (state.turnCompleted || state.controllerClosed) {
-              // This stream already ended on a proxy tool boundary. An abort
-              // here is NOT necessarily the operator: opencode 1.18.32 aborts
-              // the signal of every step that ends in tool calls, about a
-              // second after the finish, while it runs the tool (measured:
-              // 348 of 938 proxied calls on 2026-09-23, and every call in a
-              // plugin-only scratch config). Releasing on that rejected calls
-              // that were working, told Claude "the user doesn't want to
-              // proceed", and pushed each result into the next turn as text.
-              // The abort reason is the same `AbortError` either way, so
-              // opencode's session status decides: still busy means it is
-              // running the tool, idle means the operator stopped the turn.
-              // Unknown keeps the call, which at worst leaves a real abort
-              // waiting for the next message, as it did before release-on-
-              // abort existed.
-              const stoppedProcess = state.activeProcess
-              if (
-                stoppedProcess &&
-                stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
-                getPendingProxyCalls(sk).length > 0
-              ) {
-                const reason = describeAbortReason(options.abortSignal?.reason)
-                void settleSessionRunState(affinity).then((stopped) => {
-                  // Re-checked after the wait: a later turn that attached in
-                  // the meantime owns these calls now.
-                  const stillParked =
-                    stoppedProcess.lineEmitter.listenerCount("line") === 0 &&
-                    getPendingProxyCalls(sk).length > 0
-                  // Only a positive `busy` keeps the call. `unknown` (no SDK
-                  // client, no status route, a failed read) releases exactly
-                  // as it did before this check existed, so a build that
-                  // cannot ask is never left worse off.
-                  if (stopped === "busy" || !stillParked) {
-                    log.debug("abort at a tool boundary while opencode is still running the turn; keeping pending calls", {
-                      sk,
-                      session: stopped,
-                      stillParked,
-                      reason,
-                    })
-                    return
-                  }
-                  log.info("abort between proxy tool boundaries; releasing pending calls", { sk, reason })
-                  void interruptTurn(stoppedProcess).then((idle) => {
-                    log.info("interrupt sent for aborted turn", { sk, idle })
-                  })
-                  releaseAbandonedProxyCalls(
-                    "Provider stream was aborted while opencode was running its proxy tool calls",
-                  )
-                })
-              }
-              return
-            }
-
-            // Stop the CLI's turn, not just our end of the stream: it would
-            // otherwise run the abandoned turn to completion, billing tokens
-            // and executing tools, with its late output landing in the next
-            // turn. The process itself stays alive for the next message.
-            if (state.activeProcess) {
-              void interruptTurn(state.activeProcess).then((idle) => {
-                log.info("interrupt sent for aborted turn", { sk, idle })
-              })
-            }
-
-            if (!state.hasReceivedContent) {
-              log.info(
-                "abort signal received before content, closing stream immediately",
-                { cwd },
-              )
-              releaseAbandonedProxyCalls(
-                "Provider stream was aborted before pending proxy calls were emitted",
-              )
-              state.controllerClosed = true
-              cleanupTurn()
-              try {
-                controller.close()
-              } catch {}
-              return
-            }
-
-            log.info(
-              "abort signal received mid-turn, starting grace period",
-              { cwd },
-            )
-            releaseAbandonedProxyCalls(
-              "Provider stream was aborted while proxy tool calls were pending",
-            )
-            // Abort grace period — short, since the user already asked to stop.
-            startResultFallback(state, 5_000)
-          })
-        }
-
         if (hasMatchedPendingResults) {
+          // Resolving a parked call sets the CLI's turn going again, so from
+          // here an abort is an abort of work this turn owns: the handler above
+          // takes its mid-turn branches, exactly as it did before.
+          state.cliAskedForWork = true
           // Tool-result turn: the prompt carries opencode's results for the
           // proxy tool calls we drained on the previous turn. Resolve each
           // matched call (claude CLI's HTTP handlers wake up and continue).
@@ -2489,6 +2632,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         }
 
         // Send the user message for a fresh turn.
+        state.cliAskedForWork = true
         if (state.activeProcess) noteTurnStarted(state.activeProcess)
         state.proc.stdin?.write(userMsg + "\n")
         log.debug("sent user message", { textLength: userMsg.length })

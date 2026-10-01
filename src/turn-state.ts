@@ -116,6 +116,21 @@ export interface TurnState {
 
   // ---- Turn lifecycle -----------------------------------------------------
 
+  /**
+   * This turn has asked the Claude CLI to do work: it wrote the envelope, or
+   * it resolved a parked proxy call and set the CLI's turn going again. False
+   * means the turn is still being prepared, which is what the abort handler
+   * reads to decide that there is nothing to interrupt and nothing to release
+   * (h #g182). Never true for a turn that only reused an idle process.
+   */
+  cliAskedForWork: boolean
+  /**
+   * `stream-start` has been enqueued. The abort handler is registered before
+   * the spawn now, so it can be the first thing to touch the controller, and
+   * enqueuing `stream-start` twice is a protocol violation rather than a
+   * throw.
+   */
+  streamStarted: boolean
   /** A terminal `result` was seen. A close without one is a crash, not a stop. */
   turnCompleted: boolean
   /** The stream is finished. Every handler returns early on it. */
@@ -316,6 +331,8 @@ export function createTurnState(init: TurnStateInit): TurnState {
     reasoningStarted: new Map<number, boolean>(),
     hadThinkingTextFromStream: false,
 
+    cliAskedForWork: false,
+    streamStarted: false,
     turnCompleted: false,
     controllerClosed: false,
     cleanedUp: false,
