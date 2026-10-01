@@ -13,8 +13,10 @@ import {
   parseRateLimitEvent,
   reportCompactBoundary,
   reportConversationReset,
+  reportHookEvent,
   reportRateLimitEvent,
   reportSystemInit,
+  reportToolProgress,
 } from "./cli-events.js"
 import {
   accountBlockKind,
@@ -187,6 +189,27 @@ export function createLineHandler(
           state.controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
           state.endTextBlock()
         }
+      }
+
+      // A hook the user configured ran. Only the SessionStart family
+      // reaches a plugin spawn (everything else needs
+      // `--include-hook-events`, which the plugin never passes), and a
+      // failing one is silent today: the turn succeeds, the context the
+      // hook was meant to add is simply absent. The reporter warns once
+      // and keeps the row for `/claude-code-doctor`; it writes no
+      // transcript note, because a broken hook is a property of the
+      // session rather than of this answer.
+      if (msg.type === "system") {
+        reportHookEvent(msg)
+      }
+
+      // The CLI is still inside a tool it is running itself. Nothing is
+      // enqueued: the watchdog reset this frame is worth already happened
+      // at the top of the handler, and the rest is a log line naming the
+      // tool and how long it has been going.
+      if (msg.type === "tool_progress") {
+        reportToolProgress(msg)
+        return
       }
 
       // Claude Code started a new conversation (`/clear`, plan-mode

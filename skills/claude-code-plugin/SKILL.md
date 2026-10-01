@@ -814,6 +814,16 @@ warned about content that did not load. Read it whenever bridged skills are miss
 `opencode-skills@...` row is the skill bridge itself, which is a plugin bug to report,
 not something to fix in the user's config.
 
+A **Hooks Claude Code ran that failed** section appears only when one did. These are the
+user's own Claude Code hooks (`hook_response` with `outcome: "error"` or a non-zero
+`exit_code`), not opencode's. A failing `SessionStart` hook is otherwise invisible: the
+CLI drops its contribution and the turn succeeds, so the context it was meant to add is
+missing from every turn on that process. Read it whenever a hook's effect is absent. The
+first failure is also a WARN in the terminal. Only the hook's `stderr` is shown, capped
+at 200 characters, because its stdout is spliced into the model's context. The plugin
+never passes `--include-hook-events`, so only `SessionStart` (and `Setup`) hooks are
+reported at all; `cancelled` is not a failure, since an abort produces it.
+
 A **Background subagents** section is always printed: whether `background` was offered
 to Claude and `task_status` / `task_cancel` registered, the opencode major, what decided
 it, and the background tasks this process collected or cancelled. It reads
@@ -865,6 +875,7 @@ Prefer the doctor: it needs no logging change and no restart.
 | No `claude-code` provider or model in the picker at all | The plugin never loaded, or it loaded and the CLI was not usable | Check for a `plugin ready` line first: absent means not loaded (wrong `plugin`/`plugins` key, a 2.x local install not pointing at `dist/`, or no full relaunch), present with `claudeCli.version: not detected` means the binary did not answer `--version`, which also disables every version-gated flag |
 | `Model unavailable` for a model id the user typed | The provider id is not what they assumed | Use the id the ready block's `providers` field lists. With no `accounts` configured on opencode 2 the id is `claude-code`, so `claude-code-default/<model>` fails while the plugin is healthy (measured on opencode 2.0.16, 2026-09-27). Declaring `accounts` is what creates `claude-code-default`; on 1.x with accounts the ids are `claude-code-default` / `claude-code-<name>` and never a bare `claude-code` |
 | `Tool result name changed`, turn aborts, on opencode 2 | Before 0.28.1 a CLI-executed tool's result reached opencode under a different name than its call, and 2.0.16 aborts the turn on the mismatch, breaking every Claude-side MCP server call | Upgrade to 0.28.1+ **and fully relaunch every opencode window**; plugin code is read once at process start, so upgrading the package under a running window changes nothing |
+| A `SessionStart` hook the user configured has no visible effect | It exited non-zero and Claude Code discarded its contribution; the turn still succeeded | Read the **Hooks Claude Code ran that failed** section of `/claude-code-doctor` for the exit code and the hook's stderr. It is their Claude Code settings to fix, not the plugin's |
 | `plugin ready` missing from the log | Logging is off (the default), or the plugin genuinely did not load | Confirm `OPENCODE_CLAUDE_CODE_LOG_FILE=1` and a relaunch before concluding anything. `/claude-code-doctor` answers the same questions with no logging change |
 | "Failed to authenticate: OAuth session expired", one account, turns failing in milliseconds | That account's CLI login lapsed | `claude auth status` for it, then log in again with the command the `▌ **claude account:**` note prints (`CLAUDE_CONFIG_DIR=<that account's dir> claude auth login`). Restart opencode after: a switch taken from the failover form lasts until restart. Login is a user action, never a diagnostic probe |
 | A tool call reported as rejected although it ran | Two fixed causes: opencode 1.18.32 aborts the provider signal of every step ending in tool calls, read as an operator stop (0.26.1); and a call waiting on an unanswered permission prompt was rejected at the flat 10-minute deadline, after which the late approval cancelled Claude's next call (0.26.2) | Upgrade to 0.26.2+ and relaunch. Do NOT raise `proxyToolTimeoutMs` for this: a deadline now waits while opencode reports the session busy |

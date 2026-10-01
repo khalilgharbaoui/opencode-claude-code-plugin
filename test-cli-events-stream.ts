@@ -18,9 +18,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  _resetHookEventReports,
   _resetRateLimitReports,
   _resetSystemInitReports,
+  _resetToolProgressReports,
   _resetUnrecognizedModelReports,
+  snapshotHookFailures,
 } from "./src/cli-events.js"
 import { createClaudeCode } from "./src/index.js"
 import { deleteActiveProcess, sessionKey } from "./src/session-manager.js"
@@ -31,7 +34,7 @@ import { deleteActiveProcess, sessionKey } from "./src/session-manager.js"
  * two pipes are not ordered with each other and a stderr diagnostic has to be
  * seen before the turn it belongs to finishes.
  */
-function createFakeCli(lines: unknown[], stderrText = "") {
+function createFakeCli(lines: unknown[], stderrText = "", lineDelayMs = 0) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-cli-events-"))
   const cliPath = join(cwd, "fake-claude.cjs")
   const source = `#!/usr/bin/env node
@@ -44,13 +47,26 @@ if (process.argv.includes("--version")) {
 
 const LINES = ${JSON.stringify(lines)}
 const STDERR = ${JSON.stringify(stderrText)}
+const LINE_DELAY_MS = ${JSON.stringify(lineDelayMs)}
 const rl = readline.createInterface({ input: process.stdin })
 let answered = false
 rl.on("line", () => {
   if (answered) return
   answered = true
   const replay = () => {
-    for (const line of LINES) process.stdout.write(JSON.stringify(line) + "\\n")
+    if (!LINE_DELAY_MS) {
+      for (const line of LINES) process.stdout.write(JSON.stringify(line) + "\\n")
+      return
+    }
+    // Paced replay, for the watchdog fixtures: the gap between two lines is
+    // the thing under test, so they cannot all arrive in one tick.
+    let index = 0
+    const next = () => {
+      if (index >= LINES.length) return
+      process.stdout.write(JSON.stringify(LINES[index++]) + "\\n")
+      setTimeout(next, LINE_DELAY_MS)
+    }
+    next()
   }
   if (!STDERR) return replay()
   process.stderr.write(STDERR)
@@ -66,11 +82,14 @@ async function streamParts(
   lines: unknown[],
   settings: Record<string, unknown> = {},
   stderrText = "",
+  lineDelayMs = 0,
 ): Promise<any[]> {
   _resetRateLimitReports()
   _resetSystemInitReports()
   _resetUnrecognizedModelReports()
-  const fake = createFakeCli(lines, stderrText)
+  _resetHookEventReports()
+  _resetToolProgressReports()
+  const fake = createFakeCli(lines, stderrText, lineDelayMs)
   const modelId = "claude-test-cli-events"
   const sk = sessionKey(
     fake.cwd,
@@ -503,4 +522,139 @@ test("a reset frame without a conversation id is ignored, as the CLI ignores it"
     .join("")
   assert.doesNotMatch(body, /claude code reset/)
   assert.match(body, /still here/)
+})
+
+/**
+ * The hook frames below are the real shapes a plugin spawn receives. Measured
+ * on Claude Code 2.1.280 on 2026-10-01: the `SessionStart` family is emitted
+ * with no extra flag (the CLI's own gate always allows `SessionStart` and
+ * `Setup`; everything else waits for `--include-hook-events`, which the plugin
+ * never passes), and it arrives before `system`/`init`.
+ */
+const hookStarted = {
+  type: "system",
+  subtype: "hook_started",
+  hook_id: "hook-0000-0000",
+  hook_name: "SessionStart:startup",
+  hook_event: "SessionStart",
+  uuid: "uuid-0000-0000",
+  session_id: "fake-session",
+}
+
+const hookFailed = {
+  type: "system",
+  subtype: "hook_response",
+  hook_id: "hook-0000-0000",
+  hook_name: "SessionStart:startup",
+  hook_event: "SessionStart",
+  output: "probe-hook-stdout\nprobe-hook-stderr\n",
+  stdout: "probe-hook-stdout\n",
+  stderr: "probe-hook-stderr\n",
+  exit_code: 3,
+  outcome: "error",
+  uuid: "uuid-0000-0001",
+  session_id: "fake-session",
+}
+
+test("a hook that failed warns through a real doStream and writes nothing into the turn", async () => {
+  const captured = await captureStderr(() =>
+    streamParts([hookStarted, hookFailed, init, text("hello"), endTurn, successResult]),
+  )
+
+  const warning = captured.lines.join("")
+  assert.match(warning, /"SessionStart:startup" hook \(SessionStart\) exited 3/)
+  assert.match(warning, /probe-hook-stderr/)
+  // The hook's stdout is what the CLI splices into the model's context.
+  assert.equal(warning.includes("probe-hook-stdout"), false)
+
+  // Everything else about the turn is unchanged: the model's text, an
+  // ordinary stop, and no `▌` note, because a broken hook belongs to the
+  // session rather than to this answer.
+  const parts = captured.value
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.equal(body, "hello")
+  assert.equal(body.includes("▌"), false)
+  const finish = parts.find((part) => part.type === "finish")
+  assert.equal(finish?.finishReason.unified, "stop")
+
+  // And the doctor can still retrieve it, which the WARN alone cannot do:
+  // it reaches stderr and a log file that is off by default.
+  const kept = snapshotHookFailures()
+  assert.equal(kept.length, 1)
+  assert.equal(kept[0].hookEvent, "SessionStart")
+  assert.equal(kept[0].exitCode, 3)
+})
+
+test("a hook that succeeded is silent all the way through", async () => {
+  const succeeded = { ...hookFailed, exit_code: 0, outcome: "success", stderr: "" }
+  const captured = await captureStderr(() =>
+    streamParts([hookStarted, succeeded, init, text("hello"), endTurn, successResult]),
+  )
+  assert.equal(captured.lines.join(""), "")
+  assert.equal(snapshotHookFailures().length, 0)
+})
+
+/**
+ * The frame a long CLI-executed tool produces. The watchdog assertion is the
+ * point: `CLAUDE_CODE_RESULT_FALLBACK_MS` is set below the gaps this fixture
+ * leaves, so without a line arriving in between the turn would be closed with
+ * the stream-timeout note instead of finishing.
+ */
+function heartbeat(elapsed: number) {
+  return {
+    type: "tool_progress",
+    tool_use_id: `toolu_fake0001-heartbeat-${elapsed / 30 - 1}`,
+    tool_name: "Bash",
+    parent_tool_use_id: "toolu_fake0001",
+    elapsed_time_seconds: elapsed,
+    heartbeat: true,
+    uuid: `uuid-hb-${elapsed}`,
+    session_id: "fake-session",
+  }
+}
+
+test("a tool_progress heartbeat keeps a long CLI tool alive and adds nothing to the turn", async () => {
+  const original = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
+  // Shorter than the fake's own pacing below, so a turn that stops counting
+  // heartbeats as activity fails this test rather than merely slowing down.
+  process.env.CLAUDE_CODE_RESULT_FALLBACK_MS = "400"
+  try {
+    const parts = await streamParts(
+      [
+        init,
+        assistantToolUse("toolu_fake0001", "Bash"),
+        blockStop(0),
+        heartbeat(30),
+        heartbeat(60),
+        heartbeat(90),
+        text("done"),
+        endTurn,
+        successResult,
+      ],
+      {},
+      "",
+      250,
+    )
+
+    const body = parts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.delta)
+      .join("")
+    assert.equal(body, "done", "the turn must reach its own result")
+    assert.equal(body.includes("stream timeout"), false)
+    assert.equal(body.includes("▌"), false)
+
+    // No stream part is derived from a progress frame: opencode has no
+    // registry entry for one and a tool row is already open for the Bash.
+    const names = new Set(parts.map((part) => part.type))
+    assert.equal(names.has("tool-input-start"), true, "the Bash row is the real one")
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish?.finishReason.unified, "stop")
+  } finally {
+    if (original === undefined) delete process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
+    else process.env.CLAUDE_CODE_RESULT_FALLBACK_MS = original
+  }
 })

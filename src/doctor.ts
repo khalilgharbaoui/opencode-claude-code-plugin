@@ -6,8 +6,10 @@ import {
 } from "./background-tasks.js"
 import { detectCliVersion } from "./cli-version.js"
 import {
+  snapshotHookFailures,
   snapshotMcpServerErrors,
   snapshotPluginLoadFailures,
+  type HookFailure,
   type McpServerError,
   type PluginLoadFailure,
 } from "./cli-events.js"
@@ -140,6 +142,8 @@ export interface DoctorReport {
   mcpServerErrors: McpServerError[]
   /** Claude plugins (the skill bridge's included) that did not load this process. */
   pluginLoadFailures: PluginLoadFailure[]
+  /** Hooks the user configured that failed on a spawn this process made. */
+  hookFailures: HookFailure[]
   /** The CLI's own plan-usage report, only when `usage` was asked for. */
   planUsage: PlanUsage
   /** Background subagents: the gate as last read, and what this process did. */
@@ -308,6 +312,31 @@ export function formatDoctorReport(report: DoctorReport): string {
         `| ${failure.plugin} | ${failure.kind} | \`${failure.type}\` | ${failure.message || "no detail"} |`,
       )
     }
+  }
+
+  // Same rule again, and the reason is the same shape: a hook that fails
+  // leaves no trace in the turn at all. The CLI runs it, discards it and
+  // answers normally, so the only sign is the WARN, which reaches stderr and
+  // a log file that is off by default.
+  if (report.hookFailures.length > 0) {
+    lines.push("")
+    lines.push("**Hooks Claude Code ran that failed**")
+    lines.push("")
+    lines.push("| hook | event | exit | outcome | its stderr |")
+    lines.push("|---|---|---|---|---|")
+    for (const failure of report.hookFailures) {
+      lines.push(
+        `| ${failure.hookName} | ${failure.hookEvent} | ${failure.exitCode ?? "n/a"} | ` +
+          `${failure.outcome ?? "unknown"} | ${failure.stderr || "nothing"} |`,
+      )
+    }
+    lines.push("")
+    lines.push(
+      "These are your own Claude Code hooks, not opencode's. A failed hook's " +
+        "contribution to the session is missing and the turn succeeds anyway. Only the " +
+        "hook's stderr is shown: its stdout is spliced into the model's context and has " +
+        "no business in a bug report.",
+    )
   }
 
   lines.push("")
@@ -539,6 +568,7 @@ export async function gatherDoctorReport(
     proxyServers,
     mcpServerErrors: snapshotMcpServerErrors(),
     pluginLoadFailures: snapshotPluginLoadFailures(),
+    hookFailures: snapshotHookFailures(),
     planUsage,
     backgroundSubagents: {
       gate: snapshotBackgroundSubagentGate(),

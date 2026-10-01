@@ -75,6 +75,7 @@ const report: DoctorReport = {
   proxyServers: [{ url: "http://127.0.0.1:51234/mcp", auth: { status: "ok", code: 401 } }],
   mcpServerErrors: [],
   pluginLoadFailures: [],
+  hookFailures: [],
   planUsage: { status: "not-requested" },
   backgroundSubagents: { gate: undefined, ledgers: [] },
 }
@@ -229,6 +230,38 @@ test("plugins Claude Code did not load get their own section, and only when ther
   assert.ok(text.includes("**Plugins Claude Code did not load**"), text)
   assert.ok(text.includes("| probe-dep@inline | error | `dependency-unsatisfied` | Dependency missing |"), text)
   assert.ok(text.includes("| workspace@settings | warning | `suppressed` | no detail |"), text)
+})
+
+test("hooks that failed get their own section, with their stderr and not their stdout", () => {
+  assert.equal(formatDoctorReport(report).includes("Hooks Claude Code ran"), false)
+
+  const text = formatDoctorReport({
+    ...report,
+    hookFailures: [
+      {
+        hookName: "SessionStart:startup",
+        hookEvent: "SessionStart",
+        exitCode: 3,
+        outcome: "error",
+        stderr: "probe-hook-stderr",
+      },
+      {
+        hookName: "PreToolUse:Bash",
+        hookEvent: "PreToolUse",
+        exitCode: undefined,
+        outcome: "error",
+        stderr: "",
+      },
+    ],
+  })
+  assert.ok(text.includes("**Hooks Claude Code ran that failed**"), text)
+  assert.ok(
+    text.includes("| SessionStart:startup | SessionStart | 3 | error | probe-hook-stderr |"),
+    text,
+  )
+  assert.ok(text.includes("| PreToolUse:Bash | PreToolUse | n/a | error | nothing |"), text)
+  // The hook's stdout is model context; the report says so and never holds it.
+  assert.ok(text.includes("its stdout is spliced into the model's context"), text)
 })
 
 test("plan usage is off unless asked for, and says how to ask", () => {

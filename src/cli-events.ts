@@ -858,3 +858,312 @@ export function reportUnrecognizedModel(stderr: string): void {
   warnedUnrecognizedModels.add(model)
   log.warn(message, { model, ...(floor ? { cliFloor: floor } : {}) })
 }
+
+// ---------------------------------------------------------------------------
+// system / hook_started, hook_progress, hook_response
+// ---------------------------------------------------------------------------
+
+/**
+ * One frame of a Claude Code hook's lifecycle. Schemas read out of the CLI's
+ * own zod on 2.1.280:
+ *
+ *   `{type:"system",subtype:"hook_started",hook_id,hook_name,hook_event,uuid,session_id}`
+ *   `{type:"system",subtype:"hook_progress",hook_id,hook_name,hook_event,stdout,stderr,output,uuid,session_id}`
+ *   `{type:"system",subtype:"hook_response",hook_id,hook_name,hook_event,output,stdout,stderr,exit_code?,outcome:["success","error","cancelled"],uuid,session_id}`
+ *
+ * The gate in the same binary is `i3(event)`: `["SessionStart","Setup"]`
+ * always emit, every other hook event only when `--include-hook-events` set
+ * `allHookEventsEnabled`. The plugin never passes that flag, so what arrives
+ * on a plugin spawn is exactly the `SessionStart` family, and it arrives on
+ * every spawn: measured on 2.1.280 in the plugin's own argv, three
+ * `SessionStart:startup` hooks produced three `hook_started` and three
+ * `hook_response` before `system`/`init`.
+ */
+export interface HookEvent {
+  phase: "started" | "progress" | "response"
+  hookId: string
+  /** `SessionStart:startup`, the matcher-qualified name the CLI displays. */
+  hookName: string
+  /** `SessionStart`, the lifecycle event it is attached to. */
+  hookEvent: string
+  exitCode?: number
+  outcome?: string
+  /** Only ever the hook's stderr; see `describeHookFailure` for why. */
+  stderr?: string
+}
+
+const HOOK_SUBTYPES: Record<string, HookEvent["phase"]> = {
+  hook_started: "started",
+  hook_progress: "progress",
+  hook_response: "response",
+}
+
+export function parseHookEvent(msg: ClaudeStreamMessage): HookEvent | null {
+  if (msg.type !== "system") return null
+  const phase = msg.subtype ? HOOK_SUBTYPES[msg.subtype] : undefined
+  if (!phase) return null
+  const raw = msg as unknown as Record<string, unknown>
+  const hookName = str(raw.hook_name)
+  const hookEvent = str(raw.hook_event)
+  // The CLI's own adapter drops a frame it cannot name; so do we, rather than
+  // warn about `undefined` failing.
+  if (!hookName || !hookEvent) return null
+  return {
+    phase,
+    hookId: str(raw.hook_id) ?? "unknown",
+    hookName,
+    hookEvent,
+    exitCode: num(raw.exit_code),
+    outcome: str(raw.outcome),
+    stderr: str(raw.stderr),
+  }
+}
+
+/**
+ * Whether this response is a hook the user has to fix.
+ *
+ * `outcome` is the CLI's own verdict and is authoritative, but `exit_code` is
+ * optional in the schema while `outcome` is not, so a non-zero exit with no
+ * outcome still counts. `cancelled` is deliberately not a failure: an abort
+ * cancels whatever hooks were in flight, and warning about that would fire on
+ * every interrupted turn.
+ */
+export function isHookFailure(hook: HookEvent): boolean {
+  if (hook.phase !== "response") return false
+  if (hook.outcome === "error") return true
+  if (hook.outcome === "cancelled" || hook.outcome === "success") return false
+  return hook.exitCode !== undefined && hook.exitCode !== 0
+}
+
+/**
+ * The 200-character cap and the stderr-only rule are the whole reason this is
+ * a separate function.
+ *
+ * A hook's `output` and `stdout` are what the CLI splices into the model's
+ * context: measured on 2.1.280, the maintainer's own `SessionStart` hooks put
+ * a whole instruction block and a `hookSpecificOutput.additionalContext`
+ * payload there. None of that belongs in a WARN or in a bug report pasted
+ * into an issue. `stderr` is where a failing hook writes why it failed, and
+ * nothing else is read.
+ */
+export const HOOK_STDERR_CAP = 200
+
+export function describeHookFailure(hook: HookEvent): string {
+  const how =
+    hook.exitCode !== undefined
+      ? `exited ${hook.exitCode}`
+      : `reported \`${hook.outcome ?? "error"}\``
+  const tail = hook.stderr?.trim()
+  const detail = tail
+    ? ` It wrote to stderr: ${tail.length > HOOK_STDERR_CAP ? `${tail.slice(0, HOOK_STDERR_CAP)}...` : tail}`
+    : " It wrote nothing to stderr."
+  return (
+    `Claude Code's "${hook.hookName}" hook (${hook.hookEvent}) ${how}, so whatever it ` +
+    "contributes to the session is missing and every turn on this process runs without " +
+    `it. Fix or remove the hook in your Claude Code settings.${detail}`
+  )
+}
+
+/** A failed hook kept for `/claude-code-doctor`. */
+export interface HookFailure {
+  hookName: string
+  hookEvent: string
+  exitCode: number | undefined
+  outcome: string | undefined
+  stderr: string
+}
+
+const warnedHookFailures = new Set<string>()
+/** Newest wins per `event:name`, like `lastMcpServerErrors`, for the doctor. */
+const lastHookFailures = new Map<string, HookFailure>()
+
+/** Test-only. */
+export function _resetHookEventReports(): void {
+  warnedHookFailures.clear()
+  lastHookFailures.clear()
+}
+
+/** Read-only view for the doctor. Never touches the dedup set. */
+export function snapshotHookFailures(): HookFailure[] {
+  return [...lastHookFailures.values()]
+}
+
+/**
+ * WARN once per `event:name:outcome:exit` per process for a hook that failed,
+ * and nothing louder than DEBUG for anything else.
+ *
+ * The identity deliberately excludes `hook_id`, which is a fresh uuid on every
+ * spawn: keying on it would warn again for the same broken hook on every
+ * respawn and on every one of the sixteen processes a session can hold.
+ */
+export function reportHookEvent(msg: ClaudeStreamMessage): void {
+  const hook = parseHookEvent(msg)
+  if (!hook) return
+  const data = {
+    hook: hook.hookName,
+    event: hook.hookEvent,
+    ...(hook.exitCode === undefined ? {} : { exitCode: hook.exitCode }),
+    ...(hook.outcome ? { outcome: hook.outcome } : {}),
+  }
+  if (!isHookFailure(hook)) {
+    // Including `cancelled`: real, but caused by an abort rather than by the
+    // hook, and the operator already knows they interrupted the turn.
+    log.debug(`claude code hook ${hook.phase}`, data)
+    return
+  }
+  const failure: HookFailure = {
+    hookName: hook.hookName,
+    hookEvent: hook.hookEvent,
+    exitCode: hook.exitCode,
+    outcome: hook.outcome,
+    stderr: hook.stderr?.trim().slice(0, HOOK_STDERR_CAP) ?? "",
+  }
+  lastHookFailures.set(`${hook.hookEvent}:${hook.hookName}`, failure)
+  const key = `${hook.hookEvent}:${hook.hookName}:${hook.outcome ?? "?"}:${hook.exitCode ?? "?"}`
+  const message = describeHookFailure(hook)
+  if (warnedHookFailures.has(key)) {
+    log.debug(message, data)
+    return
+  }
+  warnedHookFailures.add(key)
+  log.warn(message, data)
+}
+
+// ---------------------------------------------------------------------------
+// tool_progress
+// ---------------------------------------------------------------------------
+
+/**
+ * A tool the CLI is still running. Schema from Claude Code 2.1.280:
+ * `{type:"tool_progress",tool_use_id,tool_name,parent_tool_use_id,
+ * elapsed_time_seconds,task_id?,uuid,session_id,heartbeat?,subagent_type?,
+ * subagent_retry?}`.
+ *
+ * Two of its emitters are gated and one is not. `bash_progress` and
+ * `powershell_progress` need `CLAUDE_CODE_REMOTE` or `CLAUDE_CODE_CONTAINER_ID`
+ * in the environment, so a local Bash never produces them. The heartbeat does
+ * not: `xEn` arms a 30-second interval around every tool call in the main
+ * conversation, which is why these arrive in the plugin's own mode with no
+ * flag at all. Measured on 2.1.280 driving a CLI-executed `sleep 95`: frames
+ * at 30, 60 and 90 seconds, so the longest gap between two stdout lines across
+ * the whole 102-second turn was 30.0s.
+ *
+ * `tool_use_id` on a heartbeat frame is synthetic (`<real id>-heartbeat-0`,
+ * `-1`, ...) and the real tool's id is in `parent_tool_use_id`. Reading the
+ * wrong one gives an id nothing else in the turn has ever seen, so
+ * `toolUseId` below is the real one and the frame's own is kept separately.
+ */
+export interface ToolProgress {
+  /** The tool call this is about: `parent_tool_use_id` when the CLI set one. */
+  toolUseId: string
+  /** The frame's own id, synthetic on a heartbeat. */
+  frameToolUseId: string
+  toolName: string
+  elapsedSeconds: number
+  heartbeat: boolean
+  taskId?: string
+  subagentType?: string
+  subagentRetry?: {
+    agentId: string
+    attempt: number
+    maxRetries: number
+    errorStatus: number | undefined
+    errorCategory: string
+  }
+}
+
+/**
+ * Defensive in the CLI's own terms: its `sdkMessageAdapter` drops a frame
+ * "with a non-string tool_name/tool_use_id or non-finite
+ * elapsed_time_seconds", so this returns null on exactly those.
+ */
+export function parseToolProgress(msg: ClaudeStreamMessage): ToolProgress | null {
+  if (msg.type !== "tool_progress") return null
+  const raw = msg as unknown as Record<string, unknown>
+  const frameToolUseId = str(raw.tool_use_id)
+  const toolName = str(raw.tool_name)
+  const elapsedSeconds = num(raw.elapsed_time_seconds)
+  if (!frameToolUseId || !toolName || elapsedSeconds === undefined) return null
+  const retry = isRecord(raw.subagent_retry) ? raw.subagent_retry : undefined
+  return {
+    toolUseId: str(raw.parent_tool_use_id) ?? frameToolUseId,
+    frameToolUseId,
+    toolName,
+    elapsedSeconds,
+    heartbeat: raw.heartbeat === true,
+    taskId: str(raw.task_id),
+    subagentType: str(raw.subagent_type),
+    subagentRetry: retry
+      ? {
+          agentId: str(retry.agent_id) ?? "unknown",
+          attempt: num(retry.attempt) ?? 0,
+          maxRetries: num(retry.max_retries) ?? 0,
+          errorStatus: num(retry.error_status),
+          errorCategory: str(retry.error_category) ?? "unknown",
+        }
+      : undefined,
+  }
+}
+
+export function describeToolProgress(progress: ToolProgress): string {
+  if (progress.subagentRetry) {
+    const retry = progress.subagentRetry
+    return (
+      `Claude Code is retrying a subagent's API call (${retry.errorCategory}` +
+      `${retry.errorStatus === undefined ? "" : ` ${retry.errorStatus}`}), attempt ` +
+      `${retry.attempt} of ${retry.maxRetries}. The turn is still running.`
+    )
+  }
+  return `claude code tool still running: ${progress.toolName} at ${progress.elapsedSeconds}s`
+}
+
+const reportedSubagentRetries = new Set<string>()
+
+/** Test-only. */
+export function _resetToolProgressReports(): void {
+  reportedSubagentRetries.clear()
+}
+
+/**
+ * Logs the frame. Deliberately returns nothing: there is no transcript note
+ * and no stream part here.
+ *
+ * The one job a progress frame could have done is already done for free. The
+ * line handler calls `startResultFallback` on every line it receives, so a
+ * heartbeat resets the 60-second wire-inactivity watchdog like any other line,
+ * and the measured 30-second cadence keeps a long CLI-executed tool at half
+ * the deadline. What was missing was not the reset but the diagnostic: until
+ * now a turn stuck inside a ten-minute `Bash` wrote twenty `stream message
+ * tool_progress` debug lines that named neither the tool nor how long it had
+ * been going. That is what the INFO line below says.
+ *
+ * No dedup on the heartbeat, which is the one reporter in this file without
+ * one, because its identity is `(tool_use_id, elapsed)` and the CLI never
+ * repeats a pair: deduping would suppress nothing and hide the elapsed times,
+ * which are the whole content. A subagent retry does repeat, so it dedupes.
+ */
+export function reportToolProgress(msg: ClaudeStreamMessage): void {
+  const progress = parseToolProgress(msg)
+  if (!progress) return
+  const data: Record<string, unknown> = {
+    tool: progress.toolName,
+    toolUseId: progress.toolUseId,
+    elapsedSeconds: progress.elapsedSeconds,
+    ...(progress.taskId ? { taskId: progress.taskId } : {}),
+    ...(progress.subagentType ? { subagentType: progress.subagentType } : {}),
+  }
+  const message = describeToolProgress(progress)
+  if (!progress.subagentRetry) {
+    log.info(message, data)
+    return
+  }
+  const retry = progress.subagentRetry
+  const key = `${retry.agentId}:${retry.errorCategory}`
+  const retryData = { ...data, ...retry }
+  if (reportedSubagentRetries.has(key)) {
+    log.debug(message, retryData)
+    return
+  }
+  reportedSubagentRetries.add(key)
+  log.notice(message, retryData)
+}

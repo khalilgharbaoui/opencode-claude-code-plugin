@@ -18,6 +18,8 @@ import {
   RESULT_ERROR_MARKER,
   _resetRateLimitReports,
   _resetSystemInitReports,
+  _resetHookEventReports,
+  _resetToolProgressReports,
   _resetUnrecognizedModelReports,
   apiKeySourceWarning,
   describeRateLimit,
@@ -32,12 +34,21 @@ import {
   parseSystemInit,
   parseUnrecognizedModel,
   reportUnrecognizedModel,
+  snapshotHookFailures,
   snapshotPluginLoadFailures,
   rateLimitKey,
   reportCompactBoundary,
   reportRateLimitEvent,
   reportSystemInit,
+  describeHookFailure,
   describeMcpServerError,
+  describeToolProgress,
+  isHookFailure,
+  parseHookEvent,
+  parseToolProgress,
+  reportHookEvent,
+  reportToolProgress,
+  HOOK_STDERR_CAP,
   snapshotMcpServerErrors,
 } from "./src/cli-events.js"
 import { _resetLoggerForTests, configureLogger } from "./src/logger.js"
@@ -517,5 +528,248 @@ test("a plugin that did not load warns once; an advisory warning for a loaded on
     "error:probe-dep@inline",
     "warning:workspace@settings",
   ])
+  _resetLoggerForTests()
+})
+
+// ---------------------------------------------------------------------------
+// system / hook_started, hook_progress, hook_response
+// ---------------------------------------------------------------------------
+
+/**
+ * Both fixtures below are real frames from Claude Code 2.1.280 driven in the
+ * plugin's own argv (`--print --output-format stream-json --input-format
+ * stream-json --include-partial-messages --verbose`) on 2026-10-01, with the
+ * uuids replaced and the hook's own stdout dropped: the real `output` and
+ * `stdout` were the maintainer's SessionStart instruction block, which is
+ * exactly the content `reportHookEvent` must never read.
+ */
+const hookStarted = {
+  type: "system",
+  subtype: "hook_started",
+  hook_id: "hook-0000-0000",
+  hook_name: "SessionStart:startup",
+  hook_event: "SessionStart",
+  uuid: "uuid-0000-0000",
+  session_id: "fake-session",
+} as unknown as ClaudeStreamMessage
+
+const hookFailed = {
+  type: "system",
+  subtype: "hook_response",
+  hook_id: "hook-0000-0001",
+  hook_name: "SessionStart:startup",
+  hook_event: "SessionStart",
+  output: "probe-hook-stdout\nprobe-hook-stderr\n",
+  stdout: "probe-hook-stdout\n",
+  stderr: "probe-hook-stderr\n",
+  exit_code: 3,
+  outcome: "error",
+  uuid: "uuid-0000-0001",
+  session_id: "fake-session",
+} as unknown as ClaudeStreamMessage
+
+const hookSucceeded = {
+  ...(hookFailed as object),
+  hook_id: "hook-0000-0002",
+  output: "",
+  stdout: "",
+  stderr: "",
+  exit_code: 0,
+  outcome: "success",
+} as unknown as ClaudeStreamMessage
+
+test("parseHookEvent reads all three documented hook subtypes and nothing else", () => {
+  assert.equal(parseHookEvent(hookStarted)?.phase, "started")
+  assert.equal(parseHookEvent(hookFailed)?.phase, "response")
+  assert.equal(
+    parseHookEvent({
+      type: "system",
+      subtype: "hook_progress",
+      hook_id: "h",
+      hook_name: "SessionStart:startup",
+      hook_event: "SessionStart",
+      stdout: "",
+      stderr: "",
+      output: "",
+    } as unknown as ClaudeStreamMessage)?.phase,
+    "progress",
+  )
+
+  const parsed = parseHookEvent(hookFailed)!
+  assert.equal(parsed.hookName, "SessionStart:startup")
+  assert.equal(parsed.hookEvent, "SessionStart")
+  assert.equal(parsed.exitCode, 3)
+  assert.equal(parsed.outcome, "error")
+  assert.equal(parsed.stderr, "probe-hook-stderr\n")
+
+  // Not a hook frame, and a hook frame the CLI could not name.
+  assert.equal(parseHookEvent({ type: "system", subtype: "init" }), null)
+  assert.equal(parseHookEvent({ type: "tool_progress" }), null)
+  assert.equal(
+    parseHookEvent({ type: "system", subtype: "hook_response", hook_id: "h" } as any),
+    null,
+  )
+})
+
+test("isHookFailure follows outcome, and an abort's cancellation is not a failure", () => {
+  assert.equal(isHookFailure(parseHookEvent(hookFailed)!), true)
+  assert.equal(isHookFailure(parseHookEvent(hookSucceeded)!), false)
+  assert.equal(isHookFailure(parseHookEvent(hookStarted)!), false)
+
+  const cancelled = parseHookEvent({
+    ...(hookFailed as object),
+    outcome: "cancelled",
+    exit_code: 143,
+  } as unknown as ClaudeStreamMessage)!
+  assert.equal(isHookFailure(cancelled), false)
+
+  // `exit_code` is optional in the schema while `outcome` is not, so a
+  // non-zero exit with an outcome the CLI did not send still counts.
+  const noOutcome = parseHookEvent({
+    ...(hookFailed as object),
+    outcome: undefined,
+  } as unknown as ClaudeStreamMessage)!
+  assert.equal(isHookFailure(noOutcome), true)
+})
+
+test("a failing hook warns once, names the fix, and never quotes the hook's stdout", () => {
+  configureLogger({ logFile: false })
+  _resetHookEventReports()
+
+  const first = captureStderr(() => reportHookEvent(hookFailed))
+  assert.equal(first.lines.length, 1, first.lines.join("\n"))
+  assert.match(first.lines[0], /"SessionStart:startup" hook \(SessionStart\) exited 3/)
+  assert.match(first.lines[0], /Fix or remove the hook in your Claude Code settings/)
+  assert.match(first.lines[0], /probe-hook-stderr/)
+  // The hook's stdout is model context, not a diagnostic.
+  assert.equal(first.lines[0].includes("probe-hook-stdout"), false)
+
+  // Same broken hook, new spawn: `hook_id` is a fresh uuid every time, so an
+  // identity that included it would warn again on every respawn.
+  const again = captureStderr(() =>
+    reportHookEvent({ ...(hookFailed as object), hook_id: "hook-0000-0099" } as any),
+  )
+  assert.equal(again.lines.length, 0, again.lines.join("\n"))
+
+  const quiet = captureStderr(() => {
+    reportHookEvent(hookStarted)
+    reportHookEvent(hookSucceeded)
+    reportHookEvent({ ...(hookFailed as object), outcome: "cancelled" } as any)
+  })
+  assert.equal(quiet.lines.length, 0, quiet.lines.join("\n"))
+
+  const kept = snapshotHookFailures()
+  assert.equal(kept.length, 1)
+  assert.equal(kept[0].hookName, "SessionStart:startup")
+  assert.equal(kept[0].exitCode, 3)
+  assert.equal(kept[0].stderr, "probe-hook-stderr")
+  _resetHookEventReports()
+  _resetLoggerForTests()
+})
+
+test("a hook that writes a wall of stderr is capped before it is logged or kept", () => {
+  configureLogger({ logFile: false })
+  _resetHookEventReports()
+  const noisy = { ...(hookFailed as object), stderr: "x".repeat(5_000) } as any
+  const captured = captureStderr(() => reportHookEvent(noisy))
+  assert.equal(captured.lines.length, 1)
+  assert.ok(captured.lines[0].includes(`${"x".repeat(HOOK_STDERR_CAP)}...`))
+  assert.equal(captured.lines[0].includes("x".repeat(HOOK_STDERR_CAP + 1)), false)
+  assert.equal(snapshotHookFailures()[0].stderr.length, HOOK_STDERR_CAP)
+  _resetHookEventReports()
+  _resetLoggerForTests()
+})
+
+// ---------------------------------------------------------------------------
+// tool_progress
+// ---------------------------------------------------------------------------
+
+/**
+ * A real heartbeat frame from Claude Code 2.1.280, captured in the plugin's
+ * own argv on 2026-10-01 while the CLI ran `sleep 95` through its own Bash
+ * tool. Three arrived, at 30, 60 and 90 seconds. Note the id: the frame's own
+ * `tool_use_id` is synthetic and only `parent_tool_use_id` names a tool call
+ * the rest of the turn has ever seen.
+ */
+const heartbeat = {
+  type: "tool_progress",
+  tool_use_id: "toolu_fake0001-heartbeat-1",
+  tool_name: "Bash",
+  parent_tool_use_id: "toolu_fake0001",
+  elapsed_time_seconds: 60,
+  heartbeat: true,
+  uuid: "uuid-0000-0002",
+  session_id: "fake-session",
+} as unknown as ClaudeStreamMessage
+
+test("parseToolProgress prefers the parent id and drops what the CLI's own adapter drops", () => {
+  const parsed = parseToolProgress(heartbeat)!
+  assert.equal(parsed.toolUseId, "toolu_fake0001")
+  assert.equal(parsed.frameToolUseId, "toolu_fake0001-heartbeat-1")
+  assert.equal(parsed.toolName, "Bash")
+  assert.equal(parsed.elapsedSeconds, 60)
+  assert.equal(parsed.heartbeat, true)
+  assert.equal(parsed.subagentRetry, undefined)
+
+  // Without a parent the frame's own id is the tool call.
+  assert.equal(
+    parseToolProgress({ ...(heartbeat as object), parent_tool_use_id: null } as any)?.toolUseId,
+    "toolu_fake0001-heartbeat-1",
+  )
+
+  assert.equal(parseToolProgress({ type: "result" }), null)
+  assert.equal(parseToolProgress({ ...(heartbeat as object), tool_name: 7 } as any), null)
+  assert.equal(parseToolProgress({ ...(heartbeat as object), tool_use_id: null } as any), null)
+  assert.equal(
+    parseToolProgress({ ...(heartbeat as object), elapsed_time_seconds: "60" } as any),
+    null,
+  )
+})
+
+test("a heartbeat is a log line and nothing louder, every time it arrives", () => {
+  configureLogger({ logFile: false })
+  _resetToolProgressReports()
+  const captured = captureStderr(() => {
+    reportToolProgress(heartbeat)
+    reportToolProgress({ ...(heartbeat as object), elapsed_time_seconds: 90 } as any)
+  })
+  assert.equal(captured.lines.length, 0, captured.lines.join("\n"))
+  assert.match(describeToolProgress(parseToolProgress(heartbeat)!), /Bash at 60s/)
+  _resetToolProgressReports()
+  _resetLoggerForTests()
+})
+
+test("a subagent retry says what failed and repeats itself only in the log", () => {
+  configureLogger({ logFile: false })
+  _resetToolProgressReports()
+  const retry = {
+    type: "tool_progress",
+    tool_use_id: "toolu_fake0002",
+    tool_name: "Task",
+    parent_tool_use_id: null,
+    elapsed_time_seconds: 0,
+    subagent_type: "general",
+    subagent_retry: {
+      agent_id: "agent-0001",
+      attempt: 2,
+      max_retries: 3,
+      retry_delay_ms: 1_000,
+      error_status: 529,
+      error_category: "overloaded",
+    },
+  } as unknown as ClaudeStreamMessage
+  const parsed = parseToolProgress(retry)!
+  assert.equal(parsed.subagentRetry?.errorCategory, "overloaded")
+  assert.equal(parsed.subagentRetry?.errorStatus, 529)
+  assert.match(describeToolProgress(parsed), /retrying a subagent's API call \(overloaded 529\)/)
+  assert.match(describeToolProgress(parsed), /attempt 2 of 3/)
+
+  // NOTICE, not WARN: a retry is the CLI recovering, not something to fix.
+  const captured = captureStderr(() => {
+    reportToolProgress(retry)
+    reportToolProgress(retry)
+  })
+  assert.equal(captured.lines.length, 0, captured.lines.join("\n"))
+  _resetToolProgressReports()
   _resetLoggerForTests()
 })
