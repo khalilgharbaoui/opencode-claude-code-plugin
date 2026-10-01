@@ -70,6 +70,7 @@ export interface ClaudeCodeConfig {
   planModeQuestion?: boolean
   webSearch?: WebSearchRouting
   hotReloadMcp?: boolean
+  mcpConnectWaitMs?: number
   proxyOpencodeMcpTools?: boolean
   multiStepContinuation?: boolean
   autoContinueIncompleteTurns?: boolean | "smart"
@@ -466,6 +467,26 @@ export interface ClaudeCodeProviderSettings {
    * survives MCP changes until the chat is reset).
    */
   hotReloadMcp?: boolean
+
+  /**
+   * How long a turn waits for opencode MCP servers it reports as still
+   * connecting (`pending`) before planning the spawn without them, in
+   * milliseconds. Defaults to 3000; `0` disables the wait.
+   *
+   * This only ever engages on opencode 2, which answers its MCP status call
+   * immediately and reports a server it has not finished connecting to as
+   * `pending`. opencode 1 has no such status: its own status call blocks
+   * until every server has reached a decision, so this budget is what makes
+   * a 2.x host behave like a 1.x one. Without it, a conversation whose first
+   * turn arrives while opencode is still starting a server spawns `claude`
+   * without that server, and only the next turn's hot reload brings it in.
+   *
+   * Raise it for a slow server, or set `0` to always plan with whatever the
+   * host says at that instant. A server slower than the budget is not lost
+   * either way: `hotReloadMcp` moves the conversation onto a process that
+   * has it on the next fresh turn.
+   */
+  mcpConnectWaitMs?: number
 
   /**
    * Route opencode MCP server tools through the in-process `opencode_proxy`

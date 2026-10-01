@@ -256,6 +256,7 @@ export function createClaudeCode(
       planModeQuestion: settings.planModeQuestion ?? false,
       webSearch: settings.webSearch,
       hotReloadMcp: settings.hotReloadMcp ?? true,
+      mcpConnectWaitMs: settings.mcpConnectWaitMs,
       proxyOpencodeMcpTools: settings.proxyOpencodeMcpTools === true,
       multiStepContinuation: settings.multiStepContinuation ?? true,
       autoContinueIncompleteTurns:

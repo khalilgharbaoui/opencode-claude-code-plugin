@@ -1119,6 +1119,73 @@ Tests: `test-context-usage.ts`, a fake CLI through a real `doStream` (three call
 - **Measured at merge**, calling `bridgeOpencodeMcp(cwd, { cbm: "connected" }, undefined, "v2")` on a real sandbox config holding `mcp.servers.cbm = { type: "local", command: [codebase-memory-mcp] }`: master's code reported a server named `servers` as enabled and never bridged `cbm`; the PR's bridged `cbm` with its command. The user's V1-format global servers came through identically on both.
 - **A live V2 turn did NOT bridge `cbm`, and that is not the PR's fault**: the turn was planned at 06:56:02.345, opencode logged `mcp connected server=cbm` at 06:56:02.392, and the runtime-status overlay (`enabled: status === "connected"`) correctly dropped a server that was still connecting. A second probe that ran a proxied `bash` first still showed one spawn and the first MCP config: a reused process does not re-bridge when a server connects later. Both are pre-existing, shared with V1, and mostly an `opencode run` artifact, since the TUI connects servers before the first prompt. Recorded as a follow-up.
 - Gate: 980 of 980 on the merged tree (two earlier runs lost 1 and 3 tests to 5-second timeouts at a load average of 31 to 46; the same files passed 49 of 49 in isolation). The squash merge's tree was checked identical to the gated one.
+- **The follow-up in the third bullet was taken; see (h #g180), which supersedes it.**
+
+<a id="g180"></a>
+
+#### A server that connects after the spawn (measured 2026-10-01, opencode 1.18.33 and 2.0.16)
+
+The premise handed to this lane was that "an MCP server that connects after a Claude process was spawned never reaches that process", on both majors, with the reuse half unsolved. Measuring first changed the shape of the work: **one half was only ever broken on opencode 2, and the other half already worked.** Both measurements are below verbatim, because the fix is small precisely because the diagnosis is narrow.
+
+##### What the two majors actually report
+
+The five `McpStatus` variants in `@opencode-ai/sdk@1.18.33` (`dist/gen/types.gen.d.ts:1429-1446`) are `connected`, `disabled`, `failed`, `needs_auth`, `needs_client_registration`. **None of them means "still connecting", and the reason is that opencode 1 never has to say it: `GET /mcp` blocks until every server has resolved.** opencode 2 has a sixth, `pending`, declared in `core/package/dist/types/mcp/index.d.ts` (`Status` is a tagged union of `connected`, `pending`, `disabled`, `failed`, `needs_auth`), and answers immediately.
+
+The 1.x measurement, in a scratch XDG tree under `/tmp/ccp-mcp-lane/v1` with the worktree's `dist` as the only configured plugin (`plugin ready` logged exactly once), a `claude-haiku-4-5` turn, and a stdio MCP server that sleeps before answering `initialize`:
+
+- A probe plugin polling `client.mcp.status()` every 150 ms from plugin init wrote its **first** snapshot 12.2 s later, already `{"slowmcp":{"status":"connected"}}`, against `SLOW_MCP_DELAY_MS=12000`. Every call before that was still in flight. The first `GET /mcp` from outside took 3.77 s and returned `connected`.
+- With the delay at 25 s: session created 08:13:46.3, `bridged opencode MCP config … servers:["slowmcp"]` at 08:14:12.558, spawn at 08:14:12.670. The turn blocked on the plugin's own `getRuntimeMcpStatus()` for the whole connect and **the first spawn already carried the server**. There is no late-connect window on 1.x at all; the cost is first-turn latency, which is opencode's own behaviour and not the plugin's to change.
+
+The 2.0.16 measurement, in `~/opencode-v2-sandbox` (`env.sh` sourced, `--standalone`, plugin path the worktree's `dist`, provider id `claude-code`, no accounts), `SLOW_MCP_DELAY_MS=8000`, on the unchanged tree: `plugin ready` at 08:18:11.381 naming `mcpServers:["slowmcp"]` from disk, spawn at 08:18:12.062, and the spawn's `--mcp-config` held **only** `proxy-4d21baf4e977.json`. No `bridged opencode MCP config` line at all. Claude's own `system`/`init` listed seven servers, none of them `slowmcp`. That is the reported bug, reproduced, and it is opencode 2's `pending` meeting `enabled: status === "connected"`.
+
+##### The reuse half already worked, which is why it is not rewritten here
+
+`hotReloadMcp` has compared `ActiveProcess.mcpHash` against a fresh probe since long before this lane. Driven on 1.18.33 through `opencode serve` with `POST /mcp/slowmcp/disconnect` before turn 1 and `POST /mcp/slowmcp/connect` after it, on the **unchanged** tree:
+
+```
+turn 1 claude init mcp_servers: … no slowmcp
+08:16:42.168 INFO opencode MCP config changed, respawning claude {"previousHash":null,"currentHash":"8317614d9269"}
+08:16:42.723 INFO spawning new claude process … "--resume","79447c41-722f-4a98-b70d-d3035aad8d24" …
+turn 2 claude init mcp_servers: … {"name":"slowmcp","status":"connected"} …
+turn 3 claude init mcp_servers: … slowmcp …   (one spawn, no second respawn)
+```
+
+So the lane's expected shape ("notice the set changed and move the conversation onto a process with the new config through the existing respawn path with `--resume`") was already the behaviour. **Rewriting it onto `respawnActiveProcess` would have been a regression**: that path exists for the start watchdog (h #g84) and deliberately reuses the wedged child's `cliArgs`, which carry the OLD `--mcp-config` paths. A different config is the entire point here, so `deleteActiveProcessAndWait` plus a fresh spawn stays, and the fresh spawn picks `--resume` up from the retained Claude session id.
+
+What it lacked was everything around the decision, which is what `src/mcp-hot-reload.ts` adds:
+
+- **A boundary.** The old code gated on compaction, an active process and the two config flags, and deferred on pending proxy calls. It did not check a turn in flight, an outstanding ExitPlanMode approval, or the interactive transport. `decideMcpHotReload` returns one of ten verdicts and `unchanged` is decided **before** every safety gate, so an ordinary turn cannot log a deferral for a change that never happened.
+- **The interactive exclusion is a fix, not a restriction.** The hot-reload block sits above the `useInteractive` branch, so it applied there too, and `deleteActiveProcessAndWait` is wrong for that transport in a way that reads as working: the shim's `proc` (`src/claude-session-wrapper.ts`) has no `exitCode`, so `hasProcessExited`'s `proc.exitCode !== null` is `undefined !== null`, i.e. true, and the function returns before ever calling `kill()`. The PTY child is detached from the map and leaked, and the interactive transport has no `--resume` path to recover the conversation with. Unverifiable without a real PTY run, so it is excluded and the reason is recorded rather than guessed at.
+- **Names instead of hashes.** `previousHash` / `currentHash` tells an operator nothing they can act on. The line now reads `{"joined":["slowmcp"],"left":[]}`. That needs the previous enabled set, which nothing stored, hence `ActiveProcess.mcpServers` (pre-exclusion, matching `allEnabledServerNames`, so it mirrors what opencode has enabled rather than which route each server took). `respawnActiveProcess` copies it next to `mcpHash` for the same reason it copies the hash: the replacement reuses the old `cliArgs`, so claiming a different server set would make the next turn's diff lie.
+- **A flap guard.** A server oscillating between `connected` and `failed` cost a kill and a `--resume` spawn on every single turn. One respawn per conversation per `CLAUDE_CODE_MCP_HOT_RELOAD_COOLDOWN_MS` (60 s, `0` disables) is cheaper than that, and a real second change is not lost: it lands on the first turn after the gap. The ledger is capped at 64 entries, the same shape as `MAX_CLAUDE_SESSION_ENTRIES`, because nothing in the ordinary lifecycle removes one.
+
+##### Why `pending` leaves the disk value rather than forcing `enabled: true`
+
+Three options were on the table for `pending`: force it on, force it off (the status quo), or leave the configured value. The third is what a missing entry already does, and the overlay's whole contract is to mirror a decision opencode has made. `pending` is the absence of one. Forcing it on would also override a disk `enabled: false`, which a test pins against.
+
+The bounded wait (`mcpConnectWaitMs`, default 3000, `0` disables) is the other half and it is deliberately **not** load-bearing for getting a slow server bridged: `pending`-tolerance already does that. Its job is accuracy, so a server opencode is about to call `failed` is not bridged into Claude on a guess. It re-reads every 100 ms, returns at the first snapshot with nothing pending, and keeps the snapshot it already has if the status call stops answering mid-wait. An ordinary turn pays one status call exactly as before, and a 1.x host never engages it, because `pending` cannot occur there.
+
+Measured cost on 2.0.16, same sandbox: with both a real `codebase-memory-mcp` and the fixture server starting at the same time as the host, **neither was `pending` when the first turn was planned** and no wait line was logged. The budget engaged only against the artificial 8 s delay, where it burned its 3 s and then bridged the server anyway, which is the designed outcome. That is also the end-to-end verification:
+
+```
+08:24:40.777 INFO waited for opencode MCP servers to finish connecting
+             {"waitedFor":["slowmcp"],"stillPending":["slowmcp"],"budgetMs":3000,"elapsedMs":3040}
+08:24:40.780 INFO bridged opencode MCP config {"servers":["slowmcp"],"excluded":[]}
+claude init mcp_servers: … {"name":"slowmcp","status":"connected"} …
+```
+
+`waitedFor` naming `slowmcp` is also the direct evidence that the status string opencode 2 reports is literally `pending`.
+
+##### Verification
+
+`test-mcp-late-connect.ts`, 22 tests: the overlay's treatment of all five statuses plus `pending` and the disk-disabled case, the hash moving when a pending server resolves (which is what arms the hot reload), the wait's early return / bound / zero-budget / no-client cases, every verdict of `decideMcpHotReload` including each unsafe boundary by name and the cooldown's per-session-key scope, and five fake-CLI tests that drive a real `doStream` twice over one session key and assert on the argv each spawn actually received: the server reaching the second spawn with `--resume`, no spawn when the set is unchanged, none under `hotReloadMcp: false`, none while the child is marked in flight, and none for the flap back inside the cooldown.
+
+Two traps in writing those, both worth knowing before touching the file:
+
+- **The fake CLI must not log capability probes.** `resolveSkillPluginDirs` runs a `--help` probe, which is a spawn of the same binary; counting it made every assertion off by one. It filters on `--print`.
+- **A second turn whose prompt holds one user message is a NEW conversation**, and `doStream` drops the cached process and the Claude session id before any of this is reached (`hasPriorConversation`). A two-turn fixture that forgets its history tests nothing and silently passes the wrong assertions.
+
+Master baseline: a one-off probe asserting `mergeOpencodeMcp(root, { joining: "pending" }).enabledServerNames` is `["joining"]` fails on the stashed `src/` and passes with it restored.
 
 <a id="g179"></a>
 

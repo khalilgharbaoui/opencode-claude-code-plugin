@@ -66,10 +66,14 @@ import {
 } from "./doctor.js"
 import { resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
-import { consumeExitPlanModeQuestionResult } from "./plan-mode-question.js"
+import {
+  consumeExitPlanModeQuestionResult,
+  hasExitPlanModeQuestions,
+} from "./plan-mode-question.js"
 import { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
+  resolveMcpConnectWaitMs,
   fetchSessionParentId,
   resolveSpawnCwdForSession,
   fetchSessionRunState,
@@ -169,6 +173,11 @@ import {
   stripContextRemindersEnabled,
   type LiveToolInfo,
 } from "./spawn-planning.js"
+import {
+  decideMcpHotReload,
+  logMcpHotReloadDecision,
+  noteMcpHotReload,
+} from "./mcp-hot-reload.js"
 import {
   isTitleRequest,
   latestUserText,
@@ -1245,7 +1254,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Detect the Claude CLI version in parallel so the spawn can decide
     // which optional flags it supports without crashing older binaries.
     const [runtimeStatus, cliVersion] = await Promise.all([
-      compactionMode ? Promise.resolve(undefined) : getRuntimeMcpStatus(),
+      compactionMode
+        ? Promise.resolve(undefined)
+        : getRuntimeMcpStatus({
+            // Give a server opencode is still starting a bounded moment to
+            // reach a decision before the spawn is planned without it. Only
+            // opencode 2 ever reports `pending`, so on 1.x this is one status
+            // call exactly as before.
+            waitForPendingMs: resolveMcpConnectWaitMs(
+              this.config.mcpConnectWaitMs,
+            ),
+          }),
       detectCliVersion(cliPath),
     ])
 
@@ -1345,8 +1364,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         state.proxyServer = state.activeProcess?.proxyServer ?? null
 
         const setup = async () => {
-          // Wait for the old owner to exit before resuming its session ID in
-          // the replacement, so two processes never append to one transcript.
+          // A server opencode connected after this conversation's process was
+          // spawned reaches the model by moving the conversation onto a fresh
+          // process with the new `--mcp-config` and `--resume`. The boundary
+          // is everything: a fresh user turn with nothing of the previous one
+          // still in the air. `src/mcp-hot-reload.ts` owns the decision.
+          //
+          // `deleteActiveProcessAndWait` rather than `respawnActiveProcess`:
+          // the watchdog's respawn deliberately reuses the wedged child's
+          // `cliArgs`, which carry the OLD `--mcp-config` paths, and the whole
+          // point here is a different config. Waiting for the old owner to
+          // exit is what keeps two processes from appending to one transcript.
           if (
             !compactionMode &&
             state.activeProcess &&
@@ -1355,24 +1383,30 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           ) {
             const probe = self.effectiveMcpConfig(cwd, undefined, runtimeStatus!)
             const previousHash = state.activeProcess.mcpHash ?? null
-            if (previousHash !== probe.bridgedHash) {
-              if (previousPendingProxyCalls.length > 0) {
-                log.info("deferring MCP hot reload until proxy calls resolve", {
-                  sk,
-                  previousHash,
-                  currentHash: probe.bridgedHash,
-                  pendingCalls: previousPendingProxyCalls.length,
-                })
-              } else {
-                log.info("opencode MCP config changed, respawning claude", {
-                  sk,
-                  previousHash,
-                  currentHash: probe.bridgedHash,
-                })
-                await deleteActiveProcessAndWait(sk)
-                state.activeProcess = undefined
-                state.proxyServer = null
-              }
+            const decision = decideMcpHotReload({
+              sessionKey: sk,
+              enabled: true,
+              hasActiveProcess: true,
+              compactionMode,
+              interactive: !!useInteractive,
+              turnInFlight: isTurnInFlight(state.activeProcess),
+              pendingProxyCalls: previousPendingProxyCalls.length,
+              planQuestionPending: hasExitPlanModeQuestions(sk),
+              previousHash,
+              currentHash: probe.bridgedHash,
+              previousServers: state.activeProcess.mcpServers,
+              currentServers: probe.allEnabledServerNames,
+            })
+            logMcpHotReloadDecision(decision, {
+              sessionKey: sk,
+              previousHash,
+              currentHash: probe.bridgedHash,
+            })
+            if (decision.reload) {
+              noteMcpHotReload(sk)
+              await deleteActiveProcessAndWait(sk)
+              state.activeProcess = undefined
+              state.proxyServer = null
             }
           }
 
@@ -1445,6 +1479,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 effort: reasoningEffort,
               })
               ap.mcpHash = mcp.bridgedHash
+              ap.mcpServers = mcp.allEnabledServerNames
               setActiveProcess(sk, ap)
               state.proc = ap.proc
               state.lineEmitter = ap.lineEmitter
@@ -1460,6 +1495,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           let spawnSystemPromptFile: string | undefined
           let spawnProxyServer: ProxyMcpServer | null = null
           let spawnMcpHash: string | null = null
+          let spawnMcpServers: string[] = []
 
           if (compactionMode) {
             // Compaction takes a lean spawn: no MCP servers, no proxy, no
@@ -1743,6 +1779,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             spawnSystemPromptFile = systemPromptFile
             spawnProxyServer = state.proxyServer
             spawnMcpHash = mcp.bridgedHash
+            spawnMcpServers = mcp.allEnabledServerNames
           }
 
           if (state.activeProcess && !compactionMode) {
@@ -1762,6 +1799,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               reasoningEffort,
               promptCacheTtl,
             )
+            ap.mcpServers = spawnMcpServers
             state.proc = ap.proc
             state.lineEmitter = ap.lineEmitter
             state.activeProcess = ap

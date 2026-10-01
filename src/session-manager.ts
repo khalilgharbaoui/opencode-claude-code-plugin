@@ -40,6 +40,14 @@ export interface ActiveProcess {
    * and force a respawn.
    */
   mcpHash?: string | null
+  /**
+   * The opencode MCP server names that were enabled when this process was
+   * spawned, so the hot-reload decision can say which ones joined or left
+   * instead of printing two hashes at an operator. Pre-exclusion, matching
+   * `effectiveMcpConfig`'s `allEnabledServerNames`: it mirrors what opencode
+   * has enabled, not which route each server took.
+   */
+  mcpServers?: string[]
   /** Temp file holding `--append-system-prompt-file` content; unlinked on exit. */
   systemPromptFile?: string
   /** Effort the process was spawned with, so a respawn keeps it. */
@@ -975,6 +983,11 @@ export function respawnActiveProcess(
     old.effort,
     old.promptCacheTtl,
   )
+  // The replacement reuses the old child's `cliArgs`, so it reuses its MCP
+  // config: `mcpHash` rides along above and the server names it names have
+  // to ride with it, or the next turn's hot-reload diff reports every server
+  // as newly joined.
+  replacement.mcpServers = old.mcpServers
   replacement.pendingProxyCompletions = old.pendingProxyCompletions
   delete old.pendingProxyCompletions
   if (turnWasInFlight) noteTurnStarted(replacement)

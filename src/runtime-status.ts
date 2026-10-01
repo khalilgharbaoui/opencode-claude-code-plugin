@@ -1,4 +1,4 @@
-import type { RuntimeMcpStatus } from "./mcp-bridge.js"
+import { MCP_PENDING_STATUS, type RuntimeMcpStatus } from "./mcp-bridge.js"
 import { log } from "./logger.js"
 
 /**
@@ -263,14 +263,44 @@ export async function settleSessionRunState(
 }
 
 /**
- * Snapshot opencode's current MCP runtime status so the bridge can overlay
- * UI-toggled state on top of disk config. Returns `undefined` on any
- * failure (no client captured, status call rejected, malformed response)
- * so the bridge falls back to disk-only.
+ * How long a turn will wait for servers the host reports as `pending` before
+ * it plans the spawn anyway. Only opencode 2 ever reports that status, so on
+ * opencode 1 this costs exactly nothing: its `GET /mcp` already blocks until
+ * every server has reached a decision, which is the behaviour this budget
+ * reproduces on the host that does not.
+ *
+ * Three seconds is the measured shape of the problem rather than a guess: a
+ * local stdio server on this machine reaches `connected` in well under a
+ * second, and the budget only has to outlast a process start. A server that
+ * is slower than this is not lost, it joins through the hot reload on the
+ * next turn; the budget decides how often that second spawn is needed.
  */
-export async function getRuntimeMcpStatus(): Promise<
-  RuntimeMcpStatus | undefined
-> {
+export const DEFAULT_MCP_CONNECT_WAIT_MS = 3000
+
+/** How often the wait re-reads the host's status while something is pending. */
+const MCP_CONNECT_POLL_MS = 100
+
+/**
+ * `mcpConnectWaitMs`, with `0` meaning "do not wait" and anything unusable
+ * (negative, NaN, not a number) falling back to the default rather than
+ * silently disabling the wait.
+ */
+export function resolveMcpConnectWaitMs(configured: unknown): number {
+  if (typeof configured !== "number" || !Number.isFinite(configured)) {
+    return DEFAULT_MCP_CONNECT_WAIT_MS
+  }
+  if (configured < 0) return DEFAULT_MCP_CONNECT_WAIT_MS
+  return configured
+}
+
+/** Server names the host says it is still connecting to. */
+export function pendingMcpServers(status: RuntimeMcpStatus): string[] {
+  return Object.keys(status).filter(
+    (name) => status[name] === MCP_PENDING_STATUS,
+  )
+}
+
+async function fetchRuntimeMcpStatus(): Promise<RuntimeMcpStatus | undefined> {
   const client = opencodeClient
   if (!client?.mcp?.status) return undefined
   try {
@@ -291,6 +321,56 @@ export async function getRuntimeMcpStatus(): Promise<
     })
     return undefined
   }
+}
+
+/**
+ * Snapshot opencode's current MCP runtime status so the bridge can overlay
+ * UI-toggled state on top of disk config. Returns `undefined` on any
+ * failure (no client captured, status call rejected, malformed response)
+ * so the bridge falls back to disk-only.
+ *
+ * `waitForPendingMs` gives servers the host reports as `pending` a bounded
+ * moment to reach a decision. Nothing is pending on an ordinary turn, so the
+ * wait costs one status call exactly as before; it only engages while a
+ * conversation's first turn races the host's own MCP startup.
+ */
+export async function getRuntimeMcpStatus(
+  options: { waitForPendingMs?: number } = {},
+): Promise<RuntimeMcpStatus | undefined> {
+  const current = await fetchRuntimeMcpStatus()
+  const budgetMs = options.waitForPendingMs ?? 0
+  if (!current || budgetMs <= 0) return current
+  return waitForPendingMcpServers(current, budgetMs)
+}
+
+async function waitForPendingMcpServers(
+  first: RuntimeMcpStatus,
+  budgetMs: number,
+): Promise<RuntimeMcpStatus> {
+  let current = first
+  const waitedFor = pendingMcpServers(current)
+  if (waitedFor.length === 0) return current
+
+  const started = Date.now()
+  for (;;) {
+    if (Date.now() - started >= budgetMs) break
+    await new Promise((resolve) => setTimeout(resolve, MCP_CONNECT_POLL_MS))
+    // A status call that stops answering mid-wait is not a reason to throw
+    // away the snapshot we already have: keep it and plan the spawn.
+    const next = await fetchRuntimeMcpStatus()
+    if (!next) break
+    current = next
+    if (pendingMcpServers(current).length === 0) break
+  }
+
+  const stillPending = pendingMcpServers(current)
+  log.info("waited for opencode MCP servers to finish connecting", {
+    waitedFor,
+    stillPending,
+    budgetMs,
+    elapsedMs: Date.now() - started,
+  })
+  return current
 }
 
 export interface OpencodeToolListItem {

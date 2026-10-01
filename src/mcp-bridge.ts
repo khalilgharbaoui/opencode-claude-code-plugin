@@ -463,6 +463,8 @@ export interface MergedMcp {
  *
  * Treatment per server:
  *   - "connected"      → force `enabled: true` (mirror opencode)
+ *   - "pending"        → leave disk value (opencode 2 is still connecting;
+ *     see `MCP_PENDING_STATUS`)
  *   - any other status → force `enabled: false` (don't ship a server
  *     opencode can't run; user fixes it in opencode first)
  *   - missing entry    → leave disk value
@@ -470,6 +472,20 @@ export interface MergedMcp {
  * Omit the overlay and the bridge falls back to disk-only.
  */
 export type RuntimeMcpStatus = Record<string, string>
+
+/**
+ * The status opencode 2 reports for a server it has not finished connecting
+ * to. opencode 1 has no equivalent: its five `McpStatus` variants are all
+ * decisions (`connected`, `disabled`, `failed`, `needs_auth`,
+ * `needs_client_registration`) and `GET /mcp` blocks until every server has
+ * reached one, so a 1.x overlay never sees an undecided server. opencode 2
+ * added a sixth, `pending`, and answers immediately.
+ *
+ * It is deliberately NOT treated as "not connected": a server the host is
+ * still starting would be dropped from the spawn that is about to happen,
+ * and the process would keep that config for the rest of the conversation.
+ */
+export const MCP_PENDING_STATUS = "pending"
 
 /**
  * Read opencode config layers, deep-merge their `mcp` blocks per opencode's
@@ -607,6 +623,13 @@ export function mergeOpencodeMcp(
     for (const name of Object.keys(merged)) {
       const status = runtimeStatus[name]
       if (status === undefined) continue
+      // `pending` is opencode 2 saying "still connecting", which is not a
+      // decision to mirror. Forcing `enabled: false` here is what dropped a
+      // late-connecting server from the first spawn of a conversation, and a
+      // reused process keeps the config it was spawned with. Leave the disk
+      // value, exactly as a missing entry does; `getRuntimeMcpStatus` gives
+      // the host a bounded moment to decide before it gets here.
+      if (status === MCP_PENDING_STATUS) continue
       const existing = merged[name]
       const base =
         existing && typeof existing === "object"
