@@ -1249,6 +1249,7 @@ What settles it, in the order the greps were run:
 - **Found and deliberately not fixed: an abort that arrives during `doStream`'s prologue is dropped.** `detectCliVersion` is awaited in the prologue, before the `ReadableStream` is built, and the abort listener is registered inside `start`. `addEventListener("abort", ...)` on an already-aborted signal never fires, so a stop during a slow prologue is silently ignored and the turn runs on. That is why turn 1 above still passed at 5,874 ms against a 5,000 ms signal. For `/btw` it is harmless; for a normal turn it means an operator's stop during a slow prologue does not stop the CLI's turn. Fixing it changes abort semantics across the whole turn path and belongs in its own change.
 
 ## Tests To Touch When Editing
+- **Changed at merge (maintainer review, 2026-10-01): re-probes are capped.** As opened, every deadline kill was forgotten, with no limit, so a `claude` that is always slower than 5 s (a slow wrapper script, a cold network filesystem) would have made every turn wait the full deadline again, where before it paid once and lost the flags. Now `MAX_DEADLINE_REPROBES = 2`: two consecutive kills per probe key are forgotten and re-asked, the third is cached with a single WARN, and a probe that answers resets the count. The test seams `_resetDeadlineReprobes()` and `_setProbeTimeoutMs()` keep the specs independent of machine speed; `test-cli-probe-cache.ts` exercises the cap at a 200 ms deadline.
 
 <a id="g119"></a>
 

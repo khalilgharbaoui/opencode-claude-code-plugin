@@ -3,7 +3,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
-import { _clearCache, detectCliSupportsFlag, detectCliVersion } from "./src/cli-version.js"
+import {
+  MAX_DEADLINE_REPROBES,
+  _clearCache,
+  _resetDeadlineReprobes,
+  _setProbeTimeoutMs,
+  detectCliSupportsFlag,
+  detectCliVersion,
+} from "./src/cli-version.js"
 
 // These specs spawn real children, because the behaviour under test is what
 // the two probes do when their own five-second deadline kills one. Nothing
@@ -14,6 +21,8 @@ import { _clearCache, detectCliSupportsFlag, detectCliVersion } from "./src/cli-
 /** Ask until the fixture answered for itself rather than being killed. */
 async function untilAnswered<T>(probe: () => Promise<T>, answered: (value: T) => boolean): Promise<T> {
   for (let attempt = 1; attempt <= 6; attempt++) {
+    // Kills here are machine load, not the cap under test below.
+    _resetDeadlineReprobes()
     const value = await probe()
     if (answered(value)) return value
   }
@@ -115,5 +124,29 @@ test("a failure that describes the binary is cached, so it costs one probe", asy
   } finally {
     _clearCache()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Without a cap, a `claude` that is always slower than the deadline would make
+// every turn wait the full deadline again.
+test("consecutive deadline kills are re-probed at most MAX_DEADLINE_REPROBES times, then cached", async () => {
+  _clearCache()
+  _setProbeTimeoutMs(200)
+  const cli = fakeCli()
+  try {
+    const answers: Array<Promise<unknown>> = []
+    for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+      const probe = detectCliVersion(cli.cliPath)
+      answers.push(probe)
+      assert.equal(await probe, null, `attempt ${attempt} was killed`)
+      // Let the forget-or-keep decision run before the next caller asks.
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    assert.equal(new Set(answers).size, MAX_DEADLINE_REPROBES + 1, "each re-probe was a new spawn")
+    const kept = detectCliVersion(cli.cliPath)
+    assert.equal(kept, answers[answers.length - 1], "after the cap the conservative answer is cached")
+  } finally {
+    _clearCache()
+    rmSync(cli.dir, { recursive: true, force: true })
   }
 })

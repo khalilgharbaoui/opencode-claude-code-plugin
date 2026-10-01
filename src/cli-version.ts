@@ -15,6 +15,17 @@ const cache = new Map<string, Promise<CliVersion | null>>()
 
 /** How long a probe spawn may take before we stop waiting for it. */
 const PROBE_TIMEOUT_MS = 5000
+let probeTimeoutMs = PROBE_TIMEOUT_MS
+
+/**
+ * How many times in a row a probe killed by its own deadline is forgotten and
+ * asked again, per probe key. The third consecutive kill is cached like any
+ * other failure: a `claude` (or a wrapper) that is always slower than the
+ * deadline would otherwise make every turn wait the full five seconds again.
+ * A probe that answers resets the count.
+ */
+export const MAX_DEADLINE_REPROBES = 2
+const deadlineReprobes = new Map<string, number>()
 
 /**
  * True when our own deadline killed the probe rather than the binary
@@ -61,7 +72,22 @@ function forgetDeadlineKill<T>(
   killed: () => boolean,
 ): void {
   void probe.then(() => {
-    if (killed() && entries.get(key) === probe) entries.delete(key)
+    if (entries.get(key) !== probe) return
+    if (!killed()) {
+      deadlineReprobes.delete(key)
+      return
+    }
+    const reprobes = deadlineReprobes.get(key) ?? 0
+    if (reprobes >= MAX_DEADLINE_REPROBES) {
+      log.warn("claude kept missing the probe deadline; keeping the conservative answer for this process", {
+        key: key.replace("\x00", " "),
+        deadlineMs: probeTimeoutMs,
+        attempts: reprobes + 1,
+      })
+      return
+    }
+    deadlineReprobes.set(key, reprobes + 1)
+    entries.delete(key)
   })
 }
 
@@ -127,7 +153,7 @@ export function detectCliVersion(cliPath: string): Promise<CliVersion | null> {
   const promise = (async (): Promise<CliVersion | null> => {
     try {
       const { stdout } = await execFileAsync(cliPath, ["--version"], {
-        timeout: PROBE_TIMEOUT_MS,
+        timeout: probeTimeoutMs,
       })
       const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout.trim())
       if (!match) {
@@ -260,7 +286,7 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
   const promise = (async (): Promise<boolean> => {
     try {
       const execution = execFileAsync(cliPath, ["--help"], {
-        timeout: PROBE_TIMEOUT_MS,
+        timeout: probeTimeoutMs,
         killSignal: "SIGKILL",
         maxBuffer: 4 * 1024 * 1024,
       })
@@ -287,4 +313,16 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
 export function _clearCache(): void {
   flagSupport.clear()
   cache.clear()
+  deadlineReprobes.clear()
+  probeTimeoutMs = PROBE_TIMEOUT_MS
+}
+
+/** Test-only: forget the consecutive-kill counts without dropping answers. */
+export function _resetDeadlineReprobes(): void {
+  deadlineReprobes.clear()
+}
+
+/** Test-only: a shorter deadline, so the cap can be exercised in milliseconds. */
+export function _setProbeTimeoutMs(ms: number): void {
+  probeTimeoutMs = ms
 }
