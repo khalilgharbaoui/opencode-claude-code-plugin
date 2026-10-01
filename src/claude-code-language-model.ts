@@ -86,6 +86,7 @@ import {
   buildCliArgs,
   setClaudeSessionId,
   getClaudeSessionId,
+  claudeSessionIsWriting,
   deleteClaudeSessionId,
   deleteActiveProcess,
   deleteActiveProcessAndWait,
@@ -109,7 +110,8 @@ import {
   getCompressionSummary,
 } from "./compression-store.js"
 import { log } from "./logger.js"
-import { detectCliVersion } from "./cli-version.js"
+import { detectCliSupportsFlag, detectCliVersion } from "./cli-version.js"
+import { findForkParent, recordForkFingerprint } from "./session-fork.js"
 import { recordBackgroundSubagentGate } from "./background-tasks.js"
 import {
   resolveDisallowedTools,
@@ -1227,6 +1229,71 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       includeHistoryContext = true
     }
 
+    // A new opencode session that is a FORK of one this provider already
+    // served does not have to pay for its inherited thread twice. Neither
+    // opencode major tells a provider that a session is a fork (see
+    // `src/session-fork.ts`), so the parent is found by matching this
+    // prompt's history against the conversation each sibling key was last
+    // asked to continue. Opt-in: a forked Claude conversation answers under
+    // the system prompt recorded on the PARENT's first request, which is the
+    // one thing here the replay does differently.
+    let forkFromClaudeSessionId: string | undefined
+    if (
+      this.config.forkSessions === true &&
+      includeHistoryContext &&
+      !compactionMode &&
+      !useInteractive &&
+      failoverAnswer?.kind !== "switch"
+    ) {
+      const parent = findForkParent({
+        sessionKey: sk,
+        prompt: options.prompt,
+        cliPath,
+        lookupClaudeSessionId: getClaudeSessionId,
+        // `claudeSessionIsWriting`, not `getActiveProcess`: this walks every
+        // sibling key, and that one refreshes LRU order and cancels idle
+        // timers on everything it touches. An idle live child is fine to
+        // branch from; a transcript mid-write is not.
+        isBusy: claudeSessionIsWriting,
+      })
+      if (parent) {
+        // The only await this branch adds, and it is cached per binary for
+        // the life of the process. Raced against the abort for the same
+        // reason the MCP status call below is: this is still the prologue.
+        const supported = await Promise.race([
+          detectCliSupportsFlag(cliPath, "--fork-session"),
+          turnAbort.whenAborted.then(() => false),
+        ])
+        if (turnAbort.aborted) {
+          return abortedBeforeWork("probing --fork-session support")
+        }
+        if (supported) {
+          forkFromClaudeSessionId = parent.claudeSessionId
+          includeHistoryContext = false
+          log.notice(
+            "forking the parent conversation's claude session instead of replaying it",
+            {
+              sessionKey: sk,
+              parentKey: parent.parentKey,
+              matchedMessages: parent.matched,
+            },
+          )
+        } else {
+          log.warn(
+            "forkSessions is on but this claude CLI has no --fork-session;" +
+              " replaying the conversation instead",
+            { cliPath },
+          )
+        }
+      }
+    }
+    // What this key is being asked to continue, so a later fork of it can be
+    // recognised. Only written when the feature is on, so a default install
+    // does no hashing at all.
+    if (this.config.forkSessions === true && !compactionMode && !useInteractive) {
+      recordForkFingerprint(sk, options.prompt, cliPath)
+    }
+
     // `effectiveModelId` stays intact for session keys, logs, and metadata;
     // only the name handed to the CLI gets the `-fast` marker stripped, and
     // (on a failover) the `@account` suffix the other account's wrapper would
@@ -2004,6 +2071,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             state.cliArgs = buildCliArgs({
               sessionKey: sk,
               skipPermissions,
+              forkFromClaudeSessionId,
               model: spawnModelId,
               permissionMode: self.config.permissionMode,
               mcpConfig: mcp.paths,

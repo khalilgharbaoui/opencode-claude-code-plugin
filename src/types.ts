@@ -84,6 +84,8 @@ export interface ClaudeCodeConfig {
   bridgeSkipNativeSkills?: boolean
   /** Append a one-line cost / duration / cache footer to each finished turn. */
   turnStats?: boolean
+  /** Branch a forked opencode session off the parent's Claude conversation. */
+  forkSessions?: boolean
   logging?: LoggingConfig
 }
 
@@ -441,6 +443,38 @@ export interface ClaudeCodeProviderSettings {
    * `permission_denials` always reach `providerMetadata`.
    */
   turnStats?: boolean
+
+  /**
+   * When a new opencode session turns out to be a fork of one this provider
+   * already served, branch the parent's Claude conversation with
+   * `claude --resume <parent> --fork-session` instead of re-rendering the
+   * whole thread as text into the first message.
+   *
+   * Measured on Claude Code 2.1.280 with haiku 4.5 over a ~13k-token
+   * conversation: the forked turn wrote 814 cache tokens and read 39,710,
+   * against 22,355 written and 17,385 read for the replay of the same thread,
+   * which is $0.0058 against $0.0467 for that one turn. The parent's own
+   * transcript is byte-identical afterwards (checked by hash).
+   *
+   * Off by default, and the reason is measured rather than cautious: a
+   * resumed Claude conversation reuses the system prompt recorded on its
+   * FIRST request (`--system-prompt-snapshot`, default `on`), so a forked
+   * session is answered under the parent's appended system prompt, not this
+   * turn's. Probed directly: a parent seeded with "your codename is ZEBRA"
+   * and forked while passing "your codename is QUAIL" answered ZEBRA. The
+   * conversation the model sees is otherwise the real transcript rather than
+   * the replay's clipped rendering, which is strictly more faithful and
+   * strictly cheaper, so this is worth turning on for branch-heavy work.
+   *
+   * It is also conservative about when it fires. Everything below keeps
+   * today's replay, unchanged: a different account, a parent whose Claude
+   * session id is unknown or gone, a parent that is still busy, a fork cut
+   * mid-conversation or taken mid tool round trip, a different cwd, model,
+   * agent, effort or prompt-cache TTL, a compaction turn, the interactive
+   * transport, an account-failover switch, and a `claude` with no
+   * `--fork-session` flag.
+   */
+  forkSessions?: boolean
 
   /**
    * Routing for Claude's built-in `WebSearch` tool.

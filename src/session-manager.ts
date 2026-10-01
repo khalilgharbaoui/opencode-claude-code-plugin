@@ -16,6 +16,7 @@ import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mod
 import { clearAccountFailoverQuestions } from "./account-failover.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
+import { forgetForkFingerprint } from "./session-fork.js"
 import {
   cliHygieneEnv,
   cliSupportsFastMode,
@@ -666,9 +667,31 @@ export const MAX_CLAUDE_SESSION_ENTRIES = 64
  * strand that work on a session the next turn no longer resumes. Read from
  * the map directly rather than through `getActiveProcess`: that one refreshes
  * LRU order and cancels idle timers, which a scan must not do.
+ *
  */
 function claudeSessionIsBusy(key: string): boolean {
   if (activeProcesses.has(key)) return true
+  return getPendingProxyCalls(key).length > 0 || hasExitPlanModeQuestions(key)
+}
+
+/**
+ * Whether this key's Claude transcript may still be written to.
+ *
+ * Deliberately weaker than `claudeSessionIsBusy`: a key with a live but IDLE
+ * child is not writing anything, and refusing those would make the session
+ * fork fire almost never, since idle eviction is off by default and a
+ * conversation's worker lives until the LRU cap. What a fork must not branch
+ * from is a transcript mid-write: a turn in flight, a proxied call still in
+ * the air (the child is parked inside an MCP call and its transcript ends on
+ * an unanswered `tool_use`), or an unanswered plan-mode question.
+ *
+ * Read from the map directly for the same reason `claudeSessionIsBusy` does:
+ * this is a scan over every sibling key, and `getActiveProcess` refreshes LRU
+ * order and cancels idle timers on everything it touches.
+ */
+export function claudeSessionIsWriting(key: string): boolean {
+  const active = activeProcesses.get(key)
+  if (active && isTurnInFlight(active)) return true
   return getPendingProxyCalls(key).length > 0 || hasExitPlanModeQuestions(key)
 }
 
@@ -707,6 +730,9 @@ export function deleteClaudeSessionId(key: string): void {
   const claudeSessionId = claudeSessions.get(key)
   if (claudeSessionId) clearLedger(claudeSessionId)
   claudeSessions.delete(key)
+  // The fork fingerprint only exists to point at that id. Keeping it would
+  // offer a conversation whose transcript this plugin can no longer name.
+  forgetForkFingerprint(key)
 }
 
 export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): string {
@@ -916,6 +942,31 @@ export function appendResumeIfNeeded(
   sessionKey: string,
   cliArgs: string[],
 ): string[] {
+  // A fork spawn's args point `--resume` at ANOTHER key's conversation and
+  // carry `--fork-session`. Replaying them verbatim would branch the parent a
+  // second time and strand whatever the first fork had already written, so
+  // once this key has a session id of its own the respawn continues that
+  // instead. Before the `system`/`init` frame there is no such id and nothing
+  // was written, and re-forking the parent is then the correct recovery.
+  if (cliArgs.includes("--fork-session")) {
+    const forkedSessionId = claudeSessions.get(sessionKey)
+    if (!forkedSessionId) return cliArgs
+    const resumed: string[] = []
+    for (let i = 0; i < cliArgs.length; i++) {
+      if (cliArgs[i] === "--fork-session") continue
+      if (cliArgs[i] === "--resume") {
+        resumed.push("--resume", forkedSessionId)
+        i++
+        continue
+      }
+      resumed.push(cliArgs[i])
+    }
+    log.info("respawning a forked session on its own claude conversation", {
+      sessionKey,
+      claudeSessionId: forkedSessionId,
+    })
+    return resumed
+  }
   if (cliArgs.includes("--resume") || cliArgs.includes("--session-id")) {
     return cliArgs
   }
@@ -998,6 +1049,15 @@ export function buildCliArgs(opts: {
   sessionKey: string
   skipPermissions: boolean
   includeSessionId?: boolean
+  /**
+   * Claude session id to branch this spawn off, for an opencode session that
+   * is a fork of one this provider already served (`src/session-fork.ts`).
+   * Adds `--resume <id> --fork-session`, which starts a NEW Claude session
+   * holding the parent's conversation and leaves the parent's own transcript
+   * untouched. Mutually exclusive with the `--resume` below by construction:
+   * a key that already has a session id of its own is never a fork candidate.
+   */
+  forkFromClaudeSessionId?: string
   model?: string
   permissionMode?: string
   mcpConfig?: string | string[]
@@ -1015,6 +1075,7 @@ export function buildCliArgs(opts: {
     sessionKey,
     skipPermissions,
     includeSessionId = true,
+    forkFromClaudeSessionId,
     model,
     permissionMode,
     mcpConfig,
@@ -1089,6 +1150,13 @@ export function buildCliArgs(opts: {
     const sessionId = claudeSessions.get(sessionKey)
     if (sessionId && !activeProcesses.has(sessionKey)) {
       args.push("--resume", sessionId)
+    } else if (forkFromClaudeSessionId) {
+      // A forked opencode session continuing another session's Claude
+      // conversation. `--fork-session` is what makes this safe to point at a
+      // transcript that is not ours: the CLI writes a new session id (which
+      // the `system`/`init` frame reports, so the stream parser maps this key
+      // to it exactly as it would a fresh one) and never touches the parent's.
+      args.push("--resume", forkFromClaudeSessionId, "--fork-session")
     }
   }
 
