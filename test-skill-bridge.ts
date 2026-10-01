@@ -18,6 +18,7 @@ import {
   resolveSkillPluginDirs,
   skillRoots,
 } from "./src/skill-bridge.js"
+import { detectCliSupportsFlag } from "./src/cli-version.js"
 import {
   buildCliArgs,
   deleteActiveProcessAndWait,
@@ -115,7 +116,17 @@ const fixtures = (skills: { name: string }[]) =>
  * the flag probe is deterministic and never touches the real binary. Its
  * path is unique per call, which also defeats the probe's per-path cache.
  */
-function fakeCli(base: string, help: string, exitCode = 0): string {
+/**
+ * `resolveSkillPluginDirs` finds out about `--plugin-dir` by spawning this
+ * script with `--help` under a 5s deadline, and a probe that deadline killed
+ * reports "unsupported", which these specs cannot tell apart from a slow
+ * machine and which silently turns the whole bridge off. So a CLI that is
+ * meant to advertise the flag resolves the probe here, waiting on the answer
+ * rather than on one attempt's clock. A deadline-killed probe is not cached
+ * (see `forgetDeadlineKill`), so asking again really does re-probe; the
+ * successful answer is, so every later call is free.
+ */
+async function fakeCli(base: string, help: string, exitCode = 0): Promise<string> {
   const file = path.join(base, `fake-claude-${crypto.randomUUID()}.cjs`)
   fs.writeFileSync(
     file,
@@ -125,6 +136,11 @@ process.exit(0)
 `,
   )
   fs.chmodSync(file, 0o755)
+  if (exitCode === 0 && help.includes("--plugin-dir")) {
+    for (let attempt = 1; !(await detectCliSupportsFlag(file, "--plugin-dir")); attempt++) {
+      if (attempt === 4) throw new Error(`the fake CLI never reported --plugin-dir: ${file}`)
+    }
+  }
   return file
 }
 
@@ -431,7 +447,7 @@ test("a skill Claude already loads is not bridged, and the opt-out brings it bac
     makeSkill(projectClaudeSkills, `${P}clash`, "claude's\n")
     makeSkill(projectSkills, `${P}clash`, "opencode's\n")
 
-    const cliPath = fakeCli(path.dirname(cwd), "--plugin-dir <path>")
+    const cliPath = await fakeCli(path.dirname(cwd), "--plugin-dir <path>")
     const staged = async (skipNative?: boolean) => {
       const dirs = await resolveSkillPluginDirs({ cwd, cliPath, enabled: true, skipNative })
       return skillNames(dirs[0]!).filter((n) => n.startsWith(P))
@@ -455,7 +471,7 @@ test("the native scan follows the account's own CLAUDE_CONFIG_DIR", async () => 
     const account = path.join(path.dirname(cwd), ".claude-other")
     fs.mkdirSync(path.join(account, "skills"), { recursive: true })
 
-    const cliPath = fakeCli(path.dirname(cwd), "--plugin-dir <path>")
+    const cliPath = await fakeCli(path.dirname(cwd), "--plugin-dir <path>")
     const staged = async (configDir?: string) => {
       const dirs = await resolveSkillPluginDirs({ cwd, cliPath, enabled: true, configDir })
       return skillNames(dirs[0]!).filter((n) => n.startsWith(P))
@@ -500,7 +516,7 @@ test("resolveSkillPluginDirs stages only the bundled skill when the user bridge 
     makeSkill(projectSkills, `${P}off`)
     const dirs = await resolveSkillPluginDirs({
       cwd,
-      cliPath: fakeCli(path.dirname(cwd), "--plugin-dir <path>  Load a plugin"),
+      cliPath: await fakeCli(path.dirname(cwd), "--plugin-dir <path>  Load a plugin"),
       enabled: false,
     })
     assert.equal(dirs.length, 1, "the bundled skill is bridged regardless of the opt-in")
@@ -513,7 +529,7 @@ test("resolveSkillPluginDirs stages user skills next to the bundled one when ena
     makeSkill(projectSkills, `${P}on`)
     const dirs = await resolveSkillPluginDirs({
       cwd,
-      cliPath: fakeCli(path.dirname(cwd), "--plugin-dir <path>  Load a plugin"),
+      cliPath: await fakeCli(path.dirname(cwd), "--plugin-dir <path>  Load a plugin"),
       enabled: true,
     })
     assert.equal(dirs.length, 1)
@@ -526,7 +542,7 @@ test("a user skill named like the bundled one wins, so it can be overridden", as
     makeSkill(projectSkills, "claude-code-plugin", "# user override\n")
     const dirs = await resolveSkillPluginDirs({
       cwd,
-      cliPath: fakeCli(path.dirname(cwd), "--plugin-dir <path>"),
+      cliPath: await fakeCli(path.dirname(cwd), "--plugin-dir <path>"),
       enabled: true,
     })
     assert.equal(dirs.length, 1)
@@ -539,8 +555,8 @@ test("resolveSkillPluginDirs degrades to no-op when the CLI lacks --plugin-dir",
   await withFixture(async ({ cwd, projectSkills }) => {
     makeSkill(projectSkills, `${P}unsupported`)
     for (const cliPath of [
-      fakeCli(path.dirname(cwd), "Usage: claude [options]\n  --model <model>"),
-      fakeCli(path.dirname(cwd), "--plugin-dir", 1),
+      await fakeCli(path.dirname(cwd), "Usage: claude [options]\n  --model <model>"),
+      await fakeCli(path.dirname(cwd), "--plugin-dir", 1),
       "/nonexistent/claude-binary",
     ]) {
       const dirs = await resolveSkillPluginDirs({ cwd, cliPath, enabled: true })

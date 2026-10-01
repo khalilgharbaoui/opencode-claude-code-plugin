@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { PassThrough } from "node:stream"
 import { test } from "node:test"
 import { setImmediate } from "node:timers/promises"
-import { cliSupportsSideQuestion, type CliVersion } from "./src/cli-version.js"
+import { cliSupportsSideQuestion, detectCliVersion, type CliVersion } from "./src/cli-version.js"
 import { createClaudeCode, registerSideQuestionCommand } from "./src/index.js"
 import type { OpenCodeConfig } from "./src/opencode-types.js"
 import {
@@ -430,6 +430,17 @@ test("cancel write errors cannot escape after abort/timeout cleanup", async () =
   }
 })
 
+/**
+ * A hang-stop for a provider turn, not a deadline. The fixture answers in
+ * milliseconds, so the only thing this value decides is how long a wedged
+ * child may hold the suite. It used to be 5s, which is within reach of a real
+ * spawn on a loaded machine (5.9s measured on 2026-10-01 at a load average of
+ * 76, with 40 concurrent copies of this file), so the budget was itself the
+ * flake it was meant to catch. Keep it far clear of spawn latency and below
+ * the tests' own timeouts, which are the real backstop.
+ */
+const TURN_HANG_STOP_MS = 30_000
+
 function createSideQuestionCli() {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-side-question-"))
   const cliPath = join(cwd, "fake-claude.cjs")
@@ -512,12 +523,31 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     ),
     async turn(text: string) {
       options.prompt.push({ role: "user", content: [{ type: "text", text }] })
-      const response = await model.doStream({ ...options, abortSignal: AbortSignal.timeout(5_000) })
+      const response = await model.doStream({ ...options, abortSignal: AbortSignal.timeout(TURN_HANG_STOP_MS) })
       const parts: LanguageModelV3StreamPart[] = []
       for await (const part of response.stream) parts.push(part)
       const answer = parts.filter((part) => part.type === "text-delta").map((part) => part.delta).join("")
       options.prompt.push({ role: "assistant", content: [{ type: "text", text: answer }] })
       return { parts, answer }
+    },
+    /**
+     * Resolve the fake CLI's version before the turns need it, waiting on the
+     * answer rather than on one attempt's clock.
+     *
+     * `detectCliVersion` bounds each probe at 5s, and under load that spawn
+     * really does overrun: 6 of 40 concurrent runs of this file on 2026-10-01
+     * (load average 66 to 76) were killed by it. A null version is not a
+     * detail here, it is the whole `/btw` gate, so the turn answered
+     * "requires Claude Code CLI 2.1.258 or newer" and the aside came back
+     * empty. Retrying is the entire recovery now that a deadline-killed probe
+     * is no longer cached; one of these attempts will catch a quiet moment.
+     */
+    async warmCliVersion() {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const version = await detectCliVersion(cliPath)
+        if (version) return version
+      }
+      throw new Error("the fake CLI never answered --version")
     },
     async cleanup() {
       await deleteActiveProcessAndWait(sk)
@@ -528,10 +558,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 }
 
 test("provider /btw uses native control response between normal turns on the same CLI process", {
-  timeout: 20_000,
+  // Generous on purpose: the version probe below may need more than one
+  // attempt at 5s each on a busy machine, and nothing here should ever be
+  // decided by which attempt wins.
+  timeout: 60_000,
 }, async () => {
   const fake = createSideQuestionCli()
   try {
+    assert.equal((await fake.warmCliVersion()).raw, "2.1.258")
     const first = await fake.turn("Start the main conversation.")
     assert.equal(first.answer, "Normal answer 1")
     const active = getActiveProcess(fake.sk)
