@@ -1,0 +1,52 @@
+---
+title: 'Background subagents'
+description: 'Start a subagent, keep working, collect the result later.'
+sidebar:
+  order: 2
+---
+
+A foreground `task` call blocks the conversation until the subagent finishes, and so does `task_batch`. Background dispatch is the other shape: start a subagent, keep working, collect the result later. opencode owns it, this plugin surfaces it, and it is **off unless the opencode process has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`** (or the blanket `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x. On opencode 2.x it is unconditional.
+
+```sh
+OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true opencode
+```
+
+With it set, `mcp__opencode_proxy__task` takes `background: true` and the call comes straight back:
+
+```xml
+<task id="ses_f10789724ffes9OfQApCB04IRe" state="running">
+<summary>Background task started</summary>
+<task_result>
+The task is working in the background. You will be notified automatically when it finishes.
+</task_result>
+</task>
+```
+
+Claude keeps working. When the subagent finishes, opencode prompts the same conversation with the result as a new message, so it arrives as its own turn rather than as that call's result. Measured end to end on opencode 1.18.33 with claude-haiku-4-5: the dispatch returned in 14 s while the child's 30-second command was still running, Claude ran another tool and ended its turn 18 s in, and the `<task ... state="completed">` message landed 43 s later. That notification is automatic, so the right thing after a background dispatch is to end the turn, not to wait or poll.
+
+**opencode 2 uses different envelopes for the same thing**, so the plugin tells the model about its own host's. There a background dispatch answers in prose rather than XML:
+
+```text
+The subagent is working in the background (sessionID: ses_f0cb9005fffekrDPNa1Px8Jp0J). You will be notified automatically when it finishes.
+```
+
+and the completion arrives as `<subagent sessionID="…" state="completed" description="…">`. That `sessionID` is the `task_id` for the two tools below. Measured on opencode 2.0.16.
+
+**The gate is enforced at the schema, not at the call.** On a host without the flag opencode rejects `background: true` outright with `Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, which costs a whole dispatch. So the plugin reads the host's own `task` schema (the same registry fetch that supplies the agent-type list) and, when it has no `background` property, strips the field before Claude ever sees it. Nothing about a default install changes: the model is shown exactly `description`, `prompt`, `subagent_type`, `task_id`, `command`. Either way `plugin.log` says which:
+
+```
+background subagent gate {"supported":true,"registryResolved":true,"hostApi":"v1", ...}
+```
+
+**Collect and cancel.** opencode delivers a background result by pushing it into the conversation and offers nothing else: no route reads a result back, and nothing stops a background child. A notification that never lands (an interrupted turn, an errored turn, a compaction across it) would lose the work, and a subagent running away could only be stopped from another pane. So on a host that runs background subagents, and only there, two more proxy tools ride along with `Task` in the same way `task_batch` does:
+
+| Tool | What it does |
+| --- | --- |
+| `mcp__opencode_proxy__task_status` | Reads the state of a background subagent by its `task_id` and returns its result if it has finished. A recovery path, not a progress poll: a healthy background task delivers its own result. A result is handed over once, so asking again reports the state without repeating the output. |
+| `mcp__opencode_proxy__task_cancel` | Stops a background subagent. A cancelled subagent sends no completion notification. |
+
+The `task_id` is the child's own opencode session id: the `id` in the `<task …>` envelope on opencode 1.x, the `sessionID` the dispatch reported on opencode 2. Both tools are answered inside the plugin rather than executed by opencode, because opencode has no tools of these names, and both refuse any session whose parent is not the conversation doing the asking. Neither can be named in `proxyTools`: they appear only when the host advertises background support, so upgrading changes nothing about what the model can do or spend on a default install.
+
+Both work on opencode 1.x and on opencode 2. On opencode 2 they run over the session routes a plugin is actually given there (`session.context` and `session.interrupt`); opencode 2 gives a plugin no all-sessions run-state map, so "still running" is read off the child's own transcript instead. Verified live on 2.0.16: start, `task_status` answering `running`, `task_cancel` answering `Stopped.`, and a finished child collected once.
+
+**What `/claude-code-doctor` says about it.** The report has a **Background subagents** section: whether `background` was offered to Claude and the two tools registered, which opencode major, and what decided it (the live `task` schema, a registry that did not answer, or opencode 2 offering it unconditionally), plus the background tasks this process has collected or cancelled. The gate is read while a turn plans its proxy tools, so in a fresh process the section reads `Not read yet this process`: send one message and run it again.

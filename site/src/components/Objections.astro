@@ -1,0 +1,109 @@
+---
+/*
+  "Why the CLI and not the API", written as the three objections a sceptic actually
+  raises, each answered in plain terms and pointing at the page where the claim is
+  measured or sourced. `{{tests}}` in an answer is replaced with the live test count.
+*/
+import { loadStats, formatCount } from '../data/stats';
+
+interface Item {
+  claim: string;
+  answer: string;
+  source: { label: string; href: string };
+}
+interface Props {
+  items: Item[];
+}
+const { items } = Astro.props;
+const stats = await loadStats();
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const withBase = (link: string) => (link.startsWith('/') ? `${base}${link}` : link);
+const fill = (text: string) => text.replaceAll('{{tests}}', formatCount(stats.tests));
+---
+
+<dl class="occ-objections not-content">
+  {
+    items.map((item) => (
+      <div class="occ-objection">
+        <dt class="occ-objection__claim">
+          <span class="occ-objection__quote" aria-hidden="true">“</span>
+          {item.claim}
+          <span class="occ-objection__quote" aria-hidden="true">”</span>
+        </dt>
+        <dd class="occ-objection__answer">
+          <p>{fill(item.answer)}</p>
+          <a class="occ-objection__source" href={withBase(item.source.href)}>
+            {item.source.label}
+          </a>
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  .occ-objections {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+  }
+  .occ-objection {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--occ-space-3) var(--occ-space-8);
+    padding-block: var(--occ-space-6);
+    border-top: 1px solid var(--occ-line);
+  }
+  .occ-objection__claim {
+    margin: 0;
+    font-size: var(--sl-text-xl);
+    font-weight: 650;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    color: var(--sl-color-white);
+    text-wrap: balance;
+  }
+  .occ-objection__quote {
+    color: var(--sl-color-text-accent);
+  }
+  .occ-objection__answer {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+  }
+  .occ-objection__answer p {
+    margin: 0;
+    font-size: var(--sl-text-base);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-objection__source {
+    align-self: flex-start;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    text-underline-offset: 0.2em;
+  }
+  .occ-objection__source::before {
+    content: '';
+    display: inline-block;
+    inline-size: 0.5em;
+    block-size: 0.95em;
+    margin-inline-end: 0.5em;
+    vertical-align: -0.1em;
+    border-radius: 1px;
+    background: var(--occ-bar);
+  }
+  .occ-objection__source:hover {
+    text-decoration: underline;
+  }
+
+  @media (min-width: 50rem) {
+    .occ-objection {
+      grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    }
+  }
+</style>

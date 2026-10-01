@@ -1,0 +1,132 @@
+---
+/*
+  Overrides Starlight's Hero (astro.config.mjs: components.Hero). On the landing page it
+  renders the plugin's own hero: a bar-led monospace title beside the process panel. On
+  every other page that declares `hero:` it defers to Starlight's default, so the
+  override never changes a docs page.
+
+  Reads the same frontmatter fields as the default Hero (title, tagline, actions), so
+  the copy stays in index.mdx where an editor expects it.
+*/
+import Default from '@astrojs/starlight/components/Hero.astro';
+import { LinkButton } from '@astrojs/starlight/components';
+import ProcessTree from './ProcessTree.astro';
+import { loadStats } from '../data/stats';
+
+const { starlightRoute } = Astro.locals;
+const isHome = starlightRoute.id === '';
+const { data } = starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero ?? {};
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const withBase = (link: string) => (link.startsWith('/') ? `${base}${link}` : link);
+
+const stats = isHome ? await loadStats() : undefined;
+---
+
+{
+  isHome ? (
+    <div class="occ-hero not-content">
+      <div class="occ-hero__copy">
+        <p class="occ-eyebrow">
+          <span class="occ-hero__name">@khalilgharbaoui/opencode-claude-code-plugin</span>
+          {stats && <span class="occ-hero__meta">v{stats.npmVersion} · MIT · opencode 1.x and 2.x</span>}
+        </p>
+        <h1 id="_top" data-page-title class="occ-hero__title" set:html={title} />
+        {tagline && <p class="occ-hero__tagline" set:html={tagline} />}
+        {actions.length > 0 && (
+          <div class="occ-hero__actions">
+            {actions.map(({ attrs: { class: className, ...attrs } = {}, icon, link, text, variant }) => (
+              <LinkButton href={withBase(link)} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+                {text}
+                {icon?.html && <Fragment set:html={icon.html} />}
+              </LinkButton>
+            ))}
+          </div>
+        )}
+      </div>
+      <ProcessTree />
+    </div>
+  ) : (
+    <Default>
+      <slot />
+    </Default>
+  )
+}
+
+<style>
+  .occ-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--occ-space-8);
+    align-items: center;
+    padding-block: var(--occ-space-8) var(--occ-space-4);
+  }
+  .occ-hero__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-6);
+    min-width: 0;
+  }
+  .occ-hero__name,
+  .occ-hero__meta {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  .occ-hero__name {
+    color: var(--occ-ink-2);
+  }
+
+  /* The title is set the way the plugin writes a note into a transcript:
+     a thick left bar, then the line. Monospace so it reads as output, not marketing. */
+  .occ-hero__title {
+    margin: 0;
+    padding-inline-start: 0.5em;
+    border-inline-start: 0.28em solid var(--occ-bar);
+    font-family: var(--__sl-font-mono);
+    font-size: clamp(2rem, 1rem + 3.2vw, 4.25rem);
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+    text-wrap: balance;
+  }
+  .occ-hero__tagline {
+    margin: 0;
+    max-width: 38rem;
+    font-size: clamp(var(--sl-text-base), 0.9rem + 0.6vw, var(--sl-text-xl));
+    line-height: 1.55;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-hero__tagline :global(code) {
+    font-family: var(--__sl-font-mono);
+    font-size: 0.9em;
+    padding: 0.05em 0.3em;
+    border: 1px solid var(--occ-line);
+    border-radius: 4px;
+    background: var(--sl-color-bg-inline-code);
+  }
+  .occ-hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--occ-space-3) var(--occ-space-6);
+    align-items: center;
+  }
+
+  /* Stacked below 64rem: a tablet column is too narrow for both the title and the
+     panel's 49-character lines. Equal columns to 80rem, then 7/5 once the content
+     width is capped and the title can afford the room. */
+  @media (min-width: 64rem) {
+    .occ-hero {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: var(--occ-space-12);
+      padding-block: clamp(var(--occ-space-12), 8vw, 7rem) var(--occ-space-8);
+    }
+  }
+  @media (min-width: 80rem) {
+    .occ-hero {
+      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    }
+  }
+</style>

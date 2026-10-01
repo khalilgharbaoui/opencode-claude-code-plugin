@@ -1,0 +1,22 @@
+---
+title: 'Known limitations'
+description: 'What the plugin does not do, and the quirks worth knowing before you file a bug.'
+sidebar:
+  order: 4
+---
+
+- Tool inputs stream as they are constructed (Anthropic's `input_json_delta` is forwarded as `tool-input-delta`), but only for tool calls opencode actually sees. Calls the plugin deliberately does not forward, meaning proxy tools, CLI-internal `WebSearch`, `AskUserQuestion`, `ExitPlanMode`, the todo-ledger `Task*` family and Claude's other internal tools, have their deltas suppressed, because a delta for a tool opencode never saw start renders as a permanently pending `⚙ unknown` row.
+- Raw chain-of-thought is not available. Claude 4 family models ship summarized thinking only. See [Extended thinking](../guides/compaction-and-thinking.md#extended-thinking) for the full picture.
+- Recommended Claude Code CLI: **2.1.142+**. Older CLIs work for everything else but skip the `--thinking-display` flag, so Claude Opus 4.7 turns may render empty Thinking rows. If something breaks after a Claude Code update, the CLI version is the first thing to check.
+- **Foreground Task calls have no proxy deadline by default.** The plugin listens for the events that end a call instead of timing it (see [How a proxied call ends](../internals/how-a-proxied-call-ends.md)), so a subagent runs to completion and a chat parked in one holds its `claude` worker until you abort, send another message, delete the chat, or the process goes away. Such a call warns that it is still waiting after five minutes and every five minutes after, so it is never silent. Add a wall-clock backstop via [`proxyToolTimeoutMs`](../guides/tool-proxy.md#per-tool-proxy-timeouts) if you want one. For independent work that should not block the turn at all, use `background: true` after enabling opencode's experimental background-subagent flag.
+- **Subagent todos require explicit permission.** See [Subagent todos](../configuration/subagents.md#subagent-todos) for the rule and a working config.
+
+## Quirks worth knowing
+
+- **Empty text blocks are dropped.** Claude sometimes opens a `content_block_start` for text but never sends a delta. The plugin no longer emits the empty block (which was triggering Anthropic 400s like `cache_control cannot be set for empty text blocks`).
+- **Smart incomplete-turn continuation.** By default, the plugin keeps the current opencode stream open and feeds Claude CLI a small internal continuation message when Claude emits a `result` after reasoning/tool activity without a useful visible answer. It still stops normally on final-looking answers, questions, blockers, errors, aborts, or internal safety-budget exhaustion. It also resumes an answer the model was cut off mid-sentence: a `max_tokens` stop means truncation rather than completion, so the turn continues instead of ending on half a sentence, capped at 8 attempts and 10 minutes. Every other stop reason is taken at face value. Disable with `"autoContinueIncompleteTurns": false`.
+- **`AskUserQuestion`** from the CLI is converted into plain text content rather than forwarded as a tool call, unless `"Question"` is in `proxyTools`, in which case it is routed through opencode's native `question` tool (see [AskUserQuestion](../configuration/permissions.md#askuserquestion)).
+- **Wire-inactivity watchdog.** Once the CLI has produced any content, the stream closes gracefully if stdout goes silent for 60 seconds without a `result` message arriving. Resets on every line received, so long mid-turn pauses (Sonnet between text-end and the next tool_use, for example) are tolerated. On a user-initiated abort, the watchdog shortens to 5 seconds.
+- **Context usage, not turn totals.** The CLI's `result` adds up every API call in a turn, and opencode reads a message's usage as how full the context is, so a tool-heavy turn looked several times its real size and triggered auto-compaction far below the window. The plugin reports the last API call's input and cache counts plus the turn's output instead. See [Per-turn stats](../guides/turn-stats.md) for what that does to opencode's cost figure.
+- **Lazy `cwd`.** The working directory is re-resolved at every request, so opencode's project-aware behavior works without restarting the plugin.
+- **Variants survive merge.** opencode recalculates variant lists after the plugin loads; the plugin re-injects defaults into runtime config so your variants don't disappear.

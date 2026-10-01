@@ -1,0 +1,107 @@
+---
+/*
+  The hero's right-hand panel: what one opencode conversation becomes as processes.
+  Every line is a fact from the README (the real spawn flags, the proxied tool list,
+  the loopback MCP server's name and the 0600 config that holds its bearer token).
+  Static markup, no script. The cursor blink is the page's one piece of motion and
+  stops under prefers-reduced-motion.
+*/
+---
+
+<figure class="occ-tree not-content" aria-label="What the plugin runs for one conversation">
+  <figcaption class="occ-tree__cap">
+    <span>one conversation, as processes</span>
+    <span class="occ-tree__mode">headless</span>
+  </figcaption>
+  <!-- Lines stay under 50 characters: at 13px mono that is the width of the hero's right column. -->
+  <pre class="occ-tree__pre" tabindex="0"><code><span class="r">opencode</span>
+<span class="t">└─ </span><span class="c">claude --print --output-format stream-json</span>
+<span class="t">   ├─ </span><span class="l">auth </span>  <span class="v">your login, never read by the plugin</span>
+<span class="t">   ├─ </span><span class="l">tools</span>  <span class="v">Bash Edit Write WebFetch Task</span>
+<span class="t">   │</span>         <span class="a">run by opencode</span><span class="v">, behind its prompts</span>
+<span class="t">   ├─ </span><span class="l">mcp  </span>  <span class="v">opencode_proxy over loopback, bearer</span>
+<span class="t">   │</span>         <span class="v">--mcp-config 0600, token inside</span>
+<span class="t">   └─ </span><span class="l">own  </span>  <span class="v">Read Grep Glob WebSearch,</span>
+             <span class="v">your MCP servers, your skills</span><span class="cursor" aria-hidden="true"></span></code></pre>
+</figure>
+
+<style>
+  .occ-tree {
+    margin: 0;
+    border: 1px solid var(--occ-line);
+    border-radius: var(--occ-radius);
+    background: var(--occ-panel);
+    box-shadow: var(--sl-shadow-md);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .occ-tree__cap {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--occ-space-4);
+    padding: var(--occ-space-3) var(--occ-space-4);
+    border-bottom: 1px solid var(--occ-line);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--occ-ink-3);
+  }
+  .occ-tree__mode {
+    color: var(--sl-color-text-accent);
+  }
+  .occ-tree__pre {
+    margin: 0;
+    padding: var(--occ-space-4);
+    overflow-x: auto;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    line-height: 1.7;
+    color: var(--occ-ink-2);
+    tab-size: 2;
+  }
+  .occ-tree__pre code {
+    font: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .r {
+    color: var(--occ-ink-1);
+    font-weight: 700;
+  }
+  .c {
+    color: var(--occ-ink-1);
+  }
+  .t,
+  .l {
+    color: var(--occ-ink-3);
+  }
+  .v {
+    color: var(--occ-ink-2);
+  }
+  .a {
+    color: var(--sl-color-text-accent);
+    font-weight: 600;
+  }
+  .cursor {
+    display: inline-block;
+    inline-size: 0.55em;
+    block-size: 1.05em;
+    margin-inline-start: 0.15em;
+    vertical-align: text-bottom;
+    background: var(--occ-bar);
+    animation: occ-blink 1.2s steps(1) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cursor {
+      animation: none;
+    }
+  }
+  @media (max-width: 26rem) {
+    .occ-tree__pre {
+      padding: var(--occ-space-3);
+      font-size: var(--sl-text-2xs);
+    }
+  }
+</style>

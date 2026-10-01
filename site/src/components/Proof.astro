@@ -1,0 +1,178 @@
+---
+/*
+  "Built from measurements": the discipline section. Three columns: the test figure
+  (live), one verbatim rule from AGENTS.md with its evidence marker, and the people
+  behind the features. The excerpt is a real rule; swap it for another only if the
+  replacement is also quoted verbatim with its (h #gNN) marker.
+*/
+import { loadStats, formatCount } from '../data/stats';
+
+interface Contributor {
+  handle: string;
+  what: string;
+}
+interface Props {
+  excerpt: string;
+  excerptRef: string;
+  contributors: Contributor[];
+}
+const { excerpt, excerptRef, contributors } = Astro.props;
+const stats = await loadStats();
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+
+<div class="occ-proof not-content">
+  <div class="occ-proof__col">
+    <p class="occ-proof__figure">
+      <span class="occ-proof__value">{formatCount(stats.tests)}</span>
+      <span class="occ-proof__label">tests, across {stats.testFiles} files</span>
+    </p>
+    <p class="occ-proof__text">
+      A dozen of those files drive a fake <code>claude</code> through a real turn: the stream parser, the proxy
+      broker, the watchdogs, abort, respawn, account failover and the model fallback chain are exercised end to
+      end, not mocked at the edge. Two runtime dependencies in total.
+    </p>
+    <a class="occ-proof__link" href={`${base}/internals/testing/`}>How the suite is built</a>
+  </div>
+
+  <div class="occ-proof__col">
+    <p class="occ-proof__figure">
+      <span class="occ-proof__value occ-proof__value--text">measured</span>
+      <span class="occ-proof__label">every rule in AGENTS.md cites the evidence that produced it</span>
+    </p>
+    <blockquote class="occ-proof__quote">
+      <p>{excerpt}</p>
+      <footer class="occ-proof__ref">{excerptRef}</footer>
+    </blockquote>
+    <a class="occ-proof__link" href={`${base}/internals/measurement-culture/`}>Read the rulebook</a>
+  </div>
+
+  <div class="occ-proof__col">
+    <p class="occ-proof__figure">
+      <span class="occ-proof__value">{formatCount(stats.contributors)}</span>
+      <span class="occ-proof__label">contributors, with authorship preserved</span>
+    </p>
+    <ul class="occ-proof__people" role="list">
+      {
+        contributors.map((person) => (
+          <li>
+            <a href={`https://github.com/${person.handle}`} rel="noopener">@{person.handle}</a>
+            <span class="occ-proof__what">{person.what}</span>
+          </li>
+        ))
+      }
+    </ul>
+    <a class="occ-proof__link" href={`${base}/credits/`}>Everyone, with what they built</a>
+  </div>
+</div>
+
+<style>
+  .occ-proof {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--occ-space-8);
+  }
+  .occ-proof__col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-4);
+    padding-top: var(--occ-space-6);
+    border-top: 1px solid var(--occ-line);
+    min-width: 0;
+  }
+  .occ-proof__figure {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-2);
+    margin: 0;
+  }
+  .occ-proof__value {
+    font-family: var(--__sl-font-mono);
+    font-size: clamp(2rem, 1.4rem + 2vw, 3rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+  }
+  .occ-proof__value--text {
+    color: var(--sl-color-text-accent);
+  }
+  .occ-proof__label {
+    font-size: var(--sl-text-sm);
+    color: var(--occ-ink-2);
+  }
+  .occ-proof__text {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-proof__text code {
+    font-family: var(--__sl-font-mono);
+    font-size: 0.9em;
+    padding: 0.05em 0.3em;
+    border: 1px solid var(--occ-line);
+    border-radius: 4px;
+    background: var(--sl-color-bg-inline-code);
+  }
+  .occ-proof__quote {
+    margin: 0;
+    padding: var(--occ-space-4);
+    border-inline-start: 4px solid var(--occ-bar);
+    border-radius: 0 var(--occ-radius-sm) var(--occ-radius-sm) 0;
+    background: var(--occ-panel);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    line-height: 1.65;
+    color: var(--occ-ink-2);
+  }
+  .occ-proof__quote p {
+    margin: 0 0 var(--occ-space-3);
+  }
+  .occ-proof__ref {
+    color: var(--occ-ink-3);
+  }
+  .occ-proof__people {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-2);
+    font-size: var(--sl-text-sm);
+  }
+  .occ-proof__people a {
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+  }
+  .occ-proof__people a:hover {
+    text-decoration: underline;
+  }
+  .occ-proof__what {
+    display: block;
+    color: var(--occ-ink-3);
+    font-size: var(--sl-text-xs);
+    line-height: 1.5;
+  }
+  .occ-proof__link {
+    margin-top: auto;
+    align-self: flex-start;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    text-underline-offset: 0.2em;
+  }
+  .occ-proof__link:hover {
+    text-decoration: underline;
+  }
+
+  @media (min-width: 50rem) {
+    .occ-proof {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+</style>

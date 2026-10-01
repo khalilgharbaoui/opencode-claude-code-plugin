@@ -1,0 +1,17 @@
+{
+  "name": "opencode-claude-code-plugin-docs",
+  "private": true,
+  "type": "module",
+  "description": "Docs site for @khalilgharbaoui/opencode-claude-code-plugin (Astro Starlight). Builds from the repository's docs/ pages.",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check:links": "node scripts/check-links.mjs"
+  },
+  "dependencies": {
+    "@astrojs/markdown-satteri": "0.4.2",
+    "@astrojs/starlight": "0.42.4",
+    "astro": "7.3.5"
+  }
+}

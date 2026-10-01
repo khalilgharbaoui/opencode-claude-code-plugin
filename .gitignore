@@ -2,5 +2,10 @@ dist/
 node_modules/
 opencode/
 
+# The docs site is its own package and builds into its own directory.
+site/node_modules/
+site/dist/
+site/.astro/
+
 # The repo keeps no lockfile (CI runs npm install); a lane's npm install must not commit one.
 package-lock.json

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-labelledby="occ-banner-title occ-banner-desc">
+  <title id="occ-banner-title">opencode-claude-code-plugin</title>
+  <desc id="occ-banner-desc">Run Claude in opencode through the official claude CLI. Your login, Claude's own tools, opencode's permissions.</desc>
+  <!-- README banner, dark scheme. Hand-written; every reference is internal. -->
+  <defs>
+    <pattern id="occ-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1" fill="#FFFFFF" fill-opacity="0.07"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="300" fill="#0E1013"/>
+  <rect width="1200" height="300" fill="url(#occ-grid)"/>
+  <!-- the left rule: the plugin's own transcript bar, full height -->
+  <rect x="0" y="0" width="6" height="300" fill="#E8A33A"/>
+
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace">
+    <!-- eyebrow: the npm name -->
+    <text x="64" y="74" font-size="16" fill="#8A93A2" textLength="422.4" lengthAdjust="spacingAndGlyphs">@khalilgharbaoui/opencode-claude-code-plugin</text>
+
+    <!-- wordmark -->
+    <text x="64" y="150" font-size="52" font-weight="500" fill="#C9CFD9" textLength="249.6" lengthAdjust="spacingAndGlyphs">opencode</text>
+    <rect x="334" y="104" width="18" height="54" rx="4" fill="#E8A33A"/>
+    <path d="M366 112 L390 131 L366 150" fill="none" stroke="#EEF1F6" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="414" y="150" font-size="52" font-weight="700" fill="#EEF1F6" textLength="343.2" lengthAdjust="spacingAndGlyphs">claude-code</text>
+
+    <!-- tagline -->
+    <text x="64" y="202" font-size="21" fill="#C9CFD9">Run Claude in opencode through the official claude CLI.</text>
+    <text x="64" y="234" font-size="21" fill="#C9CFD9">Your login, Claude's own tools, opencode's permissions.</text>
+    <text x="64" y="270" font-size="15" fill="#8A93A2">MIT licensed. One package for opencode 1.x and 2.x.</text>
+
+    <!-- what the process actually is -->
+    <rect x="818" y="64" width="334" height="172" rx="8" fill="#15181E" stroke="#2A3039"/>
+    <g font-size="17" xml:space="preserve">
+      <text x="838" y="98" fill="#EEF1F6" font-weight="700">opencode</text>
+      <text x="838" y="126" fill="#EEF1F6">└─ claude --print</text>
+      <text x="838" y="154" fill="#8A93A2">   ├─ auth   <tspan fill="#C9CFD9">oauth, untouched</tspan></text>
+      <text x="838" y="182" fill="#8A93A2">   ├─ tools  <tspan fill="#FFC46B">run by opencode</tspan></text>
+      <text x="838" y="210" fill="#8A93A2">   └─ mcp    <tspan fill="#C9CFD9">opencode_proxy</tspan></text>
+    </g>
+  </g>
+</svg>

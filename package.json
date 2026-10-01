@@ -2,6 +2,7 @@
   "name": "@khalilgharbaoui/opencode-claude-code-plugin",
   "version": "0.36.0",
   "description": "Claude Code CLI provider plugin for opencode",
+  "homepage": "https://khalilgharbaoui.github.io/opencode-claude-code-plugin/",
   "author": "Khalil Gharbaoui",
   "type": "module",
   "main": "dist/index.js",

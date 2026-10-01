@@ -24,6 +24,8 @@ changing, reverting or "simplifying" a rule.
 ## Commands
 
 - Keep `skills/claude-code-plugin/SKILL.md` current in the same change whenever options, defaults, env vars, model ids, proxy tools, agent configuration or troubleshooting behavior change: it is the agent-facing configuration reference, not a generated file. `test-configure-skill.ts` checks identifier coverage, but reviewers must still verify defaults, precedence, safety and recipes. Keep `skills` in the package files list and verify built-package discovery when changing layout.
+- **User-facing documentation is the markdown under `docs/`, and `README.md` is a landing page, not the manual.** A change that adds or changes a public option, an env var, a required CLI version, a model id or any behaviour a user can observe belongs on the matching `docs/` page in the same commit; touch `README.md` only when the landing page's own copy (the three bullets, the quickstart, the What you get table, the four-row comparison) stops being true. Those pages are also the Starlight site's content: `site/` loads them from `docs/` through one glob loader, so there is no copy to keep in sync and no generated file to regenerate. `docs/agents-history.md` is deliberately not a page and must not be given frontmatter. (h #g188)
+- Docs site: `cd site && npm install && npm run build` (Astro 7.3.5 + Starlight 0.42.4, pinned, no lockfile). It is its own package: the root `tsconfig.json`, `npm run typecheck`, `npm test`, `npm run build` and the npm `files` list all exclude it, and `.github/workflows/publish.yml` does not touch it. `.github/workflows/docs.yml` builds and deploys it to GitHub Pages. (h #g188)
 - Typecheck: `npm run typecheck` (`tsc --noEmit`).
 - Test suite: `npm test`. The script enumerates test files explicitly: when adding a `test-*.ts` file you MUST add it to `package.json`'s `test` script or it silently never runs.
 - Regenerate the bundle's message allowlist: `npm run generate:log-messages`, after adding or changing any `log.notice`/`log.warn`/`log.error` message. `test-diagnostic-bundle.ts` fails when `src/log-messages.ts` has drifted; until it is regenerated that message is redacted out of `/claude-code-doctor bundle`. (h #g183)
@@ -41,7 +43,7 @@ changing, reverting or "simplifying" a rule.
 - GitHub Releases lapsed after v0.9.2 and are optional. Write notes for anything security-relevant or behaviour-changing. (h #g22)
 - A freshly published version will NOT appear in a local opencode until `rm -rf ~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest` plus a full relaunch; a plain restart never re-resolves `@latest`. (h #g23)
 - Do not add a Claude co-author trailer to commits.
-- Keep `README.md` updated when adding public options, env vars, required CLI versions, or behavior users can observe.
+- Keep the `docs/` pages updated when adding public options, env vars, required CLI versions, or behavior users can observe; `README.md` is the landing page and changes only when its own copy stops being true. See the docs rule under Commands. (h #g188)
 
 ## High-Signal Runtime Gotchas
 
@@ -274,7 +276,7 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 
 ### Fork sweeps
 
-**Sweep the forks more often than once a quarter.** Add every fork as a remote and run `git cherry origin/master <branch>` per branch (patch-id equivalence, so absorbed cherry-picks do not show). Absorb fork work by cherry-pick with authorship preserved, credit by name in the README Credits table, and compare fork *contents*, not commit counts. Declined work and sweep state: (h #sweep-the-forks-more-often-than), (h #4ac319f-5b4ee5d-compress-proxy).
+**Sweep the forks more often than once a quarter.** Add every fork as a remote and run `git cherry origin/master <branch>` per branch (patch-id equivalence, so absorbed cherry-picks do not show). Absorb fork work by cherry-pick with authorship preserved, credit by name in the Credits table (`docs/credits.md`), and compare fork *contents*, not commit counts. Declined work and sweep state: (h #sweep-the-forks-more-often-than), (h #4ac319f-5b4ee5d-compress-proxy).
 
 ## Running The Suite
 

@@ -1,0 +1,26 @@
+---
+/*
+  Loads the project numbers at build time and hands them to StatsStrip as props.
+  This is the only component that touches the network, and it does so during
+  `astro build`, never on a visitor's machine.
+*/
+import StatsStrip from './StatsStrip.astro';
+import { loadStats } from '../data/stats';
+
+const stats = await loadStats();
+---
+
+<StatsStrip
+  stars={stats.stars}
+  forks={stats.forks}
+  contributors={stats.contributors}
+  releases={stats.releases}
+  downloadsMonth={stats.downloadsMonth}
+  downloadsTotal={stats.downloadsTotal}
+  downloadsSince={stats.downloadsSince}
+  tests={stats.tests}
+  models={stats.models}
+  builtAt={stats.builtAt}
+  live={stats.live}
+  fallbacks={stats.fallbacks}
+/>

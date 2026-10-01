@@ -1,0 +1,123 @@
+---
+/*
+  The "what it does" grid. Six items, numbered, separated by hairlines rather than
+  boxed: proximity does the grouping. Each item has a mono eyebrow (the subsystem),
+  a short title, one paragraph, and optionally the config line that turns it on.
+*/
+interface Item {
+  eyebrow: string;
+  title: string;
+  body: string;
+  code?: string;
+  href?: string;
+  linkText?: string;
+}
+interface Props {
+  items: Item[];
+}
+const { items } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const withBase = (link: string) => (link.startsWith('/') ? `${base}${link}` : link);
+---
+
+<ol class="occ-features not-content" role="list">
+  {
+    items.map((item, index) => (
+      <li class="occ-feature">
+        <p class="occ-feature__eyebrow">
+          <span class="occ-feature__index">{String(index + 1).padStart(2, '0')}</span>
+          <span>{item.eyebrow}</span>
+        </p>
+        <h3 class="occ-feature__title">{item.title}</h3>
+        <p class="occ-feature__body">{item.body}</p>
+        {item.code && <code class="occ-feature__code">{item.code}</code>}
+        {item.href && (
+          <a class="occ-feature__link" href={withBase(item.href)}>
+            {item.linkText ?? 'Read more'}
+          </a>
+        )}
+      </li>
+    ))
+  }
+</ol>
+
+<style>
+  .occ-features {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 var(--occ-space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .occ-feature {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-2);
+    padding-block: var(--occ-space-6);
+    border-top: 1px solid var(--occ-line);
+    min-width: 0;
+  }
+  .occ-feature__eyebrow {
+    display: flex;
+    gap: var(--occ-space-3);
+    margin: 0;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--occ-ink-3);
+  }
+  .occ-feature__index {
+    color: var(--sl-color-text-accent);
+  }
+  .occ-feature__title {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+    font-weight: 650;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+    color: var(--sl-color-white);
+  }
+  .occ-feature__body {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-feature__code {
+    align-self: flex-start;
+    margin-top: var(--occ-space-1);
+    padding: 0.2em 0.5em;
+    border: 1px solid var(--occ-line);
+    border-radius: 4px;
+    background: var(--sl-color-bg-inline-code);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    color: var(--occ-ink-2);
+    overflow-wrap: anywhere;
+  }
+  .occ-feature__link {
+    margin-top: var(--occ-space-1);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    text-underline-offset: 0.2em;
+  }
+  .occ-feature__link:hover {
+    text-decoration: underline;
+  }
+
+  @media (min-width: 40rem) {
+    .occ-features {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (min-width: 64rem) {
+    .occ-features {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+</style>

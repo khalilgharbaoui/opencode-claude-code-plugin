@@ -1,0 +1,51 @@
+---
+/*
+  A landing-page section: bar-led monospace eyebrow, a heading, an optional lead,
+  then whatever the page puts inside (markdown tables and code blocks included, so
+  this root is deliberately NOT `not-content`; Starlight still styles the content).
+*/
+interface Props {
+  id: string;
+  eyebrow: string;
+  title: string;
+  lead?: string;
+}
+const { id, eyebrow, title, lead } = Astro.props;
+---
+
+<section {id} class="occ-section">
+  <header class="occ-section__head not-content">
+    <p class="occ-eyebrow">{eyebrow}</p>
+    <h2 class="occ-section__title">{title}</h2>
+    {lead && <p class="occ-section__lead">{lead}</p>}
+  </header>
+  <div class="occ-section__body">
+    <slot />
+  </div>
+</section>
+
+<style>
+  .occ-section__head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+    margin-bottom: var(--occ-space-8);
+    max-width: 44rem;
+  }
+  .occ-section__title {
+    margin: 0;
+    font-size: clamp(var(--sl-text-2xl), 1.2rem + 1.6vw, var(--sl-text-4xl));
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--sl-color-white);
+    text-wrap: balance;
+  }
+  .occ-section__lead {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+    line-height: 1.55;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+</style>

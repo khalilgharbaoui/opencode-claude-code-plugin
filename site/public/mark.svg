@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="occ-mark-title">
+  <title id="occ-mark-title">opencode-claude-code-plugin</title>
+  <!--
+    The mark: the plugin's transcript bar (the left half-block it writes in front of
+    every note it adds to a conversation) beside a terminal chevron. Bar is the one
+    accent; the chevron takes the foreground colour of whichever scheme is active.
+  -->
+  <style>
+    .occ-fg { fill: none; stroke: #1A1D23; }
+    @media (prefers-color-scheme: dark) { .occ-fg { stroke: #EEF1F6; } }
+  </style>
+  <rect x="10" y="8" width="14" height="48" rx="3" fill="#E8A33A"/>
+  <path class="occ-fg" d="M33 17 L49 32 L33 47" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

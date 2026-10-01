@@ -1,0 +1,222 @@
+/*
+  opencode-claude-code-plugin docs theme.
+  Written against Starlight 0.42.4 (Astro 7). Unlayered, so it overrides Starlight's
+  `starlight.*` cascade layers without !important.
+
+  One accent, one meaning: amber is where the plugin itself acts (its transcript bar,
+  the proxied path, links, the current page). Everything else is a cool neutral.
+  Every text pair below was checked for WCAG AA; the numbers are in DESIGN.md.
+*/
+
+/* ---------- Dark (default) ---------- */
+:root {
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #eef1f6;
+  --sl-color-gray-2: #c9cfd9;
+  --sl-color-gray-3: #8a93a2;
+  --sl-color-gray-4: #3a4150;
+  --sl-color-gray-5: #22262e;
+  --sl-color-gray-6: #15181e;
+  --sl-color-black: #0e1013;
+
+  --sl-color-accent-low: #3d2a0b;
+  --sl-color-accent: #e8a33a;
+  --sl-color-accent-high: #ffc46b;
+
+  --sl-color-text-accent: var(--sl-color-accent-high);
+  --sl-color-bg-accent: var(--sl-color-accent);
+  --sl-color-text-invert: var(--sl-color-black);
+
+  /* Fonts: system only. No CDN, no self-hosted file, zero requests. */
+  --sl-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans',
+    Arial, sans-serif;
+  --sl-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono',
+    monospace;
+
+  --sl-content-width: 46rem;
+  --sl-text-code: 0.875rem;
+
+  /* Plugin-specific tokens the components read. Spacing is a scale, not a number. */
+  --occ-bar: var(--sl-color-accent);
+  --occ-panel: var(--sl-color-gray-6);
+  --occ-line: var(--sl-color-gray-5);
+  --occ-line-strong: var(--sl-color-gray-4);
+  --occ-ink-1: var(--sl-color-gray-1);
+  --occ-ink-2: var(--sl-color-gray-2);
+  --occ-ink-3: var(--sl-color-gray-3);
+  --occ-radius: 10px;
+  --occ-radius-sm: 6px;
+  --occ-space-1: 0.25rem;
+  --occ-space-2: 0.5rem;
+  --occ-space-3: 0.75rem;
+  --occ-space-4: 1rem;
+  --occ-space-6: 1.5rem;
+  --occ-space-8: 2rem;
+  --occ-space-12: 3rem;
+  --occ-space-16: 4rem;
+  --occ-duration: 160ms;
+}
+
+/* ---------- Light ---------- */
+:root[data-theme='light'] {
+  --sl-color-white: #1a1d23;
+  --sl-color-gray-1: #1e222a;
+  --sl-color-gray-2: #2b3038;
+  --sl-color-gray-3: #5b6472;
+  --sl-color-gray-4: #6b7380;
+  --sl-color-gray-5: #cfcbc2;
+  --sl-color-gray-6: #edeae2;
+  --sl-color-gray-7: #f6f4ee;
+  --sl-color-black: #fcfbf8;
+
+  --sl-color-accent-low: #fbe8c9;
+  --sl-color-accent: #c2730e;
+  --sl-color-accent-high: #8a4b00;
+
+  /* Mid amber fails 4.5:1 on paper, so links and filled buttons use the dark amber. */
+  --sl-color-text-accent: var(--sl-color-accent-high);
+  --sl-color-bg-accent: var(--sl-color-accent-high);
+  --sl-color-text-invert: var(--sl-color-black);
+
+  --occ-panel: var(--sl-color-gray-7);
+  --occ-line: var(--sl-color-gray-5);
+  --occ-line-strong: var(--sl-color-gray-4);
+}
+
+/* ---------- Type ---------- */
+.sl-markdown-content :is(h1, h2, h3) {
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+.sl-markdown-content h1 {
+  letter-spacing: -0.025em;
+}
+
+/* Numbers, labels and anything that names a thing on disk are monospace.
+   Prose stays in the system sans so long pages read comfortably. */
+.occ-mono {
+  font-family: var(--__sl-font-mono);
+  font-variant-ligatures: none;
+}
+
+/* The transcript bar as a heading device: used on the landing page only. */
+.occ-eyebrow {
+  display: block;
+  max-width: max-content;
+  margin: 0;
+  padding-inline-start: 0.6em;
+  border-inline-start: 5px solid var(--occ-bar);
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-xs);
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--occ-ink-3);
+}
+
+/* ---------- Docs pages: small, consistent refinements ---------- */
+/* Sidebar current item: a tinted row with the bar, not Starlight's filled pill,
+   so the one accent keeps meaning "here" without shouting. */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+  background-color: var(--sl-color-accent-low);
+  color: var(--sl-color-text-accent);
+  box-shadow: inset 3px 0 0 var(--occ-bar);
+}
+
+/* Starlight asides keep their semantic colours (they are status, not brand);
+   only the note variant takes the plugin's own bar colour. */
+.starlight-aside--note {
+  --sl-color-asides-text-accent: var(--sl-color-text-accent);
+  --sl-color-asides-border: var(--sl-color-accent);
+  background-color: var(--sl-color-accent-low);
+}
+
+/* Tables: hairline rules, mono header labels, no zebra fill competing with code.
+   Starlight renders them as scrolling blocks; src/markdown/focusable-tables.mjs puts
+   a tabindex on them so that scroll is reachable without a pointer. */
+.sl-markdown-content table {
+  font-size: var(--sl-text-sm);
+  border-collapse: collapse;
+}
+.sl-markdown-content table:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+.sl-markdown-content th {
+  font-family: var(--__sl-font-mono);
+  font-weight: 600;
+  font-size: var(--sl-text-xs);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--occ-ink-3);
+  border-bottom: 1px solid var(--occ-line-strong);
+}
+.sl-markdown-content td {
+  border-bottom: 1px solid var(--occ-line);
+  vertical-align: top;
+}
+.sl-markdown-content tr:nth-child(2n) {
+  background: transparent;
+}
+
+/* Inline code: a hairline, not a heavy pill. */
+.sl-markdown-content code:not(:where(.expressive-code *)) {
+  border: 1px solid var(--occ-line);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+}
+
+/* Expressive Code frames follow the panel tokens so code and panels agree. */
+:root {
+  --ec-brdRad: var(--occ-radius-sm);
+  --ec-brdCol: var(--occ-line);
+  --ec-frm-edBg: var(--occ-panel);
+  --ec-frm-trmBg: var(--occ-panel);
+  --ec-frm-edTabBarBg: var(--occ-panel);
+  --ec-frm-trmTtbBg: var(--occ-panel);
+  --ec-frm-edActTabIndBtmCol: var(--occ-bar);
+  --ec-frm-edActTabIndHt: 2px;
+  --ec-frm-edActTabIndTopCol: transparent;
+}
+
+/* ---------- Landing page (template: splash) ---------- */
+[data-has-hero] .main-pane {
+  --sl-content-width: 70rem;
+}
+[data-has-hero] .sl-markdown-content {
+  /* Sections own their rhythm; Starlight's generic sibling margin is too small here. */
+  --occ-section-gap: clamp(var(--occ-space-12), 8vw, var(--occ-space-16));
+}
+[data-has-hero] .sl-markdown-content > .occ-section + .occ-section,
+[data-has-hero] .sl-markdown-content > .occ-stats + .occ-section {
+  margin-top: var(--occ-section-gap);
+}
+
+/* ---------- Motion ---------- */
+@keyframes occ-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- Focus ---------- */
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}

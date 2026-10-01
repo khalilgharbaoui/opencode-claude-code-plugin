@@ -1,0 +1,167 @@
+---
+/*
+  The live stats strip. Pure presentation: every number arrives as a prop, so the
+  component never fetches and a test or a story can render it with any values.
+  LiveStats.astro is the one place that loads the real numbers at build time.
+
+  Eight tiles, each with the figure, a sentence-case label and the source it was read
+  from. The footnote says when the build ran and whether anything fell back to the
+  committed snapshot, because a "live" number that silently went stale would be a lie.
+*/
+import { formatCount } from '../data/stats';
+
+interface Props {
+  stars: number;
+  forks: number;
+  contributors: number;
+  releases: number;
+  downloadsMonth: number;
+  downloadsTotal: number;
+  downloadsSince: string;
+  tests: number;
+  models: number;
+  builtAt: string;
+  live?: boolean;
+  fallbacks?: string[];
+}
+
+const {
+  stars,
+  forks,
+  contributors,
+  releases,
+  downloadsMonth,
+  downloadsTotal,
+  downloadsSince,
+  tests,
+  models,
+  builtAt,
+  live = true,
+  fallbacks = [],
+} = Astro.props;
+
+const tiles = [
+  { value: stars, label: 'GitHub stars', source: 'api.github.com' },
+  { value: downloadsMonth, label: 'npm downloads, last 30 days', source: 'api.npmjs.org' },
+  { value: downloadsTotal, label: `npm downloads since ${downloadsSince}`, source: 'api.npmjs.org' },
+  { value: tests, label: 'tests in the suite', source: 'npm test, this build' },
+  { value: releases, label: 'tagged releases', source: 'api.github.com' },
+  { value: contributors, label: 'contributors', source: 'api.github.com' },
+  { value: forks, label: 'forks', source: 'api.github.com' },
+  { value: models, label: 'Claude models registered', source: 'src/models.ts' },
+];
+
+const snapshotNote = fallbacks.length > 0 ? `${fallbacks.length} of them from the committed snapshot` : undefined;
+---
+
+<section class="occ-stats not-content" aria-labelledby="occ-stats-title">
+  <h2 id="occ-stats-title" class="sr-only">Project numbers</h2>
+  <ul class="occ-stats__grid" role="list">
+    {
+      tiles.map((tile) => (
+        <li class="occ-stat">
+          <span class="occ-stat__value">{formatCount(tile.value)}</span>
+          <span class="occ-stat__label">{tile.label}</span>
+          <span class="occ-stat__source">{tile.source}</span>
+        </li>
+      ))
+    }
+  </ul>
+  <p class="occ-stats__note">
+    Read at build time from the GitHub REST API and api.npmjs.org; nothing is requested from your browser. Rebuilt
+    daily. This build: <time datetime={builtAt}>{builtAt}</time>{snapshotNote && `, ${snapshotNote}`}.
+    {!live && 'Some sources did not answer during this build.'}
+  </p>
+</section>
+
+<style>
+  .occ-stats {
+    margin-top: var(--occ-space-8);
+    border-top: 1px solid var(--occ-line-strong);
+    border-bottom: 1px solid var(--occ-line);
+  }
+  .occ-stats__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .occ-stat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-1);
+    padding: var(--occ-space-6) var(--occ-space-4) var(--occ-space-6) 0;
+    border-bottom: 1px solid var(--occ-line);
+    min-width: 0;
+  }
+  .occ-stat:nth-child(odd) {
+    padding-inline-start: 0;
+  }
+  .occ-stat:nth-child(even) {
+    padding-inline-start: var(--occ-space-4);
+    border-inline-start: 1px solid var(--occ-line);
+  }
+  /* Large standalone figures use proportional figures on purpose: tabular digits
+     make a lone "85" look spaced out. Columns of numbers in tables are tabular. */
+  .occ-stat__value {
+    font-family: var(--__sl-font-mono);
+    font-size: clamp(1.75rem, 1.2rem + 1.8vw, 2.5rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+    font-variant-numeric: proportional-nums;
+  }
+  .occ-stat__label {
+    font-size: var(--sl-text-sm);
+    line-height: 1.4;
+    color: var(--occ-ink-2);
+  }
+  .occ-stat__source {
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.02em;
+    color: var(--occ-ink-3);
+  }
+  .occ-stats__note {
+    margin: 0;
+    padding-block: var(--occ-space-3);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    line-height: 1.6;
+    color: var(--occ-ink-3);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (min-width: 50rem) {
+    .occ-stats__grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .occ-stat {
+      padding-inline-start: var(--occ-space-4);
+      border-inline-start: 1px solid var(--occ-line);
+    }
+    .occ-stat:nth-child(odd) {
+      padding-inline-start: var(--occ-space-4);
+    }
+    .occ-stat:nth-child(4n + 1) {
+      padding-inline-start: 0;
+      border-inline-start: 0;
+    }
+    .occ-stat:nth-child(n + 5) {
+      border-bottom: 1px solid var(--occ-line);
+    }
+  }
+</style>

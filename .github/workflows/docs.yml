@@ -1,0 +1,95 @@
+# Builds and publishes the docs site to GitHub Pages.
+#
+# The pages themselves are the repository's own `docs/**.md`, which GitHub renders
+# on their own; `site/` is an Astro Starlight project that loads those same files.
+#
+# It runs on every docs change and once a day, because the landing page's numbers
+# are fetched at build time (GitHub REST, api.npmjs.org) and nothing runs in a
+# visitor's browser. The test count comes from the suite's own summary line, so the
+# strip and the README's "tests" badge report what `npm test` actually ran.
+#
+# Pages setup (once, by hand): Settings > Pages > Source: GitHub Actions.
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - 'site/**'
+      - 'README.md'
+      - 'src/models.ts'
+      - 'AGENTS.md'
+      - '.github/workflows/docs.yml'
+  schedule:
+    # 04:23 UTC daily. An odd minute avoids the top-of-hour crowd on GitHub's scheduler.
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Starlight's lastUpdated reads git history
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/configure-pages@v5
+
+      - name: Install the plugin's dev dependencies
+        run: npm install --no-audit --no-fund
+
+      # The count is parsed from the runner's summary, never grepped out of source:
+      # tests defined in loops would be missed. A red suite still produces the line,
+      # and the build goes on, so a flaky run never blanks the figure.
+      - name: Count tests
+        run: |
+          npm test > /tmp/test.log 2>&1 || echo "suite exit $? (the count is still read)"
+          count=$(grep -E '^(ℹ|#) tests [0-9]+' /tmp/test.log | tail -1 | grep -oE '[0-9]+$')
+          echo "OCC_STAT_TESTS=${count}" >> "$GITHUB_ENV"
+          echo "tests: ${count:-not found}"
+
+      - name: Count registered models
+        run: |
+          count=$(grep -cE '^\s+"[a-z0-9-]+": defineModel\(' src/models.ts)
+          echo "OCC_STAT_MODELS=${count}" >> "$GITHUB_ENV"
+          echo "models: ${count}"
+
+      # `npm install`, not `npm ci`: this repository keeps no lockfile (see AGENTS.md),
+      # so site/package.json pins exact versions instead.
+      - name: Install the docs site
+        working-directory: site
+        run: npm install --no-audit --no-fund
+
+      - name: Build the docs site
+        working-directory: site
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # raises the REST rate limit; no scopes needed
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

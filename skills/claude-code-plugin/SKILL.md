@@ -46,7 +46,10 @@ version actually loaded, not a newer checkout. `test-configure-skill.ts` checks 
 coverage against source declarations; it does not verify defaults or runtime
 semantics or regenerate prose. For behavior, inspect the matching version's
 `src/types.ts`, consumers in `src/index.ts` / `src/claude-code-language-model.ts`, and
-the relevant module. Comments and README can lag the implementation.
+the relevant module. Comments and prose can lag the implementation. The user-facing
+manual is the markdown under `docs/` (published at
+https://khalilgharbaoui.github.io/opencode-claude-code-plugin/); `README.md` is a
+landing page and is not where an option is documented.
 
 ## Ground rules
 
