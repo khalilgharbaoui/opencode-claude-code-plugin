@@ -157,6 +157,33 @@ test("splitForkHistory refuses a prompt that is mid tool round trip", () => {
   assert.equal(splitForkHistory([userText("First message.")] as any).forkable, false)
 })
 
+test("conversationDigests tells two attachments with the same media type apart", () => {
+  // Hashing only the media type made these two fingerprint alike, so a fork
+  // could have answered from the parent's image.
+  const withImage = (data: unknown) =>
+    [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this picture?" },
+          { type: "file", mediaType: "image/png", data },
+        ],
+      },
+    ] as any
+  const cat = conversationDigests(withImage("iVBORw0KGgoCAT"))
+  const dog = conversationDigests(withImage("iVBORw0KGgoDOG"))
+  assert.notDeepEqual(cat, dog)
+  assert.deepEqual(cat, conversationDigests(withImage("iVBORw0KGgoCAT")), "same bytes, same digest")
+  assert.notDeepEqual(
+    conversationDigests(withImage(new Uint8Array([1, 2, 3]))),
+    conversationDigests(withImage(new Uint8Array([1, 2, 4]))),
+  )
+  assert.notDeepEqual(
+    conversationDigests(withImage(new URL("https://example.test/a.png"))),
+    conversationDigests(withImage(new URL("https://example.test/b.png"))),
+  )
+})
+
 test("conversationDigests ignores ids, which opencode re-keys on a fork", () => {
   const withIds = [
     userText("Run it."),

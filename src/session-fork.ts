@@ -96,11 +96,21 @@ function hashPart(hash: ReturnType<typeof createHash>, part: unknown): void {
       hash.update(stableJson(p?.output))
       break
     case "file":
-    case "image":
+    case "image": {
+      // The bytes, not just the media type: two conversations that differ only
+      // in an attached image must not fingerprint alike, or the fork would
+      // answer from the parent's image (found at review, 2026-10-02).
       hash.update(type)
       hash.update("\u0000")
       hash.update(String(p?.mediaType ?? ""))
+      hash.update("\u0000")
+      const data = p?.data ?? p?.image
+      if (typeof data === "string") hash.update(data)
+      else if (data instanceof Uint8Array) hash.update(data)
+      else if (data instanceof URL) hash.update(data.href)
+      else hash.update(stableJson(data))
       break
+    }
     default:
       // Reasoning and anything a future AI SDK adds: counted as present, not
       // as content, so an unknown part can neither forge nor break a match.
