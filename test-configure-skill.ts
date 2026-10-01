@@ -17,7 +17,18 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultModels } from "./src/models.js"
-import { DEFAULT_PROXY_TOOLS } from "./src/proxy-mcp.js"
+import {
+  DEFAULT_PROXY_TOOLS,
+  MAX_PROXY_TIMEOUT_MS,
+  PROXY_DEFAULT_TIMEOUT_MS,
+  PROXY_NO_DEADLINE_MS,
+  PROXY_PER_TOOL_DEFAULT_TIMEOUT_MS,
+} from "./src/proxy-mcp.js"
+import {
+  DEFAULT_IDLE_PROCESS_TIMEOUT_MS,
+  MAX_ACTIVE_PROCESSES,
+} from "./src/session-manager.js"
+import { DEFAULT_COMPACTION_MODEL } from "./src/call-options.js"
 import { DEFAULT_PROXY_TOOL_NAMES } from "./src/index.js"
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -115,6 +126,113 @@ test("the skill states the two facts every configuration change depends on", () 
   assert.match(SKILL, /read once, at opencode startup/i)
   assert.ok(SKILL.includes("~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest/"))
   assert.ok(SKILL.includes("get approval before removing"))
+})
+
+/**
+ * The `Default` column of one row of the options reference, by option name.
+ * `\|` inside a cell (the `hostApi` row's union type) is unescaped first so a
+ * naive split cannot mistake it for a column boundary.
+ */
+function optionDefault(option: string): string {
+  const row = SKILL.split("\n").find((line) => line.startsWith(`| \`${option}\` |`))
+  assert.ok(row, `option row not found in SKILL.md: ${option}`)
+  const cells = row!.replace(/\\\|/g, "\u0000").split("|").map((c) => c.trim())
+  // cells[0] is the empty string before the leading pipe.
+  return cells[3]!.replace(/\u0000/g, "|")
+}
+
+/** A source literal like `16` or `2_147_483_647`, as a plain number. */
+function sourceNumber(file: string, pattern: RegExp): number {
+  const src = fs.readFileSync(path.join(ROOT, "src", file), "utf8")
+  const match = pattern.exec(src)
+  assert.ok(match, `pattern not found in src/${file}: ${pattern}`)
+  return Number(match![1]!.replace(/_/g, ""))
+}
+
+test("the options table's stated defaults are the code's defaults", () => {
+  assert.equal(
+    optionDefault("proxyTools"),
+    `\`${JSON.stringify(DEFAULT_PROXY_TOOL_NAMES).replace(/","/g, '", "')}\``,
+    "the proxyTools default cell must list DEFAULT_PROXY_TOOL_NAMES",
+  )
+  assert.equal(optionDefault("compactionModel"), `\`"${DEFAULT_COMPACTION_MODEL}"\``)
+  // Unset and 0 both resolve to "no idle timer", so the column must say unset
+  // rather than naming a duration the code does not apply.
+  assert.equal(DEFAULT_IDLE_PROCESS_TIMEOUT_MS, 0)
+  assert.equal(optionDefault("idleProcessTimeoutMs"), "unset")
+  assert.doesNotMatch(
+    SKILL,
+    /idle (timer|eviction)[^.]{0,40}\bdefault\b[^.]{0,20}\b(thirty|30)\b/i,
+    "the skill must not claim a default idle eviction timer; there is none",
+  )
+  const skipDefault = /settings\.skipPermissions \?\? (true|false)/.exec(
+    fs.readFileSync(path.join(ROOT, "src", "index.ts"), "utf8"),
+  )
+  assert.ok(skipDefault, "could not read the skipPermissions default from src/index.ts")
+  assert.equal(optionDefault("skipPermissions"), `\`${skipDefault![1]}\``)
+  assert.equal(optionDefault("cliPath"), '`"claude"`')
+})
+
+test("every process-count figure matches MAX_ACTIVE_PROCESSES", () => {
+  const figures = [
+    ...SKILL.matchAll(/(\d+)[- ](?:live )?processes?\b/g),
+    ...SKILL.matchAll(/\ball (\d+) are busy\b/g),
+  ].map((m) => Number(m[1]))
+  assert.ok(figures.length > 0, "the skill should state the LRU cap at least once")
+  const wrong = figures.filter((n) => n !== MAX_ACTIVE_PROCESSES)
+  assert.deepEqual(wrong, [], `process-count figures disagreeing with MAX_ACTIVE_PROCESSES (${MAX_ACTIVE_PROCESSES}): ${wrong.join(", ")}`)
+})
+
+test("the proxy deadline defaults the skill quotes are the resolver's", () => {
+  assert.ok(
+    SKILL.includes(`${PROXY_DEFAULT_TIMEOUT_MS / 60_000} min`),
+    `the flat proxy deadline (${PROXY_DEFAULT_TIMEOUT_MS} ms) is not stated in minutes`,
+  )
+  for (const [tool, ms] of Object.entries(PROXY_PER_TOOL_DEFAULT_TIMEOUT_MS)) {
+    assert.ok(mentions(tool), `per-tool proxy deadline not documented: ${tool}`)
+    if (ms === PROXY_NO_DEADLINE_MS) continue
+    assert.ok(
+      SKILL.includes(`\`${tool}\` ${ms / 60_000} min`),
+      `per-tool deadline for ${tool} should be stated as "${ms / 60_000} min"`,
+    )
+  }
+  assert.ok(String(SKILL).includes(String(MAX_PROXY_TIMEOUT_MS)), "the clamp ceiling is not stated")
+})
+
+test("the watchdog defaults the skill quotes are the ones turn-state falls back to", () => {
+  const fallback = sourceNumber("turn-state.ts", /CLAUDE_CODE_RESULT_FALLBACK_MS[\s\S]{0,200}?: ([\d_]+)\n/)
+  const watchdog = sourceNumber("turn-state.ts", /CLAUDE_CODE_START_WATCHDOG_MS[\s\S]{0,200}?: ([\d_]+)\n/)
+  assert.ok(SKILL.includes(`default ${fallback} for`), `result fallback default ${fallback} not stated`)
+  assert.ok(SKILL.includes(`default ${watchdog} for`), `start watchdog default ${watchdog} not stated`)
+})
+
+test("every price multiplier named is one the registry actually uses", () => {
+  const used = new Set(
+    Object.values(defaultModels).map((m) => Number(/\((\d+)\u00d7\)$/.exec(m.name)?.[1])),
+  )
+  const named = new Set([...SKILL.matchAll(/(\d+)\u00d7/g)].map((m) => Number(m[1])))
+  assert.deepEqual(
+    [...named].filter((n) => !used.has(n)).sort((a, b) => a - b),
+    [],
+    "the skill names a price multiplier no registered model has",
+  )
+  assert.deepEqual(
+    [...used].filter((n) => !named.has(n)).sort((a, b) => a - b),
+    [],
+    "a registered model's price multiplier is missing from the skill",
+  )
+})
+
+test("every model CLI floor the code knows is named", () => {
+  const src = fs.readFileSync(path.join(ROOT, "src", "cli-events.ts"), "utf8")
+  const block = /const MODEL_CLI_FLOORS[\s\S]*?\n}/.exec(src)
+  assert.ok(block, "MODEL_CLI_FLOORS not found in src/cli-events.ts")
+  const floors = [...block![0].matchAll(/"([^"]+)":\s*"([^"]+)"/g)]
+  assert.ok(floors.length > 0)
+  for (const [, model, version] of floors) {
+    assert.ok(mentions(model!), `model with a CLI floor missing from the skill: ${model}`)
+    assert.ok(SKILL.includes(version!), `CLI floor ${version} for ${model} missing from the skill`)
+  }
 })
 
 test("no em dashes", () => {

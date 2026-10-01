@@ -1120,6 +1120,14 @@ Tests: `test-context-usage.ts`, a fake CLI through a real `doStream` (three call
 - **A live V2 turn did NOT bridge `cbm`, and that is not the PR's fault**: the turn was planned at 06:56:02.345, opencode logged `mcp connected server=cbm` at 06:56:02.392, and the runtime-status overlay (`enabled: status === "connected"`) correctly dropped a server that was still connecting. A second probe that ran a proxied `bash` first still showed one spawn and the first MCP config: a reused process does not re-bridge when a server connects later. Both are pre-existing, shared with V1, and mostly an `opencode run` artifact, since the TUI connects servers before the first prompt. Recorded as a follow-up.
 - Gate: 980 of 980 on the merged tree (two earlier runs lost 1 and 3 tests to 5-second timeouts at a load average of 31 to 46; the same files passed 49 of 49 in isolation). The squash merge's tree was checked identical to the gated one.
 
+<a id="g179"></a>
+
+#### The process cap is 16 and idle eviction is off (correction, audited 2026-10-01)
+
+- **(h #g62) said the cap is 8; the code says 16, and the code is the later truth.** PR #36 (@broskees) proposed 8 together with a 30-minute default `idleProcessTimeoutMs`, on the reasoning that the timer would do the real work and the cap would only be a backstop. `dfb82d5` ("Keep skills, idle timeout and cap defaults as they were", 2026-09-19) reverted both halves at merge, because a default idle timer changes when a resumed chat pays for a fresh `--resume` spawn and that is the operator's call. The history entry was written the day before, in `ff2edf0` (2026-09-18), and the AGENTS.md condense (#47, 2026-09-26) carried its wording across verbatim. What `src/session-manager.ts` says today: `MAX_ACTIVE_PROCESSES = 16` with a comment naming the reverted proposal, and `DEFAULT_IDLE_PROCESS_TIMEOUT_MS = 0` with `resolveIdleProcessTimeoutMs` mapping an unset option onto it.
+- **The bundled skill carried both numbers at once**, which is how this surfaced: its `idleProcessTimeoutMs` option row said "16 processes" while its "Change when idle workers are freed" recipe said the default was thirty minutes and the cap 8, and a troubleshooting row said eviction "skips the round when all 8 are busy; the 30-minute idle timer spares a busy worker too". `README.md` was right throughout (16, and "omit or set `0` to retain workers until LRU eviction"), so only the skill and the two docs needed the correction.
+- **No code changed for this.** The audit that found it is the one recorded in the PR body for the `skill-audit` branch; `test-configure-skill.ts` grew a mechanical guard so a figure in the skill that disagrees with `MAX_ACTIVE_PROCESSES` fails the suite rather than waiting for the next read-through.
+
 <a id="g110"></a>
 
 #### The four CLI stream events in src/cli-events.ts
