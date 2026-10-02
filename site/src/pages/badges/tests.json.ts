@@ -3,7 +3,7 @@
   as live as the daily rebuild: https://shields.io/badges/endpoint-badge
 
   Lives at src/pages/badges/tests.json.ts and is served from
-  https://khalilgharbaoui.github.io/opencode-claude-code-plugin/badges/tests.json
+  https://opencode-claude-code-plugin.dev/badges/tests.json
 */
 import type { APIRoute } from 'astro';
 import { loadStats, formatCount } from '../../data/stats';

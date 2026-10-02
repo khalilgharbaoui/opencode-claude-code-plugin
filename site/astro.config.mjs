@@ -1,7 +1,9 @@
 // Starlight 0.42.4 on Astro 7.3.5. The site is its own package under site/; the
 // content pages it builds from are the repository's own docs/*.md (see
-// src/content.config.ts). Deployed to GitHub Pages under the repository path,
-// hence `site` + `base`.
+// src/content.config.ts). Deployed to GitHub Pages on its own domain,
+// opencode-claude-code-plugin.dev, so it is served at the root (`base: '/'`).
+// The old khalilgharbaoui.github.io/opencode-claude-code-plugin/ addresses
+// redirect here, path included.
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,10 +12,9 @@ import starlight from '@astrojs/starlight';
 import { satteri } from '@astrojs/markdown-satteri';
 import { repoLinks } from './src/markdown/repo-links.mjs';
 import { focusableTables } from './src/markdown/focusable-tables.mjs';
+import { BASE, SITE } from './site-config.mjs';
 
 const REPO = 'https://github.com/khalilgharbaoui/opencode-claude-code-plugin';
-const SITE = 'https://khalilgharbaoui.github.io';
-const BASE = '/opencode-claude-code-plugin';
 const BRANCH = 'master';
 
 const repoRoot = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -87,11 +88,11 @@ export default defineConfig({
       lastUpdated: true,
       credits: false,
       head: [
-        { tag: 'meta', attrs: { property: 'og:image', content: `${SITE}${BASE}/social-preview.png` } },
+        { tag: 'meta', attrs: { property: 'og:image', content: new URL('social-preview.png', `${SITE}${BASE.endsWith('/') ? BASE : `${BASE}/`}`).href } },
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1280' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '640' } },
         { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
-        { tag: 'meta', attrs: { name: 'twitter:image', content: `${SITE}${BASE}/social-preview.png` } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: new URL('social-preview.png', `${SITE}${BASE.endsWith('/') ? BASE : `${BASE}/`}`).href } },
         { tag: 'meta', attrs: { name: 'theme-color', content: '#0E1013', media: '(prefers-color-scheme: dark)' } },
         { tag: 'meta', attrs: { name: 'theme-color', content: '#FCFBF8', media: '(prefers-color-scheme: light)' } },
         // The maintainer's Buy Me a Coffee widget, with the values they chose. It is

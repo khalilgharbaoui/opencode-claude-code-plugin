@@ -2,7 +2,7 @@
   "name": "@khalilgharbaoui/opencode-claude-code-plugin",
   "version": "0.36.2",
   "description": "Claude Code CLI provider plugin for opencode",
-  "homepage": "https://khalilgharbaoui.github.io/opencode-claude-code-plugin/",
+  "homepage": "https://opencode-claude-code-plugin.dev/",
   "funding": {
     "type": "buymeacoffee",
     "url": "https://www.buymeacoffee.com/khalilgharbaoui"

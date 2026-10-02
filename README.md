@@ -12,7 +12,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=stars&labelColor=15181E&color=FFC46B)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=forks&labelColor=15181E&color=FFC46B)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/forks)
 [![Contributors](https://img.shields.io/github/contributors/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=contributors&labelColor=15181E&color=FFC46B)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/graphs/contributors)
-[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fkhalilgharbaoui.github.io%2Fopencode-claude-code-plugin%2Fbadges%2Ftests.json&style=flat-square)](https://khalilgharbaoui.github.io/opencode-claude-code-plugin/internals/testing/)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fopencode-claude-code-plugin.dev%2Fbadges%2Ftests.json&style=flat-square)](https://opencode-claude-code-plugin.dev/internals/testing/)
 [![Publish](https://img.shields.io/github/actions/workflow/status/khalilgharbaoui/opencode-claude-code-plugin/publish.yml?style=flat-square&label=publish&labelColor=15181E)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/actions/workflows/publish.yml)
 [![License](https://img.shields.io/github/license/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=license&labelColor=15181E&color=FFC46B)](./LICENSE)
 [![Buy me a coffee](https://img.shields.io/badge/support-buy%20me%20a%20coffee-FFC46B?style=flat-square&labelColor=15181E&logo=buymeacoffee&logoColor=FFC46B)](https://www.buymeacoffee.com/khalilgharbaoui)
@@ -23,7 +23,7 @@
 - **opencode runs the tools.** `Bash`, `Edit`, `Write`, `WebFetch` and `Task` are proxied by default: Claude calls an in-process MCP tool and opencode executes it, under its own permissions and audit log.
 - **Billed as your CLI bills.** Headless `claude --print` on a subscription draws from the plan's ordinary usage limits; an API key bills pay as you go. The CLI's `apiKeySource` says which, every session, and the plugin warns when a stray `ANTHROPIC_API_KEY` would move the bill.
 
-**Docs:** <https://khalilgharbaoui.github.io/opencode-claude-code-plugin/> (the same pages are the markdown under [`docs/`](./docs/), which GitHub renders on its own).
+**Docs:** <https://opencode-claude-code-plugin.dev/> (the same pages are the markdown under [`docs/`](./docs/), which GitHub renders on its own).
 
 > Maintained fork of [`unixfox/opencode-claude-code-plugin`](https://github.com/unixfox/opencode-claude-code-plugin), which is archived and links here.
 
@@ -76,7 +76,7 @@ The [full comparison](./docs/comparison.md) has nine rows, names the projects in
 
 ## Built from measurements
 
-A dozen test files drive a fake `claude` through real turns: the stream parser, the proxy broker, both watchdogs, abort, respawn, account failover and the model fallback chain are exercised end to end. Every rule in [`AGENTS.md`](./AGENTS.md) names the probe, the version and the number that produced it, and the evidence lives in [`docs/agents-history.md`](./docs/agents-history.md). Two runtime dependencies. The [site](https://khalilgharbaoui.github.io/opencode-claude-code-plugin/) reports the live numbers, rebuilt daily.
+A dozen test files drive a fake `claude` through real turns: the stream parser, the proxy broker, both watchdogs, abort, respawn, account failover and the model fallback chain are exercised end to end. Every rule in [`AGENTS.md`](./AGENTS.md) names the probe, the version and the number that produced it, and the evidence lives in [`docs/agents-history.md`](./docs/agents-history.md). Two runtime dependencies. The [site](https://opencode-claude-code-plugin.dev/) reports the live numbers, rebuilt daily.
 
 ## Documentation
 

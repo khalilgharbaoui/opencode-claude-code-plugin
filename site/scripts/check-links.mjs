@@ -11,10 +11,12 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BASE as CONFIGURED_BASE } from '../site-config.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const dist = path.join(root, 'dist');
-const BASE = '/opencode-claude-code-plugin';
+// Without its trailing slash, so a site served at the root checks against ''.
+const BASE = CONFIGURED_BASE.replace(/\/$/, '');
 
 if (!existsSync(dist)) {
   console.error('dist/ is missing: run `npm run build` first.');
