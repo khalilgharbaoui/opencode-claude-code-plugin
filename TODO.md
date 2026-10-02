@@ -78,12 +78,19 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-02: **docs site domain `opencode-claude-code-plugin.dev`** (maintainer's, on Cloudflare).
-  Site side ready as a draft PR on branch `custom-domain` (root base, `site/site-config.mjs`). Waiting
-  on the maintainer for the Cloudflare DNS records (DNS only, grey cloud: four `A` to
-  185.199.108-111.153, four `AAAA` to 2606:50c0:8000-8003::153, `www` CNAME to
-  khalilgharbaoui.github.io). Then: set the Pages custom domain, wait for the certificate (`.dev` is
-  HTTPS-only), enforce HTTPS, merge the PR, verify, release, update the `ref_docs_site` memory.
+- 2026-10-02: the repository is still a GitHub fork of unixfox/opencode-claude-code-plugin ("forked
+  from" on every page, and that link is not nofollow, unlike README links to other sites). Only
+  GitHub Support can detach it (github.com/contact, "detach a fork"; stars, issues and PRs stay).
+  The maintainer's call.
+- 2026-10-02: **docs site domain `opencode-claude-code-plugin.dev`** (maintainer's, on Cloudflare;
+  "you add them you have access to all"). Site side ready as draft PR #79 (branch `custom-domain`).
+  The DNS needs a Cloudflare credential: none on this machine besides Wrangler's OAuth login, which has
+  no DNS scope; the personal 1Password account (`my.1password.com`) was tried twice and its approval
+  prompt timed out both times. Next: the maintainer approves the 1Password prompt on a retry (one
+  script finds a Cloudflare API credential there and adds the records), or adds the records
+  themselves: four `A` @ 185.199.108-111.153, four `AAAA` @ 2606:50c0:8000-8003::153, `www` CNAME
+  khalilgharbaoui.github.io, all DNS only. Then: Pages custom domain, certificate, enforce HTTPS,
+  merge #79 (merge master into it first), verify, release, update the `ref_docs_site` memory.
 - 2026-10-02: the widget's colour stays the maintainer's `#FF813F` (BMC orange); the designer
   suggests `#E8A33A` to match the site's amber. Change it, or keep?
 - 2026-10-02: the docs site's `github.io` address redirects to **plain http** on
@@ -115,6 +122,12 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-02: **done** (v0.36.3): Émilien (unixfox) credited by name as the original author, first
+  row of docs/credits.md, linking his profile and no longer his repository; the "Maintained fork of"
+  banner removed from the README and the docs introduction. The LICENSE now carries his copyright
+  notice too, which MIT requires while his code remains (581 of 26,498 src lines on 2026-10-02).
+  Measured against his final tree: src 1,515 to 24,639 lines (16x), tests 90 to 24,653 (274x), docs
+  136 to 4,136 (30x), plus the 7,497-line docs site; 7 commits and 2 tags against 430 and 106.
 - 2026-10-02: **done** (v0.36.2): Buy Me a Coffee, as asked ("add where appropriate like the readme
   and the website header and footer, for the website also the widget"). PR #78 by @designer: a
   badge and the yellow button in the README (served from `site/public`), a header pill in the
