@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { UNATTENDED_REPLAY_MARKER } from "./src/cli-events.js"
 import plugin, { createClaudeCode } from "./src/index.js"
 import {
   createProxyMcpServer,
@@ -757,7 +758,19 @@ async function exerciseTaskRecovery(mode: "late" | "late-queued" | "swallow" | "
       .map((part) => part.delta)
       .join("")
     if (!swallowMode) {
-      assert.ok(secondText.startsWith("Unattended narration after the task connection timed out."))
+      // The replay leads with its marker, so the operator can tell it from an
+      // answer to their own message and a transcript rebuild drops the part
+      // (h #g189). The narration itself still comes first, before this turn's
+      // own text, and still exactly once.
+      assert.ok(
+        secondText.startsWith(UNATTENDED_REPLAY_MARKER),
+        `expected the replay marker to lead, got ${JSON.stringify(secondText.slice(0, 80))}`,
+      )
+      assert.ok(
+        secondText
+          .slice(secondText.indexOf("\n\n") + 2)
+          .startsWith("Unattended narration after the task connection timed out."),
+      )
       assert.equal(secondText.split("Unattended narration").length - 1, 1)
     }
 

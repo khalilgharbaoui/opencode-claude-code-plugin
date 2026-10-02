@@ -13,8 +13,15 @@ import { join } from "node:path"
 import { createClaudeCode } from "./src/index.js"
 import { deleteActiveProcess, sessionKey } from "./src/session-manager.js"
 
-/** A fake `claude` that streams one tool call it ran itself, plus its result. */
-function createFakeToolCallCli(toolName: string, toolUseId: string) {
+/**
+ * A fake `claude` that streams one tool call it ran itself, plus its result.
+ *
+ * `resultBeforeStop` is the order the real CLI uses for a tool it REFUSES:
+ * the `user` frame carrying the refusal arrives one line ahead of the
+ * `content_block_stop` that registers the call. Measured on 2.1.286
+ * (h #g190).
+ */
+function createFakeToolCallCli(toolName: string, toolUseId: string, resultBeforeStop = false) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-tool-result-name-"))
   const cliPath = join(cwd, "fake-claude.cjs")
   const source = `#!/usr/bin/env node
@@ -49,10 +56,8 @@ rl.on("line", () => {
     index: 0,
     delta: { type: "input_json_delta", partial_json: '{"query":"probe"}' },
   })
-  event({ type: "content_block_stop", index: 0 })
-
-  // ...then reports its result for the same tool_use id.
-  emit({
+  const stop = () => event({ type: "content_block_stop", index: 0 })
+  const result = () => emit({
     type: "user",
     session_id: "fake-session",
     message: {
@@ -62,6 +67,7 @@ rl.on("line", () => {
       ],
     },
   })
+  if (${JSON.stringify(resultBeforeStop)}) { result(); stop() } else { stop(); result() }
 
   // The answer that follows, then the turn's terminal result.
   event({ type: "message_start", message: { role: "assistant" } })
@@ -84,9 +90,9 @@ rl.on("line", () => {
   return { cliPath, cwd }
 }
 
-async function streamToolPairs(toolName: string, toolUseId: string) {
-  const fake = createFakeToolCallCli(toolName, toolUseId)
-  const modelId = "claude-test-tool-result-name"
+async function streamToolPairs(toolName: string, toolUseId: string, resultBeforeStop = false) {
+  const fake = createFakeToolCallCli(toolName, toolUseId, resultBeforeStop)
+  const modelId = `claude-test-tool-result-name${resultBeforeStop ? "-early" : ""}`
   const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
 
   try {
@@ -149,4 +155,22 @@ test("a lowercased CLI tool keeps its mapped name on the result too", async () =
   assert.equal(call.toolName, "read")
   assert.ok(result)
   assert.equal(result.toolName, call.toolName)
+})
+
+test("a result that arrives before its block closes is still paired", async () => {
+  // The CLI's own refusal of a disallowed tool lands one frame ahead of
+  // `content_block_stop`. Before (h #g190) there was nothing registered to
+  // pair it with, so the result was dropped and the row stayed unanswered,
+  // which opencode 2.x reports as "Provider did not return a tool result".
+  const id = "toolu_early_result"
+  const parts = await streamToolPairs("Read", id, true)
+
+  const calls = parts.filter((part) => part.type === "tool-call" && part.toolCallId === id)
+  const results = parts.filter((part) => part.type === "tool-result" && part.toolCallId === id)
+
+  assert.equal(calls.length, 1, "exactly one call part, whichever frame completed it")
+  assert.equal(results.length, 1, "the result must not be dropped")
+  assert.equal(calls[0].toolName, "read")
+  assert.equal(results[0].toolName, calls[0].toolName)
+  assert.equal(results[0].result?.output, "probe result", "the CLI's real output, not a placeholder")
 })

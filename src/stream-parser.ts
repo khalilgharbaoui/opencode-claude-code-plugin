@@ -1,6 +1,7 @@
 import { generateId } from "./ids.js"
 import type { ClaudeCodeConfig, ClaudeStreamMessage } from "./types.js"
-import type { TurnState } from "./turn-state.js"
+import type { TurnState, TurnToolCallEntry } from "./turn-state.js"
+import { emitCliToolCall } from "./turn-state.js"
 import { log } from "./logger.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
@@ -107,6 +108,37 @@ const KNOWN_DELTA_TYPES = new Set([
 ])
 
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
+
+/**
+ * Register, and complete the `tool-call` part of, a CLI-executed call whose
+ * content block has not closed yet, so a `tool_result` that arrives first can
+ * still be paired. Returns the registration, or `undefined` when the id names
+ * no open block the plugin started a part for (a skipped tool, a proxy call,
+ * or an id from an earlier message). See (h #g190).
+ */
+function adoptOpenCliToolCall(
+  state: TurnState,
+  ctx: StreamParserContext,
+  id: string,
+): { id: string; name: string; input: unknown } | undefined {
+  for (const entry of state.toolCallMap.values()) {
+    if (entry.id !== id || !entry.started || !entry.mappedName) continue
+    let parsedInput: Record<string, unknown> = {}
+    try {
+      parsedInput = JSON.parse(entry.inputJson || "{}")
+    } catch {}
+    const { input: mappedInput, executed } = mapTool(entry.name, parsedInput, {
+      webSearch: ctx.config.webSearch,
+      sessionId: getClaudeSessionId(state.sessionKey),
+      toolUseId: entry.id,
+    })
+    const registration = { id: entry.id, name: entry.mappedName, input: parsedInput }
+    state.toolCallsById.set(entry.id, registration)
+    emitCliToolCall(state, entry.id, entry.mappedName, JSON.stringify(mappedInput), executed)
+    return registration
+  }
+  return undefined
+}
 
 export function createLineHandler(
   state: TurnState,
@@ -292,7 +324,7 @@ export function createLineHandler(
 
         if (block.type === "tool_use" && block.id && block.name) {
           noteToolActivity(state)
-          const entry = {
+          const entry: TurnToolCallEntry = {
             id: block.id,
             name: block.name,
             inputJson: "",
@@ -317,6 +349,7 @@ export function createLineHandler(
             )
             if (!skip) {
               entry.started = true
+              entry.mappedName = mappedName
               state.controller.enqueue({
                 type: "tool-input-start",
                 id: block.id,
@@ -517,21 +550,20 @@ export function createLineHandler(
               toolUseId: tc.id,
             })
 
-            if (!skip) {
+            if (!skip && !state.toolCallAnsweredIds.has(tc.id)) {
+              // Not re-registered once the result has gone out: the CLI can
+              // send that before this close, and a re-registered id gets a
+              // second, placeholder result at the end of a step that waits on
+              // a proxied call (h #g190).
               state.toolCallsById.set(tc.id, {
                 id: tc.id,
                 name: mappedName,
                 input: parsedInput,
               })
               if (!executed) state.skipResultForIds.add(tc.id)
-
-              state.controller.enqueue({
-                type: "tool-call",
-                toolCallId: tc.id,
-                toolName: mappedName,
-                input: JSON.stringify(mappedInput),
-                providerExecuted: executed,
-              } as any)
+              // A no-op when the CLI's own result already completed this part
+              // (h #g190); otherwise the ordinary path.
+              emitCliToolCall(state, tc.id, mappedName, JSON.stringify(mappedInput), executed)
             }
             log.info("tool call complete", {
               name: tc.name,
@@ -774,13 +806,7 @@ export function createLineHandler(
                   toolName: mappedName,
                   providerExecuted: executed,
                 } as any)
-                state.controller.enqueue({
-                  type: "tool-call",
-                  toolCallId: block.id,
-                  toolName: mappedName,
-                  input: JSON.stringify(mappedInput),
-                  providerExecuted: executed,
-                } as any)
+                emitCliToolCall(state, block.id, mappedName, JSON.stringify(mappedInput), executed)
               }
               log.info("tool_use from assistant message", {
                 name: block.name,
@@ -862,7 +888,19 @@ export function createLineHandler(
               }
             }
 
-            const toolCall = state.toolCallsById.get(block.tool_use_id)
+            // The CLI can send this result BEFORE the `content_block_stop`
+            // that used to be the only place the call was registered, so the
+            // name to pair the result under was simply absent and the result
+            // was dropped. Measured on 2.1.286 for a `Write` the CLI refused:
+            // the refusal frame arrives one line ahead of the block's close,
+            // and opencode 2.x reports the unanswered row as "Provider did
+            // not return a tool result". The open block already knows the
+            // mapped name, so finish the part from it here; the block's own
+            // close then finds the id already emitted and adds nothing
+            // (h #g190).
+            const toolCall =
+              state.toolCallsById.get(block.tool_use_id) ??
+              adoptOpenCliToolCall(state, ctx, block.tool_use_id)
             if (toolCall) {
               // A CLI-executed tool that failed carries `is_error`. The
               // AI SDK turns a `tool-result` with `isError` into a
@@ -890,6 +928,7 @@ export function createLineHandler(
                 isError,
               })
               state.toolCallsById.delete(block.tool_use_id)
+              state.toolCallAnsweredIds.add(block.tool_use_id)
             }
           }
         }

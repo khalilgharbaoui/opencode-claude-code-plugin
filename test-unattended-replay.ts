@@ -16,7 +16,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
+import { UNATTENDED_REPLAY_MARKER } from "./src/cli-events.js"
 import { createClaudeCode } from "./src/index.js"
+import { filterSideQuestionHistory } from "./src/message-builder.js"
 
 function createFixture() {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-unattended-replay-"))
@@ -121,7 +123,50 @@ test("a reused process's unattended output replays as a single text block, not o
     const endsForReplayBlock = parts.filter((part) => part.type === "text-end" && part.id === replayId)
     assert.equal(startsForReplayBlock.length, 1, "the replay block must open exactly once")
     assert.equal(endsForReplayBlock.length, 1, "the replay block must close exactly once")
+
+    // The replay is not an answer to this turn's message, so the block has to
+    // say so and has to be strippable. Without the marker the operator reads
+    // the previous turn's trailing sentence as this reply's first line, and a
+    // transcript rebuild hands it back to Claude as its own answer to the
+    // wrong message. Measured live on CLI 2.1.286 (h #g189).
+    const replayBlockDeltas = parts.filter(
+      (part) => part.type === "text-delta" && part.id === replayId,
+    )
+    assert.ok(replayBlockDeltas.length > 0, "the replay block must carry deltas")
+    assert.ok(
+      String(replayBlockDeltas[0].delta).trimStart().startsWith(UNATTENDED_REPLAY_MARKER),
+      `the replay block must open with ${UNATTENDED_REPLAY_MARKER}, got ${JSON.stringify(String(replayBlockDeltas[0].delta).slice(0, 80))}`,
+    )
   } finally {
     rmSync(fixture.cwd, { recursive: true, force: true })
   }
 })
+
+test("a replayed between-turns block is stripped from a rebuilt transcript", () => {
+  const replayed = replayedBlockText()
+  const prompt = [
+    { role: "user" as const, content: [{ type: "text" as const, text: "First message." }] },
+    {
+      role: "assistant" as const,
+      content: [
+        { type: "text" as const, text: replayed },
+        { type: "text" as const, text: "Second answer." },
+      ],
+    },
+    { role: "user" as const, content: [{ type: "text" as const, text: "Third message." }] },
+  ]
+
+  const filtered = filterSideQuestionHistory(prompt as any) as any[]
+  const assistant = filtered.find((message) => message.role === "assistant")
+  const texts = (assistant?.content ?? []).map((part: any) => part.text)
+  assert.deepEqual(
+    texts,
+    ["Second answer."],
+    "the marker-led replay part must be dropped and the real reply kept",
+  )
+})
+
+/** The exact shape `doStream` enqueues: the note, then the replayed text. */
+function replayedBlockText(): string {
+  return `${UNATTENDED_REPLAY_MARKER} The Claude Code CLI wrote this after the previous turn had already finished, so it is not an answer to the message above.\n\nTask completed.`
+}

@@ -40,7 +40,7 @@ import {
   registerAsideSink,
   takeSideQuestionAnswer,
 } from "./btw-command.js"
-import { formatSilentTurnNote } from "./cli-events.js"
+import { formatSilentTurnNote, formatUnattendedReplayNote } from "./cli-events.js"
 import {
   DEFAULT_ACCOUNT,
   normalizeAccountName,
@@ -2523,14 +2523,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // old tools or close this new stream on a stale approval/result.
             let partialText = false
             {
-              if (unattended.dropped > 0) {
-                const id = state.startTextBlock()
-                controller.enqueue({
-                  type: "text-delta",
-                  id,
-                  delta: `> _${unattended.dropped} lines of output emitted between turns were dropped._\n\n`,
-                })
-              }
+              // The marker leads the block, so the operator can tell this from
+              // the answer to their own message and a rebuilt transcript drops
+              // the whole part instead of handing it back as Claude's reply to
+              // the wrong turn (h #g189).
+              const replayId = state.startTextBlock()
+              controller.enqueue({
+                type: "text-delta",
+                id: replayId,
+                delta: formatUnattendedReplayNote(unattended.dropped),
+              })
               for (const line of unattended.lines) {
                 try {
                   const outer: ClaudeStreamMessage = JSON.parse(line)

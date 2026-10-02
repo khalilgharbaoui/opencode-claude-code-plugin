@@ -12,6 +12,7 @@ import {
   RESULT_ERROR_MARKER,
   SILENT_TURN_MARKER,
   STREAM_TIMEOUT_MARKER,
+  UNATTENDED_REPLAY_MARKER,
 } from "./cli-events.js"
 import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
@@ -44,6 +45,7 @@ const PLUGIN_NOTE_MARKERS = [
   FAILOVER_MARKER,
   ACCOUNT_BLOCK_MARKER,
   MODEL_FALLBACK_MARKER,
+  UNATTENDED_REPLAY_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {

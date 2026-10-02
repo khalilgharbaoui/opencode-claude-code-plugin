@@ -26,8 +26,16 @@ import { pluginTmpDir } from "./tmp.js"
  *         "environment"?: Record<string,string>,
  *         "url"?: string,                // remote
  *         "headers"?: Record<string,string>,
- *         "oauth"?: object | false,      // remote — NOT bridged (Claude --mcp-config has no slot)
- *         "timeout"?: number,            // NOT bridged (Claude --mcp-config has no slot)
+ *         "oauth"?: object | false,      // remote, NOT bridged (Claude --mcp-config has no slot)
+ *         "timeout"?: number,            // NOT bridged: Claude DOES have the slot (a
+ *                                        // positive int in ms, capped at 300000, on
+ *                                        // 2.1.280 and 2.1.286), but the two opencode
+ *                                        // majors disagree about the shape. V1 gives a
+ *                                        // number; V2 gives {startup, catalog, execution}
+ *                                        // (@opencode/schema Mcp.TimeoutConfig), so
+ *                                        // there is no faithful single value. V2's
+ *                                        // per-server "cwd" has no Claude slot at all.
+ *                                        // (h #g191)
  *         "enabled"?: boolean
  *       }
  *     }

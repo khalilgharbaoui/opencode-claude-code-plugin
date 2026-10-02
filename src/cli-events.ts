@@ -780,6 +780,36 @@ export function formatSilentTurnNote(hadReasoning: boolean): string {
 }
 
 // ---------------------------------------------------------------------------
+// output the child wrote while no turn was listening
+// ---------------------------------------------------------------------------
+
+export const UNATTENDED_REPLAY_MARKER = "▌ **between turns:**"
+
+/**
+ * A reused `claude` process can write a whole turn's worth of frames after the
+ * plugin's own turn ended on its terminal `result`, and the next turn replays
+ * them so the operator sees them rather than losing them. Measured ways in:
+ * the proxy-detach path (PR #35), and a CLI-side background task whose
+ * notification lands after the result, which makes the CLI continue the
+ * conversation on its own (both 2.1.280 and 2.1.286, see (h #g189)).
+ *
+ * The replay used to be bare text, indistinguishable from this turn's answer:
+ * an operator who asked one question got the previous turn's trailing sentence
+ * on top of the reply, and a transcript rebuilt for a fresh process handed it
+ * back as something Claude had said in answer to the wrong message. Leading
+ * the block with a marker fixes both at once, because `PLUGIN_NOTE_MARKERS`
+ * strips a text part by its first characters.
+ */
+export function formatUnattendedReplayNote(dropped: number): string {
+  const lost =
+    dropped > 0 ? ` ${dropped} earlier line${dropped === 1 ? "" : "s"} were dropped.` : ""
+  return (
+    `${UNATTENDED_REPLAY_MARKER} The Claude Code CLI wrote this after the previous ` +
+    `turn had already finished, so it is not an answer to the message above.${lost}\n\n`
+  )
+}
+
+// ---------------------------------------------------------------------------
 // unrecognized_model (stderr)
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 import type { ClaudeStreamMessage } from "./types.js"
 import type { TurnState } from "./turn-state.js"
+import { cliToolCallInputJson, emitCliToolCall } from "./turn-state.js"
 import { log } from "./logger.js"
 import { formatStreamTimeoutNote } from "./cli-events.js"
 import {
@@ -242,12 +243,93 @@ export function deliverPendingCompletions(
 
 // ---- Ending the turn on tool calls ----------------------------------------
 
+/**
+ * What a CLI-executed tool's row says when this step ends before the CLI
+ * handed its output over. The output itself is not lost: it is in Claude's own
+ * context, which is the only place it was ever going to be read.
+ */
+export const CLI_RESULT_DEFERRED_OUTPUT =
+  "Claude Code ran this tool itself and kept its output in its own context." +
+  " This step ended on a tool call opencode has to run, so the output was not" +
+  " available to show here."
+
+/**
+ * Close out every CLI-executed tool call of this step that has no result yet.
+ *
+ * The CLI answers a whole assistant message's tool calls with ONE `user`
+ * frame, so when one of them is a proxied call it withholds its own results
+ * until the plugin sends the proxied one back, which cannot happen before this
+ * step ends. Whatever arrives on the next stream reaches a turn whose state is
+ * gone, so the row is never answered: opencode 2.0.22 says so out loud
+ * ("Provider did not return a tool result") and opencode 1.18.34 leaves it
+ * pending (h #g190).
+ *
+ * Two shapes, in order, because they need different amounts of finishing: a
+ * registered call is missing only its result, while a block the CLI has not
+ * closed yet is missing its `tool-call` part too (`emitCliToolCall` is a no-op
+ * for the first group, since their part is already out). `skipResultForIds`
+ * excludes both the proxied calls and everything opencode runs itself, which
+ * is what makes what is left exactly the dangling set.
+ *
+ * The placeholder also gives a rebuilt transcript a `tool_result` for a
+ * `tool_use` this CLI process issued, which the issue-#29 gate (h #g121) would
+ * otherwise have to send back unanswered.
+ *
+ * Only this path needs it: `finishWithQuestionCall` runs from `completeResult`
+ * on a terminal `result`, by which point the CLI has delivered everything.
+ */
+function closeDeferredCliToolResults(state: TurnState): void {
+  const answer = (id: string, name: string, stage: string) => {
+    emitCliToolCall(state, id, name, cliToolCallInputJson(state, id), true)
+    state.controller.enqueue({
+      type: "tool-result",
+      toolCallId: id,
+      toolName: name,
+      result: {
+        output: CLI_RESULT_DEFERRED_OUTPUT,
+        title: name,
+        metadata: {},
+      },
+      providerExecuted: true,
+    } as any)
+    state.toolCallsById.delete(id)
+    state.toolCallAnsweredIds.add(id)
+    log.info("closing a CLI-executed tool call whose result this step cannot wait for", {
+      sessionKey: state.sessionKey,
+      toolUseId: id,
+      name,
+      stage,
+    })
+  }
+
+  // Registered and still unanswered: its block closed, or its result came in
+  // ahead of the close. Either way a `tool-call` part is already out.
+  for (const [id, toolCall] of [...state.toolCallsById]) {
+    if (state.skipResultForIds.has(id)) continue
+    answer(id, toolCall.name, "registered")
+  }
+
+  // The block never closed, so only `tool-input-start` went out: the part
+  // needs its `tool-call` too. This is the common shape, because the CLI
+  // starts the block, runs the tool, and emits `content_block_stop` with the
+  // assistant frame that closes the whole batch, which it is holding for the
+  // proxied call.
+  for (const entry of state.toolCallMap.values()) {
+    if (!entry.started || !entry.mappedName) continue
+    if (state.skipResultForIds.has(entry.id)) continue
+    if (state.toolCallAnsweredIds.has(entry.id)) continue
+    if (state.toolCallEmittedIds.has(entry.id)) continue
+    answer(entry.id, entry.mappedName, "open-block")
+  }
+}
+
 export function finishWithToolCalls(
   state: TurnState,
   calls: PendingProxyCall[],
 ): void {
   if (state.controllerClosed) return
   if (calls.length === 0) return
+  closeDeferredCliToolResults(state)
   const enqueueToolCall = (
     toolCallId: string,
     toolName: string,

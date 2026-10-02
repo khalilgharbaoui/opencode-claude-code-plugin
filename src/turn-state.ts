@@ -51,6 +51,13 @@ export interface TurnToolCallEntry {
   name: string
   inputJson: string
   started: boolean
+  /**
+   * The opencode-side name `tool-input-start` went out under, set only when
+   * `started`. A step that ends before this block closes has to finish the
+   * part itself, and a `tool-call` must carry the name its `tool-input-start`
+   * did (h #g190).
+   */
+  mappedName?: string
 }
 
 export interface TurnState {
@@ -205,6 +212,20 @@ export interface TurnState {
   readonly skipResultForIds: Set<string>
   /** Tool call id to its MAPPED name: a `tool-result` must carry the name its `tool-call` did. */
   readonly toolCallsById: Map<string, { id: string; name: string; input: unknown }>
+  /**
+   * Ids a `tool-call` part has already gone out for. Three different frames
+   * can be the first to need one (the block's close, the CLI's own result, the
+   * end of a step that waits on a proxied call), and opencode aborts a part
+   * that gets two (h #g190).
+   */
+  readonly toolCallEmittedIds: Set<string>
+  /**
+   * Ids a `tool-result` part has already gone out for. The CLI's result can
+   * precede the block's close, so without this the close re-registers an id
+   * that is already finished and the step's closeout answers it a second time
+   * (h #g190).
+   */
+  readonly toolCallAnsweredIds: Set<string>
 
   // ---- The terminal result ------------------------------------------------
 
@@ -371,6 +392,8 @@ export function createTurnState(init: TurnStateInit): TurnState {
     toolCallMap: new Map<number, TurnToolCallEntry>(),
     skipResultForIds: new Set<string>(),
     toolCallsById: new Map<string, { id: string; name: string; input: unknown }>(),
+    toolCallEmittedIds: new Set<string>(),
+    toolCallAnsweredIds: new Set<string>(),
 
     resultMeta: {},
     lastCallUsage: undefined,
@@ -389,4 +412,44 @@ export function createTurnState(init: TurnStateInit): TurnState {
     cleanupTurn: unassigned(),
   }
   return state
+}
+
+/**
+ * The JSON input accumulated for a CLI-executed call that is still streaming,
+ * as a string, or `"{}"` when the block is gone or empty. The entry is keyed
+ * by content-block index and deleted when the block closes (h #g76), so this
+ * is a scan over the few blocks of one assistant message.
+ */
+export function cliToolCallInputJson(state: TurnState, id: string): string {
+  for (const entry of state.toolCallMap.values()) {
+    if (entry.id === id) return entry.inputJson || "{}"
+  }
+  return "{}"
+}
+
+/**
+ * Emit the `tool-call` part for a CLI-executed id, at most once per turn.
+ *
+ * `tool-input-start` goes out at `content_block_start`, and until (h #g190)
+ * the matching `tool-call` went out only at `content_block_stop`. Both the
+ * CLI's own `tool_result` and the end of a step waiting on a proxied call can
+ * arrive before that, and each of them needs the part completed, so all three
+ * call this and the first one wins.
+ */
+export function emitCliToolCall(
+  state: TurnState,
+  id: string,
+  name: string,
+  inputJson: string,
+  executed: boolean,
+): void {
+  if (state.toolCallEmittedIds.has(id)) return
+  state.toolCallEmittedIds.add(id)
+  state.controller.enqueue({
+    type: "tool-call",
+    toolCallId: id,
+    toolName: name,
+    input: inputJson,
+    providerExecuted: executed,
+  } as any)
 }
