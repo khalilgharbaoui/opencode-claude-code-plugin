@@ -1,12 +1,18 @@
 ---
 /*
   Overrides Starlight's Hero (astro.config.mjs: components.Hero). On the landing page it
-  renders the plugin's own hero: a bar-led monospace title beside the turn replay. On
-  every other page that declares `hero:` it defers to Starlight's default, so the
-  override never changes a docs page.
+  renders the plugin's own hero: a bar-led monospace title, the one-line tagline, the
+  install block and the turn replay, all meant to fit the first screen at 1440x900 and
+  at 390x844. On every other page that declares `hero:` it defers to Starlight's default,
+  so the override never changes a docs page.
 
   Reads the same frontmatter fields as the default Hero (title, tagline, actions), so
-  the copy stays in index.mdx where an editor expects it.
+  the copy stays in index.mdx where an editor expects it. The install snippet is the one
+  from docs/getting-started.md; the version is the npm figure stats.ts reads.
+
+  The copy button is an enhancement: it is hidden until scripting runs, so without it
+  the snippet is plain, selectable text. The script prefers the async clipboard and
+  falls back to selecting the snippet where that API is unavailable.
 */
 import Default from '@astrojs/starlight/components/Hero.astro';
 import { LinkButton } from '@astrojs/starlight/components';
@@ -22,18 +28,40 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const withBase = (link: string) => (link.startsWith('/') ? `${base}${link}` : link);
 
 const stats = isHome ? await loadStats() : undefined;
+const snippet = '{\n  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"]\n}';
 ---
 
 {
   isHome ? (
     <div class="occ-hero not-content">
       <div class="occ-hero__copy">
-        <p class="occ-eyebrow occ-hero__eyebrow">
-          <span class="occ-hero__name">@khalilgharbaoui/opencode-claude-code-plugin</span>
-          {stats && <span class="occ-hero__meta">v{stats.npmVersion} · MIT · opencode 1.x and 2.x</span>}
-        </p>
-        <h1 id="_top" data-page-title class="occ-hero__title" set:html={title} />
+        <h1 id="_top" tabindex="-1" data-page-title class="occ-hero__title" set:html={title} />
         {tagline && <p class="occ-hero__tagline" set:html={tagline} />}
+
+        <div class="occ-install">
+          <div class="occ-install__head">
+            <span><strong class="occ-install__tldr">tl;dr</strong> just install</span>
+            {stats && (
+              <a class="occ-install__ver" href="https://www.npmjs.com/package/@khalilgharbaoui/opencode-claude-code-plugin" rel="noopener">
+                v{stats.npmVersion}
+              </a>
+            )}
+            <button type="button" class="occ-copy" data-copy="#occ-install-code" aria-label="Copy the opencode.json snippet" hidden>
+              <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+              </svg>
+              <span class="occ-copy__label">copy</span>
+            </button>
+            <span class="sr-only" role="status" aria-live="polite" id="occ-copy-status" />
+          </div>
+          <pre class="occ-install__code" id="occ-install-code" tabindex="0" aria-label="opencode.json installation snippet"><code>{snippet}</code></pre>
+          <p class="occ-install__foot">
+            Add to <code>opencode.json</code>, then relaunch.
+            Requires <code>claude</code> installed and logged in.
+          </p>
+        </div>
+
         {actions.length > 0 && (
           <div class="occ-hero__actions">
             {actions.map(({ attrs: { class: className, ...attrs } = {}, icon, link, text, variant }) => (
@@ -54,6 +82,44 @@ const stats = isHome ? await loadStats() : undefined;
   )
 }
 
+<script>
+  const button = document.querySelector<HTMLButtonElement>('.occ-copy');
+  const code = button ? document.querySelector<HTMLElement>(button.dataset.copy ?? '') : null;
+  const status = document.getElementById('occ-copy-status');
+  const label = button?.querySelector<HTMLElement>('.occ-copy__label');
+  if (button && code && label) {
+    button.hidden = false;
+    const idle = label.textContent;
+    let reset = 0;
+    const say = (text: string, state: 'copied' | 'select') => {
+      if (status) status.textContent = '';
+      label.textContent = text;
+      button.dataset.state = state;
+      if (status) status.textContent = state === 'copied' ? 'Snippet copied to the clipboard.' : 'Snippet selected; copy it with your keyboard.';
+      window.clearTimeout(reset);
+      reset = window.setTimeout(() => {
+        label.textContent = idle;
+        delete button.dataset.state;
+      }, 1800);
+    };
+    button.addEventListener('click', async () => {
+      const text = code.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(text);
+        say('copied', 'copied');
+      } catch {
+        code.focus();
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        say('selected', 'select');
+      }
+    });
+  }
+</script>
+
 <style>
   /* The glow behind this hero is a background on the landing page's frame
      (custom.css, "The one glow"): it has to bleed to the viewport's edge, which a
@@ -61,38 +127,26 @@ const stats = isHome ? await loadStats() : undefined;
   .occ-hero {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--occ-space-8);
-    align-items: center;
-    padding-block: var(--occ-space-8) var(--occ-space-4);
+    gap: var(--occ-space-4);
+    align-items: start;
+    padding-block: 0 var(--occ-space-4);
   }
   .occ-hero__copy {
     display: flex;
     flex-direction: column;
-    gap: var(--occ-space-6);
+    gap: var(--occ-space-3);
     min-width: 0;
-  }
-  .occ-hero__eyebrow {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0;
-  }
-  .occ-hero__name,
-  .occ-hero__meta {
-    display: block;
-    overflow-wrap: anywhere;
-  }
-  .occ-hero__name {
-    color: var(--occ-ink-2);
   }
 
   /* The title is set the way the plugin writes a note into a transcript:
-     a thick left bar, then the line. Monospace so it reads as output, not marketing. */
+     a thick left bar, then the line. Monospace so it reads as output, not marketing.
+     Capped so "Claude Code is" fits one line beside the replay at 1440. */
   .occ-hero__title {
     margin: 0;
     padding-inline-start: 0.5em;
     border-inline-start: 0.28em solid var(--occ-bar);
     font-family: var(--__sl-font-mono);
-    font-size: clamp(2rem, 1rem + 3.2vw, 4.25rem);
+    font-size: clamp(1.875rem, 1rem + 2.9vw, 3.6rem);
     font-weight: 700;
     line-height: 1.06;
     letter-spacing: -0.04em;
@@ -101,13 +155,14 @@ const stats = isHome ? await loadStats() : undefined;
   }
   .occ-hero__tagline {
     margin: 0;
-    max-width: 38rem;
-    font-size: clamp(var(--sl-text-base), 0.9rem + 0.6vw, var(--sl-text-xl));
-    line-height: 1.55;
+    max-width: 36rem;
+    font-size: clamp(var(--sl-text-base), 0.9rem + 0.5vw, var(--sl-text-lg));
+    line-height: 1.5;
     color: var(--occ-ink-2);
     text-wrap: pretty;
   }
-  .occ-hero__tagline :global(code) {
+  .occ-hero__tagline :global(code),
+  .occ-install__foot code {
     font-family: var(--__sl-font-mono);
     font-size: 0.9em;
     padding: 0.05em 0.3em;
@@ -121,20 +176,139 @@ const stats = isHome ? await loadStats() : undefined;
     gap: var(--occ-space-3) var(--occ-space-6);
     align-items: center;
   }
+  .occ-hero__actions :global(.sl-link-button) {
+    min-block-size: 2.75rem;
+    margin: 0;
+  }
+
+  /* The install block: the whole setup, above the fold. A panel in the hairline
+     vocabulary; the snippet is a real <pre> because it is preformatted code. */
+  .occ-install {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-1);
+    max-width: 36rem;
+    padding: var(--occ-space-1) var(--occ-space-3) var(--occ-space-3);
+    border: 1px solid var(--occ-line);
+    border-inline-start: 4px solid var(--occ-bar);
+    border-radius: 0 var(--occ-radius) var(--occ-radius) 0;
+    background: var(--occ-panel);
+    box-shadow: inset 0 1px 0 var(--occ-highlight);
+  }
+  .occ-install__head {
+    display: flex;
+    align-items: center;
+    gap: 0.75ch;
+    margin: 0;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--occ-ink-2);
+  }
+  .occ-install__tldr {
+    font-weight: 700;
+    color: var(--sl-color-text-accent);
+  }
+  .occ-install__ver {
+    margin-inline-start: auto;
+    font-size: var(--sl-text-2xs);
+    color: var(--occ-ink-3);
+    text-decoration: none;
+    text-underline-offset: 0.2em;
+    display: inline-flex;
+    align-items: center;
+    min-block-size: 2.75rem;
+  }
+  .occ-install__ver:hover {
+    color: var(--sl-color-text-accent);
+    text-decoration: underline;
+  }
+  .occ-install__code {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    padding: var(--occ-space-1) 0;
+    background: transparent;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    line-height: 1.5;
+    color: var(--occ-ink-1);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 2;
+  }
+  .occ-install__code code {
+    font: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+  }
+  .occ-copy {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5ch;
+    min-inline-size: 2.75rem;
+    inline-size: 5.5rem;
+    min-block-size: 2.75rem;
+    margin: 0;
+    padding: 0 var(--occ-space-3);
+    border: 1px solid var(--occ-line-strong);
+    border-radius: var(--occ-radius-sm);
+    background: transparent;
+    color: var(--occ-ink-2);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition:
+      border-color var(--occ-duration),
+      color var(--occ-duration),
+      background-color var(--occ-duration);
+  }
+  .occ-copy:hover {
+    border-color: var(--occ-ink-3);
+    color: var(--sl-color-white);
+  }
+  .occ-copy[data-state='copied'] {
+    border-color: var(--sl-color-accent);
+    color: var(--sl-color-text-accent);
+  }
+  .occ-install__foot {
+    margin: 0;
+    font-size: var(--sl-text-2xs);
+    line-height: 1.5;
+    color: var(--occ-ink-3);
+    text-wrap: pretty;
+  }
+  .occ-copy[hidden] {
+    visibility: hidden;
+    display: inline-flex;
+  }
+  @media (max-width: 26rem) {
+    .occ-hero__actions {
+      gap: var(--occ-space-2);
+    }
+    .occ-hero__actions :global(.sl-link-button) {
+      font-size: var(--sl-text-sm);
+      padding: var(--occ-space-2) var(--occ-space-3);
+    }
+  }
 
   /* Stacked below 64rem: a tablet column is too narrow for both the title and the
-     replay's lines. Equal columns from there, the replay a little wider past 80rem,
-     because its lines are the longer of the two. */
+     replay's lines. Two equal columns from there. */
   @media (min-width: 64rem) {
     .occ-hero {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: var(--occ-space-12);
-      padding-block: clamp(var(--occ-space-8), 6vw, 5rem) var(--occ-space-8);
+      gap: var(--occ-space-8);
+      padding-block: clamp(var(--occ-space-6), 4vw, 3.5rem) var(--occ-space-8);
+    }
+    .occ-hero__copy {
+      gap: var(--occ-space-6);
     }
   }
   @media (min-width: 80rem) {
     .occ-hero {
-      grid-template-columns: minmax(0, 11fr) minmax(0, 13fr);
+      gap: var(--occ-space-12);
     }
   }
 </style>

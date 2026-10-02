@@ -31,12 +31,17 @@ const number = String(index).padStart(2, '0');
 </section>
 
 <style>
+  /* Eyebrow to title 0.5rem, head to body 1.5rem (pass 2 had 0.75rem and 2rem): the
+     eyebrow belongs to its title, and the body belongs to its head. */
   .occ-section__head {
     display: flex;
     flex-direction: column;
-    gap: var(--occ-space-3);
-    margin-bottom: var(--occ-space-8);
+    gap: var(--occ-space-2);
+    margin-bottom: var(--occ-space-6);
     max-width: 44rem;
+  }
+  .occ-section__head > .occ-section__lead {
+    margin-top: var(--occ-space-1);
   }
   .occ-section__title {
     margin: 0;

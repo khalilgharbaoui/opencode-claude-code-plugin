@@ -202,11 +202,19 @@
 }
 
 /* ---------- Header: glass, so the page scrolls under it and still reads ---------- */
+/* Deliberately not a box: the page draws with rules, not boxes, and the header is the
+   one rule that spans the whole width. The glass and the hairline separate it from
+   content scrolling under it; on the light theme a soft shadow under the hairline keeps
+   the edge legible where paper on paper would not. */
 header.header {
   background-color: var(--occ-glass);
   -webkit-backdrop-filter: blur(12px) saturate(1.2);
   backdrop-filter: blur(12px) saturate(1.2);
   border-bottom: 1px solid var(--occ-line);
+  box-shadow: var(--occ-header-shadow, none);
+}
+:root[data-theme='light'] {
+  --occ-header-shadow: 0 6px 18px -12px rgb(26 29 35 / 0.35);
 }
 @media (prefers-reduced-transparency: reduce) {
   header.header {
@@ -214,6 +222,19 @@ header.header {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* Visually hidden, available to assistive technology (and to a page with CSS off). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 /* The search trigger in the site's own hairline vocabulary. */
 site-search > button[data-open-modal] {
@@ -642,8 +663,11 @@ site-search mark {
   background-position: 0 0;
 }
 [data-has-hero] .sl-markdown-content {
-  /* Sections own their rhythm; Starlight's generic sibling margin is too small here. */
-  --occ-section-gap: clamp(var(--occ-space-12), 9vw, 7rem);
+  /* Sections own their rhythm; Starlight's generic sibling margin is too small here.
+     Pass 2 used clamp(3rem, 9vw, 7rem), which is 7rem from 1245px up; the maintainer
+     read that as too much. Now 5rem at desktop and 2.5rem at 320px: two steps of the
+     scale, still clearly more than anything inside a section. */
+  --occ-section-gap: clamp(2.5rem, 6vw, 5rem);
 }
 [data-has-hero] .sl-markdown-content > .occ-section + .occ-section,
 [data-has-hero] .sl-markdown-content > .occ-stats + .occ-section {
