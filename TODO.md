@@ -78,11 +78,12 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-02: the maintainer is arranging a separate domain for the docs site. When it is ready:
-  set it as the project Pages custom domain (Settings, Pages, or `gh api -X PUT
-  repos/khalilgharbaoui/opencode-claude-code-plugin/pages -f cname=<domain>`), change `site` (and
-  `base` to `/` if it serves at the root) in `site/astro.config.mjs`, then the README docs link,
-  `homepage` in package.json, the tests badge URL and the `ref_docs_site` memory.
+- 2026-10-02: **docs site domain `opencode-claude-code-plugin.dev`** (maintainer's, on Cloudflare).
+  Site side ready as a draft PR on branch `custom-domain` (root base, `site/site-config.mjs`). Waiting
+  on the maintainer for the Cloudflare DNS records (DNS only, grey cloud: four `A` to
+  185.199.108-111.153, four `AAAA` to 2606:50c0:8000-8003::153, `www` CNAME to
+  khalilgharbaoui.github.io). Then: set the Pages custom domain, wait for the certificate (`.dev` is
+  HTTPS-only), enforce HTTPS, merge the PR, verify, release, update the `ref_docs_site` memory.
 - 2026-10-02: the widget's colour stays the maintainer's `#FF813F` (BMC orange); the designer
   suggests `#E8A33A` to match the site's amber. Change it, or keep?
 - 2026-10-02: the docs site's `github.io` address redirects to **plain http** on

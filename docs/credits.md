@@ -9,6 +9,7 @@ This plugin absorbs work from its forks directly, cherry-picked with the origina
 
 | Who | What | Where |
 |---|---|---|
+| [@unixfox](https://github.com/unixfox) (Émilien) | Wrote the first version of this plugin in March 2026, and with it the idea it still runs on: an opencode provider that drives the official `claude` CLI as a subprocess instead of calling the API. This repository began as a fork of that work, and its tool mapping, session manager and message builder still carry his code. | `b03fa8e` (the initial commit) and four more, to 2026-04-06 |
 | [@galvani](https://github.com/galvani) (Jan Kozak) | Per-session working directory for `opencode serve`, so one server spawns each project's `claude` in the right place. Also found the stale `toolCallMap` re-emission three months before it was fixed here. | `9e02ce4`, `2238ed0` |
 | [@HeikoAtGitHub](https://github.com/HeikoAtGitHub) | Stopped sending `AGENTS.md` to the model twice (opencode already forwards it). Independently diagnosed the 5-minute proxy wall. | `25260a4`, `42f426d` |
 | [@bernardofortes](https://github.com/bernardofortes) (Bernardo Fortes) | `idleProcessTimeoutMs`, idle eviction of retained `claude` workers. | `a5f723a` |

@@ -25,8 +25,6 @@
 
 **Docs:** <https://opencode-claude-code-plugin.dev/> (the same pages are the markdown under [`docs/`](./docs/), which GitHub renders on its own).
 
-> Maintained fork of [`unixfox/opencode-claude-code-plugin`](https://github.com/unixfox/opencode-claude-code-plugin), which is archived and links here.
-
 ## Quickstart
 
 1. **Install and log in the Claude Code CLI.** The plugin drives an existing `claude`; it does not bundle one.
@@ -112,4 +110,4 @@ Free and MIT-licensed. If the plugin saves you time, you can buy its maintainer 
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). Original work © `unixfox`. Fork modifications © Khalil Gharbaoui.
+MIT. See [LICENSE](./LICENSE). The first version was written by Émilien ([@unixfox](https://github.com/unixfox)); everything since by Khalil Gharbaoui and the people in [Credits](./docs/credits.md).

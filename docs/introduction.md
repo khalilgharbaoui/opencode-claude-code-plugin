@@ -11,7 +11,7 @@ Use Claude models inside [opencode](https://opencode.ai) by driving the official
 - **opencode stays in charge of your machine.** Bash, Edit, Write, WebFetch and subagent dispatch are executed by opencode, behind its permission prompts and audit log, rather than by Claude Code. See [Selective tool proxy](./guides/tool-proxy.md).
 - **Headless by default, on your plan's ordinary usage limits.** `claude --print` usage on a subscription plan draws from the same usage limits as interactive Claude Code; the separate Agent SDK credit Anthropic announced for June 2026 was paused before it took effect. API-key authentication bills pay-as-you-go instead. See [Billing](./billing.md).
 
-> Maintained fork of [`unixfox/opencode-claude-code-plugin`](https://github.com/unixfox/opencode-claude-code-plugin). Published as `@khalilgharbaoui/opencode-claude-code-plugin` on npm.
+> Published as `@khalilgharbaoui/opencode-claude-code-plugin` on npm.
 
 ## What the plugin actually does
 
