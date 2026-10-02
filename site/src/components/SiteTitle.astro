@@ -1,0 +1,60 @@
+---
+/*
+  Overrides Starlight's SiteTitle (astro.config.mjs: components.SiteTitle). The
+  wordmark is HTML rather than an SVG image: `opencode`, the mark, `claude-code`, set
+  in the site's own loaded mono, so it is the same type as the page, takes the theme
+  for free and costs no request. The mark sits where the hyphen would: the plugin
+  is the thing between opencode and claude-code.
+*/
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="occ-brand" aria-label={siteTitle}>
+  <span class="occ-brand__a" aria-hidden="true">opencode</span>
+  <svg class="occ-brand__mark" viewBox="0 0 32 32" aria-hidden="true">
+    <rect x="3" y="3" width="8" height="26" rx="2" fill="var(--occ-bar)"></rect>
+    <path d="M16 8 L25 16 L16 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></path>
+  </svg>
+  <span class="occ-brand__b" aria-hidden="true">claude-code</span>
+</a>
+
+<style>
+  .occ-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    color: var(--sl-color-white);
+    font-family: var(--__sl-font-mono);
+    font-size: 1.125rem;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  .occ-brand__a {
+    font-weight: 500;
+    color: var(--occ-ink-2);
+  }
+  .occ-brand__b {
+    font-weight: 700;
+  }
+  .occ-brand__mark {
+    flex: none;
+    inline-size: 1.15em;
+    block-size: 1.15em;
+  }
+  /* The header's middle column needs the room between the two-column and the wide
+     layout: the mark alone carries the brand there, the name stays for the label. */
+  @media (min-width: 50rem) and (max-width: 63.9375rem) {
+    .occ-brand__a,
+    .occ-brand__b {
+      display: none;
+    }
+  }
+  @media (max-width: 24rem) {
+    .occ-brand {
+      font-size: 1rem;
+    }
+  }
+</style>

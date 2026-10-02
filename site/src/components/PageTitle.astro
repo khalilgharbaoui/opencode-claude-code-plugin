@@ -1,0 +1,24 @@
+---
+/*
+  Overrides Starlight's PageTitle (astro.config.mjs: components.PageTitle). The h1
+  leads with the bar, and the page's frontmatter description renders under it as a
+  lead paragraph, so every docs page opens the way the landing page does. Nothing
+  about a page's meaning changes: the description was already in every file, and
+  Starlight already puts it in the <meta>.
+
+  The 404 page brings its own h1 (components/NotFound.astro), so this renders nothing
+  there rather than saying "not found" twice.
+*/
+const { entry } = Astro.locals.starlightRoute;
+const { title, description } = entry.data;
+const isNotFound = entry.id === '404';
+---
+
+{
+  !isNotFound && (
+    <>
+      <h1 id="_top" class="occ-page-title">{title}</h1>
+      {description && <p class="occ-page-lead">{description}</p>}
+    </>
+  )
+}

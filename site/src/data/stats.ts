@@ -11,7 +11,14 @@
     api.npmjs.org  downloads (last week, last month, and the total since the first publish)
     registry.npmjs.org  the published version
     the workflow  OCC_STAT_TESTS and OCC_STAT_MODELS, parsed from the suite and the source
+    git  the commit count and the date of the first commit (the workflow checks out
+         with fetch-depth 0, so the history is there)
+    the filesystem  the test files and their line count, read off the repository
 */
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import snapshot from './stats.snapshot.json';
 
 export interface ProjectStats {
@@ -26,7 +33,11 @@ export interface ProjectStats {
   downloadsSince: string;
   tests: number;
   testFiles: number;
+  testLines: number;
   models: number;
+  commits: number;
+  /** ISO date of the repository's first commit. */
+  firstCommit: string;
   npmVersion: string;
   repoCreated: string;
   /** ISO date of this build. */
@@ -115,6 +126,61 @@ async function npmVersion(): Promise<string> {
   return data.version;
 }
 
+/**
+ * The repository root. `astro build` runs from site/ (package.json, the workflow), so
+ * its parent is the first candidate; the module's own location is the second, for a
+ * build started from somewhere else. Either must hold the plugin's package.json.
+ */
+function repoRoot(): string {
+  const candidates = [
+    path.resolve(process.cwd(), '..'),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+  ];
+  for (const candidate of candidates) {
+    const manifest = path.join(candidate, 'package.json');
+    if (!existsSync(manifest)) continue;
+    try {
+      const { name } = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string };
+      if (name === PACKAGE) return candidate;
+    } catch {
+      // not a readable manifest; try the next candidate
+    }
+  }
+  throw new Error('the repository root was not found beside site/');
+}
+
+function git(args: string[]): string {
+  return execFileSync('git', args, { cwd: repoRoot(), encoding: 'utf8', timeout: TIMEOUT_MS }).trim();
+}
+
+function gitCommits(): number {
+  const count = Number.parseInt(git(['rev-list', '--count', 'HEAD']), 10);
+  if (!Number.isFinite(count) || count <= 0) throw new Error('git rev-list gave no count');
+  return count;
+}
+
+/** The date of the root commit, which is the day the first version of this plugin was written. */
+function gitFirstCommit(): string {
+  const roots = git(['rev-list', '--max-parents=0', 'HEAD']).split('\n').filter(Boolean);
+  if (roots.length === 0) throw new Error('git found no root commit');
+  const dates = roots.map((sha) => git(['log', '-1', '--format=%cs', sha])).sort();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dates[0] ?? '')) throw new Error('git gave no date for the root commit');
+  return dates[0] as string;
+}
+
+/** Every `test-*.ts` beside package.json, and the lines they add up to. */
+function testSuiteSize(): { files: number; lines: number } {
+  const root = repoRoot();
+  const files = readdirSync(root).filter((name) => /^test-.*\.ts$/.test(name));
+  if (files.length === 0) throw new Error('no test-*.ts files found');
+  let lines = 0;
+  for (const file of files) {
+    const text = readFileSync(path.join(root, file), 'utf8');
+    lines += text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+  }
+  return { files: files.length, lines };
+}
+
 function envNumber(name: string): number | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -126,7 +192,7 @@ async function collect(): Promise<ProjectStats> {
   const builtAt = new Date().toISOString().slice(0, 10);
   const fallbacks: string[] = [];
 
-  async function attempt<T>(label: string, task: () => Promise<T>, fallback: T): Promise<T> {
+  async function attempt<T>(label: string, task: () => Promise<T> | T, fallback: T): Promise<T> {
     try {
       return await task();
     } catch (error) {
@@ -152,6 +218,10 @@ async function collect(): Promise<ProjectStats> {
       attempt('npm version', npmVersion, snapshot.npmVersion),
     ]);
 
+  const commits = await attempt('git commits', gitCommits, snapshot.commits);
+  const firstCommit = await attempt('git first commit', gitFirstCommit, snapshot.firstCommit);
+  const suite = await attempt('test files', testSuiteSize, { files: snapshot.testFiles, lines: snapshot.testLines });
+
   const tests = envNumber('OCC_STAT_TESTS') ?? snapshot.tests;
   const models = envNumber('OCC_STAT_MODELS') ?? snapshot.models;
   if (!envNumber('OCC_STAT_TESTS')) fallbacks.push('tests (OCC_STAT_TESTS unset)');
@@ -167,8 +237,11 @@ async function collect(): Promise<ProjectStats> {
     downloadsTotal,
     downloadsSince: snapshot.downloadsSince,
     tests,
-    testFiles: snapshot.testFiles,
+    testFiles: suite.files,
+    testLines: suite.lines,
     models,
+    commits,
+    firstCommit,
     npmVersion: version,
     builtAt,
     live: fallbacks.filter((label) => !label.startsWith('tests') && !label.startsWith('models')).length === 0,

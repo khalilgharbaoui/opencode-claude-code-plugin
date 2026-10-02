@@ -19,8 +19,10 @@
     GitHub instead, from `docs/internals/measurement-culture.md`.
   - files whose name starts with `_`, by the usual Astro convention.
 
-  The landing page is the one site-only entry: it is MDX that imports the landing
-  components, so it lives beside them under `site/src/content/docs/`.
+  The landing page and the 404 page are the two site-only entries: they are MDX that
+  imports the site's components, so they live beside them under
+  `site/src/content/docs/`. Starlight takes a collection entry whose id is `404` as
+  its 404 page (utils/routing/data.ts, `get404Route`).
 */
 import { defineCollection } from 'astro:content';
 import { glob } from 'astro/loaders';
@@ -28,7 +30,9 @@ import { docsSchema } from '@astrojs/starlight/schema';
 
 /** Relative to this project's root (site/), which is what `base` is resolved against. */
 const REPO_ROOT = '..';
-const LANDING_PAGE = 'site/src/content/docs/index';
+const SITE_PAGES = 'site/src/content/docs';
+const LANDING_PAGE = `${SITE_PAGES}/index`;
+const NOT_FOUND_PAGE = `${SITE_PAGES}/404`;
 
 export const collections = {
   docs: defineCollection({
@@ -38,14 +42,17 @@ export const collections = {
         'docs/**/[^_]*.md',
         '!docs/agents-history.md',
         `${LANDING_PAGE}.mdx`,
+        `${NOT_FOUND_PAGE}.mdx`,
       ],
       // Starlight keys its routes on the entry id, so both roots have to collapse
       // onto the slug the sidebar and every link already use: `docs/guides/btw.md`
-      // is `guides/btw`, and the landing page is `index` (Starlight's route '').
+      // is `guides/btw`, the landing page is `index` (Starlight's route '') and the
+      // 404 page is `404`.
       generateId: ({ entry, data }) => {
         if (typeof data.slug === 'string' && data.slug) return data.slug;
         const withoutExtension = entry.replace(/\.mdx?$/, '');
         if (withoutExtension === LANDING_PAGE) return 'index';
+        if (withoutExtension === NOT_FOUND_PAGE) return '404';
         return withoutExtension.replace(/^docs\//, '');
       },
     }),

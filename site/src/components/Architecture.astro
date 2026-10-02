@@ -1,0 +1,324 @@
+---
+/*
+  "How it works": the real architecture, drawn in HTML and CSS so the labels stay
+  real text and the picture takes the theme and the width on its own. Two process
+  boxes (opencode, with the plugin and its proxy MCP server inside it; the headless
+  claude child), the wires between them labelled with what travels, the account
+  wrappers, and Anthropic under the CLI. Every line is from docs/: how-a-turn-works,
+  how-a-proxied-call-ends, scratch-files-and-security, tool-proxy, accounts, mcp,
+  skills. Three columns from 48rem, one column below with the wires turned upright.
+*/
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+
+<div class="occ-arch not-content" role="group" aria-label="How the two processes connect">
+  <section class="occ-arch__box occ-arch__box--opencode" aria-labelledby="occ-arch-opencode">
+    <h3 id="occ-arch-opencode" class="occ-arch__name">
+      <span class="occ-arch__proc">process 1</span>
+      opencode
+    </h3>
+    <p class="occ-arch__desc">
+      Your terminal. Its permission prompts, its audit log, its MCP servers, its skills. The tools that touch
+      your machine run here: <code>bash</code>, <code>edit</code>, <code>write</code>, <code>webfetch</code>,
+      <code>task</code>.
+    </p>
+    <div class="occ-arch__inner">
+      <h4 class="occ-arch__name occ-arch__name--inner">
+        <span class="occ-arch__proc">in-process</span>
+        the plugin
+      </h4>
+      <ul class="occ-arch__list">
+        <li>One <code>claude</code> child per conversation, keyed on cwd, model, tool scope and session.</li>
+        <li>
+          <code>opencode_proxy</code>: an MCP server on loopback. Bearer token, written into a <code>0600</code>
+          <code>--mcp-config</code>, never logged.
+        </li>
+        <li>One provider per account, each with its own <code>CLAUDE_CONFIG_DIR</code>.</li>
+        <li>Reads no credential. There is nothing here to lift.</li>
+      </ul>
+    </div>
+  </section>
+
+  <ol class="occ-arch__wires" aria-label="What travels between them">
+    <li class="occ-wire occ-wire--to-claude">
+      <span class="occ-wire__label">your prompt, as stream-json on stdin</span>
+    </li>
+    <li class="occ-wire occ-wire--to-opencode">
+      <span class="occ-wire__label">frames on stdout: text, thinking, tool_use, result</span>
+    </li>
+    <li class="occ-wire occ-wire--to-opencode occ-wire--proxy">
+      <span class="occ-wire__label">a proxied tool call over loopback HTTP, held open until it ends</span>
+    </li>
+    <li class="occ-wire occ-wire--to-claude occ-wire--proxy">
+      <span class="occ-wire__label">its result, once opencode has run it</span>
+    </li>
+  </ol>
+
+  <section class="occ-arch__box occ-arch__box--claude" aria-labelledby="occ-arch-claude">
+    <h3 id="occ-arch-claude" class="occ-arch__name">
+      <span class="occ-arch__proc">process 2</span>
+      claude --print
+    </h3>
+    <p class="occ-arch__desc">
+      The official client, headless. It authenticates itself, talks to Anthropic itself, and bills as its own
+      login bills.
+    </p>
+    <ul class="occ-arch__list">
+      <li>Its own tools stay its own: <code>Read</code>, <code>Grep</code>, <code>Glob</code>, <code>WebSearch</code>.</li>
+      <li>Your opencode MCP servers, bridged in through <code>--mcp-config</code>.</li>
+      <li>Your opencode skills, staged for its <code>Skill</code> tool with <code>--plugin-dir</code>.</li>
+      <li>Your login, which the plugin never reads.</li>
+    </ul>
+    <div class="occ-arch__anthropic">
+      <span class="occ-wire occ-wire--down" aria-hidden="true"></span>
+      <p>
+        <strong>Anthropic.</strong> A subscription, an API key, Bedrock or Vertex: whatever the CLI holds. The
+        plugin never talks to it.
+      </p>
+    </div>
+  </section>
+
+  <p class="occ-arch__foot">
+    <a href={`${base}/internals/how-a-turn-works/`}>How a turn works</a>
+    <a href={`${base}/internals/how-a-proxied-call-ends/`}>How a proxied call ends</a>
+    <a href={`${base}/internals/scratch-files-and-security/`}>Scratch files and security</a>
+  </p>
+</div>
+
+<style>
+  .occ-arch {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--occ-space-4);
+  }
+  .occ-arch__box {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-4);
+    padding: var(--occ-space-6);
+    border: 1px solid var(--occ-line);
+    border-radius: var(--occ-radius);
+    background: var(--occ-panel);
+    box-shadow: inset 0 1px 0 var(--occ-highlight);
+    min-width: 0;
+  }
+  .occ-arch__name {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-1);
+    margin: 0;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xl);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: var(--sl-color-white);
+  }
+  .occ-arch__name--inner {
+    font-size: var(--sl-text-lg);
+  }
+  .occ-arch__proc {
+    font-size: var(--sl-text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sl-color-text-accent);
+  }
+  .occ-arch__desc,
+  .occ-arch__list {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-arch__list {
+    padding-inline-start: 1.1em;
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-2);
+  }
+  .occ-arch__list li::marker {
+    color: var(--occ-ink-3);
+  }
+  .occ-arch :is(.occ-arch__desc, .occ-arch__list, .occ-arch__anthropic) code {
+    font-family: var(--__sl-font-mono);
+    font-size: 0.88em;
+    padding: 0.05em 0.3em;
+    border: 1px solid var(--occ-line);
+    border-radius: 4px;
+    background: var(--sl-color-bg-inline-code);
+    color: var(--occ-ink-1);
+  }
+  /* The plugin lives inside opencode's process: an inner box with the bar. */
+  .occ-arch__inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+    padding: var(--occ-space-4);
+    border: 1px solid var(--occ-line);
+    border-inline-start: 4px solid var(--occ-bar);
+    border-radius: 0 var(--occ-radius-sm) var(--occ-radius-sm) 0;
+    background: var(--sl-color-black);
+  }
+
+  /* Wires: a rule with an arrowhead, the label above it. Horizontal between the two
+     boxes from 48rem; upright and stacked below, where the boxes sit one above the other. */
+  .occ-arch__wires {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+    margin: 0;
+    padding: var(--occ-space-2) 0;
+    list-style: none;
+  }
+  .occ-wire {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-1);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    line-height: 1.45;
+    color: var(--occ-ink-3);
+  }
+  .occ-wire__label {
+    text-wrap: pretty;
+  }
+  .occ-wire::after {
+    content: '';
+    display: block;
+    position: relative;
+    block-size: 1px;
+    background: var(--occ-line-strong);
+  }
+  .occ-wire::before {
+    content: '';
+    position: absolute;
+    bottom: -3px;
+    inline-size: 7px;
+    block-size: 7px;
+    background: var(--occ-line-strong);
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+  }
+  .occ-wire--to-claude::before {
+    right: 0;
+  }
+  .occ-wire--to-opencode::before {
+    left: 0;
+    clip-path: polygon(100% 0, 0 50%, 100% 100%);
+  }
+  /* Below 48rem the boxes sit one above the other (opencode first), so a wire to
+     claude points down and a wire back to opencode points up: a short upright rule
+     beside the label, the arrowhead at the end it travels toward. */
+  @media (max-width: 47.99rem) {
+    .occ-wire {
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr);
+      column-gap: var(--occ-space-3);
+      align-items: stretch;
+      padding-block: 2px;
+    }
+    .occ-wire__label {
+      grid-area: 1 / 2;
+    }
+    .occ-wire::after {
+      grid-area: 1 / 1;
+      justify-self: center;
+      inline-size: 1px;
+      block-size: auto;
+      align-self: stretch;
+    }
+    .occ-wire::before {
+      grid-area: 1 / 1;
+      position: static;
+      justify-self: center;
+    }
+    .occ-wire--to-claude::before {
+      align-self: end;
+      clip-path: polygon(0 0, 100% 0, 50% 100%);
+    }
+    .occ-wire--to-opencode::before {
+      align-self: start;
+      clip-path: polygon(50% 0, 0 100%, 100% 100%);
+    }
+  }
+  /* The proxied path is where the plugin acts, so it is the one wire in the accent. */
+  .occ-wire--proxy {
+    color: var(--sl-color-text-accent);
+  }
+  .occ-wire--proxy::after,
+  .occ-wire--proxy::before {
+    background: var(--occ-bar);
+  }
+  .occ-arch__anthropic {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+    margin-top: var(--occ-space-2);
+    padding-top: var(--occ-space-4);
+    border-top: 1px dashed var(--occ-line-strong);
+  }
+  .occ-arch__anthropic p {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+  }
+  .occ-arch__anthropic strong {
+    color: var(--sl-color-white);
+  }
+  .occ-wire--down {
+    display: none;
+  }
+  .occ-arch__foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--occ-space-3) var(--occ-space-6);
+    margin: var(--occ-space-2) 0 0;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+  }
+  .occ-arch__foot a {
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    text-underline-offset: 0.2em;
+  }
+  .occ-arch__foot a::before {
+    content: '';
+    display: inline-block;
+    inline-size: 0.5em;
+    block-size: 0.95em;
+    margin-inline-end: 0.5em;
+    vertical-align: -0.1em;
+    border-radius: 1px;
+    background: var(--occ-bar);
+  }
+  .occ-arch__foot a:hover {
+    text-decoration: underline;
+  }
+
+  @media (min-width: 48rem) {
+    .occ-arch {
+      grid-template-columns: minmax(0, 5fr) minmax(9rem, 4fr) minmax(0, 5fr);
+      gap: var(--occ-space-4);
+      align-items: stretch;
+    }
+    .occ-arch__wires {
+      justify-content: center;
+      gap: var(--occ-space-6);
+      padding: var(--occ-space-6) var(--occ-space-2);
+    }
+    .occ-arch__foot {
+      grid-column: 1 / -1;
+      margin-top: var(--occ-space-4);
+    }
+  }
+  @media (min-width: 64rem) {
+    .occ-arch {
+      grid-template-columns: minmax(0, 6fr) minmax(12rem, 4fr) minmax(0, 5fr);
+      gap: var(--occ-space-6);
+    }
+  }
+</style>

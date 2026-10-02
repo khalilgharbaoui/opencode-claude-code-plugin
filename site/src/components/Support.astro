@@ -1,0 +1,175 @@
+---
+/*
+  The support ask, earned: a ledger of the work before the button. Every figure is
+  read at build time and says where from (stats.ts: GitHub REST, the suite's own
+  summary line, git and the filesystem over the repository), and every one falls
+  back to the committed snapshot on its own. The button is the official Buy Me a
+  Coffee image served from public/, so no third-party request is added here.
+*/
+import { loadStats, formatCount } from '../data/stats';
+
+const stats = await loadStats();
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const days = Math.max(0, Math.floor((Date.parse(stats.builtAt) - Date.parse(stats.firstCommit)) / 86_400_000));
+
+const ledger = [
+  { value: formatCount(days), label: `days since the first commit, ${stats.firstCommit}`, source: 'git log, this build' },
+  { value: formatCount(stats.commits), label: 'commits', source: 'git rev-list, this build' },
+  { value: formatCount(stats.releases), label: 'tagged releases', source: 'api.github.com' },
+  { value: formatCount(stats.mergedPrs), label: 'merged pull requests', source: 'api.github.com' },
+  { value: formatCount(stats.tests), label: 'tests in the suite', source: 'npm test, this build' },
+  { value: formatCount(stats.testLines), label: `lines of test code, in ${stats.testFiles} files`, source: 'test-*.ts, this build' },
+  { value: formatCount(stats.contributors), label: 'contributors, authorship preserved', source: 'api.github.com' },
+  { value: formatCount(stats.downloadsTotal), label: `npm downloads since ${stats.downloadsSince}`, source: 'api.npmjs.org' },
+];
+---
+
+<div class="occ-work not-content">
+  <ul class="occ-ledger" role="list">
+    {
+      ledger.map((row) => (
+        <li class="occ-ledger__row">
+          <span class="occ-ledger__value">{row.value}</span>
+          <span class="occ-ledger__label">{row.label}</span>
+          <span class="occ-ledger__source">{row.source}</span>
+        </li>
+      ))
+    }
+  </ul>
+
+  <div class="occ-ask">
+    <p class="occ-ask__text">
+      Free, MIT, and built in the open since {stats.firstCommit}. Every rule in its engineering file names the
+      measurement that produced it. If the plugin saves you time, buy its maintainer a coffee, or leave a star so
+      the next person finds it.
+    </p>
+    <div class="occ-ask__actions">
+      <a class="occ-ask__coffee" href="https://www.buymeacoffee.com/khalilgharbaoui" target="_blank" rel="noopener">
+        <img src={`${base}/buy-me-a-coffee.png`} width="178" height="50" alt="Buy me a coffee" decoding="async" />
+      </a>
+      <a class="occ-ask__star" href="https://github.com/khalilgharbaoui/opencode-claude-code-plugin" rel="noopener">
+        <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+          <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z" />
+        </svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</div>
+
+<style>
+  .occ-work {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-8);
+  }
+  .occ-ledger {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--occ-line-strong);
+  }
+  .occ-ledger__row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-1);
+    padding: var(--occ-space-5, 1.25rem) var(--occ-space-4) var(--occ-space-5, 1.25rem) 0;
+    border-bottom: 1px solid var(--occ-line);
+    min-width: 0;
+  }
+  .occ-ledger__row:nth-child(even) {
+    padding-inline-start: var(--occ-space-4);
+    border-inline-start: 1px solid var(--occ-line);
+  }
+  .occ-ledger__value {
+    font-family: var(--__sl-font-mono);
+    font-size: clamp(1.5rem, 1rem + 1.6vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+    font-variant-numeric: proportional-nums;
+  }
+  .occ-ledger__label {
+    font-size: var(--sl-text-sm);
+    line-height: 1.4;
+    color: var(--occ-ink-2);
+  }
+  .occ-ledger__source {
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.02em;
+    color: var(--occ-ink-3);
+  }
+  .occ-ask {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--occ-space-6) var(--occ-space-8);
+  }
+  .occ-ask__text {
+    margin: 0;
+    max-width: 36rem;
+    font-size: var(--sl-text-base);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-ask__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--occ-space-4) var(--occ-space-6);
+  }
+  .occ-ask__coffee {
+    display: inline-flex;
+    border-radius: var(--occ-radius);
+    line-height: 0;
+  }
+  .occ-ask__coffee img {
+    display: block;
+    width: 178px;
+    height: 50px;
+    border-radius: var(--occ-radius);
+  }
+  .occ-ask__star {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--occ-space-2);
+    padding: 0.7rem 1rem;
+    border: 1px solid var(--occ-line-strong);
+    border-radius: var(--occ-radius-sm);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    color: var(--occ-ink-1);
+    text-decoration: none;
+    transition:
+      border-color var(--occ-duration),
+      color var(--occ-duration);
+  }
+  .occ-ask__star:hover {
+    border-color: var(--occ-ink-3);
+    color: var(--sl-color-text-accent);
+  }
+  .occ-ask__star svg {
+    color: var(--sl-color-text-accent);
+  }
+
+  @media (min-width: 50rem) {
+    .occ-ledger {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .occ-ledger__row {
+      padding-inline-start: var(--occ-space-4);
+      border-inline-start: 1px solid var(--occ-line);
+    }
+    .occ-ledger__row:nth-child(4n + 1) {
+      padding-inline-start: 0;
+      border-inline-start: 0;
+    }
+  }
+</style>

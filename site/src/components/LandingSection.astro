@@ -1,21 +1,27 @@
 ---
 /*
-  A landing-page section: bar-led monospace eyebrow, a heading, an optional lead,
-  then whatever the page puts inside (markdown tables and code blocks included, so
-  this root is deliberately NOT `not-content`; Starlight still styles the content).
+  A landing-page section: bar-led monospace eyebrow with its number, a heading, an
+  optional lead, then whatever the page puts inside (markdown tables and code blocks
+  included, so this root is deliberately NOT `not-content`; Starlight still styles
+  the content).
 */
 interface Props {
   id: string;
+  index: number;
   eyebrow: string;
   title: string;
   lead?: string;
 }
-const { id, eyebrow, title, lead } = Astro.props;
+const { id, index, eyebrow, title, lead } = Astro.props;
+const number = String(index).padStart(2, '0');
 ---
 
 <section {id} class="occ-section">
   <header class="occ-section__head not-content">
-    <p class="occ-eyebrow">{eyebrow}</p>
+    <p class="occ-eyebrow">
+      <span class="occ-eyebrow__n">{number}</span>
+      <span>{eyebrow}</span>
+    </p>
     <h2 class="occ-section__title">{title}</h2>
     {lead && <p class="occ-section__lead">{lead}</p>}
   </header>
@@ -37,7 +43,7 @@ const { id, eyebrow, title, lead } = Astro.props;
     font-size: clamp(var(--sl-text-2xl), 1.2rem + 1.6vw, var(--sl-text-4xl));
     font-weight: 700;
     line-height: 1.15;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
     color: var(--sl-color-white);
     text-wrap: balance;
   }

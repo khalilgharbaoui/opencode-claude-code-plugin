@@ -14,9 +14,12 @@ interface Contributor {
 interface Props {
   excerpt: string;
   excerptRef: string;
+  /** A second, smaller measured figure under the excerpt, with its (h #gNN) marker in the label. */
+  alsoValue?: string;
+  alsoLabel?: string;
   contributors: Contributor[];
 }
-const { excerpt, excerptRef, contributors } = Astro.props;
+const { excerpt, excerptRef, alsoValue, alsoLabel, contributors } = Astro.props;
 const stats = await loadStats();
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
@@ -44,6 +47,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
       <p>{excerpt}</p>
       <footer class="occ-proof__ref">{excerptRef}</footer>
     </blockquote>
+    {alsoValue && alsoLabel && (
+      <p class="occ-proof__also">
+        <span class="occ-proof__also-value">{alsoValue}</span>
+        <span class="occ-proof__also-label">{alsoLabel}</span>
+      </p>
+    )}
     <a class="occ-proof__link" href={`${base}/internals/measurement-culture/`}>Read the rulebook</a>
   </div>
 
@@ -131,6 +140,25 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     margin: 0 0 var(--occ-space-3);
   }
   .occ-proof__ref {
+    color: var(--occ-ink-3);
+  }
+  .occ-proof__also {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--occ-space-3);
+    align-items: baseline;
+    margin: 0;
+  }
+  .occ-proof__also-value {
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xl);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+  }
+  .occ-proof__also-label {
+    font-size: var(--sl-text-xs);
+    line-height: 1.5;
     color: var(--occ-ink-3);
   }
   .occ-proof__people {

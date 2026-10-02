@@ -1,0 +1,103 @@
+---
+/*
+  The 404 page's body (site/src/content/docs/404.mdx). The page's h1 is the note the
+  plugin would write into a conversation, bar first, then the three places a lost
+  reader actually wants. The manual moved from the README to these pages on
+  2026-10-02 (docs/agents-history.md, h #g188), which is why an old bookmark can land
+  here; the README keeps a table of where each old anchor went. PageTitle.astro
+  renders nothing on this route, so the h1 here is the page's only one.
+*/
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const readmeMoves =
+  'https://github.com/khalilgharbaoui/opencode-claude-code-plugin#where-the-old-readme-sections-went';
+---
+
+<div class="occ-404 not-content">
+  <h1 id="_top" class="occ-404__note">
+    <span class="occ-404__bar" aria-hidden="true">▌</span>
+    <strong>404:</strong> nothing at this address.
+  </h1>
+  <p class="occ-404__text">
+    The manual moved from the README to these pages in October 2026, so an old bookmark may point at a section
+    that now has a page of its own.
+  </p>
+  <ul class="occ-404__links" role="list">
+    <li><a href={`${base}/introduction/`}>Start here: what the plugin is and where everything lives</a></li>
+    <li><a href={`${base}/troubleshooting/symptoms/`}>Troubleshooting, keyed on the first thing you see</a></li>
+    <li><a href={readmeMoves} rel="noopener">Where the old README sections went</a></li>
+  </ul>
+  <p class="occ-404__hint">
+    Or search: press <kbd>/</kbd>, or <kbd>⌘</kbd><kbd>K</kbd>.
+  </p>
+</div>
+
+<style>
+  .occ-404 {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-6);
+    max-width: 44rem;
+    padding-block: clamp(var(--occ-space-8), 10vw, var(--occ-space-16)) var(--occ-space-8);
+  }
+  .occ-404__note {
+    margin: 0;
+    font-family: var(--__sl-font-mono);
+    font-variant-ligatures: none;
+    font-size: clamp(var(--sl-text-2xl), 1.2rem + 2.4vw, var(--sl-text-5xl));
+    font-weight: 500;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+    color: var(--sl-color-white);
+    text-wrap: balance;
+  }
+  .occ-404__note strong {
+    font-weight: 700;
+  }
+  .occ-404__bar {
+    color: var(--occ-bar);
+    margin-inline-end: 0.1em;
+  }
+  .occ-404__text {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+    line-height: 1.55;
+    color: var(--occ-ink-2);
+    text-wrap: pretty;
+  }
+  .occ-404__links {
+    display: flex;
+    flex-direction: column;
+    gap: var(--occ-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .occ-404__links a {
+    display: inline-block;
+    padding-inline-start: 0.6em;
+    border-inline-start: 3px solid var(--occ-bar);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-text-accent);
+    text-decoration: none;
+    transition: color var(--occ-duration);
+  }
+  .occ-404__links a:hover {
+    color: var(--sl-color-white);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+  .occ-404__hint {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    color: var(--occ-ink-3);
+  }
+  .occ-404__hint kbd {
+    font-family: var(--__sl-font-mono);
+    font-size: 0.85em;
+    padding: 0.1em 0.4em;
+    border: 1px solid var(--occ-line-strong);
+    border-radius: 4px;
+    color: var(--occ-ink-2);
+  }
+</style>

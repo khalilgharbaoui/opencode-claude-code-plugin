@@ -1,0 +1,324 @@
+---
+/*
+  The hero's panel: one turn, replayed. Thirteen lines in a lane-tagged transcript,
+  each spoken by opencode, the plugin or `claude --print`, built from real line
+  shapes: the spawn flags from src/session-manager.ts (`buildCliArgs`, which pushes
+  every disallowed tool as its own argument), the built-ins each proxied tool
+  disables from src/proxy-mcp.ts and docs/guides/tool-proxy.md, the stream-json
+  frames the fake CLI in test-proxy-task.ts emits, the held HTTP request and its
+  15-second keepalive from docs/internals/how-a-proxied-call-ends.md. The one number
+  in it, the test count, is the live figure stats.ts reads from the suite's own
+  summary line. No cost, duration or token figure appears: those would be invented.
+
+  Markup: an ordered list, one item per line, each a three-column grid (speaker, bar,
+  body). Not a <pre>: there the template's own newlines render, and a grid inside it
+  stacks every span. Only the text span keeps its spaces verbatim.
+
+  Motion: lines appear in order (CSS animation-delay), the bar at the end blinks
+  eight times and holds. Nothing loops. Under prefers-reduced-motion every line is
+  simply visible, which is also what the screenshots show. The replay control is
+  the page's only script (about twenty lines) and stays hidden until it runs.
+*/
+import { loadStats } from '../data/stats';
+
+const stats = await loadStats();
+
+type Lane = 'opencode' | 'plugin' | 'claude';
+interface Line {
+  lane: Lane;
+  tag?: string;
+  text: string;
+  note?: string;
+}
+
+const lines: Line[] = [
+  { lane: 'opencode', tag: 'you', text: 'run the suite. which test files cover the proxy broker?' },
+  {
+    lane: 'plugin',
+    tag: 'spawn',
+    text: 'claude --print --output-format stream-json --input-format stream-json --model claude-sonnet-5-5',
+  },
+  {
+    lane: 'plugin',
+    tag: 'with',
+    text: '--mcp-config <0600, bearer token inside> --append-system-prompt-file <0600> --disallowedTools Bash Edit MultiEdit Write WebFetch Agent',
+  },
+  {
+    lane: 'claude',
+    text: '{"type":"system","subtype":"init", … "mcp_servers":[{"name":"opencode_proxy","status":"connected"}]}',
+  },
+  {
+    lane: 'claude',
+    text: '{"type":"assistant", … {"type":"tool_use","name":"Grep","input":{"pattern":"queuePendingProxyCall"}}}',
+    note: 'ran inside Claude Code',
+  },
+  {
+    lane: 'claude',
+    text: '{"type":"assistant", … {"type":"tool_use","name":"mcp__opencode_proxy__bash","input":{"command":"npm test"}}}',
+  },
+  {
+    lane: 'plugin',
+    tag: 'tool-call',
+    text: "bash → opencode. The CLI's HTTP request stays open, with a keepalive every 15 s.",
+  },
+  { lane: 'opencode', tag: 'permission', text: 'run npm test?  allow once' },
+  {
+    lane: 'opencode',
+    tag: 'bash',
+    text: `ran here, under opencode's own permissions and audit log · tests ${stats.tests}`,
+  },
+  { lane: 'plugin', tag: 'tool-result', text: '→ claude. The held request resolves; the model carries on.' },
+  {
+    lane: 'claude',
+    text: '{"type":"assistant", … {"type":"text","text":"test-broker.ts and test-proxy-task.ts: per-tool deadlines, the guard, stall warnings, fan-out, late results."}}',
+  },
+  { lane: 'claude', text: '{"type":"result","subtype":"success","is_error":false}' },
+  {
+    lane: 'plugin',
+    tag: 'done',
+    text: 'the answer streamed into opencode. No token was read. Billed to whatever claude is logged in as.',
+  },
+];
+---
+
+<figure class="occ-replay not-content" aria-label="One turn, replayed: what opencode, the plugin and claude --print each do">
+  <figcaption class="occ-replay__cap">
+    <span class="occ-replay__title">one turn, replayed</span>
+    <span class="occ-replay__lanes" aria-hidden="true">
+      <span class="occ-lane occ-lane--opencode">opencode</span>
+      <span class="occ-lane occ-lane--plugin">plugin</span>
+      <span class="occ-lane occ-lane--claude">claude</span>
+    </span>
+    <button type="button" class="occ-replay__btn" hidden>replay</button>
+  </figcaption>
+  <ol class="occ-replay__lines" role="list">
+    {
+      lines.map((line, index) => (
+        <li class={`occ-line occ-line--${line.lane}`} style={`--i:${index}`}>
+          <span class="occ-line__lane">{line.lane}</span>
+          <span class="occ-line__bar" aria-hidden="true" />
+          <span class="occ-line__body">
+            {line.tag && <span class="occ-line__tag">{line.tag}</span>}<span class="occ-line__text">{line.text}</span>
+            {line.note && <span class="occ-line__note"> · {line.note}</span>}
+          </span>
+        </li>
+      ))
+    }
+    <li class="occ-line occ-line--cursor" aria-hidden="true" style={`--i:${lines.length}`}>
+      <span class="occ-line__lane" />
+      <span class="occ-line__bar" />
+      <span class="occ-cursor" />
+    </li>
+  </ol>
+</figure>
+
+<script>
+  // Restarts the staged reveal. Shown only when scripting runs and motion is allowed.
+  const root = document.querySelector<HTMLElement>('.occ-replay');
+  const button = root?.querySelector<HTMLButtonElement>('.occ-replay__btn');
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+  if (root && button && !reduce.matches) {
+    button.hidden = false;
+    button.addEventListener('click', () => {
+      root.classList.add('is-reset');
+      void root.offsetWidth; // flush, so the animations really restart
+      root.classList.remove('is-reset');
+    });
+  }
+</script>
+
+<style>
+  .occ-replay {
+    margin: 0;
+    border: 1px solid var(--occ-line);
+    border-radius: var(--occ-radius);
+    background: var(--occ-panel);
+    box-shadow:
+      inset 0 1px 0 var(--occ-highlight),
+      var(--sl-shadow-md);
+    overflow: hidden;
+    min-width: 0;
+    font-family: var(--__sl-font-mono);
+    font-variant-ligatures: none;
+  }
+  .occ-replay__cap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--occ-space-2) var(--occ-space-4);
+    padding: var(--occ-space-3) var(--occ-space-4);
+    border-bottom: 1px solid var(--occ-line);
+    font-size: var(--sl-text-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--occ-ink-3);
+  }
+  .occ-replay__lanes {
+    display: flex;
+    gap: var(--occ-space-3);
+    margin-inline-start: auto;
+  }
+  .occ-lane::before {
+    content: '';
+    display: inline-block;
+    inline-size: 0.5em;
+    block-size: 0.5em;
+    margin-inline-end: 0.45em;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: 0.05em;
+  }
+  .occ-lane--opencode {
+    color: var(--occ-lane-opencode);
+  }
+  .occ-lane--plugin {
+    color: var(--occ-lane-plugin);
+  }
+  .occ-lane--claude {
+    color: var(--occ-lane-claude);
+  }
+  .occ-replay__btn {
+    margin: 0;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--occ-line-strong);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--occ-ink-2);
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    cursor: pointer;
+    transition:
+      border-color var(--occ-duration),
+      color var(--occ-duration);
+  }
+  .occ-replay__btn:hover {
+    border-color: var(--occ-ink-3);
+    color: var(--sl-color-white);
+  }
+  .occ-replay__lines {
+    margin: 0;
+    padding: var(--occ-space-3) var(--occ-space-4) var(--occ-space-4);
+    list-style: none;
+    font-size: var(--sl-text-xs);
+    line-height: 1.6;
+    color: var(--occ-ink-2);
+  }
+  .occ-line {
+    display: grid;
+    grid-template-columns: 8ch 3px minmax(0, 1fr);
+    column-gap: var(--occ-space-2);
+    margin: 0;
+    padding-block: 0.2rem;
+  }
+  .occ-line__lane {
+    font-weight: 600;
+  }
+  .occ-line--opencode .occ-line__lane {
+    color: var(--occ-lane-opencode);
+  }
+  .occ-line--plugin .occ-line__lane {
+    color: var(--occ-lane-plugin);
+  }
+  .occ-line--claude .occ-line__lane {
+    color: var(--occ-lane-claude);
+  }
+  .occ-line__bar {
+    border-radius: 1px;
+    background: transparent;
+  }
+  .occ-line--plugin .occ-line__bar {
+    background: var(--occ-bar);
+  }
+  .occ-line__body {
+    min-width: 0;
+  }
+  .occ-line__tag {
+    font-weight: 600;
+    color: var(--occ-ink-1);
+  }
+  .occ-line__tag::after {
+    content: ':';
+    margin-inline-end: 0.75ch;
+    color: var(--occ-ink-3);
+  }
+  .occ-line__text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .occ-line--plugin .occ-line__text {
+    color: var(--occ-ink-1);
+  }
+  .occ-line__note {
+    color: var(--occ-ink-3);
+  }
+  .occ-cursor {
+    display: block;
+    inline-size: 0.6em;
+    block-size: 1.1em;
+    margin-top: 0.25em;
+    border-radius: 1px;
+    background: var(--occ-bar);
+  }
+
+  /* The staged reveal: 320 ms between lines, a 240 ms fade and rise each. The cursor
+     arrives with the last line, blinks eight times (steps, like a terminal) and then
+     holds, because the blink has no fill and the bar's own opacity is 1. */
+  .occ-line {
+    opacity: 0;
+    animation: occ-reveal 240ms var(--occ-ease) forwards;
+    animation-delay: calc(0.4s + var(--i) * 0.32s);
+  }
+  .occ-cursor {
+    animation: occ-blink 1.2s steps(1) 8;
+    animation-delay: calc(0.4s + var(--i) * 0.32s + 0.24s);
+  }
+  .is-reset .occ-line,
+  .is-reset .occ-cursor {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .occ-line,
+    .occ-cursor {
+      animation: none;
+      opacity: 1;
+      translate: none;
+    }
+    .occ-replay__btn {
+      display: none;
+    }
+  }
+
+  /* On a phone the speaker goes above its line instead of beside it: an 8-character
+     column would leave 26 characters for the text. The bar still spans the whole line. */
+  @media (max-width: 26rem) {
+    .occ-replay__lines {
+      padding: var(--occ-space-3);
+      font-size: var(--sl-text-2xs);
+    }
+    .occ-line {
+      grid-template-columns: 3px minmax(0, 1fr);
+      grid-template-areas:
+        'bar lane'
+        'bar body';
+      row-gap: 0.1rem;
+      padding-block: 0.3rem;
+    }
+    .occ-line__bar {
+      grid-area: bar;
+    }
+    .occ-line__lane {
+      grid-area: lane;
+      font-size: 0.9em;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .occ-line__body,
+    .occ-cursor {
+      grid-area: body;
+    }
+    .occ-line--cursor .occ-line__lane {
+      display: none;
+    }
+  }
+</style>

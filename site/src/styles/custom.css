@@ -1,12 +1,58 @@
 /*
-  opencode-claude-code-plugin docs theme.
+  opencode-claude-code-plugin docs theme (design pass 2).
   Written against Starlight 0.42.4 (Astro 7). Unlayered, so it overrides Starlight's
   `starlight.*` cascade layers without !important.
 
-  One accent, one meaning: amber is where the plugin itself acts (its transcript bar,
-  the proxied path, links, the current page). Everything else is a cool neutral.
-  Every text pair below was checked for WCAG AA; the numbers are in DESIGN.md.
+  The organising idea: the transcript is the interface. The plugin's one visible
+  artefact is a line in an opencode conversation led by a bar, and the whole site
+  speaks in that form. One accent, one meaning: amber is where the plugin itself acts
+  (its bar, the proxied path, links, the current page, the reading progress). One
+  self-hosted monospace face is the product's voice. Everything else recedes.
+  Every text pair was checked for WCAG AA; the numbers are in the pull request.
 */
+
+/* ---------- The mono face ---------- */
+/* Geist Mono (OFL, public/fonts/OFL-GeistMono.txt), subset to Latin, punctuation,
+   arrows, box drawing and block elements: 389 glyphs, 38 KB, preloaded from
+   astro.config.mjs. The two fallback faces are the system monos with their metrics
+   adjusted to Geist Mono's (advance 0.6em, ascent 1.005, descent 0.295), so the swap
+   moves nothing on screen. Consolas is narrower (0.55em) and gets its own entry;
+   its overrides are divided by its size-adjust, as the spec applies them after it.
+   local() matches a face's full or PostScript name, never its family name, which is
+   why each face is listed twice. */
+@font-face {
+  font-family: 'Geist Mono';
+  src:
+    url('/fonts/GeistMono-variable.woff2') format('woff2') tech(variations),
+    url('/fonts/GeistMono-variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono Fallback';
+  src:
+    local('Menlo-Regular'),
+    local('Menlo Regular'),
+    local('SFMono-Regular'),
+    local('SF Mono Regular'),
+    local('DejaVuSansMono'),
+    local('DejaVu Sans Mono'),
+    local('LiberationMono'),
+    local('Liberation Mono');
+  ascent-override: 100.5%;
+  descent-override: 29.5%;
+  line-gap-override: 0%;
+  size-adjust: 100%;
+}
+@font-face {
+  font-family: 'Geist Mono Fallback Consolas';
+  src: local('Consolas');
+  ascent-override: 92.1%;
+  descent-override: 27%;
+  line-gap-override: 0%;
+  size-adjust: 109.1%;
+}
 
 /* ---------- Dark (default) ---------- */
 :root {
@@ -26,12 +72,15 @@
   --sl-color-text-accent: var(--sl-color-accent-high);
   --sl-color-bg-accent: var(--sl-color-accent);
   --sl-color-text-invert: var(--sl-color-black);
+  --sl-color-hairline-shade: var(--sl-color-gray-5);
 
-  /* Fonts: system only. No CDN, no self-hosted file, zero requests. */
-  --sl-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans',
-    Arial, sans-serif;
-  --sl-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono',
-    monospace;
+  /* Sans stays the system stack: body text is where a web font costs the most. */
+  --sl-font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial,
+    sans-serif;
+  --sl-font-mono:
+    'Geist Mono', 'Geist Mono Fallback', 'Geist Mono Fallback Consolas', ui-monospace, 'SF Mono',
+    Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace;
 
   --sl-content-width: 46rem;
   --sl-text-code: 0.875rem;
@@ -44,6 +93,16 @@
   --occ-ink-1: var(--sl-color-gray-1);
   --occ-ink-2: var(--sl-color-gray-2);
   --occ-ink-3: var(--sl-color-gray-3);
+  /* Light that behaves like light: one glow behind the hero, one top-edge highlight
+     on raised panels, and the sticky header as glass. Nothing else is tinted. */
+  --occ-glow: rgb(232 163 58 / 0.14);
+  --occ-highlight: rgb(255 255 255 / 0.045);
+  --occ-glass: rgb(14 16 19 / 0.86);
+  /* The three voices in the hero replay. Colour is never the only carrier: each
+     line also names its speaker in text. */
+  --occ-lane-opencode: var(--occ-ink-1);
+  --occ-lane-plugin: var(--sl-color-text-accent);
+  --occ-lane-claude: var(--occ-ink-3);
   --occ-radius: 10px;
   --occ-radius-sm: 6px;
   --occ-space-1: 0.25rem;
@@ -55,6 +114,7 @@
   --occ-space-12: 3rem;
   --occ-space-16: 4rem;
   --occ-duration: 160ms;
+  --occ-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 /* ---------- Light ---------- */
@@ -77,10 +137,14 @@
   --sl-color-text-accent: var(--sl-color-accent-high);
   --sl-color-bg-accent: var(--sl-color-accent-high);
   --sl-color-text-invert: var(--sl-color-black);
+  --sl-color-hairline-shade: var(--sl-color-gray-5);
 
   --occ-panel: var(--sl-color-gray-7);
   --occ-line: var(--sl-color-gray-5);
   --occ-line-strong: var(--sl-color-gray-4);
+  --occ-glow: rgb(194 115 14 / 0.1);
+  --occ-highlight: rgb(255 255 255 / 0.6);
+  --occ-glass: rgb(252 251 248 / 0.86);
 }
 
 /* ---------- Type ---------- */
@@ -91,6 +155,17 @@
 .sl-markdown-content h1 {
   letter-spacing: -0.025em;
 }
+/* Starlight's content links are the accent; the underline is a hairline that fills
+   on hover so a link reads as a link without shouting. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  transition: text-decoration-color var(--occ-duration);
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration-color: currentColor;
+}
 
 /* Numbers, labels and anything that names a thing on disk are monospace.
    Prose stays in the system sans so long pages read comfortably. */
@@ -98,41 +173,170 @@
   font-family: var(--__sl-font-mono);
   font-variant-ligatures: none;
 }
+/* Code is shown glyph for glyph. Geist Mono ships coding ligatures, and a page that
+   documents CLI flags cannot have `--` or `->` drawn as anything but what you type. */
+:is(code, kbd, samp, pre) {
+  font-variant-ligatures: none;
+}
 
-/* The transcript bar as a heading device: used on the landing page only. */
+/* The transcript bar as a heading device, used on every landing section. */
 .occ-eyebrow {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75em;
   max-width: max-content;
   margin: 0;
   padding-inline-start: 0.6em;
   border-inline-start: 5px solid var(--occ-bar);
   font-family: var(--__sl-font-mono);
   font-size: var(--sl-text-xs);
+  font-weight: 500;
   line-height: 1.5;
   letter-spacing: 0.02em;
   color: var(--occ-ink-3);
 }
+.occ-eyebrow__n {
+  font-weight: 700;
+  color: var(--sl-color-text-accent);
+  font-variant-numeric: tabular-nums;
+}
 
-/* ---------- Docs pages: small, consistent refinements ---------- */
-/* Sidebar current item: a tinted row with the bar, not Starlight's filled pill,
-   so the one accent keeps meaning "here" without shouting. */
+/* ---------- Header: glass, so the page scrolls under it and still reads ---------- */
+header.header {
+  background-color: var(--occ-glass);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  backdrop-filter: blur(12px) saturate(1.2);
+  border-bottom: 1px solid var(--occ-line);
+}
+@media (prefers-reduced-transparency: reduce) {
+  header.header {
+    background-color: var(--sl-color-bg-nav);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+/* The search trigger in the site's own hairline vocabulary. */
+site-search > button[data-open-modal] {
+  border: 1px solid var(--occ-line);
+  background-color: color-mix(in srgb, var(--sl-color-black) 55%, transparent);
+  color: var(--occ-ink-3);
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-xs);
+  letter-spacing: 0.01em;
+  transition:
+    border-color var(--occ-duration),
+    color var(--occ-duration);
+}
+site-search > button[data-open-modal]:hover {
+  border-color: var(--occ-line-strong);
+  color: var(--occ-ink-1);
+}
+site-search > button[data-open-modal] kbd {
+  background-color: transparent;
+  border: 1px solid var(--occ-line);
+  color: var(--occ-ink-3);
+  font-family: var(--__sl-font-mono);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar-pane {
+  border-inline-end: 1px solid var(--occ-line);
+}
+.sidebar-content summary .group-label .large {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--occ-ink-3);
+}
+.sidebar-content summary:hover .group-label .large {
+  color: var(--occ-ink-1);
+}
+.sidebar-content a {
+  font-size: var(--sl-text-sm);
+  border-radius: var(--occ-radius-sm);
+  transition:
+    background-color var(--occ-duration),
+    color var(--occ-duration),
+    box-shadow var(--occ-duration);
+}
+/* "Could be here" and "here" are the same device at two weights: a thin rule on
+   hover, the full bar on the current page. Starlight's filled pill is not used. */
+.sidebar-content a:hover,
+.sidebar-content a:focus-visible {
+  color: var(--sl-color-white);
+  box-shadow: inset 2px 0 0 var(--occ-line-strong);
+}
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover,
 .sidebar-content a[aria-current='page']:focus {
   background-color: var(--sl-color-accent-low);
   color: var(--sl-color-text-accent);
+  font-weight: 600;
   box-shadow: inset 3px 0 0 var(--occ-bar);
 }
-
-/* Starlight asides keep their semantic colours (they are status, not brand);
-   only the note variant takes the plugin's own bar colour. */
-.starlight-aside--note {
-  --sl-color-asides-text-accent: var(--sl-color-text-accent);
-  --sl-color-asides-border: var(--sl-color-accent);
-  background-color: var(--sl-color-accent-low);
+/* The mobile menu is the same pane as a popover; it gets the raised colour and a shadow. */
+@media (max-width: 49.99rem) {
+  .sidebar-pane {
+    box-shadow: var(--sl-shadow-lg);
+  }
 }
 
-/* Tables: hairline rules, mono header labels, no zebra fill competing with code.
+/* ---------- Docs page title and lead (components/PageTitle.astro) ---------- */
+.occ-page-title {
+  margin-top: var(--occ-space-4);
+  padding-inline-start: 0.45em;
+  border-inline-start: 0.22em solid var(--occ-bar);
+  font-size: var(--sl-text-h1);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.025em;
+  color: var(--sl-color-white);
+  text-wrap: balance;
+}
+.occ-page-lead {
+  margin: var(--occ-space-3) 0 0;
+  max-width: 40rem;
+  font-size: var(--sl-text-lg);
+  line-height: 1.5;
+  color: var(--occ-ink-3);
+  text-wrap: pretty;
+}
+
+/* ---------- Page table of contents ---------- */
+starlight-toc h2,
+mobile-starlight-toc summary .toggle {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--occ-ink-3);
+}
+starlight-toc a {
+  font-size: var(--sl-text-sm);
+  color: var(--occ-ink-3);
+  border-inline-start: 2px solid transparent;
+  border-radius: 0;
+  transition:
+    color var(--occ-duration),
+    border-color var(--occ-duration);
+}
+starlight-toc a:hover {
+  color: var(--sl-color-white);
+  border-inline-start-color: var(--occ-line-strong);
+}
+starlight-toc a[aria-current='true'],
+starlight-toc a[aria-current='true']:hover {
+  color: var(--sl-color-text-accent);
+  background: none;
+  font-weight: 600;
+  border-inline-start-color: var(--occ-bar);
+}
+
+/* ---------- Tables ---------- */
+/* Hairline rules, mono header labels, no zebra fill competing with code.
    Starlight renders them as scrolling blocks; src/markdown/focusable-tables.mjs puts
    a tabindex on them so that scroll is reachable without a pointer. */
 .sl-markdown-content table {
@@ -159,39 +363,329 @@
 .sl-markdown-content tr:nth-child(2n) {
   background: transparent;
 }
+/* On a phone a table with three prose columns is unreadable sideways, so under 48rem
+   each row becomes one card and the header travels with every cell as an eyebrow
+   (src/markdown/responsive-tables.mjs writes the data-label). The header row stays in
+   the document for assistive technology; only its box is removed. Above 48rem nothing
+   here applies and the focusable scroll container does its job. */
+@media (max-width: 47.99rem) {
+  .sl-markdown-content table[data-occ-table] {
+    border-top: 1px solid var(--occ-line-strong);
+  }
+  .sl-markdown-content table[data-occ-table] thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .sl-markdown-content table[data-occ-table] :is(tbody, tr, td) {
+    display: block;
+  }
+  .sl-markdown-content table[data-occ-table] tr {
+    padding-block: var(--occ-space-4);
+    border-bottom: 1px solid var(--occ-line);
+  }
+  .sl-markdown-content table[data-occ-table] td {
+    padding: var(--occ-space-1) 0;
+    border: 0;
+  }
+  .sl-markdown-content table[data-occ-table] td + td {
+    margin-top: var(--occ-space-3);
+  }
+  .sl-markdown-content table[data-occ-table] td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: var(--occ-space-1);
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--occ-ink-3);
+  }
+  /* A row whose first cell has no header label is a row label: the card's title. */
+  .sl-markdown-content table[data-occ-table] td:first-child:not([data-label]) {
+    font-weight: 600;
+    color: var(--sl-color-white);
+  }
+}
 
-/* Inline code: a hairline, not a heavy pill. */
+/* ---------- Inline code, asides, blockquotes ---------- */
 .sl-markdown-content code:not(:where(.expressive-code *)) {
   border: 1px solid var(--occ-line);
   border-radius: 4px;
   padding: 0.1em 0.35em;
   font-size: 0.9em;
 }
+/* Starlight asides keep their semantic colours (they are status, not brand);
+   only the note variant takes the plugin's own bar colour. */
+.starlight-aside {
+  border-radius: 0 var(--occ-radius-sm) var(--occ-radius-sm) 0;
+}
+.starlight-aside__title {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.starlight-aside--note {
+  --sl-color-asides-text-accent: var(--sl-color-text-accent);
+  --sl-color-asides-border: var(--sl-color-accent);
+  background-color: var(--sl-color-accent-low);
+}
+.sl-markdown-content blockquote:not(:where(.not-content *)) {
+  border-inline-start: 4px solid var(--occ-bar);
+  color: var(--occ-ink-2);
+}
 
-/* Expressive Code frames follow the panel tokens so code and panels agree. */
+/* ---------- Code frames (Expressive Code) ---------- */
+/* Frames follow the panel tokens so code and panels agree, and a bar leads every
+   editor frame's title: the same mark that leads a section, a page title and the
+   hero. Terminal frames keep Expressive Code's three dots, drawn by its own ::before,
+   which a second ::before on the same element could only corrupt. */
 :root {
   --ec-brdRad: var(--occ-radius-sm);
   --ec-brdCol: var(--occ-line);
+  --ec-codeBg: var(--occ-panel);
+  --ec-codeFontFml: var(--__sl-font-mono);
+  --ec-uiFontFml: var(--__sl-font-mono);
   --ec-frm-edBg: var(--occ-panel);
   --ec-frm-trmBg: var(--occ-panel);
   --ec-frm-edTabBarBg: var(--occ-panel);
-  --ec-frm-trmTtbBg: var(--occ-panel);
+  --ec-frm-edTabBarBrdBtmCol: var(--occ-line);
+  --ec-frm-edActTabBg: var(--occ-panel);
+  --ec-frm-edActTabFg: var(--occ-ink-1);
   --ec-frm-edActTabIndBtmCol: var(--occ-bar);
   --ec-frm-edActTabIndHt: 2px;
   --ec-frm-edActTabIndTopCol: transparent;
+  --ec-frm-trmTtbBg: var(--occ-panel);
+  --ec-frm-trmTtbFg: var(--occ-ink-2);
+  --ec-frm-trmTtbBrdBtmCol: var(--occ-line);
+  --ec-frm-trmTtbDotsFg: var(--occ-line-strong);
+  --ec-frm-inlBtnBg: var(--occ-panel);
+  --ec-frm-inlBtnBrd: var(--occ-line-strong);
+  --ec-frm-inlBtnFg: var(--occ-ink-2);
+  --ec-frm-shdCol: transparent;
+}
+.expressive-code .frame {
+  box-shadow: inset 0 1px 0 var(--occ-highlight);
+}
+.expressive-code .frame.has-title:not(.is-terminal) .header .title {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-2xs);
+  letter-spacing: 0.02em;
+  /* A long path stays on one line with its marker; the header scrolls if it must. */
+  white-space: nowrap;
+}
+.expressive-code .frame.has-title:not(.is-terminal) .header .title::before {
+  content: '';
+  display: inline-block;
+  inline-size: 3px;
+  block-size: 1em;
+  margin-inline-end: 0.6em;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--occ-bar);
+}
+.expressive-code .copy button {
+  border-radius: var(--occ-radius-sm);
+}
+
+/* ---------- Pagination, meta row, footer ---------- */
+.pagination-links a {
+  border: 1px solid var(--occ-line);
+  border-radius: var(--occ-radius);
+  box-shadow: inset 0 1px 0 var(--occ-highlight);
+  background: var(--occ-panel);
+  color: var(--occ-ink-3);
+  transition:
+    border-color var(--occ-duration),
+    box-shadow var(--occ-duration);
+}
+.pagination-links a:hover,
+.pagination-links a:focus-visible {
+  border-color: var(--occ-line-strong);
+}
+.pagination-links a[rel='prev']:hover,
+.pagination-links a[rel='prev']:focus-visible {
+  box-shadow: inset 3px 0 0 var(--occ-bar);
+}
+.pagination-links a[rel='next']:hover,
+.pagination-links a[rel='next']:focus-visible {
+  box-shadow: inset -3px 0 0 var(--occ-bar);
+}
+.pagination-links a > span {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pagination-links .link-title {
+  font-family: var(--__sl-font);
+  font-size: var(--sl-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--sl-color-white);
+}
+.pagination-links svg {
+  transition: translate var(--occ-duration) var(--occ-ease);
+}
+.pagination-links a[rel='prev']:hover svg {
+  translate: -2px 0;
+}
+.pagination-links a[rel='next']:hover svg {
+  translate: 2px 0;
+}
+footer .meta {
+  font-family: var(--__sl-font-mono);
+  font-size: var(--sl-text-xs);
+  color: var(--occ-ink-3);
+}
+footer .meta a {
+  color: var(--occ-ink-2);
+}
+footer .meta a:hover {
+  color: var(--sl-color-text-accent);
+}
+
+/* ---------- Search dialog ---------- */
+site-search dialog {
+  background-color: var(--occ-panel);
+  border: 1px solid var(--occ-line-strong);
+  box-shadow:
+    inset 0 1px 0 var(--occ-highlight),
+    var(--sl-shadow-lg);
+}
+site-search dialog::backdrop {
+  background-color: var(--sl-color-backdrop-overlay);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+site-search .dialog-frame {
+  --pagefind-ui-background: var(--occ-panel);
+  --pagefind-ui-border: var(--occ-line);
+  --pagefind-ui-tag: var(--sl-color-gray-5);
+  --pagefind-ui-text: var(--occ-ink-2);
+}
+site-search .pagefind-ui__search-input {
+  font-family: var(--__sl-font);
+  font-weight: 500;
+}
+site-search .pagefind-ui__message,
+site-search .pagefind-ui__result-title {
+  font-family: var(--__sl-font-mono);
+}
+site-search .pagefind-ui__message {
+  font-size: var(--sl-text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--occ-ink-3);
+}
+site-search .pagefind-ui__result-link {
+  color: var(--sl-color-white);
+}
+site-search .pagefind-ui__result-link:hover,
+site-search .pagefind-ui__result-link:focus-visible {
+  color: var(--sl-color-text-accent);
+}
+site-search mark {
+  background-color: var(--sl-color-accent-low);
+  color: var(--sl-color-text-accent);
+  padding: 0 0.15em;
+  border-radius: 2px;
+}
+@media (min-width: 50rem) {
+  site-search dialog {
+    border-radius: var(--occ-radius);
+  }
+}
+
+/* ---------- Buttons ---------- */
+/* Starlight's LinkButton is a pill by default. Everything raised on this site has
+   one radius, so the buttons take the small one and the primary gets the same
+   top-edge highlight as a panel. */
+.sl-link-button {
+  border-radius: var(--occ-radius-sm);
+  font-weight: 600;
+  transition:
+    background-color var(--occ-duration),
+    border-color var(--occ-duration),
+    color var(--occ-duration);
+}
+.sl-link-button.primary {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+.sl-link-button.secondary {
+  border-color: var(--occ-line-strong);
+}
+.sl-link-button.secondary:hover {
+  border-color: var(--occ-ink-3);
 }
 
 /* ---------- Landing page (template: splash) ---------- */
 [data-has-hero] .main-pane {
   --sl-content-width: 70rem;
 }
+/* The one glow on the site: light falling from above and to the left, in the accent,
+   behind the hero title. A background on the page frame, so it reaches the viewport's
+   edge and scrolls with the page; the ellipse stops well inside its box, so it has no
+   edge of its own. Decorative, never animated, and nothing else is tinted. */
+[data-has-hero] .page {
+  background-image: radial-gradient(30% 42% at 26% 34%, var(--occ-glow), transparent 70%);
+  background-repeat: no-repeat;
+  background-size: 100% 44rem;
+  background-position: 0 0;
+}
 [data-has-hero] .sl-markdown-content {
   /* Sections own their rhythm; Starlight's generic sibling margin is too small here. */
-  --occ-section-gap: clamp(var(--occ-space-12), 8vw, var(--occ-space-16));
+  --occ-section-gap: clamp(var(--occ-space-12), 9vw, 7rem);
 }
 [data-has-hero] .sl-markdown-content > .occ-section + .occ-section,
 [data-has-hero] .sl-markdown-content > .occ-stats + .occ-section {
   margin-top: var(--occ-section-gap);
+}
+/* The landing page has its own support section, so the footer's row would be the
+   same button twice within one screen. */
+[data-has-hero] .occ-support {
+  display: none;
+}
+
+/* ---------- Reading progress: the bar, grown by scroll ---------- */
+/* Scroll-driven, no script: `animation-timeline: scroll(root)`. The @supports guard
+   matters, because without a timeline the same shorthand would be a 0s animation
+   with `both` fill and the bar would sit full width on every page. A browser that
+   lacks scroll timelines shows nothing. Tied to scroll position, never autonomous,
+   and still removed under reduced motion. */
+@supports (animation-timeline: scroll()) {
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0 auto auto 0;
+    inline-size: 100%;
+    block-size: 2px;
+    background: var(--occ-bar);
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+    z-index: calc(var(--sl-z-index-navbar) + 1);
+    pointer-events: none;
+    animation: occ-progress linear both;
+    animation-timeline: scroll(root);
+  }
+  @keyframes occ-progress {
+    to {
+      transform: scaleX(1);
+    }
+  }
+  @media (prefers-reduced-motion: reduce), print {
+    body::after {
+      display: none;
+    }
+  }
 }
 
 /* ---------- Motion ---------- */
@@ -205,11 +699,22 @@
     opacity: 0;
   }
 }
+@keyframes occ-reveal {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }

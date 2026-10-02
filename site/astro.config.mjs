@@ -12,6 +12,7 @@ import starlight from '@astrojs/starlight';
 import { satteri } from '@astrojs/markdown-satteri';
 import { repoLinks } from './src/markdown/repo-links.mjs';
 import { focusableTables } from './src/markdown/focusable-tables.mjs';
+import { responsiveTables } from './src/markdown/responsive-tables.mjs';
 import { BASE, SITE } from './site-config.mjs';
 
 const REPO = 'https://github.com/khalilgharbaoui/opencode-claude-code-plugin';
@@ -52,6 +53,7 @@ export default defineConfig({
           isPage: (slug) => pageSlugs.has(slug),
         }),
         focusableTables(),
+        responsiveTables(),
       ],
     }),
   },
@@ -60,16 +62,16 @@ export default defineConfig({
       title: 'opencode-claude-code-plugin',
       description:
         "Run Anthropic's Claude models in opencode through the official Claude Code CLI. Your CLI's login, Claude's own tools, opencode's permissions.",
-      logo: {
-        dark: './src/assets/wordmark-dark.svg',
-        light: './src/assets/wordmark-light.svg',
-        replacesTitle: true,
-        alt: 'opencode-claude-code-plugin',
-      },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
       components: {
         Hero: './src/components/Hero.astro',
+        // The wordmark as HTML in the site's own mono, not an SVG image (no `logo`
+        // above): same type as the page, takes the theme, costs no request.
+        SiteTitle: './src/components/SiteTitle.astro',
+        // Every docs page opens with its bar-led title and its frontmatter description
+        // as a lead paragraph.
+        PageTitle: './src/components/PageTitle.astro',
         // Each wraps Starlight's default and adds the maintainer's Buy Me a Coffee link:
         // a compact control beside the GitHub and npm icons (and so in the mobile menu's
         // footer too), and the yellow button under every page's footer.
@@ -88,6 +90,19 @@ export default defineConfig({
       lastUpdated: true,
       credits: false,
       head: [
+        // The one web font (Geist Mono, OFL, subset; see src/styles/custom.css), preloaded
+        // so it is usually there before first paint. `crossorigin` is required for a font
+        // preload to be reused by the @font-face request, even same-origin.
+        {
+          tag: 'link',
+          attrs: {
+            rel: 'preload',
+            href: `${BASE.endsWith('/') ? BASE : `${BASE}/`}fonts/GeistMono-variable.woff2`,
+            as: 'font',
+            type: 'font/woff2',
+            crossorigin: 'anonymous',
+          },
+        },
         { tag: 'meta', attrs: { property: 'og:image', content: new URL('social-preview.png', `${SITE}${BASE.endsWith('/') ? BASE : `${BASE}/`}`).href } },
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1280' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '640' } },
@@ -115,7 +130,7 @@ export default defineConfig({
             'data-id': 'khalilgharbaoui',
             'data-description': 'Support me on Buy me a coffee!',
             'data-message': '',
-            'data-color': '#FF813F',
+            'data-color': '#E8A33A',
             'data-position': 'Right',
             'data-x_margin': '18',
             'data-y_margin': '18',

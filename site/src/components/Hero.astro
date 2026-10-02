@@ -1,7 +1,7 @@
 ---
 /*
   Overrides Starlight's Hero (astro.config.mjs: components.Hero). On the landing page it
-  renders the plugin's own hero: a bar-led monospace title beside the process panel. On
+  renders the plugin's own hero: a bar-led monospace title beside the turn replay. On
   every other page that declares `hero:` it defers to Starlight's default, so the
   override never changes a docs page.
 
@@ -10,7 +10,7 @@
 */
 import Default from '@astrojs/starlight/components/Hero.astro';
 import { LinkButton } from '@astrojs/starlight/components';
-import ProcessTree from './ProcessTree.astro';
+import TurnReplay from './TurnReplay.astro';
 import { loadStats } from '../data/stats';
 
 const { starlightRoute } = Astro.locals;
@@ -28,7 +28,7 @@ const stats = isHome ? await loadStats() : undefined;
   isHome ? (
     <div class="occ-hero not-content">
       <div class="occ-hero__copy">
-        <p class="occ-eyebrow">
+        <p class="occ-eyebrow occ-hero__eyebrow">
           <span class="occ-hero__name">@khalilgharbaoui/opencode-claude-code-plugin</span>
           {stats && <span class="occ-hero__meta">v{stats.npmVersion} · MIT · opencode 1.x and 2.x</span>}
         </p>
@@ -45,7 +45,7 @@ const stats = isHome ? await loadStats() : undefined;
           </div>
         )}
       </div>
-      <ProcessTree />
+      <TurnReplay />
     </div>
   ) : (
     <Default>
@@ -55,6 +55,9 @@ const stats = isHome ? await loadStats() : undefined;
 }
 
 <style>
+  /* The glow behind this hero is a background on the landing page's frame
+     (custom.css, "The one glow"): it has to bleed to the viewport's edge, which a
+     pseudo-element inside the content column cannot do without a hard edge. */
   .occ-hero {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -67,6 +70,11 @@ const stats = isHome ? await loadStats() : undefined;
     flex-direction: column;
     gap: var(--occ-space-6);
     min-width: 0;
+  }
+  .occ-hero__eyebrow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
   }
   .occ-hero__name,
   .occ-hero__meta {
@@ -86,8 +94,8 @@ const stats = isHome ? await loadStats() : undefined;
     font-family: var(--__sl-font-mono);
     font-size: clamp(2rem, 1rem + 3.2vw, 4.25rem);
     font-weight: 700;
-    line-height: 1.08;
-    letter-spacing: -0.03em;
+    line-height: 1.06;
+    letter-spacing: -0.04em;
     color: var(--sl-color-white);
     text-wrap: balance;
   }
@@ -115,18 +123,18 @@ const stats = isHome ? await loadStats() : undefined;
   }
 
   /* Stacked below 64rem: a tablet column is too narrow for both the title and the
-     panel's 49-character lines. Equal columns to 80rem, then 7/5 once the content
-     width is capped and the title can afford the room. */
+     replay's lines. Equal columns from there, the replay a little wider past 80rem,
+     because its lines are the longer of the two. */
   @media (min-width: 64rem) {
     .occ-hero {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: var(--occ-space-12);
-      padding-block: clamp(var(--occ-space-12), 8vw, 7rem) var(--occ-space-8);
+      padding-block: clamp(var(--occ-space-8), 6vw, 5rem) var(--occ-space-8);
     }
   }
   @media (min-width: 80rem) {
     .occ-hero {
-      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      grid-template-columns: minmax(0, 11fr) minmax(0, 13fr);
     }
   }
 </style>

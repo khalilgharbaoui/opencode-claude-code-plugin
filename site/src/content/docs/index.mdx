@@ -5,7 +5,7 @@ template: splash
 tableOfContents: false
 hero:
   title: Claude Code is the provider.
-  tagline: An opencode plugin that runs Anthropic's Claude models through the official <code>claude</code> CLI instead of the HTTP API. Whatever your CLI is logged in as, Claude's own tools and skills, opencode's permissions. One package for opencode 1.x and 2.x.
+  tagline: An opencode plugin that runs Anthropic's Claude models through the official <code>claude</code> CLI instead of the HTTP API. Your login stays in the CLI, Claude keeps its own tools and skills, and opencode keeps running everything that touches your machine. One package for opencode 1.x and 2.x.
   actions:
     - text: Get started
       link: /getting-started/
@@ -21,17 +21,30 @@ hero:
 import { LinkButton, Steps } from '@astrojs/starlight/components';
 import LiveStats from '../../components/LiveStats.astro';
 import LandingSection from '../../components/LandingSection.astro';
+import Architecture from '../../components/Architecture.astro';
 import FeatureGrid from '../../components/FeatureGrid.astro';
 import Objections from '../../components/Objections.astro';
 import Proof from '../../components/Proof.astro';
+import Support from '../../components/Support.astro';
 
 <LiveStats />
 
 <LandingSection
+  id="how"
+  index={1}
+  eyebrow="how it works"
+  title="Two processes. One of them is the official client."
+  lead="opencode spawns the real claude binary headless and talks to it over stream-json. The tools that touch your machine come back to opencode over a loopback MCP server the plugin runs in-process. Nothing in between holds a credential."
+>
+  <Architecture />
+</LandingSection>
+
+<LandingSection
   id="what"
+  index={2}
   eyebrow="what it does"
   title="One claude process per conversation, with opencode in charge of the machine."
-  lead="The plugin spawns the official CLI headless, streams its output into opencode, and routes the tools that touch your files and shell back to opencode. Nothing in between holds a credential."
+  lead="The plugin streams the CLI's output into opencode as it arrives, routes the tools that touch your files and shell back to opencode, and keeps the conversation's own claude process alive between turns so the model keeps its context."
 >
   <FeatureGrid
     items={[
@@ -85,6 +98,7 @@ import Proof from '../../components/Proof.astro';
 
 <LandingSection
   id="why"
+  index={3}
   eyebrow="why the CLI and not the API"
   title="The three objections, answered with what is measured."
 >
@@ -114,6 +128,7 @@ import Proof from '../../components/Proof.astro';
 
 <LandingSection
   id="quickstart"
+  index={4}
   eyebrow="quickstart"
   title="Three steps. The second one is a single line."
 >
@@ -146,6 +161,7 @@ import Proof from '../../components/Proof.astro';
 
 <LandingSection
   id="proof"
+  index={5}
   eyebrow="built from measurements"
   title="Every rule was learned from a measurement, and says so."
   lead="The project's engineering file does not contain opinions. Each rule names the probe, the version and the number that produced it, and the test that keeps it true."
@@ -153,6 +169,8 @@ import Proof from '../../components/Proof.astro';
   <Proof
     excerpt="A finish's usage is context occupancy to opencode, so its input side is the turn's LAST real API call, never result.usage, which sums every call: a 14-call turn at 180K real context reported 2,050,806 cache read and opencode auto-compacted."
     excerptRef="AGENTS.md, Tools and streaming (h #g169). Kept true by test-context-usage.ts."
+    alsoValue="27×"
+    alsoLabel="fewer prompt-cache writes on a forked claude session than on the replay it replaces: 814 against 22,355, one measured thread (h #g187)"
     contributors={[
       { handle: 'broskees', what: 'task_batch, the skill bridge, the usage fix that stopped early auto-compaction' },
       { handle: 'jknlsn', what: 'per-tool proxy timeouts, subagent dispatch steering, the question proxy' },
@@ -166,6 +184,7 @@ import Proof from '../../components/Proof.astro';
 
 <LandingSection
   id="compare"
+  index={6}
   eyebrow="how this compares"
   title="Three ways to reach Claude from opencode. They are not interchangeable."
   lead="Where a cell names what another project does, the full comparison page quotes that project's own README."
@@ -191,6 +210,7 @@ import Proof from '../../components/Proof.astro';
 
 <LandingSection
   id="install"
+  index={7}
   eyebrow="add it"
   title="One line in opencode.json."
 >
@@ -208,6 +228,16 @@ import Proof from '../../components/Proof.astro';
   </div>
 </LandingSection>
 
+<LandingSection
+  id="support"
+  index={8}
+  eyebrow="the work, and the ask"
+  title="Built in the open, one measurement at a time."
+  lead="These are the numbers behind the plugin, read from the repository and the registries when this page was built. People support effort they can see."
+>
+  <Support />
+</LandingSection>
+
 <style>{`
   .occ-also {
     max-width: 44rem;
@@ -217,9 +247,14 @@ import Proof from '../../components/Proof.astro';
     color: var(--occ-ink-3);
   }
   .occ-also a { color: var(--sl-color-text-accent); }
-  .occ-compare { overflow-x: auto; }
-  .occ-compare table { width: 100%; min-width: 48rem; }
-  .occ-compare th:first-child, .occ-compare td:first-child { width: 10rem; }
   .occ-compare th:nth-child(3), .occ-compare td:nth-child(3) { background: color-mix(in srgb, var(--sl-color-accent-low) 45%, transparent); }
+  @media (min-width: 48rem) {
+    .occ-compare { overflow-x: auto; }
+    .occ-compare table { width: 100%; min-width: 48rem; }
+    .occ-compare th:first-child, .occ-compare td:first-child { width: 10rem; }
+  }
+  @media (max-width: 47.99rem) {
+    .occ-compare td:nth-child(3) { padding-inline: var(--occ-space-3); border-inline-start: 3px solid var(--occ-bar); border-radius: 0 var(--occ-radius-sm) var(--occ-radius-sm) 0; }
+  }
   .occ-cta { display: flex; flex-wrap: wrap; gap: var(--occ-space-3) var(--occ-space-6); align-items: center; margin-top: var(--occ-space-6); }
 `}</style>
