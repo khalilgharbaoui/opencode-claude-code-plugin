@@ -1,0 +1,3 @@
+# GitHub reads this file for the repository's Sponsor button. The same page is linked from
+# package.json's `funding` field (`npm fund`), the README, and the docs site's header and footer.
+buy_me_a_coffee: khalilgharbaoui

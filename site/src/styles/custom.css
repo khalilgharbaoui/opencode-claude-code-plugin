@@ -215,6 +215,22 @@
   }
 }
 
+/* ---------- Buy Me a Coffee widget (astro.config.mjs: head) ---------- */
+/* The widget fixes a 64px button 18px in from the bottom-right corner, so the last 6rem of
+   every page are left empty: at the end of a scroll nothing, not the pagination links and
+   not the footer's own button, can sit underneath it. Starlight's mobile menu is a popover
+   and its search a <dialog>, both in the browser's top layer, so the widget's z-index can
+   never cover those. The reduced-motion rule above already stills its transitions. */
+:root {
+  --sl-main-pad: 0 0 6rem 0;
+}
+@media print {
+  #bmc-wbtn,
+  #bmc-iframe {
+    display: none !important;
+  }
+}
+
 /* ---------- Focus ---------- */
 :focus-visible {
   outline: 2px solid var(--sl-color-accent);

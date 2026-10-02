@@ -4,7 +4,7 @@
 # on their own; `site/` is an Astro Starlight project that loads those same files.
 #
 # It runs on every docs change and once a day, because the landing page's numbers
-# are fetched at build time (GitHub REST, api.npmjs.org) and nothing runs in a
+# are fetched at build time (GitHub REST, api.npmjs.org) and none of that runs in a
 # visitor's browser. The test count comes from the suite's own summary line, so the
 # strip and the README's "tests" badge report what `npm test` actually ran.
 #

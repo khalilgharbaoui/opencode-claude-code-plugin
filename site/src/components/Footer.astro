@@ -1,0 +1,59 @@
+---
+/*
+  Overrides Starlight's Footer (astro.config.mjs: components.Footer) to add one row under the
+  default footer on every page: a sentence and the maintainer's Buy Me a Coffee button.
+
+  This is where BMC's own yellow button belongs. The page has been read and the pagination
+  has had its say, so a bitmap in somebody else's brand colour can be the one loud thing
+  here without competing with content; in the header it would compete on every page. The
+  image is the official 545x153 asset served from site/public, drawn at 178x50 (its own
+  aspect ratio, sharp on a 2x display), so the only third-party request a visitor's browser
+  makes is the widget's. The same file is the README's button.
+*/
+import Default from '@astrojs/starlight/components/Footer.astro';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const href = 'https://www.buymeacoffee.com/khalilgharbaoui';
+---
+
+<Default />
+<div class="occ-support not-content">
+  <p class="occ-support__text">
+    Free and MIT-licensed. If the plugin saves you time, you can buy its maintainer a coffee.
+  </p>
+  <a class="occ-support__button" {href} target="_blank" rel="noopener">
+    <img src={`${base}/buy-me-a-coffee.png`} width="178" height="50" alt="Buy me a coffee" loading="lazy" decoding="async" />
+  </a>
+</div>
+
+<style>
+  .occ-support {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--occ-space-4) var(--occ-space-8);
+    margin-top: var(--occ-space-8);
+    padding-top: var(--occ-space-6);
+    border-top: 1px solid var(--occ-line);
+  }
+  .occ-support__text {
+    margin: 0;
+    max-width: 30rem;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--occ-ink-3);
+    text-wrap: pretty;
+  }
+  .occ-support__button {
+    display: inline-flex;
+    border-radius: var(--occ-radius);
+    line-height: 0;
+  }
+  .occ-support__button img {
+    display: block;
+    width: 178px;
+    height: 50px;
+    border-radius: var(--occ-radius);
+  }
+</style>

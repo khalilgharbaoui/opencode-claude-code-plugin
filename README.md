@@ -15,6 +15,7 @@
 [![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fkhalilgharbaoui.github.io%2Fopencode-claude-code-plugin%2Fbadges%2Ftests.json&style=flat-square)](https://khalilgharbaoui.github.io/opencode-claude-code-plugin/internals/testing/)
 [![Publish](https://img.shields.io/github/actions/workflow/status/khalilgharbaoui/opencode-claude-code-plugin/publish.yml?style=flat-square&label=publish&labelColor=15181E)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/actions/workflows/publish.yml)
 [![License](https://img.shields.io/github/license/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=license&labelColor=15181E&color=FFC46B)](./LICENSE)
+[![Buy me a coffee](https://img.shields.io/badge/support-buy%20me%20a%20coffee-FFC46B?style=flat-square&labelColor=15181E&logo=buymeacoffee&logoColor=FFC46B)](https://www.buymeacoffee.com/khalilgharbaoui)
 
 **Claude Code is the provider.** This opencode plugin runs Anthropic's Claude models through the official **Claude Code CLI** (`claude`) as a subprocess instead of calling the HTTP API. opencode inherits whatever that CLI is logged in as (a Claude subscription, an API key, Bedrock or Vertex), gets Claude's own tools, MCP servers and skills, and keeps running the tools that touch your machine itself, behind its own permission prompts. One package serves opencode 1.x and 2.x.
 
@@ -104,6 +105,10 @@ This README used to hold all of the above. Release notes and bookmarks point at 
 ## Credits
 
 This plugin absorbs work from its forks directly, cherry-picked with the original authorship preserved or reimplemented with the author named in the commit. The people behind the features you are using, and what each built, are on the [Credits](./docs/credits.md) page; `git log --author` on this repo shows the preserved authorship.
+
+Free and MIT-licensed. If the plugin saves you time, you can buy its maintainer a coffee:
+
+<a href="https://www.buymeacoffee.com/khalilgharbaoui"><img src="site/public/buy-me-a-coffee.png" alt="Buy me a coffee" width="214" height="60"></a>
 
 ## License
 
