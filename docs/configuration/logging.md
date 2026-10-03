@@ -13,14 +13,43 @@ knobs:
 |---|---|---|---|
 | `file` | `true \| false` | `false` | Persist log entries to disk |
 | `dir` | path string | `~/.local/share/opencode-claude-code/` | Custom file location |
-| `mode` | `"silent" \| "debug"` | `"silent"` | TUI policy |
+| `mode` | `"silent" \| "debug"` | `"silent"` | How much reaches the operator |
 | `level` | `"debug" \| "info" \| "notice" \| "warn" \| "error"` | `"info"` | Minimum level to emit |
 
 Rails-style threshold: anything below `level` is dropped before either
 destination decides what to do. `mode: "silent"` routes DEBUG/INFO/NOTICE
-to file only and lets WARN/ERROR bubble in the TUI (they always do).
-`mode: "debug"` additionally echoes every emitted level to the TUI (which
-opencode surfaces as warning bubbles).
+to the log file only and surfaces WARN/ERROR to the operator (they always
+do). `mode: "debug"` additionally surfaces every emitted level.
+
+## Where a surfaced line actually goes
+
+It depends on whether a full-screen TUI owns the terminal, and the plugin
+works that out on its own.
+
+- **`opencode run`, `opencode serve`, and anything else without a full-screen
+  interface:** the line is written to the plugin's stderr, prefixed
+  `[opencode-claude-code] WARN:`, exactly as it always has been. Pipe it, grep
+  it, redirect it.
+- **Inside opencode's TUI:** nothing is written to stderr at any level, because
+  there stderr *is* the terminal the TUI is drawing on and a raw line paints
+  over the interface until something forces a redraw. Instead every surfaced
+  line goes to opencode's own log (`POST /log`, service
+  `opencode-claude-code`, so it appears in `~/.local/share/opencode/log/`
+  alongside opencode's own entries), and WARN and ERROR additionally raise a
+  toast titled `claude-code`.
+
+The toast is the message only, never the JSON data, and it is rate-limited in
+two ways so it cannot become the noise it replaced: the same message text
+toasts at most once per process (several WARNs repeat on every spawn), and a
+burst raises at most three toasts followed by one line saying how many were
+held back. Nothing is held back from the log file or from opencode's log; the
+limits govern the screen only.
+
+The log file, when you turn it on, is identical in every mode.
+
+opencode 2 is unaffected and unchanged: it runs plugins in a separate
+`serve --stdio` process whose stderr is a pipe rather than the terminal, so
+there was never anything to paint over.
 
 `logging` is an ordinary provider option, so it goes under `provider.claude-code.options` like every other one. Keying it on the package name instead is the common mistake: opencode accepts that config without complaint and the plugin never reads it, so you get no log and no error.
 
@@ -46,7 +75,8 @@ The snippets below abbreviate to the `logging` value alone; each one belongs at 
 "logging": { "file": true, "level": "debug" }
 ```
 
-**Live TUI noise** (everything echoes to opencode's stderr → warning bubbles):
+**Everything surfaced** (every emitted level reaches the operator: stderr
+outside a TUI, opencode's own log inside one):
 
 ```jsonc
 "logging": { "file": true, "mode": "debug" }
@@ -133,7 +163,8 @@ fields plus live process and proxy state, without enabling logging, run
 
 ## Default behavior (no config, no env)
 
-Nothing persists; only WARN and ERROR bubble in the TUI. The plugin
+Nothing persists; only WARN and ERROR are surfaced, as a toast plus a line
+in opencode's own log inside the TUI, or on stderr outside it. The plugin
 doesn't accrete a log file on every user's disk by default. Opt in when
 you need to inspect auto-continue decisions, broker state, or other
 plugin internals.

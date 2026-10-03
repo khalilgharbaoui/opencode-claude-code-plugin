@@ -151,7 +151,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `interactiveBypass` | boolean | `false` | Deprecated no-op. The TUI asks for a manual safety confirmation on `bypassPermissions`, so the plugin never passes it. |
 | `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With `interactive`: replaces the built-in pre-allow list. MCP wildcards from discovered bridge names plus `mcp__opencode_proxy__*` are added even with `[]`. Not a capability denylist; review permissions before enabling. |
 | `interactiveSystemPrompt` | boolean | `true` | With `interactive`: append the plugin's own prompt. opencode's forwarded system prompt is deliberately not sent on this transport (it can trip Claude's third-party usage gate). `false` is for diagnostics only. |
-| `logging` | object | see below | File and TUI logging policy. |
+| `logging` | object | see below | File logging plus how much reaches the operator. |
 | `name` | string | unset | Low-level `createClaudeCode()` provider identity fallback after `providerID`, not the opencode display-name setting. Display name lives at `provider.<id>.name`; account expansion supplies its own label. Leave this option unset. |
 | `providerID` | string | derived | Config hook writes the actual provider id (`claude-code` or `claude-code-work`). Do not override manually. |
 | `hostApi` | `"v1"` \| `"v2"` | derived | Which opencode major created the model, which decides the tool names its stream uses (`bash` on 1.x, `shell` on 2.x). Set only by the opencode 2 entrypoint. Do not set it: forcing `"v2"` under opencode 1.x makes every proxied tool call fail as an unavailable tool. |
@@ -164,8 +164,24 @@ Defaults below describe normal headless opencode use when the key is absent.
 |---|---|---|---|
 | `file` | boolean | `false` | Persist entries that pass `level`. Logs can contain prompts/tool data/CLI arguments; enable temporarily with consent, not as a credential dump. |
 | `dir` | path | `~/.local/share/opencode-claude-code/` | Where `plugin.log` goes. |
-| `mode` | `"silent"` / `"debug"` | `"silent"` | After level filtering: silent routes lower levels only to the file if enabled; WARN/ERROR go to stderr/TUI too. Debug echoes all emitted levels to stderr, but does not lower the threshold. |
+| `mode` | `"silent"` / `"debug"` | `"silent"` | After level filtering: silent routes lower levels only to the file if enabled; WARN/ERROR are surfaced to the operator too. Debug surfaces all emitted levels, but does not lower the threshold. |
 | `level` | `debug` / `info` / `notice` / `warn` / `error` | `"info"` | Minimum level emitted anywhere. |
+
+Where a surfaced line goes depends on whether a full-screen TUI owns the terminal, and
+the plugin detects that itself (`isTuiHost`, true when the plugin is running off the main
+thread, which is how opencode 1.x's TUI runs a plugin). Outside a TUI (`opencode run`,
+`opencode serve`, tests, and opencode 2, which runs plugins in a separate `serve --stdio`
+process) it is stderr, prefixed `[opencode-claude-code] WARN:`, unchanged. Inside the TUI
+**nothing is written to stderr at any level**, because stderr there is the terminal the
+TUI is drawing on and a raw line sits on top of the interface until a redraw. Instead the
+line goes to opencode's own log (`client.app.log`, service `opencode-claude-code`, so it
+lands in `~/.local/share/opencode/log/`), and WARN/ERROR also raise a toast titled
+`claude-code`. The toast carries the message only, never the JSON data; the same message
+text toasts at most once per process, and a burst raises at most three toasts plus one
+line naming how many were held back. Nothing is held back from either log. So when a user
+reports "the plugin printed garbage over my opencode UI", the answer is to upgrade, not to
+turn logging off; and when they ask where a WARN went in the TUI, point them at opencode's
+own log or the toast rather than at stderr.
 
 ## Environment variables
 
@@ -836,7 +852,8 @@ user's own Claude Code hooks (`hook_response` with `outcome: "error"` or a non-z
 `exit_code`), not opencode's. A failing `SessionStart` hook is otherwise invisible: the
 CLI drops its contribution and the turn succeeds, so the context it was meant to add is
 missing from every turn on that process. Read it whenever a hook's effect is absent. The
-first failure is also a WARN in the terminal. Only the hook's `stderr` is shown, capped
+first failure is also a plugin WARN, which in the TUI means a toast plus a line in
+opencode's own log rather than terminal text. Only the hook's `stderr` is shown, capped
 at 200 characters, because its stdout is spliced into the model's context. The plugin
 never passes `--include-hook-events`, so only `SessionStart` (and `Setup`) hooks are
 reported at all; `cancelled` is not a failure, since an abort produces it.

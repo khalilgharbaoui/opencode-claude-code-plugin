@@ -32,6 +32,7 @@ import {
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
 import { configureLogger, log } from "./logger.js"
+import { registerOpencodeLogSink } from "./tui-log-sink.js"
 import {
   BTW_COMMAND_DESCRIPTION,
   handleBtwCommand,
@@ -656,7 +657,14 @@ const server: OpenCodePlugin = async (input) => {
   // `unknown` here (kept loose since opencode adds fields over time);
   // narrow defensively.
   if (input && typeof input === "object" && "client" in input) {
-    setOpencodeClient((input as { client?: unknown }).client)
+    const client = (input as { client?: unknown }).client
+    setOpencodeClient(client)
+    // Before anything else that could warn: inside opencode's TUI this is the
+    // only route a WARN has that does not paint raw text over the interface,
+    // and registering it here flushes whatever was already buffered (the
+    // stale-install sweep, the API-key heads-up). Outside a TUI the logger
+    // never consults it and stderr behaves exactly as before.
+    registerOpencodeLogSink(client)
   }
 
   // Capture opencode's project-aware directory as a *fallback* used at
