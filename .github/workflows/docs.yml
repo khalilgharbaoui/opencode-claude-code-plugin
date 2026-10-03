@@ -3,10 +3,25 @@
 # The pages themselves are the repository's own `docs/**.md`, which GitHub renders
 # on their own; `site/` is an Astro Starlight project that loads those same files.
 #
-# It runs on every docs change and once a day, because the landing page's numbers
-# are fetched at build time (GitHub REST, api.npmjs.org) and none of that runs in a
-# visitor's browser. The test count comes from the suite's own summary line, so the
-# strip and the README's "tests" badge report what `npm test` actually ran.
+# Every number on the landing page is read at build time (GitHub REST, api.npmjs.org,
+# git, the suite's own summary line) and none of it runs in a visitor's browser, so
+# "live" means "rebuilt soon after the thing changed". Four triggers cover that:
+#
+#   workflow_run       after a successful `Publish`, so a release updates the version
+#                      the page shows. A release touches package.json and a tag, and
+#                      the tag push is not a branch push, so without this trigger the
+#                      site kept the previous version until the next docs commit or
+#                      the next cron.
+#   push               the paths that feed a number or a page: docs, the site itself,
+#                      the README, AGENTS.md, the sources, the test files,
+#                      package.json and the bundled skill.
+#   schedule           every six hours, for the numbers nothing in this repository
+#                      moves (stars, forks, contributors, downloads).
+#   workflow_dispatch  by hand.
+#
+# Every trigger builds the default branch tip, including the post-publish run: the
+# version comes from the registry, so the deployed pages should be the newest master
+# rather than the released tag's older tree.
 #
 # Pages setup (once, by hand): Settings > Pages > Source: GitHub Actions.
 name: Docs
@@ -18,12 +33,19 @@ on:
       - 'docs/**'
       - 'site/**'
       - 'README.md'
-      - 'src/models.ts'
       - 'AGENTS.md'
+      - 'src/**'
+      - 'test-*.ts'
+      - 'package.json'
+      - 'skills/**'
       - '.github/workflows/docs.yml'
+  workflow_run:
+    workflows: [Publish]
+    types: [completed]
   schedule:
-    # 04:23 UTC daily. An odd minute avoids the top-of-hour crowd on GitHub's scheduler.
-    - cron: '23 4 * * *'
+    # Every six hours at 23 past. An odd minute avoids the top-of-hour crowd on
+    # GitHub's scheduler.
+    - cron: '23 */6 * * *'
   workflow_dispatch:
 
 # The build job runs `npm install` (install scripts included) and the whole
@@ -32,12 +54,17 @@ on:
 permissions:
   contents: read
 
+# One Pages deployment at a time, newest wins: a cron tick that overlaps a release
+# rebuild is cancelled rather than queued, so two runs can never deploy out of order.
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
   build:
+    # A failed or cancelled Publish must not redeploy: it would rebuild for a version
+    # npm never received. Every other trigger leaves `workflow_run` unset and passes.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +75,29 @@ jobs:
         with:
           node-version: 24
 
+      # The registry's version document lags the publish itself, by about seven
+      # minutes once (AGENTS.md records it), so building the instant Publish finishes
+      # would show the version npm served a moment ago: the exact staleness this
+      # trigger exists to remove. Only the post-publish run waits; a push or a cron
+      # has nothing to wait for and must stay instant. A timeout still builds, with
+      # whatever npm reports, and says so in the log.
+      - name: Wait for npm to serve this version
+        if: github.event_name == 'workflow_run'
+        run: |
+          want=$(node -p "require('./package.json').version")
+          pkg=$(node -p "encodeURIComponent(require('./package.json').name)")
+          echo "waiting for ${want} on registry.npmjs.org"
+          for attempt in $(seq 1 40); do
+            body=$(curl -fsS --max-time 20 "https://registry.npmjs.org/${pkg}/latest" || true)
+            got=$(printf '%s' "${body}" | node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).version??""))}catch{process.stdout.write("")}})')
+            if [ "${got}" = "${want}" ]; then
+              echo "npm serves ${got} after $(( (attempt - 1) * 15 ))s"
+              exit 0
+            fi
+            echo "attempt ${attempt}: npm says '${got:-unreadable}', want ${want}"
+            sleep 15
+          done
+          echo "::warning::npm did not serve ${want} within 10 minutes; building with whatever the registry reports"
 
       - name: Install the plugin's dev dependencies
         run: npm install --no-audit --no-fund
@@ -62,6 +112,9 @@ jobs:
           echo "OCC_STAT_TESTS=${count}" >> "$GITHUB_ENV"
           echo "tests: ${count:-not found}"
 
+      # Counts the entries of `defaultModels`, not the word `defineModel`, which also
+      # names the helper's own declaration. `/badges/models.json` republishes this
+      # number so the README never has to hard-code it.
       - name: Count registered models
         run: |
           count=$(grep -cE '^\s+"[a-z0-9-]+": defineModel\(' src/models.ts)

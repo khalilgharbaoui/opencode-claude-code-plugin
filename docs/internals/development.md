@@ -86,7 +86,7 @@ src/
 ```
 
 
-For runtime gotchas, the release flow, and the compatibility audit (last taken against **opencode 1.18.29**), see [`AGENTS.md`](../../AGENTS.md). The evidence behind every rule there is in [`docs/agents-history.md`](../agents-history.md).
+For runtime gotchas, the release flow, and the compatibility audit (last taken against **opencode 1.18.34**), see [`AGENTS.md`](../../AGENTS.md). The evidence behind every rule there is in [`docs/agents-history.md`](../agents-history.md).
 
 ## Local development
 

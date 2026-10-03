@@ -2,9 +2,11 @@
   Build-time project numbers.
 
   Everything here runs inside `astro build`, never in a visitor's browser. The page is
-  static HTML; the only reason the numbers move is that the site is rebuilt daily by
-  `.github/workflows/docs.yml`. Each source is fetched independently and falls back to
-  the committed snapshot on its own, so one slow API never blanks the whole strip.
+  static HTML; the only reason the numbers move is that `.github/workflows/docs.yml`
+  rebuilds the site: after every successful publish, on a push to the paths that feed a
+  figure, and every six hours for the ones only GitHub and npm know. Each source is
+  fetched independently and falls back to the committed snapshot on its own, so one
+  slow API never blanks the whole strip.
 
   Sources:
     GitHub REST  stars, forks, contributors, tag count, merged PR count

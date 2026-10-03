@@ -1,6 +1,6 @@
 /*
   A shields.io endpoint badge, generated at build time, so the README's "tests" badge is
-  as live as the daily rebuild: https://shields.io/badges/endpoint-badge
+  as live as the rebuild: https://shields.io/badges/endpoint-badge
 
   Lives at src/pages/badges/tests.json.ts and is served from
   https://opencode-claude-code-plugin.dev/badges/tests.json

@@ -13,6 +13,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=forks&labelColor=15181E&color=FFC46B)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/forks)
 [![Contributors](https://img.shields.io/github/contributors/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=contributors&labelColor=15181E&color=FFC46B)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/graphs/contributors)
 [![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fopencode-claude-code-plugin.dev%2Fbadges%2Ftests.json&style=flat-square)](https://opencode-claude-code-plugin.dev/internals/testing/)
+[![Models](https://img.shields.io/endpoint?url=https%3A%2F%2Fopencode-claude-code-plugin.dev%2Fbadges%2Fmodels.json&style=flat-square)](./docs/models.md)
 [![Publish](https://img.shields.io/github/actions/workflow/status/khalilgharbaoui/opencode-claude-code-plugin/publish.yml?style=flat-square&label=publish&labelColor=15181E)](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/actions/workflows/publish.yml)
 [![License](https://img.shields.io/github/license/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=license&labelColor=15181E&color=FFC46B)](./LICENSE)
 [![Buy me a coffee](https://img.shields.io/badge/support-buy%20me%20a%20coffee-FFC46B?style=flat-square&labelColor=15181E&logo=buymeacoffee&logoColor=FFC46B)](https://www.buymeacoffee.com/khalilgharbaoui)
@@ -57,7 +58,7 @@ Nothing in the picker? [Troubleshooting](./docs/troubleshooting/symptoms.md) is 
 | **Claude's own tools, MCP and skills** | `Read`, `Grep`, `Glob`, `WebSearch` run in Claude Code; your opencode MCP servers are bridged in; your opencode skills can be staged for Claude's `Skill` tool. [MCP](./docs/configuration/mcp.md) · [Skills](./docs/configuration/skills.md) |
 | **Several accounts** | `"accounts": ["personal", "work"]` becomes one provider per account. Out of usage mid-task? One line says which account, which window and when it resets in your own time zone, and names the others to pick a model from. [Accounts](./docs/configuration/accounts.md) |
 | **Subagents: your account, their model** | `forceModel`, `reasoningEffort` and `cacheTtl` in an agent file, inheriting the caller's account. `task_batch` runs several subagents at once. [Subagents](./docs/configuration/subagents.md) |
-| **18 models, reasoning variants, fast mode** | Haiku 4.5 through Opus 5.5, Fable and Mythos, each with a `(N×)` list-price suffix, `low` to `max` effort variants, and a fallback chain for a model this account cannot run today. [Models](./docs/models.md) |
+| **The whole model range, reasoning variants, fast mode** | Haiku 4.5 through Opus 5.5, Fable and Mythos, each with a `(N×)` list-price suffix, `low` to `max` effort variants, and a fallback chain for a model this account cannot run today. The badge above counts them. [Models](./docs/models.md) |
 | **`/btw` and `/claude-code-doctor`** | Side questions on the live process, and a health report whose `bundle` form is redacted by allowlist so it is safe to paste into a public issue. [`/btw`](./docs/guides/btw.md) · [Doctor](./docs/guides/doctor.md) |
 | **Ships its own setup skill** | Ask Claude to configure it. The bundled `claude-code-plugin` skill knows every option, env var, model id and troubleshooting rule, is staged into Claude Code on every spawn, and tests keep it in step with the code. [Skills](./docs/configuration/skills.md) |
 | **Read-only preset, plan mode** | `"permissionPreset": "read-only"` holds at the CLI, the proxy and the permission layer at once. [Permissions](./docs/configuration/permissions.md) |
@@ -75,7 +76,7 @@ The [full comparison](./docs/comparison.md) has nine rows, names the projects in
 
 ## Built from measurements
 
-A dozen test files drive a fake `claude` through real turns: the stream parser, the proxy broker, both watchdogs, abort, respawn, account failover and the model fallback chain are exercised end to end. Every rule in [`AGENTS.md`](./AGENTS.md) names the probe, the version and the number that produced it, and the evidence lives in [`docs/agents-history.md`](./docs/agents-history.md). Two runtime dependencies. The [site](https://opencode-claude-code-plugin.dev/) reports the live numbers, rebuilt daily.
+A dozen test files drive a fake `claude` through real turns: the stream parser, the proxy broker, both watchdogs, abort, respawn, account failover and the model fallback chain are exercised end to end. Every rule in [`AGENTS.md`](./AGENTS.md) names the probe, the version and the number that produced it, and the evidence lives in [`docs/agents-history.md`](./docs/agents-history.md). Two runtime dependencies. The [site](https://opencode-claude-code-plugin.dev/) reports the live numbers: it rebuilds itself after every release, on every push that moves a figure, and every six hours.
 
 ## Documentation
 
