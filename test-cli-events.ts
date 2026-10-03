@@ -14,7 +14,6 @@ import { test } from "node:test"
 import {
   API_KEY_SOURCES,
   COMPACT_BOUNDARY_MARKER,
-  RATE_LIMIT_MARKER,
   RESULT_ERROR_MARKER,
   _resetRateLimitReports,
   _resetSystemInitReports,
@@ -23,9 +22,12 @@ import {
   _resetUnrecognizedModelReports,
   apiKeySourceWarning,
   describeRateLimit,
+  describeRateLimitWindow,
   describeResultFailure,
   formatCompactBoundaryNote,
+  formatLocalMinute,
   formatResetsAt,
+  formatResetsAtLocal,
   formatResultFailureNote,
   isRateLimitRejected,
   parseCompactBoundary,
@@ -103,7 +105,31 @@ test("a rejection warns, explains the reason, and says what can be done", () => 
   assert.match(report!.message, /extra usage is disabled for your organization/)
   assert.match(report!.message, /Resets at 2025-09-04T15:33:20\.000Z/)
   assert.match(report!.message, /wait for the window to reset/)
-  assert.ok(report!.transcript?.startsWith(`\n${RATE_LIMIT_MARKER} `))
+  // Log-only now: every state this reporter describes is. It dedupes per
+  // identity per process, so the paragraph it used to enqueue appeared on the
+  // first limited turn of a process and on none of the others, while the
+  // turn's own failure text appeared every time. The operator-facing half is
+  // `▌ **usage limit:**`, written once per limited turn at the result
+  // boundary, where the turn knows whether the switch form or the fallback
+  // chain is taking it instead (src/account-failover.ts, h #g194).
+  assert.equal(report!.transcript, null)
+})
+
+test("formatResetsAtLocal is the operator's own clock, to the minute", () => {
+  const resetsAt = 1_791_067_800
+  assert.equal(formatResetsAtLocal(resetsAt), formatLocalMinute(resetsAt * 1000))
+  assert.equal(formatResetsAtLocal(resetsAt * 1000), formatLocalMinute(resetsAt * 1000))
+  assert.equal(formatResetsAtLocal(undefined), undefined)
+  // No `T`, no `Z`, no seconds: the UTC form stays `formatResetsAt`'s job.
+  assert.doesNotMatch(formatResetsAtLocal(resetsAt)!, /[TZ]/)
+})
+
+test("a window has a friendly name when the plugin knows it, the raw token otherwise", () => {
+  assert.equal(describeRateLimitWindow("five_hour"), "the 5-hour window")
+  assert.equal(describeRateLimitWindow("seven_day_opus"), "the 7-day Opus window")
+  assert.equal(describeRateLimitWindow("overage"), "extra usage")
+  assert.equal(describeRateLimitWindow("fortnightly_opus"), "fortnightly_opus")
+  assert.equal(describeRateLimitWindow(undefined), undefined)
 })
 
 test("an overage rejection on an allowed request is not a rejection", () => {
@@ -149,12 +175,13 @@ test("rate limits warn once per identity per process", () => {
   configureLogger({ file: false, mode: "silent", level: "info" })
 
   const first = captureStderr(() => reportRateLimitEvent(rejected))
-  assert.ok(first.value?.includes(RATE_LIMIT_MARKER), "the first rejection is surfaced")
-  assert.equal(first.lines.length, 1, "and warns in the TUI")
+  assert.equal(first.value, null, "nothing goes to the transcript from here")
+  assert.equal(first.lines.length, 1, "and the first rejection warns")
+  assert.match(first.lines[0], /rejected this request/)
 
   const second = captureStderr(() => reportRateLimitEvent(rejected))
-  assert.equal(second.value, null, "the same rejection is not repeated")
-  assert.equal(second.lines.length, 0)
+  assert.equal(second.value, null)
+  assert.equal(second.lines.length, 0, "the same rejection is not repeated")
 
   const other = captureStderr(() =>
     reportRateLimitEvent({
@@ -162,8 +189,8 @@ test("rate limits warn once per identity per process", () => {
       rate_limit_info: { status: "rejected", rateLimitType: "seven_day" },
     }),
   )
-  assert.ok(other.value, "a different window is its own warning")
-  assert.equal(other.lines.length, 1)
+  assert.equal(other.value, null)
+  assert.equal(other.lines.length, 1, "a different window is its own warning")
   _resetLoggerForTests()
 })
 

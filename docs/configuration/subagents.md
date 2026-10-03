@@ -119,10 +119,11 @@ named two cheap models.
    model (…). It may not exist or you may not have access to it."* Note that the
    result's `subtype` is `success`, which is why a refused model used to finish
    as an ordinary reply with the CLI's error standing in for Claude's answer.
-2. **A usage limit with nowhere else to go.** Only when
-   [account failover](../configuration/accounts.md#account-failover) has no other account to offer, meaning
-   a single configured account or every other one already limited. **When
-   another account exists the switch form wins and the chain does not fire**:
+2. **A usage limit with nowhere else to go.** Only when the opt-in
+   [account failover](../configuration/accounts.md#account-failover) form is not taking the turn, meaning
+   it is off (the default), or a single configured account, or every other one
+   already limited. **When the form is on and another account exists it wins
+   and the chain does not fire**:
    moving your billing is your decision, moving to a cheaper model is not, and a
    per-model weekly cap is exactly the case a chain helps with.
 

@@ -48,6 +48,12 @@ export interface RateLimitInfo {
   overageDisabledReason?: string
 }
 
+/**
+ * Nothing writes this any more (see `describeRateLimit`), but it stays in
+ * `PLUGIN_NOTE_MARKERS`: a conversation that was open before the upgrade still
+ * holds blocks led by it, and replaying one back to Claude as its own words is
+ * exactly what that list exists to prevent.
+ */
 export const RATE_LIMIT_MARKER = "▌ **rate limit:**"
 
 /**
@@ -111,6 +117,37 @@ export function formatResetsAt(resetsAt: number | undefined): string | undefined
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }
 
+/** Local time to the minute: `2026-09-22 20:56`. Seconds would be noise. */
+export function formatLocalMinute(ms: number): string {
+  const when = new Date(ms)
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return (
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ` +
+    `${pad(when.getHours())}:${pad(when.getMinutes())}`
+  )
+}
+
+/**
+ * The reset time in the operator's OWN time zone, which is the only form they
+ * can act on without doing arithmetic: a UTC instant printed next to "wait for
+ * the reset" is the shape the maintainer read as unhelpful on 2026-10-03.
+ * `formatResetsAt` stays the UTC form for logs and for the switch form, where
+ * an unambiguous instant is what a pasted diagnostic needs.
+ */
+export function formatResetsAtLocal(resetsAt: number | undefined): string | undefined {
+  const ms = resetsAtToMs(resetsAt)
+  if (ms === undefined || Number.isNaN(new Date(ms).getTime())) return undefined
+  return formatLocalMinute(ms)
+}
+
+/** The friendly name of a `rateLimitType`, or the raw token when unknown. */
+export function describeRateLimitWindow(
+  rateLimitType: string | undefined,
+): string | undefined {
+  if (!rateLimitType) return undefined
+  return RATE_LIMIT_WINDOWS[rateLimitType] ?? rateLimitType
+}
+
 /** Dedup identity: one warning per (window, overage status, reason) per process. */
 export function rateLimitKey(info: RateLimitInfo): string {
   return [
@@ -148,13 +185,25 @@ export interface RateLimitReport {
 
 /**
  * A rejection is the only state the user has to act on, so it is the only one
- * that gets a WARN and a transcript line. A warning state is a NOTICE: it is
- * real but not yet blocking, and a per-turn TUI bubble for "you are at 82%"
- * would train people to ignore the blocking one.
+ * that gets a WARN. A warning state is a NOTICE: it is real but not yet
+ * blocking, and a per-turn TUI bubble for "you are at 82%" would train people
+ * to ignore the blocking one.
+ *
+ * Nothing here writes to the transcript any more. This reporter dedupes per
+ * identity per process, so the paragraph it used to enqueue appeared on the
+ * FIRST limited turn of a process and on none of the others, while the turn's
+ * own failure text appeared every time: measured on 2026-10-03, three limited
+ * turns in one window produced one five-sentence block and two raw CLI
+ * sentences. The operator-facing half is one `▌ **usage limit:**` note per
+ * limited turn now, written at the result boundary where the turn knows
+ * whether the switch form or the fallback chain is taking it instead
+ * (`formatUsageLimitNote`, src/account-failover.ts, h #g194). The WARN and the
+ * dedup are unchanged: a log line is for whoever reads the log, and the
+ * per-process rule is what keeps one window's repeats from burying the first.
  */
 export function describeRateLimit(info: RateLimitInfo): RateLimitReport | null {
   if (!info.status && !info.overageStatus) return null
-  const window = info.rateLimitType ? RATE_LIMIT_WINDOWS[info.rateLimitType] ?? info.rateLimitType : undefined
+  const window = describeRateLimitWindow(info.rateLimitType)
   const resets = formatResetsAt(info.resetsAt)
   const overageResets = formatResetsAt(info.overageResetsAt)
   const key = rateLimitKey(info)
@@ -174,7 +223,7 @@ export function describeRateLimit(info: RateLimitInfo): RateLimitReport | null {
     if (resetAt) parts.push(`Resets at ${resetAt}.`)
     parts.push(RATE_LIMIT_ACTION)
     const message = parts.join(" ")
-    return { key, level: "warn", message, transcript: `\n${RATE_LIMIT_MARKER} ${message}\n` }
+    return { key, level: "warn", message, transcript: null }
   }
 
   if (info.status === "allowed_warning" || info.overageStatus === "allowed_warning") {

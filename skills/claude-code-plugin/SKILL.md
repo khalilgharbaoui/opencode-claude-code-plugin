@@ -112,12 +112,12 @@ Defaults below describe normal headless opencode use when the key is absent.
 |---|---|---|---|
 | `cliPath` | string | `"claude"` | Executable, not a shell command with flags. Use an absolute path for a non-PATH install. The opencode config hook supplies this default; only direct `createClaudeCode()` use falls back to `CLAUDE_CLI_PATH`. Account providers wrap it; never select a generated wrapper yourself. |
 | `accounts` | string[] | unset | Unset keeps provider `claude-code`. Any array, including `[]`, expands to `claude-code-default` plus normalized, deduplicated names. Non-default accounts use `~/.claude-<name>`; default uses the CLI's normal environment/auth. |
-| `accountFailover` | `"ask"` / `"off"` | `"ask"` | When the account a conversation runs on is out of usage, end the turn on opencode's native `question` form listing the other configured accounts, and continue the task on the pick inside the same opencode turn. Only ever fires with more than one account configured, so a single-account install is unaffected by the default. The pick is sticky for the LIMITED account until the limit's reset time (or until opencode restarts when the CLI reported none), so it covers every session on that account and subagents follow their parent; child sessions are never shown the form. Leaving it unanswered waits and costs nothing. `stop`, a dismissal, or text that is not one of the offered accounts ends the turn as the rate-limit error does. Triggered only by a rejected `rate_limit_event`, one of the two known account-limit error texts, or one of the five account-level failure kinds the CLI names on its own error reply (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`); never by a generic failure. Never on compaction turns or the interactive transport. A switch cannot resume the Claude session (transcripts live under the account's own config dir), so the conversation is replayed into a fresh one: it costs input tokens on the new account, and MCP servers configured only in the limited account's Claude profile are gone. `"off"` keeps the plain rate-limit error. |
+| `accountFailover` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` opens the switch form**, so unset and `"off"` behave identically. `"ask"` ends a usage-limited turn on opencode's native `question` form listing the other configured accounts, and continues the task on the pick inside the same opencode turn. Only ever fires with more than one account configured. The pick is sticky for the LIMITED account until the limit's reset time (or until opencode restarts when the CLI reported none), so it covers every session on that account and subagents follow their parent; child sessions are never shown the form. Leaving it unanswered waits and costs nothing. `stop`, a dismissal, or text that is not one of the offered accounts ends the turn the way a limited turn ends without the form. Triggered only by a rejected `rate_limit_event`, one of the two known account-limit error texts, or one of the five account-level failure kinds the CLI names on its own error reply (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`); never by a generic failure. Never on compaction turns or the interactive transport. A switch cannot resume the Claude session (transcripts live under the account's own config dir), so the conversation is replayed into a fresh one: it costs input tokens on the new account, and MCP servers configured only in the limited account's Claude profile are gone. With the default `"off"`, a limited turn ends on one `▌ **usage limit:**` note instead (see "When an account runs out of usage"). |
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
 | `defaultSubagentCacheTtl` | string | unset | Prompt cache TTL (`5m` / `1h`) for discovered `mode: subagent` agents that declare no `cacheTtl`; the agent's own value takes precedence. Unset leaves the CLI's default (1 hour on a subscription). Unknown values warn and change nothing. Headless spawns only (not compaction, not the interactive transport). |
-| `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when `accountFailover` has no other account to offer; with another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction, title stubs or the interactive transport. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
+| `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when the `accountFailover` form is not taking the turn, which is the case whenever it is `"off"` (its default) or has no other account to offer; with `"ask"` and another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction, title stubs or the interactive transport. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
 | `cwd` | string | automatic | Pin an absolute existing directory. Otherwise: session directory from SDK, usable `process.cwd()`, captured project directory, final `process.cwd()` fallback. Startup diagnostics cannot show the per-call session tier. |
 | `skipPermissions` | boolean | `true` | Pass `--dangerously-skip-permissions` to headless Claude, even with proxies enabled. Proxied calls still use opencode permissions, but unproxied CLI tools do not. `false` removes the bypass flag; it does not by itself create human approval prompts. Ignored when `permissionMode` is `"plan"`, which always drops the flag. |
 | `permissionMode` | `acceptEdits` / `auto` / `bypassPermissions` / `default` / `dontAsk` / `plan` | unset | Headless `--permission-mode`, not version-gated: verify the installed CLI supports the value. `plan` is enforced: it overrides `skipPermissions: true` and the plugin drops `--dangerously-skip-permissions` for it, so claude cannot edit or run commands. Every other value governs prompting and still passes the skip flag, so `plan` is the only one that makes a run read-only. Nothing releases plan mode mid-session (no headless `ExitPlanMode`), so leaving it means a config change and an opencode restart; the plugin warns once at startup. Not forwarded by the current interactive spawn path. |
@@ -308,13 +308,49 @@ suffix and sets the config dir. Existing `CLAUDE.md`, `settings.json`, `skills/`
 missing; existing targets stay untouched. This shares capabilities/settings, not an
 isolation boundary. Auth/session files are not part of the shared list.
 
+### When an account runs out of usage
+
+By default (`accountFailover` unset or `"off"`) a usage-limited turn ends with one
+`▌ **usage limit:**` note and nothing else, on every limited turn rather than once per
+process:
+
+```text
+▌ **usage limit:** the Claude account "work" is out of usage in the 5-hour window, which
+resets at 2026-09-20 20:00. Pick a model from the "personal" or "default" account and
+resend your message, or wait for the window to reset.
+```
+
+- The reset time is **local** to the operator, to the minute, and is omitted when the
+  CLI reported none. The window name comes from the CLI's `rateLimitType`.
+- With no other account configured the advice is "Wait for the window to reset, or
+  enable extra usage on the account." instead.
+- It replaces the CLI's own error text for that turn: the raw sentence names no account,
+  and the `▌ **rate limit:**` paragraph the plugin used to write is log-only now, so a
+  limited turn carries exactly one block.
+- Written on a child session too (a subagent that died on a limit is what the parent's
+  `task` result should say), but never on a compaction turn, whose text becomes the
+  stored summary. How the turn finishes is unchanged.
+- `permission_denials`, `turnStats` and the finish reason are untouched: the note
+  replaces text, not control flow.
+
+When a user says the limit message is unhelpful, check the plugin version before
+anything else: this note is recent and a long-lived opencode window may predate it.
+
 ### Account failover
 
-With more than one account configured, `accountFailover` is `"ask"` by default. When a
-turn is rejected for usage, the turn ends on opencode's `question` form instead of an
-error: one option per other configured account, plus `stop`. Picking an account applies
-it inside the same opencode turn, with no new user message, and the task carries on.
-Leaving the form unanswered waits and costs nothing.
+**Opt-in.** `{ "accountFailover": "ask" }` and more than one account configured makes a
+usage-rejected turn end on opencode's `question` form instead of that note: one option
+per other configured account, plus `stop`. Picking an account applies it inside the same
+opencode turn, with no new user message, and the task carries on. Leaving the form
+unanswered waits and costs nothing.
+
+It is opt-in rather than on by default because of what was measured against a real
+five-hour limit on 2026-10-03. Two of the three findings are not the plugin's to fix:
+typing a message instead of picking **dismisses** the form in opencode, and that message
+then runs on the still-limited account and raises a second form (the "I had to send two
+messages before anything ran" report); and a switch is always a full replay. The third,
+every pick being refused as `unrecognised answer` because another plugin appends a
+routing tag to tool results, is fixed.
 
 Tell the user what a pick actually does before recommending one:
 
@@ -329,7 +365,7 @@ Tell the user what a pick actually does before recommending one:
 - MCP servers configured only in the limited account's Claude profile will be **missing**
   on the target account.
 - `stop`, dismissing the form, or answering with anything that is not one of the offered
-  accounts ends the turn exactly as the rate-limit error does today. The limit is
+  accounts ends the turn the way a limited turn ends without the form. The limit is
   unchanged either way; failover moves the work, it does not create usage.
 - Only a rejected `rate_limit_event`, one of the two known account-limit error texts, or
   an account-level failure the CLI reports on its own error reply opens the form. The
@@ -340,10 +376,12 @@ Tell the user what a pick actually does before recommending one:
   command to fix it: `claude auth login` for the default account, or
   `CLAUDE_CONFIG_DIR=<that account's config dir> claude auth login` for a named one. When
   a user reports "Failed to authenticate: OAuth session expired", that command is the
-  fix; a switch made from that form lasts until opencode restarts.
+  fix; a switch made from that form lasts until opencode restarts. With the form off and
+  another account configured the note ends with "Or pick a model from the
+  `"<account>"` account and resend." instead of offering the form.
 - Not available on the interactive transport or on compaction turns.
 
-`{ "accountFailover": "off" }` keeps the plain rate-limit error.
+`{ "accountFailover": "off" }`, which is also the default, keeps the note.
 
 ### Subagents on one model, on the caller's account
 
@@ -426,9 +464,10 @@ Per-agent replaces provider-level; it never merges. Unset means no chain, which 
 the default. Two triggers only, never a generic error: the CLI refusing the model
 (assistant `error: "model_not_found"`, or a failed result whose text is *"There's an
 issue with the selected model"*, measured on CLI 2.1.280, where the result `subtype`
-is misleadingly `success`), and a usage limit **only when `accountFailover` has no
-other account to offer**. With another account configured the switch form wins and
-the chain stays out of it: model is a capability choice, account is a billing choice.
+is misleadingly `success`), and a usage limit **only when the `accountFailover` form is
+not taking the turn**, meaning it is `"off"` (its default) or has no other account to
+offer. With `"ask"` and another account configured the switch form wins and the chain
+stays out of it: model is a capability choice, account is a billing choice.
 An expired login, a billing hold and every other error kind are excluded because they
 fail the same way on the next model.
 

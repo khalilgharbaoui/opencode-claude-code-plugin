@@ -6,7 +6,9 @@ import {
   normalizeAccountName,
 } from "./accounts.js"
 import {
+  describeRateLimitWindow,
   formatResetsAt,
+  formatResetsAtLocal,
   isRateLimitRejected,
   resetsAtToMs,
   type RateLimitInfo,
@@ -28,14 +30,33 @@ import {
  * accounts are already configured and each is just another `CLAUDE_CONFIG_DIR`
  * behind a wrapper script (`src/accounts.ts`).
  *
- * So the limit ends the turn with a form instead of an error: one option per
- * other configured account, plus `stop`. The form is opencode's own `question`
- * tool, reached exactly the way the plan-mode bridge reaches it, which means
- * the answer arrives on the next `doStream` call as a `tool-result` and the
- * switch happens inside the same opencode turn, with no new user message.
+ * There are two shapes for that, and the quiet one is the default.
+ *
+ * **The note (`accountFailover: "off"`, the default).** The turn ends the way
+ * a limited turn always ended, with one `▌ **usage limit:**` line saying which
+ * account, which window, when it resets in the operator's own time zone, and
+ * what to do about it (`formatUsageLimitNote`). Nothing moves on its own and
+ * nothing is asked.
+ *
+ * **The form (`accountFailover: "ask"`).** The limit ends the turn on
+ * opencode's own `question` tool instead, one option per other configured
+ * account plus `stop`, reached exactly the way the plan-mode bridge reaches
+ * it: the answer arrives on the next `doStream` call as a `tool-result`, so
+ * the switch happens inside the same opencode turn with no new user message.
  * Leaving it unanswered waits, and waiting costs nothing.
  *
- * Three things about the design are deliberate and load-bearing:
+ * The form used to be the default and is opt-in now, because three things
+ * about it were measured to be worse than the note on 2026-10-03
+ * (h #g194): a defect in the answer parse refused every pick (fixed in
+ * `src/plan-mode-question.ts`, since a pick the plugin cannot read is a form
+ * that cannot work); typing instead of picking dismisses the form in opencode,
+ * and that message then runs on the still-limited account and raises a second
+ * form, which is the "two prompts with go" the maintainer reported; and a
+ * switch is inherently a fresh Claude session with the whole thread replayed,
+ * because a transcript cannot resume across accounts. None of that is wrong
+ * code in the switch itself, which is why the form stays rather than going.
+ *
+ * Three things about the form's design are deliberate and load-bearing:
  *
  * 1. **The override is scoped to the limited ACCOUNT, not the session.** A
  *    rate limit is a property of the account, so one pick governs every
@@ -88,6 +109,27 @@ export const ACCOUNT_LIMIT_PATTERNS: RegExp[] = [
 
 /** Leading text of the `▌` note naming an account that cannot serve requests. */
 export const ACCOUNT_BLOCK_MARKER = "▌ **claude account:**"
+
+/** Leading text of the `▌` note a limited turn ends with when nothing else takes it. */
+export const USAGE_LIMIT_MARKER = "▌ **usage limit:**"
+
+/**
+ * `the "default" account`, `the "work" or "default" account`. Shared by the
+ * usage-limit note and the account-block note, because both end in the same
+ * advice and a second phrasing of it would read as a second feature.
+ */
+export function describeOtherAccounts(candidates: readonly string[]): string {
+  const names = candidates
+    .map((candidate) => normalizeAccountName(candidate))
+    .filter(Boolean)
+    .map((candidate) => `"${candidate}"`)
+  if (names.length === 0) return ""
+  const joined =
+    names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`
+  return `the ${joined} account`
+}
 
 /**
  * The CLI's failure kinds that belong to the ACCOUNT rather than to this
@@ -142,14 +184,65 @@ export function formatAccountBlockNote(input: {
   account: string
   configDir?: string
   offeringSwitch: boolean
+  /**
+   * The other configured accounts. Read only when the switch form is NOT
+   * taking the turn, which is the default now: the operator can still move the
+   * work by hand, and nothing else on screen tells them the option exists.
+   */
+  candidates?: readonly string[]
 }): string {
   const block = ACCOUNT_BLOCKS[input.kind]
   const account = normalizeAccountName(input.account || DEFAULT_ACCOUNT)
   const fix = block.login
     ? `Log in again with \`${loginCommandFor(input.configDir)}\`, then resend your message.`
     : "Check the account at claude.ai, then resend your message."
-  const then = input.offeringSwitch ? " Or pick another account below." : ""
+  const others = input.offeringSwitch ? "" : describeOtherAccounts(input.candidates ?? [])
+  const then = input.offeringSwitch
+    ? " Or pick another account below."
+    : others
+      ? ` Or pick a model from ${others} and resend.`
+      : ""
   return `\n${ACCOUNT_BLOCK_MARKER} the Claude account "${account}" ${block.what}. ${fix}${then}\n`
+}
+
+/**
+ * The one thing on screen when this account's usage ran out and neither the
+ * switch form nor the fallback chain is taking the turn.
+ *
+ * Two sentences, because that is what the operator has to read before they can
+ * do anything: which account and which window ran out and when it comes back,
+ * then the one move that is theirs to make. The reset is in LOCAL time (the
+ * UTC instant the old rate-limit paragraph printed needed arithmetic before it
+ * meant anything) and is omitted when the CLI sent none, rather than guessed.
+ *
+ * Written on EVERY limited turn, unlike the rate-limit reporter it replaces,
+ * which deduped per process and so said nothing from the second limit on.
+ * Its own text part, led by `USAGE_LIMIT_MARKER` and registered in
+ * `PLUGIN_NOTE_MARKERS`: the plugin wrote it, Claude never said it. (h #g194)
+ */
+export function formatUsageLimitNote(input: {
+  sourceAccount: string
+  candidates: readonly string[]
+  resetsAt?: number
+  /** The CLI's raw `rateLimitType`; rendered through `describeRateLimitWindow`. */
+  window?: string
+}): string {
+  const account = normalizeAccountName(input.sourceAccount || DEFAULT_ACCOUNT)
+  const window = describeRateLimitWindow(input.window)
+  const resets = formatResetsAtLocal(input.resetsAt)
+  const others = describeOtherAccounts(input.candidates)
+
+  const what = [
+    `the Claude account "${account}" is out of usage`,
+    window ? ` in ${window}` : "",
+    resets ? `, which resets at ${resets}` : "",
+    ".",
+  ].join("")
+  const advice = others
+    ? `Pick a model from ${others} and resend your message, or wait for the window to reset.`
+    : "Wait for the window to reset, or enable extra usage on the account."
+
+  return `\n${USAGE_LIMIT_MARKER} ${what} ${advice}\n`
 }
 
 export function isAccountLimitError(input: {
@@ -160,6 +253,69 @@ export function isAccountLimitError(input: {
   const text = input.resultText
   if (typeof text !== "string" || text.length === 0) return false
   return ACCOUNT_LIMIT_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+// ---------------------------------------------------------------------------
+// What is known about an account's current limit
+// ---------------------------------------------------------------------------
+
+/** Which window ran out and when it comes back, as the CLI reported it. */
+export interface AccountLimitFacts {
+  resetsAt?: number
+  /** The CLI's raw `rateLimitType`. */
+  window?: string
+}
+
+const lastAccountLimits = new Map<string, AccountLimitFacts>()
+
+/** Test-only. */
+export function _resetAccountLimitMemory(): void {
+  lastAccountLimits.clear()
+}
+
+/**
+ * Remember what a rejection said about this account, because the SECOND
+ * limited turn of a conversation is told nothing.
+ *
+ * Measured live on opencode 1.18.34 + CLI 2.1.288 (2026-10-03) over one
+ * `opencode serve` process and an exhausted five-hour window: turn one carried
+ * a `rate_limit_event` and the note named the window and the reset minute,
+ * turn two on the reused child carried no event at all (the CLI emits one when
+ * its view of the limits CHANGES, not per request) and the note read "is out
+ * of usage." with nothing after it. The limit belongs to the account and its
+ * reset time does not move inside the window, so the first turn's facts are
+ * the right answer for the rest of it.
+ *
+ * Keyed by account, because that is what a limit belongs to, exactly like the
+ * failover override above.
+ */
+export function rememberAccountLimit(account: string, facts: AccountLimitFacts): void {
+  const name = normalizeAccountName(account || DEFAULT_ACCOUNT)
+  if (!name) return
+  lastAccountLimits.set(name, { resetsAt: facts.resetsAt, window: facts.window })
+}
+
+/**
+ * What is known about this account's limit, for a turn whose own rejection
+ * carried no detail. **A reset time that is not in the future is dropped**,
+ * for the reason `setAccountOverride` clamps one: the window has turned over
+ * since, so the remembered instant would tell the operator to wait for a time
+ * that has already passed. The window name is kept either way; which window
+ * ran out does not expire.
+ */
+export function recallAccountLimit(
+  account: string,
+  now = Date.now(),
+): AccountLimitFacts {
+  const name = normalizeAccountName(account || DEFAULT_ACCOUNT)
+  const facts = lastAccountLimits.get(name)
+  if (!facts) return {}
+  const resetsAtMs = resetsAtToMs(facts.resetsAt)
+  const fresh = resetsAtMs !== undefined && resetsAtMs > now
+  return {
+    ...(fresh ? { resetsAt: facts.resetsAt } : {}),
+    ...(facts.window === undefined ? {} : { window: facts.window }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,13 +474,18 @@ export async function resolveFailoverSpawn(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * On by default whenever more than one account is configured: the operator's
- * pick is the consent, and with no other account there is nothing to offer.
- * Never on a compaction turn (its answer would have nowhere to go), never on
- * the interactive transport (a TUI stdin and no proxy server), never in a
- * child session (a subagent follows its parent's account for free), and never
- * without opencode's `question` entry, where the emitted call renders as
- * `⚙ invalid` and wedges the turn.
+ * **Opt-in: only an explicit `accountFailover: "ask"` opens the form**, so an
+ * unset option and `"off"` both leave a limited turn on the quiet note. It was
+ * on by default on the argument that the operator's pick is the consent, which
+ * still holds; what did not hold is the quality of the round trip, measured on
+ * 2026-10-03 and recorded on the module note above and in (h #g194).
+ *
+ * The rest of the gate is unchanged. Never on a compaction turn (its answer
+ * would have nowhere to go), never on the interactive transport (a TUI stdin
+ * and no proxy server), never in a child session (a subagent follows its
+ * parent's account for free), never with nothing to offer, and never without
+ * opencode's `question` entry, where the emitted call renders as `⚙ invalid`
+ * and wedges the turn.
  */
 export function isAccountFailoverQuestionActive(input: {
   configured: "ask" | "off" | undefined
@@ -337,7 +498,7 @@ export function isAccountFailoverQuestionActive(input: {
   if (input.compactionMode) return false
   if (input.interactive) return false
   if (input.childSession) return false
-  if (input.configured === "off") return false
+  if (input.configured !== "ask") return false
   if (input.candidates.length === 0) return false
   return input.opencodeHasQuestion
 }

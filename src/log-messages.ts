@@ -25,6 +25,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "btw: early aside failed; the message will ask again",
   "cannot interrupt this transport; waiting for the turn to end",
   "claude --version output unparseable",
+  "claude account is out of usage; the turn ends with a note",
   "claude already registers a different skill under this name; not bridging ours",
   "claude cli < 2.1.142 detected; Opus 4.7 thinking summaries unavailable. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",
   "claude cli does not support --plugin-dir; opencode skills will not be bridged. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",

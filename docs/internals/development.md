@@ -29,7 +29,7 @@ src/
   agent-models.ts                per-agent model, effort and cache TTL resolution
   model-fallback.ts              the fallback model chain
   accounts.ts                    multi-account expansion and the per-account wrapper script
-  account-failover.ts            the usage-limit switch form and the account override
+  account-failover.ts            the usage-limit note, the opt-in switch form and the override
   fast-mode.ts                   the -fast markers and the downgrade warning
 
   claude-code-language-model.ts  the AI SDK provider class

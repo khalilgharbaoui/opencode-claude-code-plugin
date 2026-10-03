@@ -54,6 +54,7 @@ import {
   failoverUntil,
   formatFailoverNote,
   formatFailoverStopNote,
+  formatUsageLimitNote,
   isAccountFailoverQuestionActive,
   resolveFailoverSpawn,
   setAccountOverride,
@@ -1403,14 +1404,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // switch form. Resolved here, in the prologue, for the same reason the
     // plan-mode gate is: the `result` branch that needs the answer runs in a
     // synchronous line handler. The candidate check comes first so a
-    // single-account install never pays for the two lookups behind it.
+    // single-account install never pays for the two lookups behind it, and the
+    // `=== "ask"` check comes second so a default install pays for neither:
+    // the form is opt-in (h #g194).
     const failoverAccounts = failoverCandidates(
       this.config.failoverAccounts,
       sourceAccount,
     )
     const failoverAskActive =
       failoverAccounts.length > 0 &&
-      this.config.accountFailover !== "off" &&
+      this.config.accountFailover === "ask" &&
       !compactionMode &&
       !useInteractive &&
       // A `doGenerate` caller takes the override and reports the plain
@@ -1427,6 +1430,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // the operator is usually not even looking at.
         childSession: !!(await fetchSessionParentId(affinity)),
       })
+
+    // Whether a usage limit on this turn should be said once, plainly, in the
+    // conversation (`formatUsageLimitNote`, h #g194). The complement of the
+    // form rather than a second option: exactly one of the two answers a
+    // limited turn, and with the form opt-in this is what a default install
+    // gets. The parser turns it into `TurnState.usageLimitNote` at the result
+    // frame, where whether the limit actually happened is finally known.
+    //
+    // Excluded for the same two reasons the stale-build note is: a `/compact`
+    // turn's text becomes the stored summary, and a `doGenerate` turn's text
+    // is aggregated into a return value rather than shown. A child session is
+    // NOT excluded: a subagent that died on a usage limit is exactly what the
+    // parent's `task` result should say. The fallback chain is not checked
+    // here either, because whether it takes the turn is only known once the
+    // refusal is in hand; `completeResult` reads this after the chain's own
+    // branch has had its chance to return.
+    const usageLimitNoteActive =
+      !compactionMode && mode !== "generate" && !failoverAskActive
 
     // Whether this turn tells the operator that the opencode process they are
     // talking to is running an older plugin build than the one on disk
@@ -2298,6 +2319,33 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
+          // Nothing above took the turn, so a usage limit is simply what
+          // happened: say it once, plainly, and let the turn finish exactly
+          // the way a limited turn finishes today. No `return`, because this
+          // note replaces text and changes no control flow (h #g194). The
+          // parser decided this at the `result` frame and suppressed the CLI's
+          // own error text there, so this is the only thing on screen.
+          if (state.usageLimitNote) {
+            log.warn("claude account is out of usage; the turn ends with a note", {
+              sessionKey: sk,
+              account: sourceAccount,
+              window: state.accountLimitHit?.window ?? null,
+              resetsAt: state.accountLimitHit?.resetsAt ?? null,
+              candidates: failoverAccounts,
+            })
+            controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: formatUsageLimitNote({
+                sourceAccount,
+                candidates: failoverAccounts,
+                resetsAt: state.accountLimitHit?.resetsAt,
+                window: state.accountLimitHit?.window,
+              }),
+            })
+            state.endTextBlock()
+          }
+
           // The nudge and the one line that says the nudging stopped, both
           // in src/turn-controller.ts. True means the turn was put back to
           // work and must not finish here.
@@ -2399,6 +2447,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           planModeQuestionActive,
           sourceAccount,
           failoverAskActive,
+          usageLimitNoteActive,
+          failoverAccounts,
           modelFallbackArmed,
           attempt,
           handleControlRequest,

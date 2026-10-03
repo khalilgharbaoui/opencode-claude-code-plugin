@@ -419,7 +419,12 @@ test("a failed turn gets no stats footer even with turnStats on", async () => {
   assert.match(body, /error_during_execution/)
 })
 
-test("a rate-limit rejection is written into the transcript", async () => {
+test("a rate-limit rejection on a served turn changes nothing the operator sees", async () => {
+  // It used to enqueue a five-sentence paragraph here, once per process per
+  // identity, which meant a limited turn could carry it and the next one in
+  // the same window could not. It is log-only now; the operator-facing half
+  // is one `▌ **usage limit:**` note on a turn that actually FAILED, which
+  // this turn did not (test-account-failover.ts owns that path, h #g194).
   const parts = await streamParts([
     init,
     {
@@ -440,9 +445,12 @@ test("a rate-limit rejection is written into the transcript", async () => {
     .filter((part) => part.type === "text-delta")
     .map((part) => part.delta)
     .join("")
-  assert.match(body, /▌ \*\*rate limit:\*\*/)
-  assert.match(body, /out of usage in the 5-hour window/)
-  assert.match(body, /wait for the window to reset/)
+  assert.match(body, /cannot continue/)
+  assert.equal(body.includes("▌"), false)
+  assert.equal(
+    parts.find((part) => part.type === "finish").finishReason.unified,
+    "stop",
+  )
 })
 
 test("a CLI self-compaction is announced in the transcript", async () => {

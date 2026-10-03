@@ -234,7 +234,11 @@ export function createClaudeCode(
       configDir: settings.configDir,
       failoverAccounts: settings.failoverAccounts,
       baseCliPath: settings.baseCliPath ?? cliPath,
-      accountFailover: settings.accountFailover ?? "ask",
+      // Passed through, with no default applied here: the form is opt-in and
+      // `isAccountFailoverQuestionActive` asks for an explicit `"ask"`, so an
+      // unset option must stay unset rather than being written to one mode or
+      // the other in only one of the two entry points (h #g194).
+      accountFailover: settings.accountFailover,
       providerID: settings.providerID,
       skipPermissions: preset?.skipPermissions ?? settings.skipPermissions ?? true,
       permissionMode: preset?.permissionMode ?? settings.permissionMode,

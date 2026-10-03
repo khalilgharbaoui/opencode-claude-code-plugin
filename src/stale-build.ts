@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { formatLocalMinute } from "./cli-events.js"
 import { log } from "./logger.js"
 import { pluginVersion } from "./startup-diagnostics.js"
 
@@ -119,15 +120,13 @@ export function compareBuilds(
   }
 }
 
-/** Local time to the minute: `2026-09-22 20:56`. Seconds would be noise. */
-export function formatLocalMinute(ms: number): string {
-  const when = new Date(ms)
-  const pad = (value: number) => String(value).padStart(2, "0")
-  return (
-    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ` +
-    `${pad(when.getHours())}:${pad(when.getMinutes())}`
-  )
-}
+/**
+ * Re-exported, not defined here: the usage-limit note needs the same local
+ * minute and `src/cli-events.ts` already owns the reset-time formatters, so
+ * that is where it lives now. The name stays importable from here because this
+ * is the module whose notes are built out of it.
+ */
+export { formatLocalMinute }
 
 /**
  * The note, in the operator's own words rather than the plugin's: what is

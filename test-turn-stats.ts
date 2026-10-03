@@ -6,8 +6,24 @@
  */
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import {
+  ACCOUNT_BLOCK_MARKER,
+  FAILOVER_MARKER,
+  USAGE_LIMIT_MARKER,
+} from "./src/account-failover.js"
+import {
+  COMPACT_BOUNDARY_MARKER,
+  CONVERSATION_RESET_MARKER,
+  RATE_LIMIT_MARKER,
+  RESULT_ERROR_MARKER,
+  SILENT_TURN_MARKER,
+  STREAM_TIMEOUT_MARKER,
+  UNATTENDED_REPLAY_MARKER,
+} from "./src/cli-events.js"
 import { createClaudeCode } from "./src/index.js"
 import { filterSideQuestionHistory } from "./src/message-builder.js"
+import { MODEL_FALLBACK_MARKER } from "./src/model-fallback.js"
+import { STALE_BUILD_MARKER } from "./src/stale-build.js"
 import {
   TURN_STATS_MARKER,
   extractTurnStats,
@@ -131,6 +147,47 @@ test("the footer is stripped from a transcript rebuilt for the CLI", () => {
   const filtered = filterSideQuestionHistory(prompt)
   assert.equal(filtered.length, 2)
   assert.deepEqual((filtered[1] as any).content, [{ type: "text", text: "the answer" }])
+})
+
+test("every ▌ marker the plugin writes is stripped from a rebuilt transcript", () => {
+  // The list lives in src/message-builder.ts and a marker missing from it is
+  // silent: the note simply comes back to Claude as something it said. So
+  // each one is asserted here, beside the footer that owns this file, rather
+  // than only in the file that happens to format it (h #g108).
+  const notes = [
+    `${USAGE_LIMIT_MARKER} the Claude account "appical" is out of usage.`,
+    `${RATE_LIMIT_MARKER} Claude Code rejected this request.`,
+    `${ACCOUNT_BLOCK_MARKER} the Claude account "appical" is not logged in.`,
+    `${FAILOVER_MARKER} moved to "default".`,
+    `${STALE_BUILD_MARKER} restart opencode.`,
+    `${SILENT_TURN_MARKER} claude said nothing.`,
+    `${RESULT_ERROR_MARKER} the turn failed.`,
+    `${STREAM_TIMEOUT_MARKER} the CLI went silent.`,
+    `${COMPACT_BOUNDARY_MARKER} claude compacted itself.`,
+    `${CONVERSATION_RESET_MARKER} claude cleared its conversation.`,
+    `${UNATTENDED_REPLAY_MARKER} it said this between turns.`,
+    `${MODEL_FALLBACK_MARKER} falling back.`,
+    `${TURN_STATS_MARKER} $0.0001`,
+  ]
+  for (const note of notes) {
+    const prompt = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "the answer" },
+          // Its own text part, led by the marker: that is what makes the
+          // strip exact instead of a guess at where a block ends.
+          { type: "text", text: `\n${note}\n` },
+        ],
+      },
+    ] as any
+    assert.deepEqual(
+      (filterSideQuestionHistory(prompt)[1] as any).content,
+      [{ type: "text", text: "the answer" }],
+      `not stripped: ${note.slice(0, 40)}`,
+    )
+  }
 })
 
 test("turnStats is off unless the provider option asks for it", () => {

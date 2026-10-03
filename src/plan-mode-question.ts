@@ -13,6 +13,22 @@ const OPENCODE_QUESTION_RESULT_SUFFIX =
 /** What opencode writes for a question the operator left blank. */
 const OPENCODE_UNANSWERED = "Unanswered"
 
+/**
+ * The tag opencode-dcp appends to a tool output on its way to the provider.
+ *
+ * Measured on 2026-10-03 from the live log: every failover pick arrived as
+ * `...You can now continue with the user's answers in mind.\n<dcp-message-id>
+ * m0795</dcp-message-id>`, so the `endsWith` below missed the suffix and the
+ * whole sentence came back as the answer, which `classify` then refused as
+ * `unrecognised answer`. Three picks in a row (`default`, `default`, `stop`)
+ * were lost that way. opencode's own database stores the output WITHOUT the
+ * tag, so it is added in flight and nothing upstream of here can strip it.
+ *
+ * Deliberately this one tag, anchored at the end, repeats allowed: a general
+ * "drop any trailing tag" rule would eat an answer the operator typed.
+ */
+const DCP_MESSAGE_ID_SUFFIX = /(?:\s*<dcp-message-id>[^<>]*<\/dcp-message-id>)+\s*$/
+
 const KEY_SEPARATOR = "\u0000"
 
 /**
@@ -196,21 +212,28 @@ export function unwrapToolOutput(part: any): unknown {
  *
  * The sentence is trimmed first: measured live on 1.18.32 (2026-09-28, a real
  * five-hour limit) it arrives with a trailing newline, so an exact `endsWith`
- * missed it and both failover picks were refused as unrecognised.
+ * missed it and both failover picks were refused as unrecognised. A trailing
+ * `<dcp-message-id>` tag comes off for the same reason and was the same bug a
+ * second time (2026-10-03); see `DCP_MESSAGE_ID_SUFFIX`.
  */
 function unwrapOpencodeQuestionResult(value: string, question?: string): string {
-  const sentence = value.trim()
+  // Every path below falls back to `untagged`, never to the raw input: the
+  // tag is opencode-dcp's routing metadata and was never part of an answer,
+  // so a bare `yes` that arrived with one should still read as `yes`. With no
+  // tag present this is the input unchanged.
+  const untagged = value.replace(DCP_MESSAGE_ID_SUFFIX, "")
+  const sentence = untagged.trim()
   if (
     !sentence.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
     !sentence.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
   ) {
-    return value
+    return untagged
   }
   const body = sentence.slice(
     OPENCODE_QUESTION_RESULT_PREFIX.length,
     sentence.length - OPENCODE_QUESTION_RESULT_SUFFIX.length,
   )
-  if (!body.startsWith('"') || !body.endsWith('"')) return value
+  if (!body.startsWith('"') || !body.endsWith('"')) return untagged
 
   let answer: string | undefined
   const head = question === undefined ? undefined : `"${question}"="`
@@ -220,7 +243,7 @@ function unwrapOpencodeQuestionResult(value: string, question?: string): string 
     const split = body.lastIndexOf('"="')
     if (split > 0) answer = body.slice(split + 3, -1)
   }
-  if (answer === undefined) return value
+  if (answer === undefined) return untagged
   return answer === OPENCODE_UNANSWERED ? "" : answer
 }
 

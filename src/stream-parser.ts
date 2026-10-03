@@ -23,6 +23,8 @@ import {
   accountBlockKind,
   formatAccountBlockNote,
   isAccountLimitError,
+  recallAccountLimit,
+  rememberAccountLimit,
 } from "./account-failover.js"
 import {
   extractTurnStats,
@@ -84,6 +86,15 @@ export interface StreamParserContext {
   sourceAccount: string
   /** Whether a usage limit should end the turn on the switch form. */
   failoverAskActive: boolean
+  /**
+   * Whether a usage limit should end the turn on the `▌ **usage limit:**`
+   * note, the complement of `failoverAskActive` (h #g194). The limit itself is
+   * not known until the `result` frame, which is where this becomes
+   * `TurnState.usageLimitNote`.
+   */
+  usageLimitNoteActive: boolean
+  /** The other configured accounts, for a note that names where to move the work. */
+  failoverAccounts: readonly string[]
   /** Whether a refusal on this turn may move to the next model in the chain. */
   modelFallbackArmed: boolean
   attempt?: ModelFallbackAttempt
@@ -280,6 +291,10 @@ export function createLineHandler(
             resetsAt: info.resetsAt ?? info.overageResetsAt,
             window: info.rateLimitType,
           }
+          // Kept for the rest of the window, because a later limited turn on
+          // a reused child gets no event of its own. See
+          // `rememberAccountLimit`.
+          rememberAccountLimit(ctx.sourceAccount, state.accountLimitHit)
         }
         const note = reportRateLimitEvent(msg)
         if (note) {
@@ -674,6 +689,38 @@ export function createLineHandler(
           state.hasReceivedContent = true
         }
 
+        // A usage limit does not reach us only as the result's error text:
+        // measured live on CLI 2.1.288 (2026-10-03), the CLI answers with a
+        // `<synthetic>` assistant frame carrying its own sentence ("You've hit
+        // your individual spend limit · run /usage-credits …"), flagged
+        // `is_api_error_message: true` and `error: "rate_limit"`, and THAT is
+        // what reached the transcript. So the suppression the note needs lives
+        // here as well as at the `result`, keyed on the same flag the model
+        // chain uses to know a frame is the CLI's prose rather than Claude's
+        // words.
+        //
+        // The frame has to say it is about the LIMIT, by its own `error` kind
+        // or by its text, rather than merely arriving on a turn that saw a
+        // rejection: a `server_error` reply on such a turn is a different
+        // failure and its text is the only account of it. Reading it also
+        // makes the note certain to fire at the result. (h #g194)
+        const apiErrorReply = (msg as { is_api_error_message?: unknown })
+          .is_api_error_message === true
+        const limitErrorReply =
+          apiErrorReply &&
+          ctx.usageLimitNoteActive &&
+          !state.accountBlock &&
+          ((msg as { error?: unknown }).error === "rate_limit" ||
+            isAccountLimitError({
+              resultText: (msg.message.content as any[])
+                .filter((b) => b.type === "text" && b.text)
+                .map((b) => String(b.text))
+                .join("\n"),
+            }))
+        if (limitErrorReply) {
+          state.accountLimitHit ??= recallAccountLimit(ctx.sourceAccount)
+        }
+
         if (hasText && !hasToolUse) {
           startResultFallback(state)
         }
@@ -683,6 +730,10 @@ export function createLineHandler(
 
         for (const block of msg.message.content) {
           if (block.type === "text" && block.text) {
+            // The usage-limit note says this better and names the account,
+            // which the CLI's sentence does not. Dropped rather than
+            // rendered, so a limited turn carries exactly one block.
+            if (limitErrorReply) continue
             // New text block — keep only this block's text in the
             // last-block buffer for final-answer detection.
             resetLastVisibleTextBlock(state)
@@ -948,12 +999,42 @@ export function createLineHandler(
           return
         }
 
+        // The other half of the limit signal: some rejections only ever
+        // reach us as the error text of the terminal result. Read BEFORE the
+        // error text is emitted below, because for this shape of limit that
+        // text IS the limit and the note replaces it.
+        if (
+          !state.accountLimitHit &&
+          msg.is_error &&
+          isAccountLimitError({
+            resultText: typeof msg.result === "string" ? msg.result : null,
+          })
+        ) {
+          // The result's text says nothing about which window or when it
+          // resets, so a limit the plugin has already seen on this account
+          // supplies both (`recallAccountLimit`); a first-ever one is `{}`.
+          state.accountLimitHit = recallAccountLimit(ctx.sourceAccount)
+        }
+
+        // The one place this is decided; see `TurnState.usageLimitNote`.
+        state.usageLimitNote =
+          ctx.usageLimitNoteActive &&
+          !!state.accountLimitHit &&
+          // An expired login or a billing hold writes its own note just below
+          // and says what to run; two notes about one failure is one too many.
+          !state.accountBlock &&
+          msg.is_error === true
+
         // Some CLI failures only include user-readable text in
         // `result.result` (no prior assistant text blocks). Emit it so
-        // opencode users don't see a blank turn.
+        // opencode users don't see a blank turn. The one exception is a limit
+        // the note is about to describe: the CLI's own sentence names no
+        // account, gives the reset in UTC or not at all, and would sit
+        // directly above a note saying the same thing better.
         if (
           !state.currentTextId &&
           msg.is_error &&
+          !state.usageLimitNote &&
           typeof msg.result === "string" &&
           msg.result.trim().length > 0
         ) {
@@ -963,18 +1044,6 @@ export function createLineHandler(
             id: errId,
             delta: msg.result,
           })
-        }
-
-        // The other half of the limit signal: some rejections only ever
-        // reach us as the error text of the terminal result.
-        if (
-          !state.accountLimitHit &&
-          msg.is_error &&
-          isAccountLimitError({
-            resultText: typeof msg.result === "string" ? msg.result : null,
-          })
-        ) {
-          state.accountLimitHit = {}
         }
 
         // The other half of the refusal signal, for a CLI that reports
@@ -1001,6 +1070,10 @@ export function createLineHandler(
               account: ctx.sourceAccount,
               configDir: ctx.config.configDir,
               offeringSwitch,
+              // Read only when the form is not taking the turn, which is the
+              // default: moving the work by hand is then the operator's only
+              // route and nothing else on screen says it exists (h #g194).
+              candidates: ctx.failoverAccounts,
             }),
           })
           state.endTextBlock()

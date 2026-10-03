@@ -243,6 +243,15 @@ export interface TurnState {
   resultFailure: string | undefined
   /** Set only by a REJECTED rate-limit event or a known account-limit text. */
   accountLimitHit: { resetsAt?: number; window?: string } | null
+  /**
+   * Whether this turn ends with the `▌ **usage limit:**` note (h #g194).
+   * Decided in ONE place, the `result` frame in src/stream-parser.ts, because
+   * two things read it and they must never disagree: that frame suppresses the
+   * CLI's own error text when the note is coming, and `completeResult` writes
+   * the note itself after the switch form and the fallback chain have each had
+   * their chance to take the turn instead.
+   */
+  usageLimitNote: boolean
   /** Read from the `error` kind on the CLI's failure reply, never from its text. */
   accountBlock: AccountBlockKind | null
   /** Set only when a fallback is armed, so a turn with no chain is unchanged. */
@@ -399,6 +408,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     lastCallUsage: undefined,
     resultFailure: undefined,
     accountLimitHit: null,
+    usageLimitNote: false,
     accountBlock: null,
     modelRefusal: null,
 
