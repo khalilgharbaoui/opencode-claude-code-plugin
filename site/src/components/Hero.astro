@@ -38,31 +38,46 @@ const stats = isHome ? await loadStats() : undefined;
         {tagline && <p class="occ-hero__tagline" set:html={tagline} />}
 
         <div class="occ-install">
-          <div class="occ-install__head">
-            <span>
-              <strong class="occ-install__tldr">tl;dr</strong> just install, and{' '}
-              <a class="occ-install__coffee" href="https://www.buymeacoffee.com/khalilgharbaoui" rel="noopener">support it</a>{'\u00a0'}
-              <span class="occ-install__face" aria-hidden="true">☕😌</span>
-            </span>
-            {stats && (
-              <a class="occ-install__ver" href="https://www.npmjs.com/package/@khalilgharbaoui/opencode-claude-code-plugin" rel="noopener">
-                v{stats.npmVersion}
-              </a>
-            )}
-            <button type="button" class="occ-copy" data-copy="#occ-install-code" aria-label="Copy the opencode.json snippet" hidden>
-              <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
-                <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
-              </svg>
-              <span class="occ-copy__label">copy</span>
-            </button>
-            <span class="sr-only" role="status" aria-live="polite" id="occ-copy-status" />
-          </div>
-          <pre class="occ-install__code" id="occ-install-code" tabindex="0" aria-label="opencode.json installation snippet"><code><span class="occ-tok--p">{'{'}</span>{'\n  '}<span class="occ-tok--key">"plugin"</span><span class="occ-tok--p">: [</span><span class="occ-tok--str">"@khalilgharbaoui/opencode-claude-code-plugin"</span><span class="occ-tok--p">]</span>{'\n'}<span class="occ-tok--p">{'}'}</span></code></pre>
-          <p class="occ-install__foot">
-            Add to <code>opencode.json</code>, then relaunch.
-            Requires <code>claude</code> installed and logged in.
+          <p class="occ-install__lead">
+            <strong class="occ-install__tldr">tl;dr</strong> just install, and{' '}
+            <a class="occ-install__coffee" href="https://www.buymeacoffee.com/khalilgharbaoui" rel="noopener">support it</a>{' '}
+            <span class="occ-install__face" aria-hidden="true">☕😌</span>
           </p>
+          <div class="occ-install__window">
+            <div class="occ-install__bar">
+              <span class="occ-install__file">opencode.json</span>
+              <span class="occ-install__tools">
+                {stats && (
+                  <a
+                    class="occ-install__ver"
+                    href="https://www.npmjs.com/package/@khalilgharbaoui/opencode-claude-code-plugin"
+                    rel="noopener"
+                    title="The version npm installs today"
+                  >
+                    <span class="occ-install__ver-dot" aria-hidden="true" />
+                    <span class="occ-install__ver-label">npm</span> v{stats.npmVersion}
+                  </a>
+                )}
+                <button type="button" class="occ-copy" data-copy="#occ-install-code" aria-label="Copy the opencode.json snippet" hidden>
+                  <svg class="occ-copy__icon" aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                    <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+                  </svg>
+                  <svg class="occ-copy__done" aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 8.5l3.2 3L13 4.5" />
+                  </svg>
+                  <span class="occ-copy__label">copy</span>
+                </button>
+              </span>
+              <span class="sr-only" role="status" aria-live="polite" id="occ-copy-status" />
+            </div>
+            <pre class="occ-install__code" id="occ-install-code" tabindex="0" aria-label="opencode.json installation snippet"><code><span class="occ-tok--p">{'{'}</span>{'\n  '}<span class="occ-tok--key">"plugin"</span><span class="occ-tok--p">: [</span>{'\n    '}<span class="occ-tok--str">"@khalilgharbaoui/opencode-claude-code-plugin"</span>{'\n  '}<span class="occ-tok--p">]</span>{'\n'}<span class="occ-tok--p">{'}'}</span></code></pre>
+          </div>
+          <div class="occ-install__foot">
+            <p>
+              Add it to <code>opencode.json</code> and relaunch. Needs <code>claude</code> installed and logged in.
+            </p>
+          </div>
         </div>
 
         {actions.length > 0 && (
@@ -184,31 +199,22 @@ const stats = isHome ? await loadStats() : undefined;
     margin: 0;
   }
 
-  /* The install block: the whole setup, above the fold. A panel in the hairline
-     vocabulary; the snippet is a real <pre> because it is preformatted code. */
+  /* The install block: the whole setup, above the fold. Three rows, each with one
+     job: the sentence on a line of its own, the snippet in a small code window whose
+     title bar carries the file name and the copy button (so the button never shares
+     a row with prose), and the setup note with the published version beside it. */
   .occ-install {
     display: flex;
     flex-direction: column;
-    gap: var(--occ-space-1);
+    gap: var(--occ-space-2);
     max-width: 36rem;
-    padding: var(--occ-space-1) var(--occ-space-3) var(--occ-space-3);
-    border: 1px solid var(--occ-line);
-    border-inline-start: 4px solid var(--occ-bar);
-    border-radius: 0 var(--occ-radius) var(--occ-radius) 0;
-    background: var(--occ-panel);
-    box-shadow: inset 0 1px 0 var(--occ-highlight);
   }
-  /* Label, version, copy: the label wraps inside its own column when the row is
-     narrow, so the version and the copy button never leave the right edge. */
-  .occ-install__head {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 0.75ch;
+  .occ-install__lead {
     margin: 0;
     font-family: var(--__sl-font-mono);
     font-size: var(--sl-text-xs);
     color: var(--occ-ink-2);
+    text-wrap: balance;
   }
   .occ-install__tldr {
     font-weight: 700;
@@ -226,32 +232,45 @@ const stats = isHome ? await loadStats() : undefined;
   .occ-install__face {
     font-family: system-ui, sans-serif;
   }
-  .occ-install__ver {
-    font-size: var(--sl-text-2xs);
-    color: var(--occ-ink-3);
-    text-decoration: none;
-    text-underline-offset: 0.2em;
-    display: inline-flex;
+
+  /* The window: a panel in the hairline vocabulary, led by the bar. */
+  .occ-install__window {
+    border: 1px solid var(--occ-line);
+    border-inline-start: 4px solid var(--occ-bar);
+    border-radius: 0 var(--occ-radius) var(--occ-radius) 0;
+    background: var(--occ-panel);
+    box-shadow: inset 0 1px 0 var(--occ-highlight);
+    overflow: hidden;
+  }
+  .occ-install__bar {
+    display: flex;
     align-items: center;
-    min-block-size: 2.75rem;
-  }
-  .occ-install__ver:hover {
-    color: var(--sl-color-text-accent);
-    text-decoration: underline;
-  }
-  .occ-install__code {
-    flex: 1 1 auto;
-    min-width: 0;
-    margin: 0;
-    padding: var(--occ-space-1) 0;
-    background: transparent;
+    justify-content: space-between;
+    gap: var(--occ-space-2);
+    padding-inline: var(--occ-space-3) var(--occ-space-1);
+    border-block-end: 1px solid var(--occ-line);
     font-family: var(--__sl-font-mono);
     font-size: var(--sl-text-2xs);
-    line-height: 1.5;
+    color: var(--occ-ink-3);
+  }
+  .occ-install__file {
+    letter-spacing: 0.02em;
+  }
+  .occ-install__code {
+    margin: 0;
+    padding: var(--occ-space-2) var(--occ-space-3);
+    background: transparent;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    line-height: 1.6;
     color: var(--occ-ink-1);
     white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     tab-size: 2;
+  }
+  .occ-install__code:focus-visible {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: -2px;
   }
   .occ-install__code code {
     font: inherit;
@@ -261,17 +280,21 @@ const stats = isHome ? await loadStats() : undefined;
   }
   /* The snippet's tokens use the site's shared code-token colours (custom.css, Code
      tokens), the same ones the replay bodies use, in both themes. */
+
+  /* Quiet until wanted: a ghost button in the title bar, a hairline on hover, and a
+     check plus the accent once the snippet is on the clipboard. Fixed width, so
+     "copy" becoming "copied" never moves the bar. */
   .occ-copy {
     flex: none;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.5ch;
-    min-inline-size: 2.75rem;
-    inline-size: 5.5rem;
-    min-block-size: 2.75rem;
-    margin: 0;
-    padding: 0 var(--occ-space-3);
-    border: 1px solid var(--occ-line-strong);
+    inline-size: 5.75rem;
+    min-block-size: 2.25rem;
+    margin: var(--occ-space-1) 0;
+    padding: 0 var(--occ-space-2);
+    border: 1px solid transparent;
     border-radius: var(--occ-radius-sm);
     background: transparent;
     color: var(--occ-ink-2);
@@ -284,26 +307,79 @@ const stats = isHome ? await loadStats() : undefined;
       color var(--occ-duration),
       background-color var(--occ-duration);
   }
-  .occ-copy:hover {
-    border-color: var(--occ-ink-3);
+  .occ-copy:hover,
+  .occ-copy:focus-visible {
+    border-color: var(--occ-line-strong);
     color: var(--sl-color-white);
+  }
+  .occ-copy__done {
+    display: none;
   }
   .occ-copy[data-state='copied'] {
     border-color: var(--sl-color-accent);
     color: var(--sl-color-text-accent);
   }
-  .occ-install__foot {
+  .occ-copy[data-state='copied'] .occ-copy__icon {
+    display: none;
+  }
+  .occ-copy[data-state='copied'] .occ-copy__done {
+    display: inline;
+  }
+  .occ-copy[hidden] {
+    visibility: hidden;
+    display: inline-flex;
+  }
+
+  .occ-install__foot p {
     margin: 0;
     font-size: var(--sl-text-2xs);
     line-height: 1.5;
     color: var(--occ-ink-3);
     text-wrap: pretty;
   }
-  .occ-copy[hidden] {
-    visibility: hidden;
+  /* The version npm serves today, as a small pill beside the copy button: it
+     describes the package in the snippet, so it lives in the snippet's own bar. */
+  .occ-install__tools {
     display: inline-flex;
+    align-items: center;
+    gap: var(--occ-space-2);
+  }
+  .occ-install__ver {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6ch;
+    min-block-size: 1.75rem;
+    padding: 0 0.75ch;
+    border: 1px solid var(--occ-line);
+    border-radius: 999px;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-2xs);
+    color: var(--occ-ink-2);
+    text-decoration: none;
+    transition:
+      border-color var(--occ-duration),
+      color var(--occ-duration);
+  }
+  .occ-install__ver:hover,
+  .occ-install__ver:focus-visible {
+    border-color: var(--occ-bar);
+    color: var(--sl-color-text-accent);
+  }
+  .occ-install__ver-label {
+    color: var(--occ-ink-3);
+  }
+  .occ-install__ver-dot {
+    inline-size: 0.45rem;
+    block-size: 0.45rem;
+    border-radius: 50%;
+    background: var(--occ-bar);
   }
   @media (max-width: 26rem) {
+    .occ-install__code {
+      padding-inline: var(--occ-space-2);
+      font-size: 0.6875rem;
+    }
     .occ-hero__actions {
       gap: var(--occ-space-2);
     }
