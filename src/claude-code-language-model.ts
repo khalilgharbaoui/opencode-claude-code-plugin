@@ -112,6 +112,11 @@ import {
 import { log } from "./logger.js"
 import { detectCliSupportsFlag, detectCliVersion } from "./cli-version.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
+import {
+  formatStaleBuildNote,
+  staleBuildWatch,
+  type StaleBuild,
+} from "./stale-build.js"
 import { recordBackgroundSubagentGate } from "./background-tasks.js"
 import {
   resolveDisallowedTools,
@@ -1423,6 +1428,28 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         childSession: !!(await fetchSessionParentId(affinity)),
       })
 
+    // Whether this turn tells the operator that the opencode process they are
+    // talking to is running an older plugin build than the one on disk
+    // (src/stale-build.ts, h #g192). Resolved here, in the prologue, because
+    // the one lookup it can need is async; the note itself is written after
+    // `stream-start`, which is also where the session is claimed, so a turn
+    // stopped before it asked Claude for work spends nothing.
+    //
+    // Everything excluded here is excluded because the note would land
+    // somewhere the operator is not reading, or somewhere it would be taken
+    // for Claude's answer: a `/compact` summary, a `doGenerate` return value
+    // (whose text is aggregated rather than shown), a turn with no real
+    // opencode session, and a subagent, whose reply text can become the
+    // parent's `task` result. A title request never reaches this line: its
+    // stub returns far above. The disk check is throttled to once a minute
+    // and the parent lookup happens only when the build really is stale, so a
+    // current build pays nothing at all.
+    let staleBuild: StaleBuild | null = null
+    if (!compactionMode && mode !== "generate" && affinity !== "default") {
+      staleBuild = staleBuildWatch().check()
+      if (staleBuild && (await fetchSessionParentId(affinity))) staleBuild = null
+    }
+
     log.info("doStream starting", {
       cwd,
       model: effectiveModelId,
@@ -2134,6 +2161,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           if (stoppedBeforeWork()) return
           state.streamStarted = true
           controller.enqueue({ type: "stream-start", warnings })
+
+          // Before anything Claude says, because it is about whether anything
+          // Claude says here comes from the code the operator thinks it does.
+          // The session is claimed at this point rather than where the verdict
+          // was decided, so a turn that never got here still gets its note on
+          // the next message. Its own text part, and never counted as output:
+          // `startTextBlock` touches none of the signals `isSilentTurn`,
+          // auto-continue, `turnStats` or `provesModelServing` read.
+          if (staleBuild && staleBuildWatch().claimSession(affinity)) {
+            controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: formatStaleBuildNote(staleBuild),
+            })
+            state.endTextBlock()
+          }
 
           // Its own text part, led by FAILOVER_MARKER, so a later transcript
           // rebuild strips it exactly: it was never Claude's output.

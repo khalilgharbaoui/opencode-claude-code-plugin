@@ -32,8 +32,23 @@ import {
   snapshotActiveProcesses,
 } from "./src/session-manager.js"
 
+/** 2026-09-22 20:56 local, the shape of the stale process that started #g192. */
+const LOADED_AT = new Date(2026, 8, 22, 20, 56).getTime()
+
 const report: DoctorReport = {
   plugin: "0.18.3",
+  build: {
+    loaded: {
+      version: "0.18.3",
+      entryPath: "/Users/you/code/plugin/dist/index.js",
+      mtimeMs: 1_000,
+      size: 100,
+      loadedAt: LOADED_AT,
+    },
+    onDisk: { version: "0.18.3", mtimeMs: 1_000, size: 100 },
+    stale: null,
+    verdict: "current",
+  },
   opencode: "1.18.29",
   claudeCli: { path: "/usr/local/bin/claude", version: "2.1.263 (Claude Code)" },
   cwd: { resolved: "/Users/you/code/app", source: "process" },
@@ -86,6 +101,7 @@ test("the report names every field a bug report needs, and nothing secret", () =
 
   for (const expected of [
     "| plugin | 0.18.3 |",
+    "| plugin build | 0.18.3, loaded 2026-09-22 20:56, current |",
     "| opencode | 1.18.29 |",
     "| claude CLI | `/usr/local/bin/claude` (2.1.263 (Claude Code)) |",
     "| cwd | `/Users/you/code/app` (process) |",
@@ -107,6 +123,59 @@ test("the report names every field a bug report needs, and nothing secret", () =
 
   // Nothing that identifies a credential may appear, by value or by name.
   assert.equal(/authToken|bearer|sk-ant|Authorization/i.test(text), false)
+})
+
+// --- the plugin build row -------------------------------------------------
+
+// The row the operator reads when a fix they installed is not taking effect.
+// It is built from an unthrottled read that marks no session (`describe`), so
+// running the doctor can never consume the note a conversation is owed; that
+// half is asserted in test-stale-build.ts, which owns the watch.
+test("the plugin build row names the verdict, and never the entry file", () => {
+  const stale = (over: Partial<DoctorReport["build"]>): string =>
+    formatDoctorReport({ ...report, build: { ...report.build, ...over } })
+
+  assert.ok(
+    stale({
+      onDisk: { version: "0.36.5", mtimeMs: 2_000, size: 120 },
+      stale: {
+        kind: "version",
+        loadedVersion: "0.18.3",
+        onDiskVersion: "0.36.5",
+        loadedAt: LOADED_AT,
+      },
+      verdict: "version",
+    }).includes(
+      "| plugin build | 0.18.3, loaded 2026-09-22 20:56; on disk 0.36.5. Restart opencode to run it |",
+    ),
+  )
+
+  const rebuiltAt = new Date(2026, 9, 3, 14, 21).getTime()
+  assert.ok(
+    stale({
+      onDisk: { version: "0.18.3", mtimeMs: rebuiltAt, size: 120 },
+      stale: {
+        kind: "rebuilt",
+        loadedVersion: "0.18.3",
+        onDiskVersion: "0.18.3",
+        loadedAt: LOADED_AT,
+        rebuiltAt,
+      },
+      verdict: "rebuilt",
+    }).includes("the same version was rebuilt on disk at 2026-10-03 14:21. Restart opencode"),
+  )
+
+  // A disk we could not read is its own answer. It must never read as stale
+  // (a deleted package cache is not evidence of anything) and must never read
+  // as current either.
+  const unreadable = stale({ onDisk: undefined, stale: null, verdict: "unreadable" })
+  assert.ok(unreadable.includes("the build on disk could not be read"))
+  assert.equal(unreadable.includes("Restart opencode"), false)
+
+  // No path in any of the four, so a bundle has nothing new to redact.
+  for (const text of [formatDoctorReport(report), unreadable]) {
+    assert.equal(text.includes("dist/index.js"), false)
+  }
 })
 
 // --- background subagents ------------------------------------------------

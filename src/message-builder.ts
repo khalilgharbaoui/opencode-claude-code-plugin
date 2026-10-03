@@ -18,6 +18,7 @@ import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
 import { MODEL_FALLBACK_MARKER } from "./model-fallback.js"
 import { parseSideQuestionContent } from "./side-question.js"
+import { STALE_BUILD_MARKER } from "./stale-build.js"
 import { TURN_STATS_MARKER } from "./turn-stats.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
@@ -46,6 +47,7 @@ const PLUGIN_NOTE_MARKERS = [
   ACCOUNT_BLOCK_MARKER,
   MODEL_FALLBACK_MARKER,
   UNATTENDED_REPLAY_MARKER,
+  STALE_BUILD_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {

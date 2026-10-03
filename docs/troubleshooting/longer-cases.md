@@ -28,6 +28,24 @@ A `file://` install is different: it runs the checkout's `dist/`, so rebuild wit
 
 **`claudeCli.version` reading `not detected`.** The binary at that path did not answer `--version`, which also silently disables every version-gated flag, including `--thinking-display summarized`, `--plugin-dir` and the fast-mode opt-in.
 
+## A fix you installed is not taking effect
+
+opencode reads a plugin's code once, when the process starts, and never again. A window that has been open since before you upgraded is still running the build it loaded then, and every other signal you can check (`npm ls`, the registry, `git log`, the files on disk) agrees with the new version. On 2026-10-03 that cost a live debugging session here: an account-failover answer behaved exactly like a defect fixed three weeks earlier, because the window answering it had been open for eleven days. Ten opencode processes were running at the time.
+
+The plugin now says so itself, in two places:
+
+- **One note in the reply**, once per conversation, led by `▌ **restart opencode:**`. It names the version this process loaded, when it loaded it, and the version on disk. It is written before Claude's own output, counts as nothing the model said, and is stripped from any transcript rebuilt for the CLI.
+- **The `plugin build` row of `/claude-code-doctor`**, which re-reads the disk every time you run it:
+
+| The row says | What it means |
+|---|---|
+| `0.36.5, loaded 2026-10-03 09:12, current` | This process is running the build on disk. |
+| `… ; on disk 0.36.5. Restart opencode to run it` | A different version is installed. Quit every opencode window and relaunch. |
+| `… ; the same version was rebuilt on disk at 2026-10-03 14:21. Restart opencode to run it` | A `file://` install whose `dist/` was rebuilt without a version bump. Same fix. |
+| `… ; the build on disk could not be read` | Not a verdict. A package cache mid-reinstall, a build mid-`clean` or an unreadable path all land here, and none of them is evidence that this process is stale. |
+
+The fix is always the same, and "restart" means the process, not the session: quit every opencode window, including `serve` and GUI processes, and relaunch. A `/new` session reuses the same process and changes nothing.
+
 ## A question form never renders and the turn hangs
 
 For a stalled call, inspect `GET /question` on the same opencode server and workspace. If no request exists, check awaited `tool.execute.before` hooks and custom tools replacing `question`, especially notification plugins: a hook opencode waits on runs *before* the tool, so the request cannot exist yet. If a request exists but no form appears, check session ownership, pending permissions, and event delivery. The separate detach/reattach issue [anomalyco/opencode#36604](https://github.com/anomalyco/opencode/issues/36604) remains open; [PR #36603](https://github.com/anomalyco/opencode/pull/36603) is closed without merging. Do not infer a universal platform or version failure from either symptom.

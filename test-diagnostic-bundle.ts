@@ -431,6 +431,25 @@ test("readLogTail takes the end of the file and drops a split line", () => {
 
 const report: DoctorReport = {
   plugin: "0.34.1",
+  // The stale case on purpose: the row has to be printable in a bundle, and
+  // the entry path it is built from must never reach one.
+  build: {
+    loaded: {
+      version: "0.34.1",
+      entryPath: `${HOME}/code/plugin/dist/index.js`,
+      mtimeMs: 1_000,
+      size: 100,
+      loadedAt: new Date(2026, 8, 22, 20, 56).getTime(),
+    },
+    onDisk: { version: "0.36.5", mtimeMs: 2_000, size: 120 },
+    stale: {
+      kind: "version",
+      loadedVersion: "0.34.1",
+      onDiskVersion: "0.36.5",
+      loadedAt: new Date(2026, 8, 22, 20, 56).getTime(),
+    },
+    verdict: "version",
+  },
   opencode: "1.18.33",
   claudeCli: { path: `${HOME}/.local/bin/claude`, version: "2.1.280 (Claude Code)" },
   cwd: { resolved: `${HOME}/code/app`, source: "process" },
@@ -497,6 +516,14 @@ test("the bundle argument appends the section and rewrites the whole report", ()
   // The doctor table's own home path is rewritten, because the whole thing is
   // what gets pasted.
   assert.ok(out.includes("~/code/app"))
+  // The stale-build row is plugin-authored text about two version strings and
+  // two timestamps, so it survives a bundle whole. What it must never carry is
+  // the entry file it was built from: the row names no path at all, and the
+  // fixture puts that path under the home directory so a regression shows up
+  // here as well as in `assertClean`.
+  assert.ok(out.includes("| plugin build | 0.34.1, loaded "))
+  assert.ok(out.includes("on disk 0.36.5. Restart opencode to run it |"))
+  assert.equal(out.includes("dist/index.js"), false)
   assertClean(out, "the bundled doctor report")
 })
 

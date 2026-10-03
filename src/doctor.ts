@@ -36,6 +36,11 @@ import {
   type ActiveProcessSnapshot,
 } from "./session-manager.js"
 import {
+  describeBuildStatus,
+  staleBuildWatch,
+  type StaleBuildStatus,
+} from "./stale-build.js"
+import {
   collectStartupDiagnostics,
   detectOpencodeVersion,
   lastDiagnosticsProviders,
@@ -135,6 +140,12 @@ export interface DoctorProxyRow {
 
 export interface DoctorReport {
   plugin: string
+  /**
+   * Whether the build this opencode process is running is still the one on
+   * disk (src/stale-build.ts). Read unthrottled and marking no session: the
+   * doctor observes, it never spends the note a conversation is owed.
+   */
+  build: StaleBuildStatus
   opencode: string
   claudeCli: { path: string; version: string }
   cwd: { resolved: string; source: CwdSource }
@@ -231,6 +242,9 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push("| Field | Value |")
   lines.push("|---|---|")
   lines.push(`| plugin | ${report.plugin} |`)
+  // Right under the version, because it is the sentence that says whether the
+  // version above is the code answering you.
+  lines.push(`| plugin build | ${describeBuildStatus(report.build)} |`)
   lines.push(`| opencode | ${report.opencode} |`)
   lines.push(`| claude CLI | \`${report.claudeCli.path}\` (${report.claudeCli.version}) |`)
   lines.push(`| cwd | \`${report.cwd.resolved}\` (${report.cwd.source}) |`)
@@ -578,6 +592,8 @@ export async function gatherDoctorReport(
 
   return {
     plugin: base.plugin,
+    // `describe`, not `check`: unthrottled, silent, and it claims no session.
+    build: staleBuildWatch().describe(),
     opencode: base.opencode,
     claudeCli: { path: cliPath, version: cli?.raw ?? "not detected" },
     cwd: base.cwd,
@@ -672,6 +688,7 @@ export async function buildDoctorReport(options: GatherDoctorOptions): Promise<s
     const report = await gatherDoctorReport(options)
     log.info("claude-code doctor report", {
       plugin: report.plugin,
+      verdict: report.build.verdict,
       opencode: report.opencode,
       cwd: report.cwd,
       processes: report.processes.length,

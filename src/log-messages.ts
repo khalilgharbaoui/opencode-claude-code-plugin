@@ -118,6 +118,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "skipping remote MCP server with no url",
   "stale scratch directory sweep failed",
   "task_batch resolving with child results missing",
+  "this opencode process is running an older plugin build than the one on disk",
   "timed out pending proxy call",
   "turn abort listener threw",
   "two different skills share a name; bridging the one the nearest root claimed",

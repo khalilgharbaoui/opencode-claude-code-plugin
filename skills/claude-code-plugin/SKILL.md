@@ -808,6 +808,17 @@ else is flagged unsafe), and the last stderr of any child that produced some. Pr
 prompt. A user-defined `claude-code-doctor` command is never overwritten. The name has
 no space in it: opencode would read the second word as an argument.
 
+The `plugin build` row, directly under `plugin`, is the one field that says whether the
+version above it is the code actually answering. It compares the build this opencode
+process loaded at startup with the one on disk right now and reads `current`,
+`on disk <version>. Restart opencode to run it`, `the same version was rebuilt on disk
+at <time>. Restart opencode to run it`, or `the build on disk could not be read`. The
+last is not a fault: a package cache mid-reinstall or a build mid-`clean` is unreadable
+and says nothing about staleness. It names no path. The same comparison writes a
+one-per-conversation `▌ **restart opencode:**` note into the reply and one WARN per
+process, because a process can be months out of date with nothing else saying so. Check
+this row before investigating any bug the user says was already fixed.
+
 It also prints an **MCP config entries Claude Code skipped** section, but only when the
 CLI refused an entry in an `--mcp-config` it was given. Read it whenever MCP tools are
 missing: a skipped server is absent from the CLI's server list rather than listed
@@ -910,6 +921,8 @@ Prefer the doctor: it needs no logging change and no restart.
 | Symptom | Cause | Fix |
 |---|---|---|
 | A config change did nothing | Options are read at startup; another opencode window is still running the old process | Fully quit every opencode window and relaunch |
+| A `▌ **restart opencode:**` note at the top of a reply | Correct and acted on by the user, not by you: this opencode process loaded an older plugin build than the one now on disk, so a fix they installed is not running here. opencode reads a plugin once, at process start | Quit every opencode window (serve and GUI processes included) and relaunch. The note appears once per conversation, names the loaded version, the on-disk version and when the build was loaded, and is stripped from any transcript rebuilt for the CLI |
+| A bug the user is sure was fixed is back | Same cause as the row above, before they have seen the note: the window answering them predates the fix | The `plugin build` row of `/claude-code-doctor`, which reads the disk unthrottled: `current`, `on disk <version>`, `rebuilt on disk` or `could not be read`. Compare its loaded version with the version they installed before investigating the bug at all |
 | New plugin version or model not in the picker after upgrading | Frozen `@latest` in opencode's package cache | Remove the cache dir (recipe "Upgrade the plugin") and relaunch |
 | No `claude-code` provider or model in the picker at all | The plugin never loaded, or it loaded and the CLI was not usable | Check for a `plugin ready` line first: absent means not loaded (wrong `plugin`/`plugins` key, a 2.x local install not pointing at `dist/`, or no full relaunch), present with `claudeCli.version: not detected` means the binary did not answer `--version`, which also disables every version-gated flag |
 | `Model unavailable` for a model id the user typed | The provider id is not what they assumed | Use the id the ready block's `providers` field lists. With no `accounts` configured on opencode 2 the id is `claude-code`, so `claude-code-default/<model>` fails while the plugin is healthy (measured on opencode 2.0.16, 2026-09-27). Declaring `accounts` is what creates `claude-code-default`; on 1.x with accounts the ids are `claude-code-default` / `claude-code-<name>` and never a bare `claude-code` |

@@ -250,6 +250,10 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
 
   cliFloor: "version",
   cliVersion: "version",
+  // The two halves of the stale-build WARN: what this process loaded and what
+  // is on disk now. Both are this package's own version strings.
+  loadedVersion: "version",
+  onDiskVersion: "version",
   opencode: "version",
   plugin: "version",
   version: "version",
