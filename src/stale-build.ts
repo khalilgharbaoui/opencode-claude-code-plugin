@@ -325,12 +325,20 @@ function recordLoadedBuild(): LoadedBuild {
   return { version: pluginVersion(), entryPath, mtimeMs, size, loadedAt: Date.now() }
 }
 
+/**
+ * The running build, recorded when this module is evaluated, which is when
+ * opencode imported the plugin. Not on first use: a process whose first turn
+ * comes after a rebuild would take the rebuilt file as its baseline and never
+ * say `rebuilt`, and the note's "loaded" time would be that first turn's.
+ */
+const loadedAtImport = recordLoadedBuild()
+
 let watch: StaleBuildWatch | undefined
 
-/** The process's one watch, created on first use from the real filesystem. */
+/** The process's one watch, over the build recorded at import. */
 export function staleBuildWatch(): StaleBuildWatch {
   if (!watch) {
-    const loaded = recordLoadedBuild()
+    const loaded = loadedAtImport
     watch = createStaleBuildWatch({
       loaded,
       readOnDisk: () => readOnDiskBuild(loaded.entryPath),

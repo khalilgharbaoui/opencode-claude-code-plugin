@@ -46,6 +46,9 @@ import {
   type StaleBuildWatch,
 } from "./src/stale-build.js"
 
+/** Taken after every import above was evaluated, so after the plugin loaded. */
+const importedBy = Date.now()
+
 after(() => {
   _setStaleBuildWatch(undefined)
   killAllActiveProcesses()
@@ -682,10 +685,16 @@ test("a turn stopped after the check but before the first write keeps its note",
   }
 })
 
-test("the process watch is created lazily and can be replaced", () => {
+test("the process watch records the build at import, not at first use, and can be replaced", () => {
   _setStaleBuildWatch(undefined)
   const real = staleBuildWatch()
   assert.equal(staleBuildWatch(), real, "one watch per process")
+  // Imports are evaluated before this file's body, and every test above has
+  // run since, so a baseline taken on first use would be later than this.
+  assert.ok(
+    real.loaded.loadedAt <= importedBy,
+    `baseline taken at ${real.loaded.loadedAt}, after the import at ${importedBy}`,
+  )
   // It describes this very checkout, so the only safe claim is that it answers
   // without throwing and names a version.
   assert.ok(real.describe().loaded.version.length > 0)
