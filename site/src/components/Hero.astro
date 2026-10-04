@@ -39,9 +39,8 @@ const stats = isHome ? await loadStats() : undefined;
 
         <div class="occ-install">
           <p class="occ-install__lead">
-            <strong class="occ-install__tldr">tl;dr</strong> just install, and{' '}
-            <a class="occ-install__coffee" href="https://www.buymeacoffee.com/khalilgharbaoui" rel="noopener">support it</a>{' '}
-            <span class="occ-install__face" aria-hidden="true">☕😌</span>
+            <strong class="occ-install__tldr">tl;dr</strong> just install it, and{' '}
+            <a class="occ-install__coffee" href="https://www.buymeacoffee.com/khalilgharbaoui" rel="noopener">support it</a>{'\u00a0'}<span class="occ-install__face" aria-hidden="true">☕😌</span>
           </p>
           <div class="occ-install__window">
             <div class="occ-install__bar">
@@ -231,6 +230,7 @@ const stats = isHome ? await loadStats() : undefined;
   }
   .occ-install__face {
     font-family: system-ui, sans-serif;
+    white-space: nowrap;
   }
 
   /* The window: a panel in the hairline vocabulary, led by the bar. */
