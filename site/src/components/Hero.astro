@@ -53,7 +53,7 @@ const stats = isHome ? await loadStats() : undefined;
                     rel="noopener"
                     title="The latest version on npm"
                   >
-                    <span class="occ-install__ver-dot" aria-hidden="true" />
+                    <span class="occ-live-dot" aria-hidden="true" />
                     <span class="occ-install__ver-label">latest</span> v{stats.npmVersion}
                   </a>
                 )}
@@ -282,8 +282,9 @@ const stats = isHome ? await loadStats() : undefined;
      tokens), the same ones the replay bodies use, in both themes. */
 
   /* Quiet until wanted: a ghost button in the title bar, a hairline on hover, and a
-     check plus the accent once the snippet is on the clipboard. Fixed width, so
-     "copy" becoming "copied" never moves the bar. */
+     check in the live colour once the snippet is on the clipboard (custom.css,
+     --occ-live: done, not brand). Fixed width, so "copy" becoming "copied" never
+     moves the bar. */
   .occ-copy {
     flex: none;
     display: inline-flex;
@@ -316,8 +317,8 @@ const stats = isHome ? await loadStats() : undefined;
     display: none;
   }
   .occ-copy[data-state='copied'] {
-    border-color: var(--sl-color-accent);
-    color: var(--sl-color-text-accent);
+    border-color: var(--occ-live);
+    color: var(--occ-live);
   }
   .occ-copy[data-state='copied'] .occ-copy__icon {
     display: none;
@@ -338,7 +339,9 @@ const stats = isHome ? await loadStats() : undefined;
     text-wrap: pretty;
   }
   /* The version npm serves today, as a small pill beside the copy button: it
-     describes the package in the snippet, so it lives in the snippet's own bar. */
+     describes the package in the snippet, so it lives in the snippet's own bar. It
+     says "latest", and its dot is the live colour (custom.css, .occ-live-dot): the
+     figure was read from the registry when this page was built. */
   .occ-install__tools {
     display: inline-flex;
     align-items: center;
@@ -348,7 +351,7 @@ const stats = isHome ? await loadStats() : undefined;
     flex: none;
     display: inline-flex;
     align-items: center;
-    gap: 0.6ch;
+    gap: 1ch;
     min-block-size: 1.75rem;
     padding: 0 0.75ch;
     border: 1px solid var(--occ-line);
@@ -368,12 +371,6 @@ const stats = isHome ? await loadStats() : undefined;
   }
   .occ-install__ver-label {
     color: var(--occ-ink-3);
-  }
-  .occ-install__ver-dot {
-    inline-size: 0.45rem;
-    block-size: 0.45rem;
-    border-radius: 50%;
-    background: var(--occ-bar);
   }
   @media (max-width: 26rem) {
     .occ-install__code {

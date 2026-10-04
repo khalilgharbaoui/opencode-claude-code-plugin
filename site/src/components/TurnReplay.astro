@@ -677,7 +677,8 @@ const turns: Turn[] = [
   }
 
   /* The three turns as a segmented row. Each is a 44 px target. The chosen one carries
-     a track along its bottom edge, and the bar fills it as the turn plays. */
+     a track along its bottom edge, the bar fills it as the turn plays, and the fill
+     turns teal while the finished turn holds (custom.css, --occ-live: done). */
   .occ-replay__tabs {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -742,7 +743,12 @@ const turns: Turn[] = [
     background: var(--occ-bar);
     transform-origin: left;
     transform: scaleX(var(--p, 0));
-    transition: transform 320ms linear;
+    transition:
+      transform 320ms linear,
+      background-color var(--occ-duration);
+  }
+  [data-playback='holding'] .occ-replay__tab[aria-selected='true'] .occ-replay__tab-bar::after {
+    background: var(--occ-live);
   }
   [data-mode='css'] .occ-replay__tab[aria-selected='true'] .occ-replay__tab-bar::after {
     transform: none;

@@ -6,7 +6,8 @@
 
   Eight tiles, each with the figure, a sentence-case label and the source it was read
   from. The footnote says when the build ran and whether anything fell back to the
-  committed snapshot, because a "live" number that silently went stale would be a lie.
+  committed snapshot, because a "live" number that silently went stale would be a lie;
+  the live dot before the date is drawn only when nothing did.
 */
 import { formatCount } from '../data/stats';
 
@@ -69,7 +70,7 @@ const snapshotNote = fallbacks.length > 0 ? `${fallbacks.length} of them from th
   </ul>
   <p class="occ-stats__note">
     Read at build time from the GitHub REST API and api.npmjs.org; nothing is requested from your browser. Rebuilt
-    daily. This build: <time datetime={builtAt}>{builtAt}</time>{snapshotNote && `, ${snapshotNote}`}.
+    daily. {live && <span class="occ-live-dot occ-stats__live" aria-hidden="true" />}This build: <time datetime={builtAt}>{builtAt}</time>{snapshotNote && `, ${snapshotNote}`}.
     {!live && 'Some sources did not answer during this build.'}
   </p>
 </section>
@@ -132,6 +133,13 @@ const snapshotNote = fallbacks.length > 0 ? `${fallbacks.length} of them from th
     font-size: var(--sl-text-2xs);
     line-height: 1.6;
     color: var(--occ-ink-3);
+  }
+  /* Drawn only when every GitHub and npm figure came from the network in this build
+     (custom.css, .occ-live-dot). When one fell back the dot is gone and the sentence
+     after the date says so, so colour is never the only carrier. */
+  .occ-stats__live {
+    margin-inline-end: 1ch;
+    vertical-align: -0.02em;
   }
   .sr-only {
     position: absolute;

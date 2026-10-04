@@ -6,8 +6,9 @@
   The organising idea: the transcript is the interface. The plugin's one visible
   artefact is a line in an opencode conversation led by a bar, and the whole site
   speaks in that form. One accent, one meaning: amber is where the plugin itself acts
-  (its bar, the proxied path, links, the current page, the reading progress). One
-  self-hosted monospace face is the product's voice. Everything else recedes.
+  (its bar, the proxied path, links, the current page, the reading progress). Teal,
+  the strings' colour, is the one other meaning: live, current, done (--occ-live).
+  One self-hosted monospace face is the product's voice. Everything else recedes.
   Every text pair was checked for WCAG AA; the numbers are in the pull request.
 */
 
@@ -87,6 +88,12 @@
 
   /* Plugin-specific tokens the components read. Spacing is a scale, not a number. */
   --occ-bar: var(--sl-color-accent);
+  /* The one other colour with a meaning. Teal says a thing is live, current or done:
+     the dot on the latest version, a snippet once it is copied, a replayed turn once
+     it has finished, the numbers when they were read live. The code tokens' string
+     colour is the same hue, so a value that came back from the world and a state
+     that holds right now agree. Amber stays where the plugin acts. */
+  --occ-live: #8fd3c9;
   --occ-panel: var(--sl-color-gray-6);
   --occ-line: var(--sl-color-gray-5);
   --occ-line-strong: var(--sl-color-gray-4);
@@ -104,11 +111,12 @@
   --occ-lane-plugin: var(--sl-color-text-accent);
   --occ-lane-claude: var(--occ-ink-3);
   /* Code tokens, shared by the install snippet and the replay bodies. Three hues
-     only: the accent for names and flags, teal for strings, lavender for numbers;
-     placeholders in ink, punctuation receding. Each pair passes 4.5:1 on its panel. */
+     only: the accent for names and flags, teal (the live colour) for strings,
+     lavender for numbers; placeholders in ink, punctuation receding. Each pair
+     passes 4.5:1 on its panel. */
   --occ-tok-key: var(--sl-color-text-accent);
   --occ-tok-flag: var(--sl-color-text-accent);
-  --occ-tok-str: #8fd3c9;
+  --occ-tok-str: var(--occ-live);
   --occ-tok-num: #c9b8ff;
   --occ-tok-ph: var(--occ-ink-2);
   --occ-tok-p: var(--occ-ink-3);
@@ -154,7 +162,7 @@
   --occ-glow: rgb(194 115 14 / 0.1);
   --occ-highlight: rgb(255 255 255 / 0.6);
   --occ-glass: rgb(252 251 248 / 0.86);
-  --occ-tok-str: #0f6e66;
+  --occ-live: #0f6e66;
   --occ-tok-num: #5b3fbf;
 }
 
@@ -177,6 +185,20 @@
 }
 .occ-tok--p {
   color: var(--occ-tok-p);
+}
+
+/* ---------- The live dot ---------- */
+/* A 0.45rem light in the live colour with a faint halo, so it reads as a status light
+   and not a bullet. Placed by whoever uses it (the hero's version pill, the stats
+   footnote); always aria-hidden, the words beside it carry the meaning. */
+.occ-live-dot {
+  display: inline-block;
+  flex: none;
+  inline-size: 0.45rem;
+  block-size: 0.45rem;
+  border-radius: 50%;
+  background: var(--occ-live);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--occ-live) 22%, transparent);
 }
 
 /* ---------- Type ---------- */
