@@ -538,6 +538,91 @@ test("an abort at a tool boundary while opencode is still running the turn keeps
   }
 }, BUSY_SESSION))
 
+/**
+ * A session whose workspace is not the directory the plugin's client is scoped
+ * to. Its stubbed `session.get` also feeds the spawn-cwd lookup unless the
+ * harness pins the cwd, which `withParkedTaskCli` does.
+ */
+const OTHER_WORKSPACE_SESSION = "ses_busy_other_workspace"
+
+// loom:tc LDV-236
+test("an abort at a tool boundary keeps the call of a session running in another workspace", {
+  timeout: 15_000,
+}, () => withParkedTaskCli("park", async (ctx) => {
+  const { model, sk, events } = ctx
+  // opencode keeps one status map per workspace directory. The plugin's client
+  // is scoped to the directory that loaded it last, so asked without a
+  // directory the map has no entry for a session running elsewhere and the
+  // session reads idle: every abort at a tool boundary then rejected the call
+  // and interrupted the CLI ("the user interrupted the operation"). The read
+  // has to name the session's own directory.
+  setOpencodeClient({
+    session: {
+      get: async () => ({ data: { id: OTHER_WORKSPACE_SESSION, directory: "/ws/other" } }),
+      status: async (options?: { query?: { directory?: string } }) => ({
+        data: options?.query?.directory === "/ws/other" ? { [OTHER_WORKSPACE_SESSION]: { type: "running" } } : {},
+      }),
+    },
+  })
+  try {
+    const abort = new AbortController()
+    const first = await collect(
+      (await model.doStream({
+        ...firstTurn(),
+        abortSignal: abort.signal,
+        headers: { "x-session-affinity": OTHER_WORKSPACE_SESSION },
+      } as any)).stream,
+    )
+    assert.equal((first.find((part) => part.type === "finish") as any)?.finishReason.unified, "tool-calls")
+    assert.equal(getPendingProxyCalls(sk).length, 1)
+
+    abort.abort()
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
+    assert.equal(getPendingProxyCalls(sk).length, 1, "the call opencode is running must survive")
+    assert.equal(ctx.server().pendingCallIds().length, 1, "and its HTTP request with it")
+    assert.equal(
+      events().some((event) => event.type === "interrupt"),
+      false,
+      "the CLI must not be interrupted while its tool call is still being served",
+    )
+  } finally {
+    setOpencodeClient(null)
+  }
+}, OTHER_WORKSPACE_SESSION))
+
+// loom:tc LDV-236
+test("an abort at a tool boundary still releases the call when the session in another workspace has really stopped", {
+  timeout: 15_000,
+}, () => withParkedTaskCli("park", async (ctx) => {
+  const { model, sk, events } = ctx
+  // The scoped map is empty because the turn is over: the operator pressed
+  // stop, so the parked call must be released and the CLI interrupted.
+  setOpencodeClient({
+    session: {
+      get: async () => ({ data: { id: OTHER_WORKSPACE_SESSION, directory: "/ws/other" } }),
+      status: async () => ({ data: {} }),
+    },
+  })
+  try {
+    const abort = new AbortController()
+    const first = await collect(
+      (await model.doStream({
+        ...firstTurn(),
+        abortSignal: abort.signal,
+        headers: { "x-session-affinity": OTHER_WORKSPACE_SESSION },
+      } as any)).stream,
+    )
+    assert.equal((first.find((part) => part.type === "finish") as any)?.finishReason.unified, "tool-calls")
+    assert.equal(getPendingProxyCalls(sk).length, 1)
+
+    abort.abort()
+    await eventually("the interrupt to reach the parked CLI", () => events().some((event) => event.type === "interrupt"))
+    await assertReleased(ctx, /stream was aborted while opencode was running its proxy tool calls/)
+  } finally {
+    setOpencodeClient(null)
+  }
+}, OTHER_WORKSPACE_SESSION))
+
 const PROMPT_SESSION = "ses_permission_prompt"
 
 test("a call past its deadline waits while opencode is still serving it, then ends", {

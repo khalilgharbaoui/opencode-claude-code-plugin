@@ -23,8 +23,13 @@ type OpencodeClient = {
       path: { id: string }
       query?: { directory?: string }
     }) => Promise<{ data?: unknown; error?: unknown }>
-    /** `GET /session/status`: sessions missing from the map are idle. */
-    status?: () => Promise<{ data?: unknown; error?: unknown }>
+    /**
+     * `GET /session/status`: sessions missing from the map are idle. The map is
+     * per workspace directory, so ask with the session's own `directory`.
+     */
+    status?: (options?: {
+      query?: { directory?: string }
+    }) => Promise<{ data?: unknown; error?: unknown }>
     /** `GET /session/{id}/message`: the child session's transcript. */
     messages?: (options: {
       path: { id: string }
@@ -215,12 +220,24 @@ export type SessionRunState = "busy" | "idle" | "unknown"
  */
 export async function fetchSessionRunState(
   sessionID: string,
+  directory?: string,
 ): Promise<SessionRunState> {
   if (!sessionID || sessionID === "default") return "unknown"
   const status = opencodeClient?.session?.status
   if (!status) return "unknown"
   try {
-    const res = await status.call(opencodeClient!.session)
+    // opencode keeps one status map per workspace directory, and the client
+    // the plugin holds is scoped to whichever directory loaded it last. Asked
+    // without a directory, a session running in any other workspace is absent
+    // from the map and reads as `idle`, which releases its parked proxy calls
+    // (measured on 1.18.32: five busy sessions, an empty unscoped map). So ask
+    // for the session's own directory. `""` means the caller already looked
+    // and found none.
+    const dir = directory ?? (await fetchSessionDirectory(sessionID))
+    const res = await status.call(
+      opencodeClient!.session,
+      dir ? { query: { directory: dir } } : undefined,
+    )
     const data = (res as { data?: unknown }).data
     if (!data || typeof data !== "object") return "unknown"
     const entry = (data as Record<string, unknown>)[sessionID]
@@ -247,14 +264,18 @@ export async function fetchSessionRunState(
  */
 export async function settleSessionRunState(
   sessionID: string,
-  options: { pollMs?: number; windowMs?: number } = {},
+  options: { pollMs?: number; windowMs?: number; directory?: string } = {},
 ): Promise<SessionRunState> {
   const pollMs = options.pollMs ?? 150
   const windowMs = options.windowMs ?? 1_500
   const started = Date.now()
   let last: SessionRunState = "unknown"
+  // Looked up once and kept; a lookup that failed is retried on the next
+  // poll, so one transient failure does not leave the window unscoped.
+  let directory = options.directory
   for (;;) {
-    const state = await fetchSessionRunState(sessionID)
+    directory ??= await fetchSessionDirectory(sessionID)
+    const state = await fetchSessionRunState(sessionID, directory ?? "")
     if (state === "busy") return "busy"
     if (state !== "unknown") last = state
     if (Date.now() - started >= windowMs) return last

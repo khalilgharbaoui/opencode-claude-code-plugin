@@ -1721,7 +1721,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   })
                   return
                 }
-                log.info("abort between proxy tool boundaries; releasing pending calls", { sk, reason })
+                log.info("abort between proxy tool boundaries; releasing pending calls", { sk, reason, session: stopped })
                 void interruptTurn(stoppedProcess).then((idle) => {
                   log.info("interrupt sent for aborted turn", { sk, idle })
                 })

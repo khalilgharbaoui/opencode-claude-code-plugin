@@ -205,6 +205,102 @@ test("the 'default' bucket has no run state to read", async () => {
   assert.equal(probe.calls, 0)
 })
 
+// opencode keeps one status map per workspace directory. The client the plugin
+// holds is scoped to whichever directory loaded it last, so a session running
+// in another workspace is absent from the unscoped map and reads as idle.
+function clientWithDirectories(sessions: Record<string, string>, maps: Record<string, unknown>) {
+  const probe = { gets: 0, statusArgs: [] as unknown[] }
+  setOpencodeClient({
+    session: {
+      get: async (options: { path: { id: string } }) => {
+        probe.gets++
+        const directory = sessions[options.path.id]
+        return directory ? { data: { id: options.path.id, directory } } : { data: undefined }
+      },
+      status: async (options?: { query?: { directory?: string } }) => {
+        probe.statusArgs.push(options)
+        // The unscoped map belongs to the directory the client is scoped to.
+        return { data: maps[options?.query?.directory ?? "/scoped/elsewhere"] ?? {} }
+      },
+    },
+  })
+  return probe
+}
+
+// loom:tc LDV-236
+test("a session busy in another workspace reads busy: the status map asked for is its own", async () => {
+  const probe = clientWithDirectories(
+    { ses_a: "/ws/a" },
+    { "/ws/a": { ses_a: { type: "busy" } } },
+  )
+
+  assert.equal(await fetchSessionRunState("ses_a"), "busy")
+  assert.deepEqual(probe.statusArgs, [{ query: { directory: "/ws/a" } }])
+})
+
+// loom:tc LDV-236
+test("a finished session in its own workspace still reads idle", async () => {
+  clientWithDirectories({ ses_a: "/ws/a" }, { "/ws/a": {} })
+  assert.equal(await fetchSessionRunState("ses_a"), "idle")
+})
+
+// loom:tc LDV-236
+test("without a session directory the status read is unscoped, as before", async () => {
+  const probe = clientWithDirectories({}, { "/scoped/elsewhere": { ses_a: { type: "busy" } } })
+
+  assert.equal(await fetchSessionRunState("ses_a"), "busy")
+  assert.deepEqual(probe.statusArgs, [undefined])
+})
+
+// loom:tc LDV-236
+test("an explicit directory is used without a lookup, and an empty one means none", async () => {
+  const probe = clientWithDirectories(
+    { ses_a: "/ws/a" },
+    { "/ws/b": { ses_a: { type: "busy" } } },
+  )
+
+  assert.equal(await fetchSessionRunState("ses_a", "/ws/b"), "busy")
+  assert.equal(probe.gets, 0)
+  assert.deepEqual(probe.statusArgs, [{ query: { directory: "/ws/b" } }])
+
+  await fetchSessionRunState("ses_a", "")
+  assert.equal(probe.gets, 0)
+  assert.equal(probe.statusArgs[1], undefined)
+})
+
+// loom:tc LDV-236
+test("a directory lookup that failed is retried on the next poll", async () => {
+  let gets = 0
+  const args: unknown[] = []
+  setOpencodeClient({
+    session: {
+      get: async () => {
+        gets++
+        if (gets === 1) throw new Error("socket hang up")
+        return { data: { id: "ses_a", directory: "/ws/a" } }
+      },
+      status: async (options?: { query?: { directory?: string } }) => {
+        args.push(options)
+        return { data: options?.query?.directory === "/ws/a" ? { ses_a: { type: "busy" } } : {} }
+      },
+    },
+  })
+
+  assert.equal(await settleSessionRunState("ses_a", { pollMs: 1, windowMs: 200 }), "busy")
+  assert.equal(args[0], undefined, "the first poll had no directory yet")
+  assert.deepEqual(args.at(-1), { query: { directory: "/ws/a" } })
+})
+
+// loom:tc LDV-236
+test("settling looks the directory up once for the whole window", async () => {
+  const probe = clientWithDirectories({ ses_a: "/ws/a" }, { "/ws/a": {} })
+
+  assert.equal(await settleSessionRunState("ses_a", { pollMs: 1, windowMs: 20 }), "idle")
+  assert.equal(probe.gets, 1)
+  assert.ok(probe.statusArgs.length > 1)
+  assert.ok(probe.statusArgs.every((arg) => (arg as { query: { directory: string } }).query.directory === "/ws/a"))
+})
+
 // ---------------------------------------------------------------------------
 // settleSessionRunState
 // ---------------------------------------------------------------------------
