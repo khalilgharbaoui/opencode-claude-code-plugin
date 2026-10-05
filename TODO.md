@@ -125,6 +125,7 @@ Nothing parked.
   spawn now gets the same proxy server, `proxyTools` and `--disallowedTools` as headless, so opencode
   runs the tools, asks the permissions and dispatches subagents. Live on 1.18.34 and 2.0.22 (proxied
   bash, a `general` subagent). Not live-checked: `question` and an abort mid proxied call. 1,194 tests.
+  Released as **v0.40.0** (CI publish green, registry shasum `abb78889` matches the step's notice).
 - 2026-10-05: **done**: "fix what you can fix now also consolidate what we are doing in the split above
   into this session ... and close that split". The split (`wA:p5`) had no unfinished site work (its
   last turns were the 10097 review, `375b69b`; the design passes shipped as #86 and #87); its open
