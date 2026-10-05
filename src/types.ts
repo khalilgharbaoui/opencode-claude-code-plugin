@@ -86,6 +86,8 @@ export interface ClaudeCodeConfig {
   turnStats?: boolean
   /** Branch a forked opencode session off the parent's Claude conversation. */
   forkSessions?: boolean
+  /** Resume a conversation's Claude session after opencode restarts. Default true. */
+  resumeAfterRestart?: boolean
   logging?: LoggingConfig
 }
 
@@ -475,6 +477,23 @@ export interface ClaudeCodeProviderSettings {
    * `--fork-session` flag.
    */
   forkSessions?: boolean
+
+  /**
+   * Resume a conversation's Claude session after opencode restarts, instead
+   * of replaying the whole thread as text into a fresh one. Default `true`.
+   *
+   * The plugin's map from a conversation to its Claude session lives in
+   * memory, so the first turn in a new opencode process used to resend the
+   * whole history (up to 981,109 characters in the maintainer's log). After
+   * every successful turn the session id is written to
+   * `$XDG_STATE_HOME/opencode-claude-code-plugin/claude-sessions.json` with a
+   * digest chain of the conversation it answered, and the next process
+   * resumes only when the same binary served it, its transcript is still on
+   * disk, and this turn's history is that exact conversation plus Claude's
+   * own reply. An edited, reverted or compacted conversation replays as
+   * before. `false` never reads or writes the file.
+   */
+  resumeAfterRestart?: boolean
 
   /**
    * Routing for Claude's built-in `WebSearch` tool.

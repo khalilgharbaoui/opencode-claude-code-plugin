@@ -354,6 +354,21 @@ export function findForkParent(opts: {
   return best
 }
 
+/**
+ * True when `prompt` continues exactly the conversation `recorded` describes:
+ * the same messages in the same order, then nothing but Claude's own reply,
+ * and no tool round trip open in the trailing segment. The same test
+ * `findForkParent` applies to a sibling, used for one key's own past.
+ */
+export function continuesRecordedConversation(
+  recorded: ForkMessageDigest[],
+  prompt: Prompt,
+): boolean {
+  const { history, forkable } = splitForkHistory(prompt)
+  if (!forkable || recorded.length === 0 || recorded.length > history.length) return false
+  return isPrefix(recorded, history) && tailIsReplyOnly(history, recorded.length)
+}
+
 function isPrefix(
   recorded: ForkMessageDigest[],
   history: ForkMessageDigest[],

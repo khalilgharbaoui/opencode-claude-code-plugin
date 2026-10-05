@@ -17,10 +17,13 @@ import { cliHygieneEnv } from "./cli-version.js"
  *   - replies captured by tailing the session JSONL transcript
  *     (<CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/<session-id>.jsonl) and
  *     parsing the assistant records; completion detected by a terminal
- *     `stop_reason`.
+ *     `stop_reason`, an interrupt marker, or the `system/turn_duration`
+ *     record the TUI writes when a turn ends,
+ *   - the screen read for the few prompts a turn cannot get past on its own
+ *     (`classifyScreen`), because the TUI has no control channel to ask.
  *
- * Driving the INTERACTIVE TUI (real TTY) keeps model calls on the subscription
- * billing path (not `claude -p` / Agent SDK, which meter after 2026-06-15).
+ * It exists as insurance for the day headless `--print` is removed or
+ * restricted. Today both transports draw from the same plan usage limits.
  */
 
 function resolveClaude(cmd = "claude"): string {
@@ -134,6 +137,222 @@ export interface ClaudeSessionOptions {
    *  rejects with an "aborted" error. */
   signal?: AbortSignal
   debug?: boolean
+  /** Continue this Claude session (`--resume <id>`) instead of starting a new
+   *  one. The CLI appends to the same `<id>.jsonl`, measured on 2.1.288. */
+  resumeSessionId?: string
+  /** The whole child environment. Defaults to `interactiveSpawnEnv`; the
+   *  plugin passes the headless spawn's env so both transports get the same
+   *  hygiene, effort, cache TTL and thinking variables. `CLAUDE_CONFIG_DIR`
+   *  and `TERM` are always set on top. */
+  env?: Record<string, string | undefined>
+  /** How often a turn reports that the TUI is still working while the
+   *  transcript is quiet (a long tool call, a long thinking block). */
+  heartbeatMs?: number
+  /** How long to wait for the TUI to acknowledge an interrupt before the
+   *  turn is ended anyway. */
+  interruptGraceMs?: number
+  /** How long the PTY must be quiet before a permission dialog is answered,
+   *  so model text that merely contains the words is never mistaken for one. */
+  permissionQuietMs?: number
+  /** How long the transcript must stay quiet after a terminal stop_reason
+   *  before the turn counts as ended (the call's remaining records). */
+  stopSettleMs?: number
+  /** Told about every screen the session acted on. */
+  onScreen?: (event: ScreenEvent) => void
+  /** Told once when the child is gone, with its exit code when it has one. */
+  onExit?: (code: number | null) => void
+  /** PTY seam for tests. Defaults to Bun's native terminal. */
+  spawnPty?: PtySpawner
+}
+
+/** The subset of a Bun PTY subprocess this module uses. */
+export interface PtyHandle {
+  readonly terminal: { write(data: string): unknown; close(): void }
+  readonly exited: Promise<number | null | undefined>
+  kill(): void
+}
+
+export type PtySpawner = (
+  argv: string[],
+  opts: {
+    cwd: string
+    env: Record<string, string | undefined>
+    cols: number
+    rows: number
+    onData: (chunk: string) => void
+  },
+) => PtyHandle
+
+const bunPtySpawner: PtySpawner = (argv, opts) => {
+  const [command, ...args] = argv
+  return Bun.spawn([resolveClaude(command ?? "claude"), ...args], {
+    cwd: opts.cwd,
+    env: opts.env,
+    terminal: {
+      cols: opts.cols,
+      rows: opts.rows,
+      data: (_term, data) => opts.onData(Buffer.from(data).toString("utf8")),
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Reading the screen.
+//
+// The TUI has no `can_use_tool` channel and no structured way to say "I am
+// waiting for you". Everything it is blocked on is drawn on the screen, so the
+// session reads the screen for the few states a turn cannot get past alone.
+// Matching is on words with any whitespace between them, because Ink moves the
+// cursor with escape sequences instead of writing spaces.
+// ---------------------------------------------------------------------------
+
+/** A screen the session recognises. */
+export type ScreenKind =
+  /** Folder trust. `--print` never asks, so accepting it is parity. */
+  | "trust"
+  /** No usable login. Nothing typed can fix it; fatal at boot. */
+  | "login"
+  /** First-run onboarding (theme picker). Fatal: run `claude` once by hand. */
+  | "onboarding"
+  /** A tool permission dialog. Denied: there is nobody here to ask. */
+  | "permission"
+  /** The usage-limit screen's armed "continuing automatically at <time>".
+   *  Cancelled, or the turn reruns later with nobody watching. */
+  | "auto-continue"
+
+export interface ScreenState {
+  kind: ScreenKind
+  /** The matched text, for logs. */
+  detail: string
+}
+
+export interface ScreenEvent extends ScreenState {
+  action: "accepted" | "denied" | "cancelled" | "fatal"
+}
+
+function words(text: string): string {
+  return text
+    .split(/\s+/)
+    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("\\s*")
+}
+
+const SCREEN_PATTERNS: ReadonlyArray<{ kind: ScreenKind; pattern: RegExp }> = [
+  {
+    kind: "login",
+    pattern: new RegExp(
+      [
+        words("Select login method"),
+        words("Please run /login"),
+        words("Invalid API key"),
+        words("OAuth token has expired"),
+        words("Not logged in"),
+      ].join("|"),
+      "i",
+    ),
+  },
+  {
+    kind: "onboarding",
+    pattern: new RegExp(
+      [words("Choose the text style that looks best"), words("Let's get started.")].join("|"),
+      "i",
+    ),
+  },
+  {
+    kind: "trust",
+    pattern: new RegExp(
+      [
+        words("Do you trust the files in this folder?"),
+        words("Is this a project you created or one you trust?"),
+        words("Yes, I trust this folder"),
+      ].join("|"),
+      "i",
+    ),
+  },
+  {
+    // The question alone is not enough: Claude can write "Do you want to
+    // proceed?" in a reply. The dialog always numbers its options.
+    kind: "permission",
+    pattern: new RegExp(
+      `${words("Do you want to")}\\s*(?:proceed|make\\s*this\\s*edit|create|overwrite|allow|run)[^?]{0,160}\\?[\\s\\S]{0,600}?1\\.\\s*Yes`,
+      "i",
+    ),
+  },
+  {
+    kind: "auto-continue",
+    pattern: new RegExp(
+      `${words("continuing automatically at")}[^·\\n]{1,40}·\\s*${words("esc to cancel")}`,
+      "i",
+    ),
+  },
+]
+
+/**
+ * Terminal output as plain text: cursor-forward becomes spaces and every other
+ * cursor move a line break, so words drawn apart stay apart; every other
+ * escape sequence and control character is dropped.
+ */
+export function stripTerminal(raw: string): string {
+  return raw
+    .replace(/\x1B\[(\d*)C/g, (_match, count: string) =>
+      " ".repeat(Math.min(Number(count) || 1, 200)),
+    )
+    .replace(/\x1B\[[0-9;?]*[ABDEFGHJKfd]/g, "\n")
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+    .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, "")
+    .replace(/[ \t]+/g, " ")
+}
+
+/**
+ * Which choice of a Yes/No select the TUI's `❯` marks, read from the newest
+ * draw, or null when no marked choice is on screen. The folder trust dialog
+ * marks "No, exit" by default on 2.1.288 (measured 2026-10-05), so Enter is
+ * only ever pressed once this says "yes".
+ */
+export function highlightedChoice(text: string): "yes" | "no" | null {
+  let last: string | null = null
+  for (const match of text.matchAll(/❯\s*(?:\d+\s*\.\s*)?(Yes|No)\b/gi)) {
+    last = match[1]!.toLowerCase()
+  }
+  return last === "yes" || last === "no" ? last : null
+}
+
+/** The first recognised screen in this text, or null. Pure. */
+export function classifyScreen(text: string): ScreenState | null {
+  for (const { kind, pattern } of SCREEN_PATTERNS) {
+    const match = pattern.exec(text)
+    if (match) {
+      return { kind, detail: match[0].replace(/\s+/g, " ").trim().slice(0, 200) }
+    }
+  }
+  return null
+}
+
+/** Where the TUI writes a session's transcript. */
+export function interactiveTranscriptPath(opts: {
+  configDir?: string
+  cwd: string
+  sessionId: string
+}): string {
+  return path.join(
+    resolveConfigDir(opts.configDir),
+    "projects",
+    encodeCwd(path.resolve(opts.cwd)),
+    `${opts.sessionId}.jsonl`,
+  )
+}
+
+/**
+ * `CLAUDE_CONFIG_DIR` for the child, set only when a config dir was actually
+ * configured. Setting it at all changes where the CLI looks for its login:
+ * measured on 2.1.288, `claude auth status` says `loggedIn: true` with it
+ * unset and `loggedIn: false` with it set to the very same `~/.claude`. So
+ * the default account must inherit the variable exactly as the headless
+ * spawn does, or every interactive spawn boots logged out.
+ */
+export function configDirEnv(configDir: string | undefined): Record<string, string> {
+  return configDir ? { CLAUDE_CONFIG_DIR: configDir } : {}
 }
 
 /**
@@ -143,13 +362,14 @@ export interface ClaudeSessionOptions {
  * which no test can reach without a real PTY.
  */
 export function interactiveSpawnEnv(opts: {
-  configDir: string
+  /** Set only for a configured account; see `configDirEnv`. */
+  configDir?: string
   ignoreAnthropicApiKey?: boolean
   effort?: string
 }): Record<string, string | undefined> {
   return {
     ...process.env,
-    CLAUDE_CONFIG_DIR: opts.configDir,
+    ...configDirEnv(opts.configDir),
     TERM: "xterm-256color",
     // Pin the binary so a mid-session autoupdate cannot invalidate the
     // detected version the flag gates read, and skip non-essential traffic.
@@ -276,7 +496,62 @@ export class TurnUsageAccumulator {
 const TERMINAL_STOP = new Set(["end_turn", "stop_sequence", "max_tokens"])
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-function resolveConfigDir(configDir: string | undefined): string {
+/** Raw terminal output kept for diagnostics and for reading the screen. */
+const RAW_KEEP_CHARS = 64 * 1024
+const SCREEN_WINDOW_CHARS = 16 * 1024
+
+/**
+ * The text the TUI writes as a user record when a turn is interrupted: Esc on
+ * a running turn ("[Request interrupted by user]") or on a tool permission
+ * dialog ("[Request interrupted by user for tool use]"). Counted over this
+ * machine's transcripts on 2026-10-04: 54 and 1,701 occurrences.
+ */
+const INTERRUPT_MARKER = "[Request interrupted by user"
+
+/** True for the user record the TUI writes when a turn was interrupted. */
+export function isInterruptRecord(rec: any): boolean {
+  if (!rec || rec.type !== "user" || !rec.message) return false
+  const content = rec.message.content
+  if (typeof content === "string") return content.startsWith(INTERRUPT_MARKER)
+  if (!Array.isArray(content)) return false
+  return content.some(
+    (block: any) =>
+      block?.type === "text" &&
+      typeof block.text === "string" &&
+      block.text.startsWith(INTERRUPT_MARKER),
+  )
+}
+
+/**
+ * True for the `system`/`turn_duration` record the TUI writes once a turn is
+ * over. Measured on 2.1.288 after a turn that ended on a usage limit; it is a
+ * second end signal, never the only one a normal turn relies on.
+ */
+export function isTurnDurationRecord(rec: any): boolean {
+  return rec?.type === "system" && rec.subtype === "turn_duration"
+}
+
+/** How a turn ended. */
+export type TurnEnd =
+  /** An assistant record with a terminal `stop_reason`. */
+  | "stop"
+  /** The TUI wrote its interrupt marker, or an interrupt was not
+   *  acknowledged within `interruptGraceMs` and the turn was abandoned. */
+  | "interrupted"
+  /** The TUI wrote `turn_duration` without a terminal assistant record. */
+  | "ended"
+
+export interface TailTurnResult {
+  stopReason: string | null
+  end: TurnEnd
+  usage: any | null
+  lastCallUsage: any | null
+  callCount: number
+  /** Permission dialogs denied during this turn. */
+  denied: ScreenState[]
+}
+
+export function resolveConfigDir(configDir: string | undefined): string {
   const value = configDir ?? process.env.CLAUDE_CONFIG_DIR
   if (!value) return path.join(os.homedir(), ".claude")
   if (value === "~") return os.homedir()
@@ -286,20 +561,49 @@ function resolveConfigDir(configDir: string | undefined): string {
   return path.resolve(value)
 }
 
+function fatalScreenMessage(kind: ScreenKind, configDir: string, cwd: string): string {
+  if (kind === "trust") {
+    return `Claude Code's folder trust dialog for ${cwd} could not be answered. Run \`claude\` in that folder once by hand and trust it, then retry.`
+  }
+  if (kind === "login") {
+    return `Claude Code is not logged in for ${configDir}. Run \`claude\` there once by hand and log in (or \`claude auth login\`), then retry.`
+  }
+  return `Claude Code has not finished its first-run setup for ${configDir}. Run \`claude\` there once by hand, then retry.`
+}
+
 export class ClaudeSession {
   readonly sessionId: string
   readonly cwd: string
   readonly configDir: string
   readonly jsonlPath: string
+  /** The newest terminal output, ANSI included, for diagnostics. */
   raw = ""
 
-  private proc: BunSubprocess | null = null
+  private proc: PtyHandle | null = null
   private cursor = 0 // index into transcript split('\n')
   private lastDataAt = 0
   private exited = false
   private exitCode: number | null = null
   private aborted = false
   private readonly signal?: AbortSignal
+  private readonly resumeSessionId?: string
+  private readonly env?: Record<string, string | undefined>
+  private readonly onScreen?: (event: ScreenEvent) => void
+  private readonly onExit?: (code: number | null) => void
+  private readonly spawnPty: PtySpawner
+  /** The configured config dir, which alone is exported to the child. */
+  private readonly explicitConfigDir?: string
+  /** Output since the screen was last acted on, read by `checkScreen`. */
+  private screen = ""
+  private screenTimer: ReturnType<typeof setTimeout> | null = null
+  private fatal: ScreenEvent | null = null
+  /** The folder trust dialog is up and not answered yet. */
+  private trustPending = false
+  private trustMoves = 0
+  private trustMovedAt = 0
+  private turn: Promise<unknown> | null = null
+  private turnDenied: ScreenState[] = []
+  private abandonTurn = false
   private readonly o: Required<
     Omit<
       ClaudeSessionOptions,
@@ -311,6 +615,11 @@ export class ClaudeSession {
       | "signal"
       | "ignoreAnthropicApiKey"
       | "effort"
+      | "resumeSessionId"
+      | "env"
+      | "onScreen"
+      | "onExit"
+      | "spawnPty"
     >
   > &
     Pick<
@@ -327,8 +636,15 @@ export class ClaudeSession {
   constructor(opts: ClaudeSessionOptions = {}) {
     this.cwd = path.resolve(opts.cwd ?? process.cwd())
     this.configDir = resolveConfigDir(opts.configDir)
+    this.explicitConfigDir = opts.configDir ? this.configDir : undefined
     this.signal = opts.signal
-    this.sessionId = randomUUID()
+    this.resumeSessionId = opts.resumeSessionId
+    this.env = opts.env
+    this.onScreen = opts.onScreen
+    this.onExit = opts.onExit
+    this.spawnPty = opts.spawnPty ?? bunPtySpawner
+    // A resumed session keeps its id: the CLI appends to the same transcript.
+    this.sessionId = opts.resumeSessionId ?? randomUUID()
     this.jsonlPath = path.join(
       this.configDir,
       "projects",
@@ -359,7 +675,51 @@ export class ClaudeSession {
       submitConfirmMs: opts.submitConfirmMs ?? 1500,
       submitMaxRetries: opts.submitMaxRetries ?? 8,
       debug: opts.debug ?? false,
+      // The headless CLI's `tool_progress` heartbeat runs every 30 s, and the
+      // wire-inactivity watchdog it keeps quiet fires at 60 s.
+      heartbeatMs: opts.heartbeatMs ?? 30_000,
+      interruptGraceMs: opts.interruptGraceMs ?? 5_000,
+      // Shorter than `bootQuietMs`, so a trust dialog is answered before boot
+      // could declare the TUI ready and paste a prompt into it.
+      permissionQuietMs: opts.permissionQuietMs ?? 1_000,
+      stopSettleMs: opts.stopSettleMs ?? 750,
     }
+  }
+
+  /** The CLI arguments this session spawns with. */
+  spawnArgs(): string[] {
+    const args: string[] = this.resumeSessionId
+      ? ["--resume", this.resumeSessionId]
+      : ["--session-id", this.sessionId]
+    if (this.o.model) args.push("--model", this.o.model)
+    if (this.o.settingSources !== null && this.o.settingSources !== undefined) {
+      args.push("--setting-sources", this.o.settingSources)
+    }
+    if (this.o.extraArgs && this.o.extraArgs.length) args.push(...this.o.extraArgs)
+    return args
+  }
+
+  /** The child environment: the caller's (or the default one) plus `TERM`,
+   *  and `CLAUDE_CONFIG_DIR` only for a configured one (`configDirEnv`). */
+  spawnEnv(): Record<string, string | undefined> {
+    if (!this.env) {
+      return interactiveSpawnEnv({
+        configDir: this.explicitConfigDir,
+        ignoreAnthropicApiKey: this.o.ignoreAnthropicApiKey,
+        effort: this.o.effort,
+      })
+    }
+    return { ...this.env, ...configDirEnv(this.explicitConfigDir), TERM: "xterm-256color" }
+  }
+
+  /** True while a turn is between its paste and its end. */
+  get turnRunning(): boolean {
+    return this.turn !== null
+  }
+
+  /** True once the child is gone (exited, killed or never started). */
+  get hasExited(): boolean {
+    return this.exited
   }
 
   async start(): Promise<void> {
@@ -372,66 +732,167 @@ export class ClaudeSession {
       },
       { once: true },
     )
-    const claude = resolveClaude(this.o.cliPath ?? "claude")
-    const args: string[] = ["--session-id", this.sessionId]
-    if (this.o.model) args.push("--model", this.o.model)
-    if (this.o.settingSources !== null && this.o.settingSources !== undefined) {
-      args.push("--setting-sources", this.o.settingSources)
-    }
-    if (this.o.extraArgs && this.o.extraArgs.length) args.push(...this.o.extraArgs)
+    const claude = this.o.cliPath ?? "claude"
+    const args = this.spawnArgs()
 
     if (this.o.debug)
       process.stderr.write(`[session] spawn: ${claude} ${args.join(" ")}\n`)
 
     this.lastDataAt = Date.now()
-    this.proc = Bun.spawn([claude, ...args], {
+    const proc = this.spawnPty([claude, ...args], {
       cwd: this.cwd,
-      env: interactiveSpawnEnv({
-        // The resolved field, not `this.o.configDir`: same value (the
-        // constructor copies it in) but typed as always present.
-        configDir: this.configDir,
-        ignoreAnthropicApiKey: this.o.ignoreAnthropicApiKey,
-        effort: this.o.effort,
-      }),
-      terminal: {
-        cols: this.o.cols,
-        rows: this.o.rows,
-        data: (_term, d) => {
-          this.lastDataAt = Date.now()
-          const chunk = Buffer.from(d).toString("utf8")
-          this.raw += chunk
-          if (this.o.debug) process.stdout.write(chunk)
-        },
-      },
+      env: this.spawnEnv(),
+      cols: this.o.cols,
+      rows: this.o.rows,
+      onData: (chunk) => this.onData(chunk),
     })
-    this.proc.exited
-      .then((code) => {
-        this.exitCode = typeof code === "number" ? code : null
-        this.exited = true
-        this.proc = null
-      })
-      .catch(() => {
-        this.exited = true
-        this.proc = null
-      })
+    this.proc = proc
+    const markExited = (code: number | null) => {
+      if (this.exited) return
+      this.exitCode = code
+      this.exited = true
+      this.proc = null
+      this.clearScreenTimer()
+      this.onExit?.(code)
+    }
+    proc.exited
+      .then((code) => markExited(typeof code === "number" ? code : null))
+      .catch(() => markExited(null))
 
     await this.waitForBoot()
     this.cursor = this.lineCount()
   }
 
+  private onData(chunk: string): void {
+    this.lastDataAt = Date.now()
+    this.raw = (this.raw + chunk).slice(-RAW_KEEP_CHARS)
+    this.screen = (this.screen + chunk).slice(-SCREEN_WINDOW_CHARS)
+    if (this.o.debug) process.stdout.write(chunk)
+    // Act on a screen only once the TUI has stopped drawing: a dialog sits
+    // still, while model text that merely contains the words keeps moving.
+    this.clearScreenTimer()
+    this.screenTimer = setTimeout(() => {
+      this.screenTimer = null
+      this.checkScreen()
+    }, this.o.permissionQuietMs)
+  }
+
+  private clearScreenTimer(): void {
+    if (this.screenTimer) {
+      clearTimeout(this.screenTimer)
+      this.screenTimer = null
+    }
+  }
+
+  /**
+   * Answer the screen the TUI is blocked on, if it is one of the few this
+   * session recognises. Returns what it did, or null. Each screen is acted on
+   * once: the window is cleared afterwards, so the next check only reads what
+   * the TUI drew since.
+   */
+  checkScreen(): ScreenEvent | null {
+    if (!this.proc || this.exited) return null
+    const text = stripTerminal(this.screen)
+    // Once the trust dialog is up, a redraw may repaint only the two choice
+    // lines, which no longer match the dialog's own wording.
+    const state: ScreenState | null = this.trustPending
+      ? { kind: "trust", detail: "folder trust dialog" }
+      : classifyScreen(text)
+    if (!state) return null
+    let action: ScreenEvent["action"]
+    switch (state.kind) {
+      case "trust": {
+        this.trustPending = true
+        const choice = highlightedChoice(text)
+        if (choice === "yes") {
+          this.write("\r")
+          this.trustPending = false
+          action = "accepted"
+          break
+        }
+        // Nothing marked yet, or the last move not drawn yet: wait.
+        if (choice === null) return null
+        if (this.trustMovedAt && this.lastDataAt <= this.trustMovedAt) return null
+        if (this.trustMoves >= 4) {
+          action = "fatal"
+          break
+        }
+        // The TUI marks "No, exit": move down one. The window is kept, so the newest `❯` in it is the TUI's own
+        // answer to this move.
+        this.trustMoves++
+        this.trustMovedAt = Date.now()
+        this.write("\x1b[B")
+        return null
+      }
+      case "permission":
+        // Only a turn can raise one. Outside a turn the match is a reply's
+        // text still on screen, and Esc at an idle prompt is not free.
+        if (!this.turn) return null
+        this.write("\x1b")
+        this.turnDenied.push(state)
+        action = "denied"
+        break
+      case "auto-continue":
+        this.write("\x1b")
+        action = "cancelled"
+        break
+      case "login":
+      case "onboarding":
+        action = "fatal"
+        break
+    }
+    this.screen = ""
+    const event: ScreenEvent = { ...state, action }
+    if (action === "fatal") {
+      this.fatal = event
+      this.killProcess()
+    }
+    try {
+      this.onScreen?.(event)
+    } catch {}
+    return event
+  }
+
+  private write(data: string): void {
+    try {
+      this.proc?.terminal.write(data)
+    } catch {}
+  }
+
+  private fatalError(): Error | null {
+    if (!this.fatal) return null
+    return new Error(
+      this.failureMessage(fatalScreenMessage(this.fatal.kind, this.configDir, this.cwd), true),
+    )
+  }
+
   /** Wait until the TUI has been quiet for bootQuietMs (Ink ready), bounded by
-   *  bootMinMs..bootMaxMs. */
+   *  bootMinMs..bootMaxMs. A screen still waiting to be answered when the TUI
+   *  goes quiet is answered first, and the wait goes on. */
   private async waitForBoot(): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < this.o.bootMaxMs) {
       await delay(150)
       if (this.aborted) throw new Error("aborted during boot")
+      const fatal = this.fatalError()
+      if (fatal) throw fatal
       if (this.exited) {
         throw new Error(this.failureMessage("claude exited during boot", true))
       }
       const elapsed = Date.now() - start
       const sinceData = Date.now() - this.lastDataAt
-      if (elapsed >= this.o.bootMinMs && sinceData >= this.o.bootQuietMs) return
+      if (elapsed >= this.o.bootMinMs && sinceData >= this.o.bootQuietMs) {
+        const acted = this.checkScreen()
+        if (!acted && !this.trustPending) return
+        const fatalNow = this.fatalError()
+        if (fatalNow) throw fatalNow
+      }
+    }
+    // Pasting a prompt into the dialog would answer it with the prompt's text.
+    if (this.trustPending) {
+      this.fatal = { kind: "trust", detail: "folder trust dialog", action: "fatal" }
+      this.killProcess()
+      throw this.fatalError()!
     }
   }
 
@@ -473,11 +934,7 @@ export class ClaudeSession {
   }
 
   private rawTail(max = 600): string {
-    const clean = this.raw
-      // Strip ANSI escape/control sequences before including terminal output in diagnostics.
-      .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
+    const clean = stripTerminal(this.raw).replace(/\s+/g, " ").trim()
     return clean.length > max ? clean.slice(-max) : clean
   }
 
@@ -493,76 +950,168 @@ export class ClaudeSession {
   }
 
   /**
+   * Paste a turn into the live session and follow the transcript until the
+   * turn ends, handing every new record to `onRecord` (raw line and parsed
+   * record, the latter null when the line is not JSON). One turn at a time:
+   * a second call while one runs is refused, because both would read the
+   * same cursor.
+   */
+  private async runTurnLoop(
+    prompt: string,
+    onRecord: (raw: string, rec: any | null) => void,
+    timeout: number,
+    onHeartbeat?: () => void,
+  ): Promise<{ stopReason: string | null; end: TurnEnd | null; denied: ScreenState[] }> {
+    if (this.aborted) throw new Error("aborted")
+    const fatal = this.fatalError()
+    if (fatal) throw fatal
+    if (!this.proc || this.exited)
+      throw new Error("session not started or already exited")
+    if (this.turn) throw new Error("a turn is already running in this session")
+
+    let settle!: () => void
+    this.turn = new Promise<void>((resolve) => (settle = resolve))
+    this.turnDenied = []
+    this.abandonTurn = false
+    // Records written between turns (a late `turn_duration`, an interrupt
+    // marker) belong to the turn before, never to this one.
+    this.cursor = Math.max(this.cursor, this.lineCount())
+    // A reply from an earlier turn may still be in the window; nothing this
+    // turn raises has been drawn yet.
+    this.screen = ""
+
+    try {
+      // Bracketed paste keeps multi-line prompts from submitting early;
+      // submitTurn() then presses Enter and confirms the turn was accepted,
+      // resending Enter if the (collapsed) paste swallowed the first one.
+      if (this.o.bracketedPaste) {
+        this.proc.terminal.write("\x1b[200~" + prompt + "\x1b[201~")
+      } else {
+        this.proc.terminal.write(prompt)
+      }
+      await this.submitTurn()
+
+      let stopReason: string | null = null
+      // When the newest terminal stop was read. One API call is written as
+      // one record per content block, every one carrying the call's
+      // `stop_reason` (the reply's text is the LAST of them), so a terminal
+      // stop ends the turn only once the transcript has stayed quiet for
+      // `stopSettleMs`. Ending on the first such record dropped the answer.
+      let stopSeenAt = 0
+      let end: TurnEnd | null = null
+      // End signals other than a terminal stop count only after this turn's
+      // own first user record, so a stale one can never end it.
+      let sawUserRecord = false
+      let lastBeat = Date.now()
+      const deadline = Date.now() + timeout
+
+      while (Date.now() < deadline) {
+        await delay(this.o.pollMs)
+        if (this.aborted) throw new Error("aborted mid-turn")
+        const fatalNow = this.fatalError()
+        if (fatalNow) throw fatalNow
+        const lines = this.readRawLines()
+        const lastComplete = lines.length - 1 // exclusive bound; trailing/partial line skipped
+        if (lastComplete > this.cursor) {
+          for (let i = this.cursor; i < lastComplete && !end; i++) {
+            const s = lines[i]
+            if (!s || !s.trim()) continue
+            let rec: any = null
+            try {
+              rec = JSON.parse(s)
+            } catch {}
+            onRecord(s, rec)
+            if (!rec) continue
+            if (rec.type === "assistant" && rec.message) {
+              const reason = rec.message.stop_reason
+              // A non-terminal stop after a terminal one is the model going
+              // on (a Stop hook can make it), so the turn is not over.
+              if (typeof reason === "string") {
+                stopReason = TERMINAL_STOP.has(reason) ? reason : null
+              }
+            } else if (rec.type === "user") {
+              if (sawUserRecord && isInterruptRecord(rec)) end = "interrupted"
+              sawUserRecord = true
+            } else if ((sawUserRecord || stopReason) && isTurnDurationRecord(rec)) {
+              end = stopReason ? "stop" : "ended"
+            }
+            this.cursor = i + 1
+          }
+          if (!end) this.cursor = lastComplete
+          lastBeat = Date.now()
+          stopSeenAt = Date.now()
+          if (end) return { stopReason: end === "stop" ? stopReason : null, end, denied: this.turnDenied }
+          continue
+        }
+        if (stopReason && Date.now() - stopSeenAt >= this.o.stopSettleMs) {
+          return { stopReason, end: "stop", denied: this.turnDenied }
+        }
+        // Drain the transcript before reacting to exit: a final assistant record
+        // can be flushed in the same tick the process exits.
+        if (this.exited) throw new Error(this.failureMessage("claude exited mid-turn", true))
+        if (this.abandonTurn) return { stopReason: null, end: "interrupted", denied: this.turnDenied }
+        const now = Date.now()
+        if (onHeartbeat && now - lastBeat >= this.o.heartbeatMs) {
+          lastBeat = now
+          // Only while the TUI is visibly alive (its spinner redraws several
+          // times a second): a wedged child must still meet the watchdog.
+          if (now - this.lastDataAt < this.o.heartbeatMs) onHeartbeat()
+        }
+      }
+      return { stopReason: null, end: null, denied: this.turnDenied }
+    } finally {
+      this.turn = null
+      this.abandonTurn = false
+      settle()
+    }
+  }
+
+  /**
+   * Stop the running turn the way the TUI's own Esc does, and keep the
+   * session alive for the next one. Resolves true once the turn ended, false
+   * when it was abandoned after `interruptGraceMs` without the TUI saying so.
+   */
+  async interrupt(graceMs = this.o.interruptGraceMs): Promise<boolean> {
+    const turn = this.turn
+    if (!turn) return true
+    this.write("\x1b")
+    const ended = await Promise.race([turn.then(() => true), delay(graceMs).then(() => false)])
+    if (ended) return true
+    // One more Esc for a TUI that was mid-redraw, then stop following the turn
+    // so the caller is not held for up to `turnTimeoutMs`.
+    this.write("\x1b")
+    this.abandonTurn = true
+    await Promise.race([turn, delay(this.o.pollMs * 4)])
+    return false
+  }
+
+  /**
    * Inject a turn into the live session and return the assistant reply once a
    * terminal stop_reason is observed in the transcript.
    */
   async ask(prompt: string, perTurnTimeoutMs?: number): Promise<TurnResult> {
-    if (this.aborted) throw new Error("aborted")
-    if (!this.proc || this.exited)
-      throw new Error("session not started or already exited")
     const timeout = perTurnTimeoutMs ?? this.o.turnTimeoutMs
     const t0 = Date.now()
-
-    // Inject. Bracketed paste keeps multi-line prompts from submitting early;
-    // submitTurn() then presses Enter and confirms the turn was accepted,
-    // resending Enter if the (collapsed) paste swallowed the first one.
-    if (this.o.bracketedPaste) {
-      this.proc.terminal.write("\x1b[200~" + prompt + "\x1b[201~")
-    } else {
-      this.proc.terminal.write(prompt)
-    }
-    await this.submitTurn()
-
     const collected: string[] = []
     const usage = new TurnUsageAccumulator()
-    let stopReason: string | null = null
-    const deadline = Date.now() + timeout
-
-    while (Date.now() < deadline) {
-      await delay(this.o.pollMs)
-      if (this.aborted) throw new Error("aborted mid-turn")
-      const lines = this.readRawLines()
-      const lastComplete = lines.length - 1 // exclusive bound; trailing/partial line skipped
-      if (lastComplete <= this.cursor) {
-        // Drain the transcript before reacting to exit: a final assistant record
-        // can be flushed in the same tick the process exits.
-        if (this.exited) throw new Error(this.failureMessage("claude exited mid-turn", true))
-        continue
-      }
-
-      for (let i = this.cursor; i < lastComplete; i++) {
-        const s = lines[i]
-        if (!s || !s.trim()) continue
-        let rec: any
-        try {
-          rec = JSON.parse(s)
-        } catch {
-          continue
+    const { stopReason } = await this.runTurnLoop(
+      prompt,
+      (_raw, rec) => {
+        if (rec?.type !== "assistant" || !rec.message) return
+        // Each record carries DIFFERENT content blocks of the same call, so
+        // text is collected per record while usage is counted per call.
+        for (const b of rec.message.content ?? []) {
+          if (b?.type === "text" && typeof b.text === "string") collected.push(b.text)
         }
-        if (rec.type === "assistant" && rec.message) {
-          // Each record carries DIFFERENT content blocks of the same call, so
-          // text is collected per record while usage is counted per call.
-          for (const b of rec.message.content ?? []) {
-            if (b?.type === "text" && typeof b.text === "string")
-              collected.push(b.text)
-          }
-          usage.add(rec)
-          if (
-            rec.message.stop_reason &&
-            TERMINAL_STOP.has(rec.message.stop_reason)
-          ) {
-            stopReason = rec.message.stop_reason
-          }
-        }
-      }
-      this.cursor = lastComplete
-      if (stopReason) break
-    }
+        usage.add(rec)
+      },
+      timeout,
+    )
 
     if (!stopReason) {
       throw new Error(
         this.failureMessage(
-          `turn timed out after ${timeout}ms (no terminal assistant record; collected ${collected.length} text block(s))`,
+          `turn ended without a terminal assistant record after ${Date.now() - t0}ms (collected ${collected.length} text block(s))`,
         ),
       )
     }
@@ -586,9 +1135,9 @@ export class ClaudeSession {
 
   /**
    * Like ask(), but instead of collecting the reply text it re-emits each NEW
-   * raw JSONL transcript line via onLine (verbatim) until a terminal
-   * stop_reason. Used by the opencode plugin transport shim, which feeds
-   * these raw lines into the existing stream-json line handler unchanged.
+   * raw JSONL transcript line via onLine (verbatim) until the turn ends. Used
+   * by the opencode plugin transport shim, which feeds these raw lines into
+   * the existing stream-json line handler unchanged.
    *
    * `usage` is the turn summed over DISTINCT API calls, which is exactly what
    * a headless `result` frame reports, so the shim can synthesize one and
@@ -596,71 +1145,30 @@ export class ClaudeSession {
    * `turnStats`) behaves as it does on the headless path. `lastCallUsage` is
    * the newest real call, returned because a caller with no stream parser
    * (`askOnce`) has no other way to get the context side.
+   *
+   * A turn that ends any way other than a terminal stop (an interrupt, a
+   * denied permission dialog, `turn_duration`) resolves with that `end` and a
+   * null `stopReason`; only a timeout throws.
    */
   async tailTurn(
     prompt: string,
     onLine: (rawLine: string) => void,
-    perTurnTimeoutMs?: number
-  ): Promise<{
-    stopReason: string | null
-    usage: any | null
-    lastCallUsage: any | null
-    callCount: number
-  }> {
-    if (this.aborted) throw new Error("aborted")
-    if (!this.proc || this.exited)
-      throw new Error("session not started or already exited")
+    perTurnTimeoutMs?: number,
+    onHeartbeat?: () => void,
+  ): Promise<TailTurnResult> {
     const timeout = perTurnTimeoutMs ?? this.o.turnTimeoutMs
-
-    if (this.o.bracketedPaste) {
-      this.proc.terminal.write("\x1b[200~" + prompt + "\x1b[201~")
-    } else {
-      this.proc.terminal.write(prompt)
-    }
-    await this.submitTurn()
-
     const usage = new TurnUsageAccumulator()
-    let stopReason: string | null = null
-    const deadline = Date.now() + timeout
+    const { stopReason, end, denied } = await this.runTurnLoop(
+      prompt,
+      (raw, rec) => {
+        onLine(raw)
+        if (rec) usage.add(rec)
+      },
+      timeout,
+      onHeartbeat,
+    )
 
-    while (Date.now() < deadline) {
-      await delay(this.o.pollMs)
-      if (this.aborted) throw new Error("aborted mid-turn")
-      const lines = this.readRawLines()
-      const lastComplete = lines.length - 1
-      if (lastComplete <= this.cursor) {
-        // Drain the transcript before reacting to exit: the terminal assistant
-        // record can land in the same tick the process exits.
-        if (this.exited) {
-          throw new Error(this.failureMessage("claude exited mid-turn", true))
-        }
-        continue
-      }
-      for (let i = this.cursor; i < lastComplete; i++) {
-        const s = lines[i]
-        if (!s || !s.trim()) continue
-        onLine(s)
-        let rec: any
-        try {
-          rec = JSON.parse(s)
-        } catch {
-          continue
-        }
-        usage.add(rec)
-        if (rec.type === "assistant" && rec.message) {
-          if (
-            rec.message.stop_reason &&
-            TERMINAL_STOP.has(rec.message.stop_reason)
-          ) {
-            stopReason = rec.message.stop_reason
-          }
-        }
-      }
-      this.cursor = lastComplete
-      if (stopReason) break
-    }
-
-    if (!stopReason) {
+    if (!end) {
       throw new Error(
         this.failureMessage(
           `turn timed out after ${timeout}ms (no terminal assistant record)`,
@@ -670,24 +1178,31 @@ export class ClaudeSession {
 
     return {
       stopReason,
+      end,
       usage: usage.turnTotal,
       lastCallUsage: usage.lastCall,
       callCount: usage.callCount,
+      denied,
     }
   }
 
+  private killProcess(): void {
+    const proc = this.proc
+    if (!proc) return
+    try {
+      proc.terminal.write("\x03")
+    } catch {}
+    try {
+      proc.kill()
+    } catch {}
+    try {
+      proc.terminal.close()
+    } catch {}
+  }
+
   dispose(): void {
-    if (this.proc) {
-      try {
-        this.proc.terminal.write("\x03")
-      } catch {}
-      try {
-        this.proc.kill()
-      } catch {}
-      try {
-        this.proc.terminal.close()
-      } catch {}
-    }
+    this.clearScreenTimer()
+    this.killProcess()
     this.proc = null
   }
 }

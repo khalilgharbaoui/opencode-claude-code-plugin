@@ -17,7 +17,7 @@ Or per-process: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`.
 
 ### Requirements
 
-- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. If it isn't, the flag is ignored and the headless transport is used, and nothing breaks.
+- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. If it isn't, the flag is ignored and the headless transport is used, and nothing breaks. Both opencode 1.x and 2.x provide it: verified live on 1.18.34 and 2.0.22 with Claude Code 2.1.288. On opencode 2 the option goes under `providers.claude-code.settings` instead of `provider.claude-code.options`.
 - A logged-in `claude` (subscription auth). The whole point is plan billing, so API-key auth gains nothing here.
 
 ### What carries over from the headless transport
@@ -45,5 +45,22 @@ This is the part to read before turning it on. Three whole features of this plug
 - **Token counts come from the transcript, one count per API call.** The session JSONL writes one record per content block (thinking, text, tool_use) and every record of a call repeats that call's final usage, so the transport counts each call once, keyed by its message id. The numbers then mean exactly what they do on the headless transport: [`turnStats`](../guides/turn-stats.md) gets the turn's totals and opencode gets the last call's context plus the turn's output. Before this was fixed a four-tool turn reported 1,306 output tokens against a real 653, and its input and cache counts were one call's instead of the turn's. An all-zero `<synthetic>` record (how the CLI writes "Login expired" or a session limit into the transcript) is not counted as a call.
 - **How a turn finishes:** a turn that reaches a terminal stop reason (`end_turn`, `stop_sequence`, `max_tokens`) finishes exactly as a headless turn does, so it is an ordinary completed reply and [`turnStats`](../guides/turn-stats.md) applies to it. `max_tokens` is deliberately a completed turn rather than a failure: the call happened and billed, and the truncation is what auto-continue reads. Before this was fixed every interactive turn finished as an error instead, which also suppressed the stats footer.
 - **Turn timeout:** a turn that produces no terminal stop within 30 minutes is reported honestly as an error result (visible truncation), not silently ended.
+
+### What it answers on your behalf
+
+The TUI has no control channel, so everything it is blocked on is drawn on the screen. The transport reads the screen for the few prompts a turn cannot get past alone, and only once the TUI has stopped drawing, so a reply that merely contains the same words is never mistaken for one:
+
+- **Folder trust** is accepted, because `--print` never asks. On Claude Code 2.1.288 the dialog marks **"No, exit"** by default, so the transport moves the cursor to "Yes, I trust this folder" and presses Enter only once the TUI shows it marked. A dialog it cannot answer fails the start with a message naming the folder, rather than pasting your prompt into it.
+- **Not logged in** and **first-run setup** fail the start with the command to run, instead of waiting out the turn.
+- **A tool permission dialog** is denied with Esc, because there is nobody at that terminal to ask. The denial ends the turn as an interrupted one and is reported in the result's `permission_denials` with the tool's name and id. Widen `interactiveAllowTools` for a tool you want to run.
+- **The usage-limit screen's "continuing automatically at <time>"** is cancelled, or the turn would rerun hours later with nobody watching.
+
+### How a turn behaves
+
+- **Stopping a reply** sends Esc, as the TUI's own key does, and keeps the session for your next message. A turn that does not acknowledge the Esc within a few seconds is abandoned, never waited out. Anything that turn queued behind itself is dropped with it, and a turn's result never lands on the turn after it.
+- **A TUI that dies or is evicted** is replaced on your next message with `--resume`, so the conversation continues where it was. Before this, the next message started a blank conversation.
+- **Long tool calls and long thinking** keep the turn alive: while the TUI is visibly working and the transcript is quiet, the transport reports progress every 30 seconds the way the headless CLI's own `tool_progress` heartbeat does. A slow first answer (measured: one first call took 185 seconds inside the CLI) no longer trips the start watchdog.
+- **A turn ends** on a terminal stop reason once that API call's last record is in (a call is written as several records, and the reply text is the last of them), on the TUI's interrupt marker, or on the `turn_duration` record 2.1.288 writes after every turn.
+- **The account's login is the one `claude` uses on its own.** `CLAUDE_CONFIG_DIR` reaches the TUI only for an account you configured: measured on 2.1.288, setting it even to the default `~/.claude` makes the CLI report itself logged out, which made every default-account interactive turn fail.
 - **No idle eviction:** `idleProcessTimeoutMs` does not apply to interactive sessions.
 - `/compact` always uses the headless transport regardless of this setting.

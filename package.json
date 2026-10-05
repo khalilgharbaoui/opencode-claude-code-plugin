@@ -26,7 +26,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "OPENCODE_CLAUDE_CODE_LOG_FILE=0 tsx --test test/*.test.ts",
+    "test": "OPENCODE_CLAUDE_CODE_LOG_FILE=0 XDG_STATE_HOME=$(mktemp -d) tsx --test test/*.test.ts",
     "generate:log-messages": "tsx scripts/generate-log-messages.ts"
   },
   "dependencies": {

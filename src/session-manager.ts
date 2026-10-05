@@ -17,6 +17,7 @@ import { clearAccountFailoverQuestions } from "./account-failover.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
 import { forgetForkFingerprint } from "./session-fork.js"
+import { forgetResumePoint } from "./session-resume-store.js"
 import {
   cliHygieneEnv,
   cliSupportsFastMode,
@@ -88,6 +89,16 @@ export interface ActiveProcess {
   opencodeSessionID?: string
   /** What the /btw command hook needs to send a side question to this process early. */
   asideTransport?: { cliPath: string; interactive: boolean }
+  /**
+   * Set by the interactive transport only, which has no stdin protocol to
+   * carry an `interrupt` control request and keeps its own turn state.
+   * `interruptTurn` and `isTurnInFlight` ask it instead of `turnInFlight`.
+   */
+  interactiveControl?: {
+    turnRunning(): boolean
+    /** Esc to the TUI; resolves true once the turn ended. */
+    interrupt(timeoutMs: number): Promise<boolean>
+  }
   /**
    * True from a stdin write that asks the CLI for work until its terminal
    * `result` line, whether or not a turn is still listening. Set by
@@ -389,6 +400,7 @@ export function noteTurnLine(ap: ActiveProcess, line: string): void {
 }
 
 export function isTurnInFlight(ap: ActiveProcess): boolean {
+  if (ap.interactiveControl) return ap.interactiveControl.turnRunning()
   return ap.turnInFlight === true
 }
 
@@ -415,6 +427,9 @@ export function interruptTurn(
   ap: ActiveProcess,
   timeoutMs = TURN_INTERRUPT_TIMEOUT_MS,
 ): Promise<boolean> {
+  // The interactive transport stops a turn the way its TUI does, with Esc,
+  // and keeps the session alive for the next message.
+  if (ap.interactiveControl) return ap.interactiveControl.interrupt(timeoutMs)
   if (!ap.turnInFlight) return Promise.resolve(true)
   const stdin = ap.proc.stdin
   if (ap.asideTransport?.interactive || !stdin || !stdin.writable) {
@@ -458,6 +473,28 @@ export function getActiveProcess(key: string): ActiveProcess | undefined {
 export function setActiveProcess(key: string, ap: ActiveProcess): void {
   cancelIdleProcessEviction(key)
   activeProcesses.set(key, ap)
+}
+
+/**
+ * The interactive transport's counterpart to the exit handler
+ * `spawnClaudeProcess` wires for a headless child: a TUI that died stops
+ * being the process this key reuses, so the next turn spawns again with
+ * `--resume` instead of writing into a dead session. The Claude session id
+ * is kept for that resume, unless the child failed with a code, exactly as
+ * the headless handler decides.
+ */
+export function noteInteractiveProcessExit(
+  sessionKey: string,
+  ap: ActiveProcess,
+  code: number | null,
+): void {
+  if (activeProcesses.get(sessionKey) !== ap) return
+  cancelIdleProcessEviction(sessionKey)
+  activeProcesses.delete(sessionKey)
+  if (code !== 0 && code !== null) {
+    claudeSessions.delete(sessionKey)
+    forgetResumePoint(sessionKey)
+  }
 }
 
 /**
@@ -724,6 +761,14 @@ export function setClaudeSessionId(key: string, sessionId: string): void {
   capClaudeSessions()
 }
 
+/**
+ * Test seam: lose the in-memory id the way a restarted opencode process does,
+ * leaving the copy `src/session-resume-store.ts` keeps on disk alone.
+ */
+export function _forgetClaudeSessionIdInMemory(key: string): void {
+  claudeSessions.delete(key)
+}
+
 export function deleteClaudeSessionId(key: string): void {
   clearExitPlanModeQuestions(key)
   clearAccountFailoverQuestions(key)
@@ -733,6 +778,9 @@ export function deleteClaudeSessionId(key: string): void {
   // The fork fingerprint only exists to point at that id. Keeping it would
   // offer a conversation whose transcript this plugin can no longer name.
   forgetForkFingerprint(key)
+  // Same for the copy kept across restarts: a conversation this process
+  // abandoned must not be resumed by the next one.
+  forgetResumePoint(key)
 }
 
 export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): string {
@@ -887,6 +935,7 @@ export function spawnClaudeProcess(
         sessionKey,
       })
       claudeSessions.delete(sessionKey)
+      forgetResumePoint(sessionKey)
     }
   })
 
@@ -914,6 +963,7 @@ export function spawnClaudeProcess(
           error: stderr.slice(0, 200),
         })
         claudeSessions.delete(sessionKey)
+        forgetResumePoint(sessionKey)
       } else {
         log.debug("ignoring session ID error from stale claude process", {
           sessionKey,

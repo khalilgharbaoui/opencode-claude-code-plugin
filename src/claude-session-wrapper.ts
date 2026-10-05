@@ -1,6 +1,12 @@
 import { EventEmitter } from "node:events"
+import { existsSync } from "node:fs"
 import { unlink } from "node:fs/promises"
-import { ClaudeSession } from "./claude-session-bun.js"
+import {
+  ClaudeSession,
+  type ClaudeSessionOptions,
+  type PtySpawner,
+  type TurnEnd,
+} from "./claude-session-bun.js"
 import { cliEffortLevel, type ActiveProcess } from "./session-manager.js"
 import type { ReasoningEffort } from "./types.js"
 import { log } from "./logger.js"
@@ -37,6 +43,28 @@ export interface InteractiveSpawnOptions {
   ignoreAnthropicApiKey?: boolean
   /** Reasoning effort, exported as CLAUDE_CODE_EFFORT_LEVEL for the session. */
   effort?: ReasoningEffort
+  /** Continue this Claude session with `--resume` instead of starting a new
+   *  one, which is what keeps a conversation whose TUI died or was evicted
+   *  from starting over empty. */
+  resumeSessionId?: string
+  /** The child environment, normally the headless spawn's (`claudeSpawnEnv`)
+   *  so both transports carry the same hygiene, effort and cache TTL. */
+  env?: Record<string, string | undefined>
+  /** PTY seam for tests. */
+  spawnPty?: PtySpawner
+  /** Timing overrides, for tests that cannot wait out production delays. */
+  tuning?: Pick<
+    ClaudeSessionOptions,
+    | "bootMinMs"
+    | "bootQuietMs"
+    | "pollMs"
+    | "submitMinMs"
+    | "submitConfirmMs"
+    | "stopSettleMs"
+    | "heartbeatMs"
+    | "interruptGraceMs"
+    | "permissionQuietMs"
+  >
 }
 
 /**
@@ -91,21 +119,11 @@ export function decodeUserEnvelope(chunk: string): string {
   return parts.join("\n\n")
 }
 
-/**
- * Adapt a ClaudeSession (interactive Bun ConPTY transport) to the ActiveProcess
- * contract the doStream line handler depends on. The shim's `proc.stdin.write`
- * injects a turn into the live interactive `claude` and re-emits each new JSONL
- * transcript record on `lineEmitter` as a 'line' event, plus a synthetic
- * `{type:'result'}` line on a terminal stop_reason so the existing finish branch
- * (usage + providerMetadata + controller.close) fires unchanged.
- *
- * No node-pty, no node sidecar: runs in-process under opencode's Bun (which
- * bundles a Bun version with native ConPTY). Interactive = subscription billing.
- */
+
 /**
  * The CLI flags an interactive spawn adds after `ClaudeSession`'s own
- * `--session-id` / `--model` / `--setting-sources`. Exported so the spawn
- * arguments can be checked without a PTY.
+ * `--session-id` (or `--resume`) / `--model` / `--setting-sources`. Exported
+ * so the spawn arguments can be checked without a PTY.
  */
 export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
   const extraArgs: string[] = []
@@ -146,12 +164,180 @@ export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
   return extraArgs
 }
 
+/**
+ * Tool calls the TUI started and has not answered yet, read off the
+ * transcript records the turn forwards. The heartbeat names the newest one,
+ * the way the headless CLI's own `tool_progress` frame does.
+ */
+export class OpenToolCalls {
+  private readonly open = new Map<string, { name: string; startedAt: number }>()
+
+  add(rec: any, now = Date.now()): void {
+    const content = rec?.message?.content
+    if (!Array.isArray(content)) return
+    for (const block of content) {
+      if (rec.type === "assistant" && block?.type === "tool_use" && typeof block.id === "string") {
+        this.open.set(block.id, { name: String(block.name ?? "tool"), startedAt: now })
+      } else if (rec.type === "user" && block?.type === "tool_result") {
+        this.open.delete(block.tool_use_id)
+      }
+    }
+  }
+
+  newest(): { id: string; name: string; startedAt: number } | null {
+    let newest: { id: string; name: string; startedAt: number } | null = null
+    for (const [id, call] of this.open) newest = { id, ...call }
+    return newest
+  }
+
+  clear(): void {
+    this.open.clear()
+  }
+}
+
+/**
+ * The frame a heartbeat emits. The line handler resets the wire-inactivity
+ * watchdog on every line, so what matters is that it is a line the parser
+ * reads without acting on: a `tool_progress` (logged, h #g184) while a tool
+ * is open, otherwise a `system`/`status` (deliberately unparsed, h #g191).
+ */
+export function heartbeatFrame(
+  sessionId: string,
+  openCall: { id: string; name: string; startedAt: number } | null,
+  now = Date.now(),
+): string {
+  if (openCall) {
+    // The headless heartbeat's own id is synthetic and the call is in
+    // `parent_tool_use_id` (`parseToolProgress`); this follows that shape.
+    return JSON.stringify({
+      type: "tool_progress",
+      tool_use_id: `${openCall.id}-heartbeat`,
+      tool_name: openCall.name,
+      parent_tool_use_id: openCall.id,
+      heartbeat: true,
+      elapsed_time_seconds: Math.round((now - openCall.startedAt) / 1000),
+      session_id: sessionId,
+    })
+  }
+  return JSON.stringify({
+    type: "system",
+    subtype: "status",
+    status: "requesting",
+    session_id: sessionId,
+  })
+}
+
+/**
+ * The terminal `result` frame for an interactive turn, in the shape a
+ * headless turn emits.
+ *
+ * Measured verbatim on Claude Code 2.1.280 (`claude -p ... --output-format
+ * stream-json --verbose`), both for a clean reply and for a turn the CLI
+ * failed on its own max-output-tokens guard:
+ *
+ *   clean:  "stop_reason":"end_turn",    ... "terminal_reason":"completed",
+ *           "is_error":false, "subtype":"success"
+ *   failed: "stop_reason":"stop_sequence", ... "terminal_reason":"api_error",
+ *           "is_error":true,  "subtype":"success"
+ *
+ * So the CLI NEVER encodes a stop reason in `subtype`: it stays `success` and
+ * the stop reason rides in a TOP-LEVEL `stop_reason` field. Putting the stop
+ * reason in `subtype` made every completed interactive turn trip
+ * `describeResultFailure` (h #g113), finish as `{unified:"error"}` and
+ * suppress `turnStats` (h #g109).
+ *
+ * `max_tokens` is deliberately NOT an error: the call completed and billed,
+ * the headless CLI says `is_error:false`, and an error would skip both
+ * `turnStats` and the auto-continue nudge (`shouldDeferResult` needs
+ * `!msg.is_error`; `isTruncationStopReason`, h #g104, reads the assistant
+ * record's own `stop_reason`, which the turn already forwarded).
+ *
+ * A turn that ended without a terminal stop (an interrupt, a `turn_duration`
+ * with no reply, a denied permission dialog that ended it) is reported
+ * honestly as an error, so a cut-short answer never reads as a finished one.
+ */
+/** One `permission_denials` entry, as the headless `result` carries them. */
+export interface PermissionDenial {
+  tool_name: string
+  tool_use_id?: string
+}
+
+export function interactiveResultFrame(opts: {
+  /** Omitted when the conversation was never written, so the next spawn
+   *  does not `--resume` a session the CLI has no transcript for. */
+  sessionId?: string
+  end: TurnEnd | "failed"
+  stopReason: string | null
+  usage?: unknown
+  denials?: PermissionDenial[]
+  error?: string
+}): string {
+  const completed = opts.end === "stop" && !!opts.stopReason
+  let result: string | undefined
+  let terminalReason = "completed"
+  if (!completed) {
+    if (opts.end === "failed") {
+      terminalReason = "error_during_execution"
+      result = `Interactive transport failed: ${opts.error ?? "unknown error"}`
+    } else if (opts.end === "interrupted") {
+      terminalReason = "aborted"
+      result = "Interactive transport: the turn was interrupted."
+    } else {
+      terminalReason = "error_during_execution"
+      result =
+        "Interactive transport: the turn ended without a terminal stop_reason. Output above may be incomplete."
+    }
+  }
+  return JSON.stringify({
+    type: "result",
+    subtype: completed ? "success" : "error_during_execution",
+    is_error: !completed,
+    stop_reason: completed ? opts.stopReason : null,
+    terminal_reason: terminalReason,
+    result,
+    session_id: opts.sessionId,
+    usage: opts.usage ?? {},
+    // The TUI has no `can_use_tool` channel, so a permission dialog is the
+    // only way it asks; each one the session denied is reported in the
+    // headless field's place, names and ids only (h #g109).
+    permission_denials: opts.denials ?? [],
+    total_cost_usd: null,
+    duration_ms: 0,
+  })
+}
+
+/**
+ * Adapt a ClaudeSession (interactive Bun PTY transport) to the ActiveProcess
+ * contract the doStream line handler depends on. The shim's `proc.stdin.write`
+ * injects a turn into the live interactive `claude` and re-emits each new JSONL
+ * transcript record on `lineEmitter` as a 'line' event, then a synthesized
+ * `{type:'result'}` line (`interactiveResultFrame`) so the existing finish
+ * branch (usage + providerMetadata + controller.close) fires unchanged.
+ *
+ * What makes it behave like a headless child to the rest of the plugin:
+ *   - `exitCode` / `signalCode` and real `exit` / `close` events, so
+ *     `deleteActiveProcessAndWait` and the close handler see the child die,
+ *   - `interactiveControl`, so an abort stops the turn with Esc
+ *     (`interruptTurn`) and keeps the session for the next message,
+ *   - turns run one at a time in write order, and a turn's `result` is dropped
+ *     once a newer write superseded it, so an interrupted turn's late result
+ *     can never close the next turn's stream,
+ *   - a heartbeat line while the TUI is visibly working and the transcript is
+ *     quiet, which is what the headless CLI's `tool_progress` does.
+ */
 export function spawnInteractiveProcess(
   opts: InteractiveSpawnOptions,
 ): ActiveProcess {
   const extraArgs = interactiveExtraArgs(opts)
+  const openCalls = new OpenToolCalls()
+  let denials: PermissionDenial[] = []
+  const lineEmitter = new EventEmitter()
+  // A plain emitter is what `ChildProcess` is to its listeners. `error` is
+  // emitted only when someone listens, because an unheard `error` throws.
+  const proc: any = new EventEmitter()
 
   const session = new ClaudeSession({
+    ...opts.tuning,
     cwd: opts.cwd,
     cliPath: opts.cliPath,
     configDir: opts.configDir,
@@ -163,6 +349,31 @@ export function spawnInteractiveProcess(
     extraArgs,
     ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
     effort: opts.effort ? cliEffortLevel(opts.effort) : undefined,
+    resumeSessionId: opts.resumeSessionId,
+    env: opts.env,
+    spawnPty: opts.spawnPty,
+    onScreen: (event) => {
+      if (event.action === "denied") {
+        // The dialog is about the call the TUI is holding, which is the
+        // newest one the transcript opened and has not answered.
+        const call = openCalls.newest()
+        denials.push(call ? { tool_name: call.name, tool_use_id: call.id } : { tool_name: "unknown" })
+      }
+      const data = { sessionId: session.sessionId, screen: event.kind, detail: event.detail }
+      if (event.action === "accepted") log.info("interactive transport accepted a prompt", data)
+      else if (event.action === "fatal") log.error("interactive transport cannot continue", data)
+      else if (event.action === "denied") log.warn("interactive transport denied a permission prompt", data)
+      else log.warn("interactive transport cancelled the usage-limit auto-continue", data)
+    },
+    onExit: (code) => {
+      // A child we killed reads as signalled; one that died on its own with
+      // no code does too, so `hasProcessExited` never mistakes it for alive.
+      proc.exitCode = code
+      proc.signalCode = code === null ? "SIGTERM" : null
+      log.info("interactive claude exited", { sessionId: session.sessionId, code })
+      proc.emit("exit", proc.exitCode, proc.signalCode)
+      proc.emit("close", proc.exitCode, proc.signalCode)
+    },
   })
   log.info("prepared interactive claude session", {
     cwd: opts.cwd,
@@ -171,141 +382,112 @@ export function spawnInteractiveProcess(
     model: opts.model,
     effort: opts.effort,
     sessionId: session.sessionId,
+    resumed: !!opts.resumeSessionId,
     jsonlPath: session.jsonlPath,
   })
 
-  const lineEmitter = new EventEmitter()
-  const errorHandlers = new Set<(err: Error) => void>()
   let startPromise: Promise<void> | null = null
-
   const ensureStarted = (): Promise<void> => {
     if (!startPromise) startPromise = session.start()
     return startPromise
   }
 
-  /**
-   * Synthesize the terminal `result` frame in the shape a headless turn emits.
-   *
-   * Measured verbatim on Claude Code 2.1.280 (`claude -p ... --output-format
-   * stream-json --verbose`), both for a clean reply and for a turn the CLI
-   * failed on its own max-output-tokens guard:
-   *
-   *   clean:  "stop_reason":"end_turn",    ... "terminal_reason":"completed",
-   *           "is_error":false, "subtype":"success"
-   *   failed: "stop_reason":"stop_sequence", ... "terminal_reason":"api_error",
-   *           "is_error":true,  "subtype":"success"
-   *
-   * So the CLI NEVER encodes a stop reason in `subtype`: `subtype` stayed
-   * `success` even on the failing turn, and the stop reason rides in a
-   * TOP-LEVEL `stop_reason` field. Putting the stop reason in `subtype` (which
-   * is what this did) made every completed interactive turn trip
-   * `describeResultFailure` (h #g113), so it finished as
-   * `{unified:"error"}` and `turnStats` was suppressed (h #g109).
-   */
-  const emitResult = (opts: {
-    subtype: string
-    isError: boolean
-    stopReason: string | null
-    terminalReason: string
-    result?: string
-    usage?: unknown
-  }): void => {
-    lineEmitter.emit(
-      "line",
-      JSON.stringify({
-        type: "result",
-        subtype: opts.subtype,
-        is_error: opts.isError,
-        stop_reason: opts.stopReason,
-        terminal_reason: opts.terminalReason,
-        result: opts.result,
-        session_id: session.sessionId,
-        usage: opts.usage ?? {},
-        total_cost_usd: null,
-        duration_ms: 0,
-      }),
-    )
-  }
+  /** Bumped by every write; a turn whose number is stale has been superseded. */
+  let writes = 0
+  /** Every turn up to this write number was interrupted, run or queued. */
+  let cancelledThrough = 0
+  /** Turns waiting for, or holding, the session. */
+  let queued = 0
+  let chain: Promise<void> = Promise.resolve()
 
-  const runTurn = (userMsg: string): void => {
-    void (async () => {
-      try {
-        await ensureStarted()
-        const { stopReason, usage, lastCallUsage, callCount } =
-          await session.tailTurn(userMsg, (raw) => {
-            lineEmitter.emit("line", raw)
-          })
-        // The synthesized `result` below carries the TURN totals, as a
-        // headless one does, so `turnStats` matches the bill. The finish's
-        // own usage is narrowed to the last call's context by
-        // `lastCallContextUsage`, off the same `assistant` records the line
-        // handler already saw. Logged because the two differ on every
-        // multi-call turn and only the log says by how much.
-        log.info("interactive turn usage", {
-          apiCalls: callCount,
-          turnOutputTokens: usage?.output_tokens,
-          turnInputTokens: usage?.input_tokens,
-          turnCacheReadTokens: usage?.cache_read_input_tokens,
-          lastCallInputTokens: lastCallUsage?.input_tokens,
-          lastCallCacheReadTokens: lastCallUsage?.cache_read_input_tokens,
-          lastCallCacheWriteTokens: lastCallUsage?.cache_creation_input_tokens,
-        })
-        // Synthesize the `result` line the headless transport would have
-        // emitted, so doStream's existing finish branch runs verbatim. A turn
-        // with no terminal stop_reason (turn timeout / session exit mid-turn)
-        // is still reported HONESTLY as an error result, so truncation stays
-        // visible to the user and to auto-continue.
-        //
-        // `max_tokens` is deliberately NOT an error here. It is a terminal
-        // stop_reason, so the turn did complete an API call and did bill, and
-        // the headless CLI reports the same situation with `is_error:false`.
-        // Marking it an error would suppress `turnStats` on a turn that cost
-        // money, and would skip the auto-continue nudge that is the one
-        // handling truncation deserves: `shouldDeferResult` in the stream
-        // parser requires `!msg.is_error`, and `isTruncationStopReason`
-        // (h #g104) reads the assistant record's own `stop_reason`, which
-        // `tailTurn` already forwards verbatim.
-        const timedOut = !stopReason
-        emitResult({
-          subtype: timedOut ? "error_during_execution" : "success",
-          isError: timedOut,
-          stopReason: timedOut ? null : stopReason,
-          terminalReason: timedOut ? "error_during_execution" : "completed",
-          result: timedOut
-            ? "Interactive transport: the turn ended without a terminal stop_reason (turn timeout or claude exit). Output above may be incomplete."
-            : undefined,
-          usage,
-        })
-      } catch (err) {
-        const e = err instanceof Error ? err : new Error(String(err))
-        log.error("interactive turn failed", { error: e.message })
-        emitResult({
-          subtype: "error_during_execution",
-          isError: true,
-          stopReason: null,
-          terminalReason: "error_during_execution",
-          result: `Interactive transport failed: ${e.message}`,
-        })
-        if (errorHandlers.size > 0) {
-          for (const h of errorHandlers) h(e)
-        } else {
-          lineEmitter.emit("close")
-        }
+  const runTurn = async (userMsg: string, turnNumber: number): Promise<void> => {
+    const current = () => turnNumber === writes
+    const emit = (line: string) => {
+      if (current()) lineEmitter.emit("line", line)
+    }
+    try {
+      await ensureStarted()
+      if (turnNumber <= cancelledThrough) {
+        log.info("interactive turn cancelled before it started", { sessionId: session.sessionId })
+        return
       }
-    })()
+      openCalls.clear()
+      denials = []
+      const { stopReason, end, usage, lastCallUsage, callCount, denied } =
+        await session.tailTurn(
+          userMsg,
+          (raw) => {
+            try {
+              openCalls.add(JSON.parse(raw))
+            } catch {}
+            emit(raw)
+          },
+          undefined,
+          () => emit(heartbeatFrame(session.sessionId, openCalls.newest())),
+        )
+      // The `result` carries the TURN totals, as a headless one does, so
+      // `turnStats` matches the bill; the finish narrows to the last call
+      // through `lastCallContextUsage` off the records already forwarded.
+      log.info("interactive turn ended", {
+        end,
+        stopReason,
+        superseded: !current(),
+        apiCalls: callCount,
+        turnOutputTokens: usage?.output_tokens,
+        turnInputTokens: usage?.input_tokens,
+        turnCacheReadTokens: usage?.cache_read_input_tokens,
+        lastCallInputTokens: lastCallUsage?.input_tokens,
+        lastCallCacheReadTokens: lastCallUsage?.cache_read_input_tokens,
+        lastCallCacheWriteTokens: lastCallUsage?.cache_creation_input_tokens,
+        deniedPrompts: denied.length,
+        cancelled: turnNumber <= cancelledThrough,
+      })
+      emit(
+        interactiveResultFrame({
+          sessionId: session.sessionId,
+          end,
+          stopReason,
+          usage,
+          denials,
+        }),
+      )
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      log.error("interactive turn failed", { error: e.message, superseded: !current() })
+      if (!current()) return
+      emit(
+        interactiveResultFrame({
+          sessionId: existsSync(session.jsonlPath) ? session.sessionId : undefined,
+          end: "failed",
+          stopReason: null,
+          error: e.message,
+        }),
+      )
+      if (proc.listenerCount("error") > 0) proc.emit("error", e)
+      else lineEmitter.emit("close")
+    }
   }
 
-  // Minimal ChildProcess-shaped shim: only the members doStream/session-manager
-  // actually touch (stdin.write, on/off 'error', kill).
-  const proc: any = {
+  const enqueueTurn = (userMsg: string): void => {
+    const turnNumber = ++writes
+    queued++
+    chain = chain
+      .then(() => runTurn(userMsg, turnNumber))
+      .finally(() => {
+        queued--
+      })
+  }
+
+  Object.assign(proc, {
     stdin: {
+      writable: true,
       write(chunk: string): boolean {
         const raw =
           typeof chunk === "string" && chunk.endsWith("\n")
             ? chunk.slice(0, -1)
             : chunk
         // doStream writes stream-json envelopes; the TUI needs plain text.
-        runTurn(decodeUserEnvelope(raw))
+        enqueueTurn(decodeUserEnvelope(raw))
         return true
       },
       end(): void {},
@@ -314,34 +496,45 @@ export function spawnInteractiveProcess(
     stderr: null,
     pid: -1,
     killed: false,
-    on(event: string, fn: (err: Error) => void): unknown {
-      if (event === "error") errorHandlers.add(fn)
-      return proc
-    },
-    once(): unknown {
-      return proc
-    },
-    off(event: string, fn: (err: Error) => void): unknown {
-      if (event === "error") errorHandlers.delete(fn)
-      return proc
-    },
+    exitCode: null,
+    signalCode: null,
     kill(): boolean {
+      if (!proc.killed) {
+        proc.killed = true
+        if (opts.systemPromptFile) {
+          void unlink(opts.systemPromptFile).catch(() => {})
+        }
+      }
+      const started = startPromise !== null
       try {
         session.dispose()
       } catch {}
-      if (opts.systemPromptFile) {
-        void unlink(opts.systemPromptFile).catch(() => {})
+      // Never started: there is no child to report an exit, so report it
+      // here, once, or a caller waiting for `exit` waits out its timeout.
+      if (!started && proc.exitCode === null && proc.signalCode === null) {
+        proc.signalCode = "SIGTERM"
+        proc.emit("exit", null, "SIGTERM")
+        proc.emit("close", null, "SIGTERM")
       }
-      proc.killed = true
       return true
     },
-  }
+  })
 
   return {
-    proc: proc as unknown as ActiveProcess["proc"],
+    proc: proc as ActiveProcess["proc"],
     lineEmitter,
     proxyServer: null,
     mcpHash: undefined,
     systemPromptFile: opts.systemPromptFile,
+    cliPath: opts.cliPath,
+    interactiveControl: {
+      turnRunning: () => queued > 0,
+      // Stops the running turn and every queued one: they were all written
+      // by the turn being aborted, or by one before it.
+      interrupt: (timeoutMs: number) => {
+        cancelledThrough = writes
+        return session.interrupt(timeoutMs)
+      },
+    },
   }
 }

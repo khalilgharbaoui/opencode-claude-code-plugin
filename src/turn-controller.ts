@@ -120,6 +120,16 @@ export function clearStartWatchdog(state: TurnState): void {
 function onStartWatchdogFire(state: TurnState): void {
   state.startWatchdog = null
   if (state.controllerClosed || state.hasReceivedContent || state.hasReceivedProgress) return
+  // The interactive transport writes nothing until the TUI has booted and the
+  // first API call has finished, which can take longer than this deadline,
+  // and it has its own liveness: a dead TUI ends the turn with a `result`, a
+  // wedged one meets `turnTimeoutMs`. A respawn here would build a HEADLESS
+  // child from `cliArgs` the interactive spawn never set, so wait instead.
+  const interactive = state.activeProcess?.interactiveControl
+  if (interactive) {
+    if (interactive.turnRunning()) armStartWatchdog(state)
+    return
+  }
   if (state.respawnAttempted) {
     log.error(
       "claude process still silent after respawn; ending turn",

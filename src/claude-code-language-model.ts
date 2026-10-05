@@ -7,6 +7,7 @@ import type {
   LanguageModelV3Usage,
   SharedV3Warning,
 } from "@ai-sdk/provider"
+import { join } from "node:path"
 import { generateId } from "./ids.js"
 import type {
   ClaudeCodeConfig,
@@ -83,6 +84,8 @@ import {
 import {
   getActiveProcess,
   setActiveProcess,
+  noteInteractiveProcessExit,
+  claudeSpawnEnv,
   spawnClaudeProcess,
   buildCliArgs,
   setClaudeSessionId,
@@ -113,6 +116,8 @@ import {
 import { log } from "./logger.js"
 import { detectCliSupportsFlag, detectCliVersion } from "./cli-version.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
+import { findResumePoint, recordResumePoint } from "./session-resume-store.js"
+import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
 import {
   formatStaleBuildNote,
   staleBuildWatch,
@@ -1293,6 +1298,36 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         }
       }
     }
+    // A conversation this key served in an EARLIER opencode process. Its
+    // Claude session id died with that process's memory, so without this the
+    // whole thread is replayed as text (`src/session-resume-store.ts` has the
+    // measurements and every refusal). Setting the id is all it takes: the
+    // spawn below resumes any key that has one and no live process, exactly
+    // as it does after an idle eviction.
+    if (
+      this.config.resumeAfterRestart !== false &&
+      includeHistoryContext &&
+      !compactionMode &&
+      !forkFromClaudeSessionId &&
+      failoverAnswer?.kind !== "switch"
+    ) {
+      const configDir = resolveConfigDir(this.config.configDir)
+      const resumePoint = findResumePoint({
+        sessionKey: sk,
+        prompt: options.prompt,
+        cliPath,
+        transcriptPath: (id) => join(configDir, "projects", encodeCwd(cwd), `${id}.jsonl`),
+      })
+      if (resumePoint) {
+        setClaudeSessionId(sk, resumePoint.claudeSessionId)
+        includeHistoryContext = false
+        log.notice("resuming the claude session from before the restart instead of replaying it", {
+          sessionKey: sk,
+          matchedMessages: resumePoint.matched,
+        })
+      }
+    }
+
     // What this key is being asked to continue, so a later fork of it can be
     // recognised. Only written when the feature is on, so a default install
     // does no hashing at all.
@@ -1819,6 +1854,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 ...self.skillBridgeSpawn(failover),
               })
               if (stoppedBeforeWork()) return
+              // A conversation whose TUI died or was evicted continues where
+              // it was. Without this the key kept its Claude session id, so
+              // the history was not replayed either, and the next turn
+              // started a blank conversation.
+              const resumeSessionId = getClaudeSessionId(sk)
               const ap = spawnInteractiveProcess({
                 cwd,
                 cliPath,
@@ -1831,7 +1871,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 systemPromptFile,
                 ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
                 effort: reasoningEffort,
+                resumeSessionId,
+                // The headless spawn's env, so hygiene, effort and the
+                // agent's prompt cache TTL reach both transports alike.
+                env: claudeSpawnEnv({
+                  ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+                  effort: reasoningEffort,
+                  promptCacheTtl,
+                }),
               })
+              ap.proc.once("exit", (code: number | null) =>
+                noteInteractiveProcessExit(sk, ap, code),
+              )
               ap.mcpHash = mcp.bridgedHash
               ap.mcpServers = mcp.allEnabledServerNames
               setActiveProcess(sk, ap)
@@ -1840,6 +1891,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               state.activeProcess = ap
               log.info("spawned interactive claude session", {
                 sk,
+                resumed: !!resumeSessionId,
                 cliPath,
                 configDir: self.config.configDir,
                 model: effectiveModelId,
@@ -2221,6 +2273,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // the line handler, the close handler and `completeResult` below.
         const completeResult = (msg: ClaudeStreamMessage) => {
           if (state.controllerClosed) return
+          // Which Claude session answered this conversation, for the next
+          // opencode process. Only after a turn that was served: a failed one
+          // may leave a transcript the plugin itself would not resume.
+          if (
+            self.config.resumeAfterRestart !== false &&
+            !compactionMode &&
+            msg.is_error !== true &&
+            typeof msg.session_id === "string"
+          ) {
+            recordResumePoint(sk, msg.session_id, options.prompt, cliPath)
+          }
           // The socket may have closed after the tool-result prompt was matched,
           // or while the result-boundary grace timer was running.
           if (deliverPendingCompletions(state)) {

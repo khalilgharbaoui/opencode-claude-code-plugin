@@ -78,23 +78,16 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-04: **idea, from reviewing `10097.patch`**: resume the Claude session after an opencode restart
-  instead of replaying the conversation. Today the session-id map lives in memory, so the first turn of
-  an existing conversation in a fresh opencode process sends the whole history as text: the retained
-  `plugin.log` holds 3 such replays, averaging 648,653 characters and up to 981,109 (an account switch
-  is one of them, and that one can never resume). The patch had `saveClaudeSessionId` /
-  `loadClaudeSessionId` for this, but they were never called. Doing it safely means persisting the
-  session id together with `src/session-fork.ts`'s digest chain and the `cliPath`, and resuming only
-  when this history still extends that chain (opencode revert and edits change it) on the same account.
-  Not started; build it, or leave it?
 - 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after
   0.37.1: 17 idle Herdr panes restarted onto their own sessions by `/tmp/oc-restart/
   restart-opencode-panes.py` (quit with `ctrl+x q`, relaunch `opencode -s <id>` in the same pane;
   each verified by process start time and argv). Still on an older build, left for the maintainer:
   Herdr `wA:p4` (alwasiyyah, mid-turn, started 10:48), `wA:pK` (Stashcut, since Oct 1, input box
-  unreadable), `wA:p5` (the session that did the restart, 22:37), and pid 14428, a terminal outside
+  unreadable), and pid 14428, a terminal outside
   Herdr (`ttys017`, `~/code/Appical/webapp`, since Sep 24). Per pane: `ctrl+x q`, then the
-  `opencode -s` line opencode prints on exit.
+  `opencode -s` line opencode prints on exit. (`wA:p5` was closed 2026-10-05 at the maintainer's
+  request, its work consolidated into the parity session.) With `resumeAfterRestart` (h #g197) a
+  restarted pane now resumes its Claude session instead of replaying it.
 - 2026-10-02: the repository is still a GitHub fork of unixfox/opencode-claude-code-plugin.
   **Filed 2026-10-03 as GitHub Support ticket #4818005** (maintainer: "1", then "go"), from the
   maintainer's login in a throwaway debug-Chrome profile, deleted afterwards. Findings first:
@@ -128,6 +121,15 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-05: **done**: "fix what you can fix now also consolidate what we are doing in the split above
+  into this session ... and close that split". The split (`wA:p5`) had no unfinished site work (its
+  last turns were the 10097 review, `375b69b`; the design passes shipped as #86 and #87); its open
+  items were already here, and it was closed. Fixed in the same pass: (1) the interactive transport's
+  parity work (h #g196), now verified live through opencode 1.18.34 and 2.0.22 as well, where
+  `Bun.Terminal` exists in V2's plugin process; (2) V2 showed every CLI-executed tool's output as raw
+  `{"output":...}` JSON on both transports, now plain text (h #g197); (3) the 2026-10-04 idea:
+  `resumeAfterRestart` (default on) resumes a conversation's Claude session after an opencode restart
+  instead of replaying it, live on both majors (h #g197). 1,189 tests.
 - 2026-10-04: **done**: reviewed `10097.patch` (maintainer: "check it out the patch whether its
   beneficial still and can be assimilated"). It is anomalyco/opencode#10097 by Dennis Krämer, the opencode
   proof of concept the first version was built from. Nothing to assimilate: every live piece is

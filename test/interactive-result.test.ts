@@ -44,6 +44,8 @@ const TURN_USAGE = {
 
 async function runInteractiveTurn(stub: {
   stopReason: string | null
+  /** How `tailTurn` says the turn ended; follows `stopReason` when omitted. */
+  end?: "stop" | "interrupted" | "ended"
   throws?: string
 }): Promise<any> {
   const realStart = ClaudeSession.prototype.start
@@ -53,9 +55,11 @@ async function runInteractiveTurn(stub: {
     if (stub.throws) throw new Error(stub.throws)
     return {
       stopReason: stub.stopReason,
+      end: stub.end ?? (stub.stopReason ? "stop" : "ended"),
       usage: TURN_USAGE,
       lastCallUsage: TURN_USAGE,
       callCount: 1,
+      denied: [],
     }
   }
   try {
@@ -143,6 +147,16 @@ test("a turn with no terminal stop_reason stays an error result", async () => {
   assert.equal(result.stop_reason, null)
   assert.ok(describeResultFailure(result))
   assert.match(result.result, /without a terminal stop_reason/)
+})
+
+test("an interrupted turn is an error result that says so", async () => {
+  // Esc on a running turn (an abort) or the TUI's own interrupt marker. A
+  // half-written answer must never read as a finished one.
+  const result = await runInteractiveTurn({ stopReason: null, end: "interrupted" })
+  assert.equal(result.subtype, "error_during_execution")
+  assert.equal(result.is_error, true)
+  assert.equal(result.terminal_reason, "aborted")
+  assert.match(result.result, /interrupted/)
 })
 
 test("a failed turn stays an error result", async () => {

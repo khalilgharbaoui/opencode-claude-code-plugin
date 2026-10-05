@@ -16,6 +16,7 @@
  */
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -60,7 +61,10 @@ function readRecords(fixture: string): any[] {
 
 /**
  * Drive the REAL `tailTurn` over a fixture: point the session's transcript
- * path at it and stub the PTY, which is the only Bun-only part of the path.
+ * path at a scratch file and stub the PTY, which is the only Bun-only part of
+ * the path. The fixture lands in the file when the prompt is submitted (the
+ * Enter after the paste), as the CLI writes it: a turn starts reading at the
+ * transcript's end, so records already there belong to an earlier turn.
  * Everything else (the poll loop, the cursor, the terminal-stop detection and
  * the usage aggregation) runs unmodified.
  */
@@ -72,14 +76,30 @@ async function tailFixture(
     pollMs: 1,
     submitMinMs: 0,
     submitConfirmMs: 50,
+    stopSettleMs: 20,
     turnTimeoutMs: 5000,
   })
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-usage-"))
+  const transcript = path.join(scratch, "session.jsonl")
+  fs.writeFileSync(transcript, "")
   const anySession = session as any
-  anySession.jsonlPath = fixture
-  anySession.proc = { terminal: { write: () => {} } }
+  anySession.jsonlPath = transcript
+  anySession.proc = {
+    terminal: {
+      write: (data: string) => {
+        if (data === "\r" && fs.statSync(transcript).size === 0) {
+          fs.writeFileSync(transcript, fs.readFileSync(fixture, "utf8"))
+        }
+      },
+    },
+  }
   const lines: string[] = []
-  const result = await session.tailTurn("prompt", (raw) => lines.push(raw))
-  return { lines, result }
+  try {
+    const result = await session.tailTurn("prompt", (raw) => lines.push(raw))
+    return { lines, result }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+  }
 }
 
 // ---------------------------------------------------------------------------

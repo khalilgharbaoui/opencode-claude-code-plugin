@@ -121,6 +121,24 @@ function parseInput(raw: unknown): Input {
 }
 
 /**
+ * The result of a tool the CLI ran itself, in the shape V2 shows. opencode 1.x
+ * reads `output`, `title` and `metadata` off the `{output,title,metadata}`
+ * object the stream parser emits. V2 keeps nothing but text from it:
+ * `@opencode/core`'s `hostedContent` passes a string through and
+ * `JSON.stringify`s anything else, so the object reached the conversation as
+ * raw JSON (measured on 2.0.22, both transports). The output string is all V2
+ * has a place for.
+ */
+function hostedToolResult(part: StreamPart): unknown {
+  const result = part.result as { output?: unknown } | undefined
+  if (part.providerExecuted !== true) return part.result
+  if (!result || typeof result !== "object" || typeof result.output !== "string") {
+    return part.result
+  }
+  return result.output
+}
+
+/**
  * A per-stream rewriter for tool parts. Stateful because opencode ties a
  * tool's start, deltas, call and result together by id, so a tool that is
  * renamed or dropped at its start must be treated the same way to the end.
@@ -179,7 +197,8 @@ export function createHostToolPartTranslator(
       case "tool-result": {
         const tool = classify(String(part.toolCallId), part.toolName)
         if (tool === null) return null
-        return tool ? { ...part, toolName: tool.name } : part
+        const result = hostedToolResult(part)
+        return tool ? { ...part, toolName: tool.name, result } : { ...part, result }
       }
       default:
         return part

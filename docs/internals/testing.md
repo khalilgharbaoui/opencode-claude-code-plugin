@@ -40,6 +40,10 @@ current in the same change as the code.
 - **The `test` script forces `OPENCODE_CLAUDE_CODE_LOG_FILE=0`.** Without it a run appends
   fixture lines and fake `plugin ready` blocks to the live `plugin.log`, which the next person
   to read that log will take for a broken install.
+- **It also gives every run a fresh `XDG_STATE_HOME` (`mktemp -d`).** Fake-CLI turns finish
+  successfully, and each one would otherwise record a resume point in the operator's real
+  `claude-sessions.json` (see `resumeAfterRestart`). Run a single file the same way:
+  `XDG_STATE_HOME=$(mktemp -d) npx tsx --test test/<name>.test.ts`.
 
 Two further traps are about load rather than correctness. A spec must never race the CLI
 version probe's 5-second deadline, because on a loaded machine it loses and the feature under

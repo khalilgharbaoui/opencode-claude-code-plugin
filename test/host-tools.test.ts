@@ -150,3 +150,57 @@ test("translateStreamForHost is the identity on V1 and rewrites on V2", async ()
     ["subagent"],
   )
 })
+
+// V2 renders a provider-executed result through `@opencode/core`'s
+// `hostedContent`, which passes a string through and JSON.stringifies anything
+// else. The `{output,title,metadata}` object 1.x reads therefore reached a V2
+// conversation as raw JSON (measured on 2.0.22, both transports).
+test("V2 gets a CLI-executed tool's output as plain text", () => {
+  const translate = createHostToolPartTranslator("v2")
+  const part = (name: string, extra: Record<string, unknown> = {}) =>
+    translate({
+      type: "tool-result",
+      toolCallId: `r-${name}`,
+      toolName: name,
+      result: { output: "v2-tool-ok", title: name, metadata: {} },
+      providerExecuted: true,
+      ...extra,
+    })
+  assert.equal(part("bash")?.result, "v2-tool-ok")
+  assert.equal(part("bash")?.toolName, "shell")
+  // A tool V2 has no rename for gets the same treatment.
+  assert.equal(part("read")?.result, "v2-tool-ok")
+  // A failure keeps its flag; V2 reads the string as the error message.
+  const failed = part("grep", { isError: true })
+  assert.equal(failed?.result, "v2-tool-ok")
+  assert.equal(failed?.isError, true)
+})
+
+test("V2 leaves results it cannot read as text alone", () => {
+  const translate = createHostToolPartTranslator("v2")
+  const notProviderExecuted = { output: "x", title: "t", metadata: {} }
+  assert.deepEqual(
+    translate({ type: "tool-result", toolCallId: "n1", toolName: "read", result: notProviderExecuted })?.result,
+    notProviderExecuted,
+  )
+  const noOutput = { title: "t" }
+  assert.deepEqual(
+    translate({
+      type: "tool-result",
+      toolCallId: "n2",
+      toolName: "read",
+      result: noOutput,
+      providerExecuted: true,
+    })?.result,
+    noOutput,
+  )
+})
+
+test("V1 keeps the result object opencode 1.x reads title and metadata from", () => {
+  const translate = createHostToolPartTranslator("v1")
+  const result = { output: "ok", title: "bash", metadata: {} }
+  assert.deepEqual(
+    translate({ type: "tool-result", toolCallId: "v1", toolName: "bash", result, providerExecuted: true })?.result,
+    result,
+  )
+})
