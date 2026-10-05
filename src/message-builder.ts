@@ -661,3 +661,56 @@ Now continuing with the current message:
     },
   })
 }
+
+/**
+ * The plain user messages that follow the last assistant message, one array of
+ * content blocks per message, plus the prompt index of that assistant message.
+ *
+ * A tool-result turn resolves the parked proxy calls and never writes a user
+ * envelope, so anything the host promoted into the prompt beside the results
+ * (a background-PTY notice, a mail-watch notice, a steered prompt) has to be
+ * forwarded by the caller or the CLI never sees it. `tool` messages and
+ * `tool-result` parts are skipped: those are what the resolution already
+ * delivers. The index identifies which assistant boundary the messages belong
+ * to, so a later tool-result turn for the same boundary does not send them twice.
+ */
+export function getTrailingUserMessages(
+  prompt: Prompt,
+  opts: { stripContextReminders?: boolean } = {},
+): {
+  assistantIndex: number
+  messages: any[][]
+} {
+  // The same cleaning `getClaudeUserMessage` applies, so a forwarded message
+  // never carries what the envelope path would have removed.
+  prompt = stripAccountFailoverParts(prompt)
+  if (opts.stripContextReminders) prompt = stripContextReminders(prompt).prompt
+  let assistantIndex = -1
+  for (let i = prompt.length - 1; i >= 0; i--) {
+    if (prompt[i].role === "assistant") {
+      assistantIndex = i
+      break
+    }
+  }
+  const messages: any[][] = []
+  for (let i = assistantIndex + 1; i < prompt.length; i++) {
+    const msg = prompt[i]
+    if (msg.role !== "user") continue
+    if (parseSideQuestionContent(msg.content) !== null) continue
+    const blocks: any[] = []
+    if (typeof msg.content === "string") {
+      if ((msg.content as string).trim()) blocks.push({ type: "text", text: msg.content })
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content as any[]) {
+        if (part.type === "text") {
+          if (part.text && part.text.trim()) blocks.push({ type: "text", text: part.text })
+        } else if (part.type === "file" || part.type === "image") {
+          const block = toImageBlock(part)
+          if (block) blocks.push(block)
+        }
+      }
+    }
+    if (blocks.length > 0) messages.push(blocks)
+  }
+  return { assistantIndex, messages }
+}

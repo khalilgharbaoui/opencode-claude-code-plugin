@@ -67,6 +67,16 @@ export interface ActiveProcess {
    */
   cliPath?: string
   cliArgs?: string[]
+  /**
+   * How many of the plain user messages after the assistant message at
+   * `assistantIndex` a tool-result turn has already written to this child. A
+   * later tool-result turn for the same boundary (parallel proxy calls finish
+   * in separate opencode turns) sends only what is beyond `count`. A respawned
+   * child starts without it, on purpose: a message the killed child had only
+   * queued would be lost if it were carried, and one it had already attached is
+   * merely repeated if it is reset, and repeating is the safer failure.
+   */
+  forwardedUserMessages?: { assistantIndex: number; count: number }
   // Retain resolved calls until continuation settles, including late channel closure.
   pendingProxyCompletions?: Map<string, {
     call: PendingProxyCall

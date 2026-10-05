@@ -16,7 +16,7 @@ import type {
   ReasoningEffort,
 } from "./types.js"
 import { translateStreamForHost } from "./host-tools.js"
-import { getClaudeUserMessage } from "./message-builder.js"
+import { getClaudeUserMessage, getTrailingUserMessages } from "./message-builder.js"
 import {
   resolveAgentCacheTtl,
   resolveAgentEffort,
@@ -269,6 +269,11 @@ export async function isProxyCallStillServed(callId: string): Promise<boolean> {
 }
 
 setProxyDeadlineGuard(({ callId }) => isProxyCallStillServed(callId))
+
+// How long the CLI gets to enqueue a forwarded user message before the parked
+// proxy call it is blocked in is resolved. Measured lag of the enqueue behind
+// the tool result without it: up to 19 ms.
+export const FORWARD_SETTLE_MS = 250
 
 // How long a turn that lost its child waits for that child's exit status
 // before reporting the crash without one.
@@ -2903,6 +2908,57 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // here an abort is an abort of work this turn owns: the handler above
           // takes its mid-turn branches, exactly as it did before.
           state.cliAskedForWork = true
+          // The prompt that carried these results can also carry user
+          // messages the host promoted beside them (a background-PTY or mail
+          // notice, a steered prompt). Resolving a proxy call writes no user
+          // envelope, so without this the CLI never sees them although
+          // opencode has recorded them as delivered. Written BEFORE the
+          // parked calls are resolved: the CLI is blocked inside the proxy
+          // call, queues a message that arrives now, and attaches it to the
+          // model call that follows the result, so it stays in this turn.
+          // When the turn already ended (recovery), the completion envelope
+          // opens a new turn first and the messages follow it instead. Only
+          // what a previous tool-result turn for the same assistant boundary
+          // has not already sent.
+          const forwardTrailingUserMessages = (): number => {
+            if (compactionMode || !state.activeProcess) return 0
+            const trailing = getTrailingUserMessages(effectivePrompt, {
+              stripContextReminders: self.stripContextRemindersEnabled(),
+            })
+            const sent =
+              state.activeProcess.forwardedUserMessages?.assistantIndex === trailing.assistantIndex
+                ? state.activeProcess.forwardedUserMessages.count
+                : 0
+            const fresh = trailing.messages.slice(sent)
+            if (fresh.length === 0) return 0
+            state.activeProcess.forwardedUserMessages = {
+              assistantIndex: trailing.assistantIndex,
+              count: trailing.messages.length,
+            }
+            for (const content of fresh) {
+              state.proc.stdin?.write(
+                JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n",
+              )
+            }
+            log.info("forwarded user messages that arrived beside tool results", {
+              sessionKey: sk,
+              messages: fresh.length,
+            })
+            return fresh.length
+          }
+          if (!state.unattendedTurnEnded && forwardTrailingUserMessages() > 0) {
+            // The CLI reads stdin and the proxy HTTP response on separate paths,
+            // and a message it enqueues AFTER it consumed the result runs as a
+            // second turn (measured: 2 of 7 forwardings, enqueue 6 and 19 ms
+            // after the result). A short head start makes it queue first.
+            await new Promise((resolve) => setTimeout(resolve, FORWARD_SETTLE_MS))
+            // An abort can land in that wait. Its mid-turn branch has already
+            // interrupted the CLI, rejected the parked calls and closed the
+            // stream, so resolving them or recording their completions now
+            // would hand a rejected call's result to a later turn as late text.
+            if (state.controllerClosed) return
+          }
+
           // Tool-result turn: the prompt carries opencode's results for the
           // proxy tool calls we drained on the previous turn. Resolve each
           // matched call (claude CLI's HTTP handlers wake up and continue).
@@ -2941,7 +2997,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          if (state.unattendedTurnEnded) deliverPendingCompletions(state)
+          if (state.unattendedTurnEnded) {
+            deliverPendingCompletions(state)
+            forwardTrailingUserMessages()
+          }
 
           // Calls queued while no turn was attached were never handed to
           // opencode; the child is blocked on them right now.
@@ -2981,7 +3040,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         // Send the user message for a fresh turn.
         state.cliAskedForWork = true
-        if (state.activeProcess) noteTurnStarted(state.activeProcess)
+        if (state.activeProcess) {
+          noteTurnStarted(state.activeProcess)
+          // A new ordinary turn sends its own trailing messages: forget the boundary.
+          state.activeProcess.forwardedUserMessages = undefined
+        }
         state.proc.stdin?.write(userMsg + "\n")
         log.debug("sent user message", { textLength: userMsg.length })
         // Arm the start watchdog so a reused child that goes silent after
