@@ -129,7 +129,8 @@ Nothing parked.
   `Bun.Terminal` exists in V2's plugin process; (2) V2 showed every CLI-executed tool's output as raw
   `{"output":...}` JSON on both transports, now plain text (h #g197); (3) the 2026-10-04 idea:
   `resumeAfterRestart` (default on) resumes a conversation's Claude session after an opencode restart
-  instead of replaying it, live on both majors (h #g197). 1,189 tests.
+  instead of replaying it, live on both majors (h #g197). 1,189 tests. Released as **v0.39.0**
+  (commit `375ddba`, CI publish green, registry shasum `e7cad9b2` matches the step's notice).
 - 2026-10-04: **done**: reviewed `10097.patch` (maintainer: "check it out the patch whether its
   beneficial still and can be assimilated"). It is anomalyco/opencode#10097 by Dennis Krämer, the opencode
   proof of concept the first version was built from. Nothing to assimilate: every live piece is
