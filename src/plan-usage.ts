@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { detectHeadlessSupport } from "./cli-version.js"
 import { log } from "./logger.js"
 import { claudeSpawnEnv } from "./session-manager.js"
 
@@ -99,6 +100,8 @@ export interface FetchPlanUsageOptions {
   timeoutMs?: number
   /** The provider option: strip a stray API key, as every turn's spawn does. */
   ignoreAnthropicApiKey?: boolean
+  /** Capability seam; no inference is used to learn whether print is present. */
+  headlessSupportImpl?: typeof detectHeadlessSupport
   /** Seam for tests; defaults to spawning the real CLI. */
   runImpl?: (
     cliPath: string,
@@ -144,6 +147,10 @@ export async function fetchPlanUsage(
   const timeoutMs = options.timeoutMs ?? 20_000
   const run = options.runImpl ?? runCli
   try {
+    const support = options.headlessSupportImpl ?? (options.runImpl ? undefined : detectHeadlessSupport)
+    if (support && await support(cliPath) === "unsupported") {
+      return { status: "failed", error: "Plan usage is unavailable: this Claude CLI does not support headless output. Check usage in the Claude CLI directly." }
+    }
     // The turn spawn's env, not the bare inherited one: unlike `--version`,
     // `-p` is a full CLI start, so without the hygiene vars it may auto-update
     // the binary behind the version cache, and without the key strip a stray

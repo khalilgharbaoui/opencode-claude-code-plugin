@@ -274,6 +274,7 @@ export function createClaudeCode(
       turnStats: settings.turnStats === true,
       forkSessions: settings.forkSessions === true,
       resumeAfterRestart: settings.resumeAfterRestart !== false,
+      transport: settings.transport,
       interactive: settings.interactive,
       interactiveBypass: settings.interactiveBypass,
       interactiveAllowTools: settings.interactiveAllowTools,

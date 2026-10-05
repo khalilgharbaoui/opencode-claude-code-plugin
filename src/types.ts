@@ -1,6 +1,7 @@
 import type { LogLevel, LogMode } from "./logger"
 
 export type { LogLevel, LogMode }
+export type ClaudeCodeTransport = "auto" | "headless" | "interactive"
 
 export interface ClaudeCodeConfig {
   provider: string
@@ -13,6 +14,8 @@ export interface ClaudeCodeConfig {
    * so nothing process-wide may decide it.
    */
   hostApi?: "v1" | "v2"
+  /** Explicit transport selection; auto switches only on proven missing headless flags. */
+  transport?: ClaudeCodeTransport
   /** Drive interactive claude (subscription) instead of headless --print. */
   interactive?: boolean
   /** Deprecated/no-op with interactive: Claude Code's TUI requires manual confirmation for bypassPermissions. */
@@ -134,6 +137,8 @@ export interface ClaudeCodeProviderSettings {
   cliPath?: string
   /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostApi`. */
   hostApi?: "v1" | "v2"
+  /** Wins over the legacy interactive option and its environment fallback. */
+  transport?: ClaudeCodeTransport
   /** Drive interactive claude (subscription) instead of headless --print. */
   interactive?: boolean
   /** Deprecated/no-op with interactive: Claude Code's TUI requires manual confirmation for bypassPermissions. */

@@ -480,6 +480,8 @@ export function getClaudeUserMessage(
   includeHistoryContext: boolean = false,
   opts: {
     compactionMode?: boolean
+    /** PTY compaction has no appended system prompt, so type its instructions. */
+    compactionInstructions?: string
     cliToolCallIds?: ReadonlySet<string>
     stripContextReminders?: boolean
   } = {},
@@ -558,6 +560,9 @@ The complete prior conversation appears above. The synthesis instructions follow
 
 `,
       })
+    }
+    if (opts.compactionInstructions?.trim()) {
+      content.push({ type: "text", text: opts.compactionInstructions })
     }
   } else if (includeHistoryContext) {
     const historyContext = compactConversationHistory(prompt)

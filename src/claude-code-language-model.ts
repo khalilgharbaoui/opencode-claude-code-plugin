@@ -115,6 +115,7 @@ import {
 } from "./compression-store.js"
 import { log } from "./logger.js"
 import { detectCliSupportsFlag, detectCliVersion } from "./cli-version.js"
+import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
 import { findResumePoint, recordResumePoint } from "./session-resume-store.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
@@ -892,16 +893,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const flagOn = (v: string | undefined) =>
       v !== undefined &&
       !["", "0", "false", "no", "off"].includes(v.trim().toLowerCase())
-    // Interactive (subscription) transport: drive the claude TUI over Bun's
-    // native ConPTY + JSONL tail instead of headless `--print` stream-json.
-    // Prefer the provider option (config-driven, reliable in the GUI app where
-    // process env vars are not inherited); fall back to the env var. Self-healing:
-    // if Bun.Terminal is unavailable (e.g. not under Bun), use the headless path.
-    const interactivePref =
-      this.config.interactive ??
-      flagOn(process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT)
-    const useInteractive =
-      interactivePref && typeof (globalThis as any).Bun?.Terminal === "function"
+    const transport = requestedTransport(this.config)
+    const doctor =
+      !compactionMode && scope !== "no-tools" ? parseDoctorCommand(options.prompt) : null
+    // Legacy interactive keeps its historical non-Bun fallback. Explicit
+    // transport selection fails clearly instead of silently changing modes.
+    const selectedTransport = doctor
+      ? transport === "interactive" ? "interactive" : "headless"
+      : this.config.transport === undefined && !hasInteractiveTransport()
+      ? "headless"
+      : this.isTitleRequest(scope, options) && !compactionMode
+        ? "headless"
+        : await Promise.race([selectTransport(transport, this.config.cliPath), turnAbort.whenAborted])
+    if (turnAbort.aborted) return abortedBeforeWork("selecting the transport")
+    const useInteractive = selectedTransport === "interactive"
+    if (useInteractive && !compactionMode && !doctor &&
+      (this.config.permissionPreset === "read-only" || this.config.permissionMode === "plan")) {
+      throw new Error("Interactive Claude transport cannot enforce the read-only preset or plan mode. Use the headless transport for this permission posture.")
+    }
     const interactiveBypassRequested =
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
@@ -922,9 +931,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // override is keyed on the ACCOUNT, so it covers every session running on
     // it, subagents included. Resolved here, before anything reads `cliPath`.
     //
-    // Excluded for the interactive transport, which drives a TUI over a PTY
-    // with no proxy server: nothing in that path can show the form or replay
-    // the conversation, so it keeps the plain rate-limit error.
+    // The account-switch round trip is not verified on the interactive
+    // transport, so that path keeps the plain rate-limit error.
     const sourceAccount = normalizeAccountName(
       this.config.account ?? DEFAULT_ACCOUNT,
     )
@@ -955,8 +963,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // inference at all: everything in the report is already in this process.
     // Same shape as the aside branch below, and the exchange is stripped from
     // rebuilt transcripts the same way a `/btw` pair is.
-    const doctor =
-      !compactionMode && scope !== "no-tools" ? parseDoctorCommand(options.prompt) : null
     if (doctor) {
       const doctorOptions = {
         cliPath,
@@ -1092,7 +1098,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // after a turn already finished. The prompt ends with an assistant
     // message and has no fresh user input — spawning Claude here would
     // just produce a stub like "No input received. Standing by".
-    if (!hasNewUserContent(options.prompt)) {
+    if (!compactionMode && !hasNewUserContent(options.prompt)) {
       log.info("doStream short-circuit: no new user content")
       const stream = new ReadableStream<LanguageModelV3StreamPart>({
         start(controller) {
@@ -1366,6 +1372,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       exitPlanModeQuestionResult ??
       getClaudeUserMessage(effectivePrompt, includeHistoryContext, {
         compactionMode,
+        compactionInstructions: useInteractive && compactionMode
+          ? extractSystemMessages(effectivePrompt).join("\n\n")
+          : undefined,
         cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
         stripContextReminders: this.stripContextRemindersEnabled(),
       })
@@ -2023,7 +2032,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          if (useInteractive && !compactionMode) {
+          if (useInteractive && compactionMode) {
+            // A fresh, tool-less TUI answers only this summary request. No
+            // bridge, proxy, skill staging, resume or continuation prompt.
+            const ap = spawnInteractiveProcess({
+              cwd,
+              cliPath,
+              configDir: self.config.configDir,
+              model: spawnModelId,
+              fastMode,
+              tools: [],
+              mcpConfigPaths: ['{"mcpServers":{}}'],
+              env: claudeSpawnEnv({ ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey }),
+            })
+            state.proc = ap.proc
+            state.lineEmitter = ap.lineEmitter
+            state.activeProcess = ap
+          } else if (useInteractive) {
             // Interactive Bun-ConPTY transport. Reuse the live session if one
             // exists for this key; else spawn a new interactive claude. The
             // wrapper conforms to ActiveProcess, so reuse/eviction/hot-reload
@@ -2677,6 +2702,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           state.asideSinkUnregister?.()
           state.asideSinkUnregister = null
           state.proc.off("error", procErrorHandler)
+          if (compactionMode && useInteractive) state.proc.kill()
         }
 
         const procErrorHandler = (err: Error) => {

@@ -7,18 +7,24 @@ sidebar:
 
 ## Interactive transport (experimental)
 
-By default the plugin spawns `claude --print` (headless). The interactive transport instead drives the real interactive `claude` TUI under a native PTY inside opencode's Bun runtime, types your prompt into it, and streams the session transcript (`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`) back through the same pipeline the headless transport uses. Claude Code names that directory from the cwd's **resolved real path** with every non-alphanumeric character replaced by `-`, so a working directory reached through a symlink (on macOS `/tmp` is a symlink to `/private/tmp`) is named after the target: `/tmp/scratch` becomes `-private-tmp-scratch`. It was built as insurance for the day headless usage is billed differently from interactive usage; today both draw from the same plan usage limits (see [Billing](../billing.md)), so it is not a way to change what a turn costs.
+By default the plugin spawns `claude --print` (headless). The interactive transport instead drives the real interactive `claude` TUI under a native PTY inside opencode's Bun runtime, types your prompt into it, and streams the session transcript (`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`) back through the same pipeline the headless transport uses. Claude Code names that directory from the cwd's **resolved real path** with every non-alphanumeric character replaced by `-`, so a working directory reached through a symlink (on macOS `/tmp` is a symlink to `/private/tmp`) is named after the target: `/tmp/scratch` becomes `-private-tmp-scratch`. This provides a transport alternative if a future CLI removes headless flags. Both transports currently draw from the same plan usage limits (see [Billing](../billing.md)); selecting a transport does not change billing or access restrictions.
 
 ```json
-"options": { "interactive": true }
+"options": { "transport": "auto" }
 ```
 
-Or per-process: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`.
+`transport` takes precedence over the legacy `interactive` option and its environment variable:
+
+- `"headless"`: always use the headless CLI.
+- `"interactive"`: require the PTY transport.
+- `"auto"`: prefer headless. A cached, input-less help/argument probe selects the PTY only when the CLI definitively rejects a required headless flag or advertises help without it. A timeout, missing binary, authentication failure or inconclusive output is **unknown**, not evidence that headless disappeared. Such a turn stays headless and reports its normal failure. The plugin never retries an already submitted request on another transport.
+
+With `transport` unset, the default remains headless. `interactive: true` or `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1` retains the legacy PTY opt-in; an explicit `interactive` boolean wins over that environment variable. Fully quit and relaunch opencode after changing provider options.
 
 ### Requirements
 
-- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. If it isn't, the flag is ignored and the headless transport is used, and nothing breaks. Both opencode 1.x and 2.x provide it: verified live on 1.18.34 and 2.0.22 with Claude Code 2.1.288. On opencode 2 the option goes under `providers.claude-code.settings` instead of `provider.claude-code.options`.
-- A logged-in `claude` (subscription auth). The whole point is plan billing, so API-key auth gains nothing here.
+- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. Explicit `transport: "interactive"` and an automatic PTY selection fail clearly when it is absent. The legacy `interactive` option still falls back to headless. Both opencode 1.x and 2.x provide it: verified live on 1.18.34 and 2.0.22 with Claude Code 2.1.288. On opencode 2 the option goes under `providers.claude-code.settings` instead of `provider.claude-code.options`.
+- A working, authenticated `claude` using the account you intend. Transport selection cannot repair an expired login or a usage limit.
 
 ### What carries over from the headless transport
 
@@ -34,7 +40,7 @@ Set `interactiveSystemPrompt: false` only for diagnostics. While disabled, the i
 
 This is the part to read before turning it on. Two features of this plugin are absent on the interactive transport:
 
-- **No `permissionMode`.** The interactive spawn never passes your `permissionMode` to the CLI, so `"plan"` and the rest have no effect there. Permission handling is the pre-allow list described below and nothing else.
+- **No `permissionMode`.** Permission handling is the pre-allow list described below. A normal turn with `permissionMode: "plan"` or `permissionPreset: "read-only"` refuses PTY selection, including automatic fallback, because the transport cannot enforce that posture. Other `permissionMode` values are not forwarded.
 - **No [`/btw`](../guides/btw.md).** Side questions ride Claude Code's `side_question` control protocol over the headless process's stdio. Asking one in an interactive session returns an error telling you so.
 
 ### What else is different
@@ -63,4 +69,5 @@ The TUI has no control channel, so everything it is blocked on is drawn on the s
 - **A turn ends** on a terminal stop reason once that API call's last record is in (a call is written as several records, and the reply text is the last of them), on the TUI's interrupt marker, or on the `turn_duration` record 2.1.288 writes after every turn.
 - **The account's login is the one `claude` uses on its own.** `CLAUDE_CONFIG_DIR` reaches the TUI only for an account you configured: measured on 2.1.288, setting it even to the default `~/.claude` makes the CLI report itself logged out, which made every default-account interactive turn fail.
 - **No idle eviction:** `idleProcessTimeoutMs` does not apply to interactive sessions.
-- `/compact` always uses the headless transport regardless of this setting.
+- **`/compact` uses the selected transport.** An interactive compaction gets a fresh, short-lived TUI with built-in tools disabled and an empty strict MCP configuration, no proxy or skill bridge, and the transcript plus summary instructions as text. The TUI is closed after its result; it never resumes or replaces the main conversation's TUI. Compaction still omits agent effort/cache overrides, continuation nudges and stats notes.
+- **Doctor usage when headless is unavailable:** `/claude-code-doctor usage` reports that the free headless `/cost` check is unavailable and asks you to check usage in Claude directly. It does not send `/cost` as an inference prompt or scrape a PTY screen. The ordinary doctor report still works.

@@ -47,8 +47,10 @@ import {
   noteInteractiveProcessExit,
   setActiveProcess,
   setClaudeSessionId,
+  sessionKey,
 } from "../src/session-manager.js"
 import { armStartWatchdog } from "../src/turn-controller.js"
+import { createClaudeCode } from "../src/index.js"
 
 // ---------------------------------------------------------------------------
 // The scripted TUI.
@@ -181,6 +183,89 @@ function scratch(): { cwd: string; configDir: string; cleanup: () => void } {
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
   }
 }
+
+test("auto survives removed print flags on both hosts, including lean compaction", async () => {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const dirs = scratch()
+  const cliPath = path.join(dirs.cwd, "no-print")
+  fs.writeFileSync(cliPath, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\nprintf \"error: unknown option '--print'\\n\" >&2\nexit 1\n", { mode: 0o755 })
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      tui.turns = [(child) => child.append(assistantRecord("reply", "end_turn", textBlock("SUMMARY")))]
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  try {
+    for (const posture of [{ permissionMode: "plan" as const }, { permissionPreset: "read-only" as const }]) {
+      const restricted = createClaudeCode({
+        transport: "auto", cliPath, cwd: dirs.cwd, configDir: dirs.configDir,
+        bridgeOpencodeMcp: false, proxyTools: [], ...posture,
+      }).languageModel("claude-test-no-print-restricted")
+      await assert.rejects(restricted.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "reply" }] }],
+        tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+      }), /cannot enforce/)
+      assert.equal(children.length, 0, "automatic selection must not relax the requested posture")
+    }
+    for (const hostApi of ["v1", "v2"] as const) {
+      const modelId = `claude-test-no-print-${hostApi}`
+      const model = createClaudeCode({
+        transport: "auto", cliPath, cwd: dirs.cwd, configDir: dirs.configDir, hostApi,
+        bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false,
+      }).languageModel(modelId)
+      const options = {
+        prompt: [{ role: "user" as const, content: [{ type: "text" as const, text: "reply" }] }],
+        tools: [{ type: "function" as const, name: "read", inputSchema: { type: "object" } }],
+      }
+      const normal = await model.doStream(options)
+      const normalParts = []
+      for await (const part of normal.stream) normalParts.push(part)
+      assert(normalParts.some((part) => part.type === "text-delta" && part.delta === "SUMMARY"))
+      const normalChild = children.at(-1)!
+      assert(!normalChild.argv.includes("--print"))
+      assert.equal(normalChild.exitCode, undefined, "ordinary sessions remain reusable")
+      deleteActiveProcess(sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`))
+
+      const compact = await model.doStream({ ...options,
+        prompt: [
+          { role: "system", content: "Summarize the conversation. Preserve the secret codename." },
+          { role: "user", content: [{ type: "text", text: "The codename is OSPREY." }] },
+          { role: "assistant", content: [{ type: "text", text: "I will remember OSPREY." }] },
+        ],
+        providerOptions: { "claude-code": { opencodeAgent: "compaction" } },
+      })
+      const compactParts = []
+      for await (const part of compact.stream) compactParts.push(part)
+      assert(compactParts.some((part) => part.type === "text-delta" && part.delta === "SUMMARY"))
+      const child = children.at(-1)!
+      assert.equal(child.argv[child.argv.indexOf("--tools") + 1], "")
+      assert.equal(child.argv[child.argv.indexOf("--mcp-config") + 1], '{"mcpServers":{}}')
+      assert(child.argv.includes("--strict-mcp-config"))
+      assert(!child.argv.includes("--plugin-dir"))
+      assert(!child.argv.includes("--resume"))
+      assert.equal(child.argv[child.argv.indexOf("--model") + 1], "claude-haiku-4-5")
+      const paste = child.writes.find((write) => write.startsWith("\x1b[200~"))!
+      assert.match(paste, /Summarize the conversation/)
+      assert.match(paste, /OSPREY/)
+      assert.equal(child.exitCode, null, "compaction's temporary TUI is closed")
+    }
+  } finally {
+    for (const child of children) child.exit(null)
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else Reflect.deleteProperty(globalThis, "Bun")
+    dirs.cleanup()
+  }
+})
 
 async function withSession(
   tui: FakeTui,

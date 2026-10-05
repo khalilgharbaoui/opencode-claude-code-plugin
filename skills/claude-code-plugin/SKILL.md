@@ -140,7 +140,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `stripContextReminders` | boolean | `false` | Strip opencode-dcp `<dcp-system-reminder>` blocks from user/assistant message text, including the fresh-session rebuild. Only when no `compress` is proxied via `proxyTools` or `proxyOpencodeTools`; reachable compress makes it inert. Resolved from config, so a configured-but-unregistered name still counts as reachable. Leaves opencode's own `<system-reminder>` blocks alone. |
 | `multiStepContinuation` | boolean | `true` | Append a system-prompt hint to chain tool calls in one turn instead of stopping between subtasks. |
 | `autoContinueIncompleteTurns` | boolean or `"smart"` | `"smart"` | `true`/`"smart"` continue a turn truncated at `max_tokens`, bounded by 8 attempts and 10 minutes, and otherwise run the keyword heuristic only when stop reason is missing. Every other stop reason, plus error, abort or latched question, stops it. Current measured CLIs always report a reason, so truncation is the only case that resumes in practice. Also gates the `▌ **no reply:**` note written when a turn finishes cleanly with no text and no tool call; `false` turns off the note as well as the continuation. |
-| `compactionModel` | string | `"claude-haiku-4-5"` | `/compact` uses a fresh short-lived headless process without the usual bridge/proxy/skill wiring. Nonblank `CLAUDE_CODE_COMPACTION_MODEL` wins. This is inference and can be billed. |
+| `compactionModel` | string | `"claude-haiku-4-5"` | `/compact` uses a fresh short-lived process on the selected transport without the usual bridge/proxy/skill wiring. On the PTY it disables built-in tools, uses an empty strict MCP config, submits summary instructions with the transcript as text, and closes the TUI after its answer. Nonblank `CLAUDE_CODE_COMPACTION_MODEL` wins. This is inference and can be billed. |
 | `ignoreAnthropicApiKey` | boolean | `false` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from headless/interactive spawn env, allowing stored auth to be used. Does not log in, change the parent env, or guarantee subscription billing if other CLI/cloud auth is configured. Warns at startup when either nonempty variable is present, regardless of the flag. |
 | `idleProcessTimeoutMs` | number | unset | Kill a conversation's idle `claude` worker this many ms after a finished turn. The timer starts when a turn completes, reuse cancels it, and a worker found mid-turn when it fires is re-timed rather than killed. The session id is kept, so the next message resumes transparently. Unset or `0` keeps workers until LRU eviction (16 processes, oldest idle first). Values above `2147483647` are ignored. Not applied to the interactive transport. Deleting a chat in opencode releases its workers and session ids immediately regardless. |
 | `turnStats` | boolean | `false` | Append one `▌ **stats:**` line to each finished turn: cost, wall duration, CLI turn count, input/output/cache-read/cache-write tokens, and a permission-denial count when the turn had any, taken from the CLI's own `result`. Never on a compaction turn or a turn that ended in error. Its own text part, stripped from transcripts rebuilt for the CLI, so the model never sees it. The same numbers are logged at INFO regardless, and `modelUsage` plus `permission_denials` always reach `providerMetadata`. Reported cost is the CLI's figure, not a billing guarantee. |
@@ -148,10 +148,11 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `resumeAfterRestart` | boolean | `true` | After an opencode restart, resume the conversation's Claude session (`--resume`) instead of replaying the thread as text. Persists session id + conversation digest per session key in `$XDG_STATE_HOME/opencode-claude-code-plugin/claude-sessions.json` (0600, 256 entries, 30 days) after each successful turn. Resumes only on the same session key and binary, with the transcript on disk and the history equal to the recorded conversation plus Claude's reply; anything else (edit, revert, compaction, account switch, open tool round trip) replays. Not on compaction. Log: `resuming the claude session from before the restart` (NOTICE) or `not resuming ...` with a reason (INFO). `false` disables reading and writing. |
 | `bridgeOpencodeSkills` | boolean | `false` | Stage the user's opencode skills for Claude's native Skill tool as `opencode-skills:<name>`, on the headless and interactive spawns (never compaction). Covers every root opencode reads: project `.opencode/`, `.claude/`, `.agents/` walking up, the opencode config dirs (`skill/` and `skills/`), and global `~/.claude/skills` and `~/.agents/skills` under opencode's own `OPENCODE_DISABLE_EXTERNAL_SKILLS` / `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` switches. Requires the CLI's `--help` to advertise `--plugin-dir`; otherwise no-op. Bridged skills are also listed in opencode's forwarded system prompt, so a large skill set costs prompt tokens twice, which is why it is off by default; `true` opts the user's skills in. Bundled skill staging ignores this option, but still requires flag support and successful discovery/staging. |
 | `bridgeSkipNativeSkills` | boolean | `true` | Leave a skill unbridged when the Claude session already loads it: from `<CLAUDE_CONFIG_DIR>/skills`, the project's `.claude/skills`, or an installed plugin's `skills/`. Matched by resolved directory, by byte-identical SKILL.md, or (user/project scope only, since plugin skills are namespaced `<plugin>:<name>`) by name. A name match means `Skill("<name>")` answers from Claude's copy, not opencode's, so it is logged at WARN with both paths. The plugin scan reads `installed_plugins.json` and does not check whether the plugin is enabled. `false` bridges everything and reinstates the duplicates. |
-| `interactive` | boolean | unset (headless) | Experimental PTY transport; explicit boolean wins over `CLAUDE_CODE_INTERACTIVE_TRANSPORT`. Needs `Bun.Terminal`; otherwise headless fallback. Compaction stays headless. Wires the same proxy MCP server, `proxyTools` and `--disallowedTools` as headless (proxied tools, subagent dispatch and `question` run in opencode with its permission prompts); tools the TUI runs itself are pre-allowed by `interactiveAllowTools`. No `permissionMode`, `/btw` or MCP hot reload. The skill bridge, effort, prompt cache TTL and CLI hygiene env do apply. Stopping a reply sends Esc and keeps the session; a dead or evicted TUI is replaced with `--resume`; folder trust is accepted (moving off the default "No, exit"), a login or first-run screen fails the start with the fix, the usage-limit auto-continue is cancelled. Never enable to bypass a billing/access restriction. |
+| `transport` | `"auto"` / `"headless"` / `"interactive"` | unset (headless) | Explicit choice wins over `interactive` and its env var. `auto` prefers headless and probes required headless flags with free help/argument parsing and no prompt. Only definitive unsupported flags select the PTY; timeout, auth failure, missing binary and unknown output stay headless. Never retries a submitted request. Explicit or automatic PTY selection requires `Bun.Terminal`, otherwise errors. Title stubs do not probe. `/compact` follows the selected transport. The PTY refuses normal turns with plan mode or the read-only preset instead of weakening them. `/claude-code-doctor usage` reports the free headless check unavailable when those flags are absent; it does not run a PTY inference prompt. |
+| `interactive` | boolean | unset (headless) | Legacy experimental PTY opt-in when `transport` is unset; explicit boolean wins over `CLAUDE_CODE_INTERACTIVE_TRANSPORT`. Needs `Bun.Terminal`; this legacy setting retains headless fallback without it. Wires the same proxy MCP server, `proxyTools` and `--disallowedTools` as headless (proxied tools, subagent dispatch and `question` run in opencode with its permission prompts); tools the TUI runs itself are pre-allowed by `interactiveAllowTools`. No `permissionMode`, `/btw` or MCP hot reload. Plan mode and the read-only preset refuse normal PTY turns. The skill bridge, effort, prompt cache TTL and CLI hygiene env do apply. Stopping a reply sends Esc and keeps the session; a dead or evicted TUI is replaced with `--resume`; folder trust is accepted (moving off the default "No, exit"), a login or first-run screen fails the start with the fix, the usage-limit auto-continue is cancelled. Never enable to bypass a billing/access restriction. |
 | `interactiveBypass` | boolean | `false` | Deprecated no-op. The TUI asks for a manual safety confirmation on `bypassPermissions`, so the plugin never passes it. |
-| `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With `interactive`: replaces the built-in pre-allow list. MCP wildcards from discovered bridge names plus `mcp__opencode_proxy__*` are added even with `[]`. Not a capability denylist; review permissions before enabling. A tool outside the list raises the TUI's permission dialog, which the transport denies with Esc (nobody is there to answer): the turn ends interrupted and the result's `permission_denials` names the tool. |
-| `interactiveSystemPrompt` | boolean | `true` | With `interactive`: append the plugin's own prompt. opencode's forwarded system prompt is deliberately not sent on this transport (it can trip Claude's third-party usage gate). `false` is for diagnostics only. |
+| `interactiveAllowTools` | string[] | `["Bash", "Edit", "Write", "Read", "WebFetch"]` | With the interactive transport: replaces the built-in pre-allow list. MCP wildcards from discovered bridge names plus `mcp__opencode_proxy__*` are added even with `[]`. Not a capability denylist; review permissions before enabling. A tool outside the list raises the TUI's permission dialog, which the transport denies with Esc (nobody is there to answer): the turn ends interrupted and the result's `permission_denials` names the tool. |
+| `interactiveSystemPrompt` | boolean | `true` | With the interactive transport: append the plugin's own prompt. opencode's forwarded system prompt is deliberately not sent on this transport (it can trip Claude's third-party usage gate). `false` is for diagnostics only. |
 | `logging` | object | see below | File logging plus how much reaches the operator. |
 | `name` | string | unset | Low-level `createClaudeCode()` provider identity fallback after `providerID`, not the opencode display-name setting. Display name lives at `provider.<id>.name`; account expansion supplies its own label. Leave this option unset. |
 | `providerID` | string | derived | Config hook writes the actual provider id (`claude-code` or `claude-code-work`). Do not override manually. |
@@ -202,7 +203,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `CLAUDE_CODE_SHOW_THINKING_SUMMARIES` | Headless spawn fills in `1` only if unset and neither disable flag is enabled. Any explicit value is preserved and suppresses the plugin's `--thinking-display` override; `0` requests suppression from the CLI. |
 | `CLAUDE_CODE_COMPACTION_MODEL` | Nonblank, trimmed value wins over `compactionModel`. |
 | `CLAUDE_CODE_DISABLE_FAST_MODE` | CLI-owned kill switch, conventionally `1`; plugin does not interpret it or change picker prices. Use the non-fast id if fast mode is disabled. |
-| `CLAUDE_CODE_INTERACTIVE_TRANSPORT` | Fallback when `interactive` is absent: `1` enables; empty/`0`/`false`/`no`/`off` disable (case-insensitive). Explicit `interactive: false` wins. |
+| `CLAUDE_CODE_INTERACTIVE_TRANSPORT` | Fallback when both `transport` and `interactive` are absent: `1` enables; empty/`0`/`false`/`no`/`off` disable (case-insensitive). Explicit `transport` or `interactive: false` wins. |
 | `CLAUDE_CODE_INTERACTIVE_BYPASS` | Deprecated no-op, like `interactiveBypass`. |
 | `CLAUDE_CODE_START_WATCHDOG_MS` | Positive integer ms before a headless start or proxy-result continuation is considered silent; default 90000 for missing/invalid/nonpositive values. First expiry respawns, second errors. Bookkeeping-only output is not progress. Keep within timer range; do not lower for routine config checks. |
 | `CLAUDE_CODE_RESULT_FALLBACK_MS` | Positive integer ms of stdout silence, after the CLI has produced output, before the turn is closed with no `result`; default 60000 for missing/invalid/nonpositive values. The close is announced in the reply as a `▌ **stream timeout:**` note, which is stripped from any rebuilt transcript. An aborted turn gets no note. |
@@ -289,6 +290,38 @@ With the bridge off, OpenCode still owns MCP connections and catalog updates,
 but the plugin's disk-MCP hot-reload mechanism does not apply. This path is
 verified offline with a fake CLI, not a paid live Claude probe. Fully restart
 all opencode processes after provider/plugin changes; ask before live probes.
+
+### Transport selection
+
+To opt into fallback when the CLI removes headless flags, put this in the provider
+options (or `providers.claude-code.settings` on opencode 2):
+
+```json
+{ "transport": "auto" }
+```
+
+Unset keeps headless as the default. `"headless"` forces that path; `"interactive"`
+requires the PTY directly. An explicit `transport` wins over the legacy `interactive`
+boolean and `CLAUDE_CODE_INTERACTIVE_TRANSPORT`. Fully quit and relaunch opencode.
+
+`"auto"` probes the required headless flags with `--help` before submitting work.
+Only a definite missing flag selects PTY; timeout, authentication failure, a missing
+binary or inconclusive output stays headless. Nothing retries a submitted request on
+another transport. Explicit PTY and an automatic PTY selection require `Bun.Terminal`;
+without it they fail clearly. This changes transport, not account access or billing.
+
+Interactive transport is text-only and reads completed transcript blocks, not token
+deltas. It currently re-reads the transcript while polling. Normal interactive turns
+do not forward opencode's system prompt, and have no native `/btw`, MCP hot reload,
+idle timeout, account-failover form or model-fallback chain. `plan` and `read-only`
+postures are refused rather than weakened; other `permissionMode` values are not
+forwarded. Proxy tools use opencode's permissions, while CLI permission dialogs are
+denied with Esc. `/compact` uses a fresh tool-free PTY with an empty strict MCP config,
+explicit summary instructions and no session resume, proxy or skills.
+
+The doctor remains available even if a PTY cannot start. Its optional usage lookup
+reports unavailable when headless output is demonstrably unsupported; it does not
+send `/cost` as an interactive model prompt.
 
 ### Two accounts
 
@@ -426,7 +459,8 @@ which is 1 hour on a subscription. Claude Code also has a per-agent
 `experimental.cacheTtl` and a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`: neither does
 anything here, because both apply only to subagents the CLI runs through its own `Task`
 tool, and this plugin disallows that tool by default so opencode runs the subagent
-instead. An opencode subagent is a separate `claude --print` process, which the CLI
+instead. An opencode subagent is a separate `claude` process using the selected
+transport, which the CLI
 counts as a main conversation. Use `cacheTtl: 5m` on short-lived workers that never
 re-read the cache they wrote, since a 1-hour write is billed above a 5-minute one and
 both come out of the same usage limit; leave a long-lived main session at the default.
@@ -816,8 +850,9 @@ options an applied preset replaced), `interactiveTransport`, `planModeQuestion`,
 `anthropicApiKeyInEnv`, `claudeCli.path` and `.version`
 (`not detected` means the binary did not answer `--version`, which also disables
 version-gated flags). Cwd is a startup fallback snapshot, not the per-session spawn
-directory. MCP names are disk discovery, not proof of live connectivity. Interactive
-status is a preference report, not proof that Bun PTY transport was used. Check a
+directory. MCP names are disk discovery, not proof of live connectivity. The startup
+`interactiveTransport` boolean reports the legacy preference only, not the new
+`transport` selection or proof that Bun PTY transport was used. Check a
 relevant, redacted spawn/bridge entry for actual routing after an approved normal turn.
 
 Useful log lines to search for (redact payloads): `spawning new claude process`,
@@ -863,6 +898,10 @@ else is flagged unsafe), and the last stderr of any child that produced some. Pr
 `plugin.log` for a first look. It carries no bearer token, no key value and no system
 prompt. A user-defined `claude-code-doctor` command is never overwritten. The name has
 no space in it: opencode would read the second word as an argument.
+
+Diagnostics remain accessible when Bun PTY support is missing or an interactive
+permission posture is refused. The transport row is not evidence that a child started;
+for `auto`, check an actual spawn entry after an approved normal turn.
 
 The `plugin build` row, directly under `plugin`, is the one field that says whether the
 version above it is the code actually answering. It compares the build this opencode
@@ -915,6 +954,10 @@ and limit questions. It is opt-in only because it starts a short-lived `claude`,
 runs the user's `SessionStart` hooks and takes a few seconds; say that when suggesting
 it. Do not propose `--bare` to skip the hooks: it never reads OAuth, so it reports
 nothing about a subscription.
+
+When the capability probe definitively finds headless output unsupported, this section
+reports that plan usage is unavailable and directs the user to the Claude CLI. It does
+not scrape a PTY screen or submit `/cost` for interactive inference.
 
 ### Filing an issue: /claude-code-doctor bundle
 

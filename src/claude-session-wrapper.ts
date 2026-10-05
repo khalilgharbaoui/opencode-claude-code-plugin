@@ -31,6 +31,8 @@ export interface InteractiveSpawnOptions {
   /** Native tools the proxy serves instead (`--disallowedTools`), so a call
    *  reaches opencode, its permission prompt and its UI, as on headless. */
   disallowedTools?: string[]
+  /** Explicit native tool set. An empty list disables tools for compaction. */
+  tools?: string[]
   /** The proxy MCP server this session's `--mcp-config` points at. Owned by
    *  the session from here: closed when its TUI exits. */
   proxyServer?: ProxyMcpServer | null
@@ -134,6 +136,7 @@ export function decodeUserEnvelope(chunk: string): string {
  */
 export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
   const extraArgs: string[] = []
+  if (opts.tools) extraArgs.push("--tools", opts.tools.join(","))
   if (opts.mcpConfigPaths && opts.mcpConfigPaths.length > 0) {
     extraArgs.push(
       "--mcp-config",

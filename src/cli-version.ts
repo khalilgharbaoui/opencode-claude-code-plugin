@@ -268,6 +268,44 @@ export function cliSupportsThinking(v: CliVersion | null): boolean {
 /** For tests. */
 const flagSupport = new Map<string, Promise<boolean>>()
 
+export type HeadlessSupport = "supported" | "unsupported" | "unknown"
+const headlessSupport = new Map<string, Promise<HeadlessSupport>>()
+
+/** A free, input-less parse probe. Never retry a submitted model request. */
+export function detectHeadlessSupport(cliPath: string): Promise<HeadlessSupport> {
+  const key = `${cliPath}\x00headless`
+  const cached = headlessSupport.get(key)
+  if (cached) return cached
+  let deadlineKill = false
+  const promise = (async (): Promise<HeadlessSupport> => {
+    try {
+      const execution = execFileAsync(cliPath, [
+        "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--help",
+      ], { timeout: probeTimeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 })
+      execution.child.stdin?.end()
+      const { stdout } = await execution
+      // Empty, garbled or diagnostic output is not proof of removed flags.
+      if (!/^\s*Usage:/im.test(stdout) || !/^\s*Options:/im.test(stdout)) return "unknown"
+      const flags = ["--print", "--input-format", "--output-format"]
+      if (!flags.every((flag) => new RegExp(`^\\s+(?:-[A-Za-z],\\s+)?${flag}(?:\\s|,|$)`, "m").test(stdout))) {
+        return "unsupported"
+      }
+      return stdout.includes("stream-json") ? "supported" : "unknown"
+    } catch (error) {
+      deadlineKill = killedByDeadline(error)
+      const stderr = (error as { stderr?: unknown })?.stderr
+      // Accept only a parser's explicit refusal of one of our required flags.
+      if (typeof stderr === "string" && /^(?:error: )?(?:unknown|unrecognized|unsupported) option ['"]?--(?:print|input-format|output-format)(?:['"\s]|$)/im.test(stderr)) {
+        return "unsupported"
+      }
+      return "unknown"
+    }
+  })()
+  headlessSupport.set(key, promise)
+  forgetDeadlineKill(headlessSupport, key, promise, () => deadlineKill)
+  return promise
+}
+
 /**
  * Probe whether the binary's own `--help` mentions a flag. For flags with no
  * published version marker (`--plugin-dir`), where an invented semver
@@ -311,6 +349,7 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
 }
 
 export function _clearCache(): void {
+  headlessSupport.clear()
   flagSupport.clear()
   cache.clear()
   deadlineReprobes.clear()

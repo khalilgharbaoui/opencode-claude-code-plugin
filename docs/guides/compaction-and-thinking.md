@@ -7,6 +7,8 @@ sidebar:
 
 ## Compaction
 
+Compaction uses the selected `transport`. With `transport: "auto"`, a CLI that definitively lacks the required headless flags uses a fresh interactive TUI instead. That TUI has no built-in tools, MCP servers, proxy, skill bridge or resumed session. The transcript and summary instructions are submitted as text, and the process is closed after its answer. The default remains headless.
+
 When you run `/compact` in opencode, the plugin handles it on a short-lived dedicated Claude CLI spawn instead of routing it through your main conversation process. Three reasons:
 
 1. **Cost.** The summarizer reads your entire transcript every time. Routing through a smaller model keeps `/compact` from burning your Opus budget.

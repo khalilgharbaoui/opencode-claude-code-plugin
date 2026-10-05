@@ -78,6 +78,17 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-05: "anyway to fix/fill the gaps properly?" (PTY transport gaps). Waiting on the
+  maintainer: (0) commit and release the uncommitted #g199 work (`transport`, auto detection, PTY
+  compaction; live on 1.18.34 and 2.0.22, 1,199 tests). Proposed fills, in order: (1) MCP hot reload
+  and idle eviction on PTY (both were blocked on a missing exit code and `--resume`, both since
+  fixed in #g196); (2) `permissionPreset: "read-only"` on PTY via `--restricted` (not print-only in
+  2.1.288's help), a read-only allow list and the existing Esc-deny; (3) `permissionMode: "plan"` on
+  PTY, where the TUI offers `ExitPlanMode` and its approval dialog can be routed through the existing
+  `planModeQuestion` question; (4) images on PTY via a 0600 temp file whose path is pasted;
+  (5) `/btw` on PTY answered from a short-lived `--resume --fork-session` TUI. Not fixable properly:
+  token-by-token streaming (the TUI only writes whole records). Lower value, later: fallback chain
+  and failover form on PTY.
 - 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after
   0.37.1: 17 idle Herdr panes restarted onto their own sessions by `/tmp/oc-restart/
   restart-opencode-panes.py` (quit with `ctrl+x q`, relaunch `opencode -s <id>` in the same pane;

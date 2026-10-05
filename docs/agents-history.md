@@ -1898,3 +1898,57 @@ The largest remaining gap with `--print`, closed the same day as #g196 and #g197
 - Live on 1.18.34 with `interactive: true` and the default `proxyTools`: "say BEFORE, then run `echo proxied-ok` with Bash" rendered BEFORE, the model's own lead-in, the opencode-executed `$ echo` row and DONE, with the drain, the resolution and one `interactive turn ended` (3 API calls) in the log; a `general` subagent dispatched through the proxy returned `SUBOK` from a second interactive TUI. On 2.0.22 the same two passed (`v2-proxied-ok`, `V2SUBOK`). `question` and a stop mid proxied call could not be measured under `opencode run` (the registry advertises `question` while the turn's tool set lacks it), so both were measured the same day under `opencode serve` on 1.18.34 with `proxyTools` including `"Question"`, driven over HTTP:
   - **`question`**: the form reached `GET /question` 8 s into the turn with the model's two options, `POST /question/{id}/reply` with `[["BLUE"]]` resolved the pending call, and the same TUI turn ended on `BLUE` (one `interactive turn ended`, 3 API calls).
   - **A stop mid proxied call**: `sleep 45 && echo slept-ok` through proxied Bash, `POST /session/{id}/abort` 5.6 s in. The log reads `abort between proxy tool boundaries; releasing pending calls`, the pending call rejected, `interrupt sent for aborted turn`, and `interactive turn ended {"end":"interrupted"}` 300 ms after the abort; opencode recorded the tool as `User aborted the command`. The next prompt in the same session reused the same TUI (`reusing active interactive session`, no respawn, no `previous turn still in flight`) and answered `AFTER` in 2 s. A rerun with the process tree visible showed opencode killing the whole process group (`zsh -c` and its `sleep`), nothing left behind.
+
+<a id="g199"></a>
+
+#### Explicit transport selection and no-print compaction (2026-10-05)
+
+`transport` accepts `auto`, `headless` and `interactive`, overriding the legacy
+`interactive` boolean and its environment variable. Unset remains headless; the
+legacy no-Bun fallback is preserved. An explicit PTY request or an automatic PTY
+selection requires `Bun.Terminal` and errors without it.
+
+`detectHeadlessSupport` is an input-less help/argument parse, never an inference
+request. Only coherent help missing a required headless flag or an explicit parser
+refusal selects the PTY. Authentication failures, missing binaries, garbled output
+and deadlines are unknown and stay headless. The bounded deadline re-probe rule in
+#g181 applies. Transport is selected before submitting work; nothing retries a
+submitted turn. Normal PTY turns refuse plan mode and the read-only preset, whose
+posture the transport cannot enforce.
+
+PTY compaction uses a separate, short-lived TUI, `--tools ""`, an empty strict MCP
+configuration, no proxy, bridge, skill staging, resume or agent effort/cache
+override. The summary instructions are part of the text submission rather than
+the usual forwarded system prompt. Its cleanup kills that TUI after detaching the
+turn listeners. An assistant-ending compaction transcript must bypass the normal
+no-new-user-content guard: the summary request itself is work. The no-print fake
+CLI through a real `doStream` verifies ordinary turns and compaction on both host
+dialects in `test/interactive-pty.test.ts`; capability/precedence/deadline cases
+live in `test/transport.test.ts`.
+
+Doctor usage remains a free headless `/cost` command when available. A definitive
+no-headless answer reports it unavailable before that spawn; it never sends a
+local slash command as a PTY inference prompt. This supersedes the headless-only
+compaction restriction in #g196 without changing the exclusions in #g198 for a
+normal interactive turn.
+
+Live on opencode 1.18.34 and 2.0.22 with Claude Code 2.1.288: an isolated wrapper
+refused `-p`, `--print`, `--input-format` and `--output-format`, but passed TUI
+arguments to the real CLI. With `transport: "auto"`, both hosts executed proxied
+`printf no-print-ok`, remembered the test label on a separate `run -c` process,
+and logged a persisted-session resume with the same Claude session id. Both hosts'
+HTTP compaction routes produced a real Haiku summary through a fresh interactive
+child, then closed that child. `/claude-code-doctor usage` reported the unavailable
+headless command on both hosts. Each probe used isolated XDG directories and a
+pinned scratch cwd; the private HTTP servers were stopped afterwards. These were
+CLI and HTTP checks, not full-screen visual tests. Typecheck, build and all 1,199
+tests passed.
+
+The bundled-skill audit also caught a diagnostic ordering bug: selecting a PTY
+before recognizing the doctor command could reject the report for missing
+`Bun.Terminal` or a plan/read-only posture. The doctor is recognized first now
+and bypasses inference transport startup gates. `test/transport.test.ts` drives
+the real `doStream` without Bun for explicit interactive, plan, read-only and auto
+settings, asserting a doctor report rather than a transport error. The skill's
+recipes describe selected-transport subagents, conservative automatic selection,
+the remaining PTY limitations and unavailable headless usage.
