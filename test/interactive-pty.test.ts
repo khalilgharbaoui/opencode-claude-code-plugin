@@ -32,6 +32,7 @@ import {
 } from "../src/claude-session-bun.js"
 import {
   OpenToolCalls,
+  carriesReplyText,
   heartbeatFrame,
   interactiveResultFrame,
   spawnInteractiveProcess,
@@ -702,4 +703,87 @@ test("the start watchdog waits on an interactive turn instead of respawning it",
   running = false
   await new Promise((resolve) => setTimeout(resolve, 25))
   assert.equal(state.startWatchdog, null)
+})
+
+// ---------------------------------------------------------------------------
+// The proxy: a proxied call ends a step in the middle of a TUI turn.
+// ---------------------------------------------------------------------------
+
+test("flushTranscript hands the running turn what the TUI already wrote", async () => {
+  const tui = new FakeTui()
+  // After the prompt is accepted, as the real TUI writes a reply: a proxied
+  // call needs a whole API call first, so it can never beat the submit.
+  tui.turns.push((t) => t.later(150, () => t.append(assistantRecord("m1", "tool_use", textBlock("led the call")))))
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      const lines: string[] = []
+      const turn = session.tailTurn("go", (raw) => lines.push(raw))
+      await waitFor(() => fs.existsSync(tui.transcript) && fs.readFileSync(tui.transcript, "utf8").includes("led the call"))
+      // Synchronous: by the time it returns the record has reached the turn,
+      // whichever of the flush and the poll got there first.
+      session.flushTranscript()
+      assert.ok(lines.some((line) => line.includes("led the call")))
+      tui.append(assistantRecord("m2", "end_turn", textBlock("done")))
+      const result = await turn
+      assert.equal(result.end, "stop")
+      // Read once, never twice.
+      assert.equal(lines.filter((line) => line.includes("led the call")).length, 1)
+    },
+    // A slow poll, so the flush is what a waiting caller depends on.
+    { pollMs: 200 },
+  )
+  // Between turns it reads nothing and throws nothing.
+  await withSession(new FakeTui(), async (session) => {
+    await session.start()
+    session.flushTranscript()
+  })
+})
+
+test("a detached shim keeps reply text and nothing else", async () => {
+  const dirs = scratch()
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append({ type: "attachment", attachment: { type: "hook" } })
+    t.append(assistantRecord("m1", "end_turn", textBlock("said while nobody listened")))
+  })
+  try {
+    // No `line` listener: the state between a proxied call ending a step and
+    // the next step attaching.
+    const ap = spawnInteractiveProcess({ cwd: dirs.cwd, configDir: dirs.configDir, env: {}, spawnPty: tui.spawner, tuning: FAST })
+    ;(ap.proc.stdin as any).write(JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }) + "\n")
+    await waitFor(() => !ap.interactiveControl!.turnRunning())
+    assert.equal(ap.unattendedLines?.length, 1)
+    assert.match(ap.unattendedLines![0], /said while nobody listened/)
+    ap.proc.kill()
+  } finally {
+    dirs.cleanup()
+  }
+})
+
+test("carriesReplyText is true only for an assistant record with text", () => {
+  assert.equal(carriesReplyText(JSON.stringify(assistantRecord("m", "end_turn", textBlock("hi")))), true)
+  assert.equal(carriesReplyText(JSON.stringify(assistantRecord("m", "end_turn", textBlock("  ")))), false)
+  assert.equal(carriesReplyText(JSON.stringify(assistantRecord("m", "tool_use", toolBlock("t", "Bash")))), false)
+  assert.equal(carriesReplyText(heartbeatFrame("s", { id: "t", name: "Bash", startedAt: 0 }, 1_000)), false)
+  assert.equal(carriesReplyText(JSON.stringify({ type: "attachment" })), false)
+  assert.equal(carriesReplyText("not json"), false)
+})
+
+test("the shim owns its proxy server and closes it once", async () => {
+  const dirs = scratch()
+  let closed = 0
+  const proxyServer = { close: async () => { closed++ } } as any
+  try {
+    const ap = spawnInteractiveProcess({ cwd: dirs.cwd, configDir: dirs.configDir, env: {}, spawnPty: new FakeTui().spawner, tuning: FAST, proxyServer })
+    assert.equal(ap.proxyServer, proxyServer)
+    const exited = once(ap.proc as any, "exit")
+    ap.proc.kill()
+    ap.proc.kill()
+    await exited
+    assert.equal(closed, 1)
+  } finally {
+    dirs.cleanup()
+  }
 })

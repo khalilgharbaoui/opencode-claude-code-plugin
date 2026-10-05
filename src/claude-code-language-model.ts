@@ -1798,128 +1798,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           }
 
-          if (useInteractive && !compactionMode) {
-            // Interactive Bun-ConPTY transport. Reuse the live session if one
-            // exists for this key; else spawn a new interactive claude. The
-            // wrapper conforms to ActiveProcess, so reuse/eviction/hot-reload
-            // and the whole emission body below work unchanged.
-            const mcp = self.effectiveMcpConfig(cwd, undefined, runtimeStatus!)
-            if (state.activeProcess) {
-              state.proc = state.activeProcess.proc
-              state.lineEmitter = state.activeProcess.lineEmitter
-              log.debug("reusing active interactive session", { sk })
-            } else {
-              // MCP wildcards are always derived from the live bridge config;
-              // the built-in tool list is overridable via interactiveAllowTools.
-              const allow = [
-                ...mcp.allEnabledServerNames.map((n) => `mcp__${n}__*`),
-                "mcp__opencode_proxy__*",
-                ...(self.config.interactiveAllowTools ?? [
-                  "Bash",
-                  "Edit",
-                  "Write",
-                  "Read",
-                  "WebFetch",
-                ]),
-              ]
-              const systemPromptFile =
-                self.config.interactiveSystemPrompt === false
-                  ? undefined
-                  : buildAppendedSystemPrompt(
-                      cwd,
-                      self.config.multiStepContinuation !== false,
-                      // Do not forward opencode's own system prompt into the
-                      // interactive TUI. Live subscription-account testing
-                      // showed that large forwarded payload can trigger Claude
-                      // Code's third-party-app usage gate, while our static
-                      // CLI/AGENTS/continuation prompt remains safe.
-                    )
-              if (self.config.interactiveSystemPrompt === false) {
-                log.warn(
-                  "interactive system prompt disabled; opencode agent prompts will not be appended",
-                )
-              }
-              if (interactiveBypassRequested) {
-                log.warn(
-                  "interactiveBypass ignored: Claude Code prompts for bypassPermissions confirmation in the interactive TUI",
-                )
-              }
-              // Same skill bridge as the headless spawn: the TUI's native
-              // Skill tool reads `--plugin-dir` too, and the flag probe
-              // keeps it off a CLI that does not know the flag.
-              const skillPluginDirs = await resolveSkillPluginDirs({
-                cwd,
-                cliPath,
-                enabled: self.config.bridgeOpencodeSkills === true,
-                ...self.skillBridgeSpawn(failover),
-              })
-              if (stoppedBeforeWork()) return
-              // A conversation whose TUI died or was evicted continues where
-              // it was. Without this the key kept its Claude session id, so
-              // the history was not replayed either, and the next turn
-              // started a blank conversation.
-              const resumeSessionId = getClaudeSessionId(sk)
-              const ap = spawnInteractiveProcess({
-                cwd,
-                cliPath,
-                configDir: self.config.configDir,
-                model: spawnModelId,
-                fastMode,
-                mcpConfigPaths: mcp.paths,
-                pluginDirs: skillPluginDirs,
-                permissionsAllow: allow,
-                systemPromptFile,
-                ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
-                effort: reasoningEffort,
-                resumeSessionId,
-                // The headless spawn's env, so hygiene, effort and the
-                // agent's prompt cache TTL reach both transports alike.
-                env: claudeSpawnEnv({
-                  ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
-                  effort: reasoningEffort,
-                  promptCacheTtl,
-                }),
-              })
-              ap.proc.once("exit", (code: number | null) =>
-                noteInteractiveProcessExit(sk, ap, code),
-              )
-              ap.mcpHash = mcp.bridgedHash
-              ap.mcpServers = mcp.allEnabledServerNames
-              setActiveProcess(sk, ap)
-              state.proc = ap.proc
-              state.lineEmitter = ap.lineEmitter
-              state.activeProcess = ap
-              log.info("spawned interactive claude session", {
-                sk,
-                resumed: !!resumeSessionId,
-                cliPath,
-                configDir: self.config.configDir,
-                model: effectiveModelId,
-              })
-            }
-          } else {
-          let spawnSystemPromptFile: string | undefined
-          let spawnProxyServer: ProxyMcpServer | null = null
-          let spawnMcpHash: string | null = null
-          let spawnMcpServers: string[] = []
-
-          if (compactionMode) {
-            // Compaction takes a lean spawn: no MCP servers, no proxy, no
-            // appended system prompt, no disallowed-tools list. The model
-            // is asked for text output only on a single turn — all the
-            // normal tool wiring is pure overhead and adds latency.
-            // Explicitly opt out of `--resume` so a stale id can never
-            // resume into the lean spawn.
-            state.cliArgs = buildCliArgs({
-              sessionKey: sk,
-              skipPermissions,
-              includeSessionId: false,
-              model: spawnModelId,
-              permissionMode: self.config.permissionMode,
-              fastMode,
-              cliVersion,
-            })
-          } else {
+          // What the proxy MCP server serves for this spawn, the server
+          // itself, and which native tools that disables. Shared by both
+          // transports: the proxy is plain HTTP, so the interactive TUI reaches
+          // opencode's tools, the question form and subagents through it the
+          // same way a headless child does.
+          const resolveProxyWiring = async () => {
             // First pass: discover which opencode MCP servers would be
             // bridged. We use this to decide which ones to re-route through
             // the proxy instead. No --mcp-config path is consumed here;
@@ -2128,6 +2012,173 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               extraDisallowedTools: self.config.extraDisallowedTools,
               disableWebSearch: self.config.webSearch === "disabled",
             })
+            return {
+              excludeServers,
+              taskProxyEnabled,
+              backgroundSubagentsSupported,
+              questionProxyActive,
+              opencodeToolDefs,
+              pluginCompressEnabled,
+              allDisallowed,
+            }
+          }
+
+          if (useInteractive && !compactionMode) {
+            // Interactive Bun-ConPTY transport. Reuse the live session if one
+            // exists for this key; else spawn a new interactive claude. The
+            // wrapper conforms to ActiveProcess, so reuse/eviction/hot-reload
+            // and the whole emission body below work unchanged.
+            if (state.activeProcess) {
+              state.proc = state.activeProcess.proc
+              state.lineEmitter = state.activeProcess.lineEmitter
+              log.debug("reusing active interactive session", { sk })
+            } else {
+              const wiring = await resolveProxyWiring()
+              const mcp = self.effectiveMcpConfig(
+                cwd,
+                state.proxyServer?.configPath(),
+                runtimeStatus!,
+                wiring.excludeServers,
+              )
+              // MCP wildcards are always derived from the live bridge config;
+              // the built-in tool list is overridable via interactiveAllowTools.
+              // A tool the proxy serves is disallowed natively below, so its
+              // entry here is inert rather than a second way in.
+              const allow = [
+                ...mcp.allEnabledServerNames.map((n) => `mcp__${n}__*`),
+                "mcp__opencode_proxy__*",
+                ...(self.config.interactiveAllowTools ?? [
+                  "Bash",
+                  "Edit",
+                  "Write",
+                  "Read",
+                  "WebFetch",
+                ]),
+              ]
+              const systemPromptFile =
+                self.config.interactiveSystemPrompt === false
+                  ? undefined
+                  : buildAppendedSystemPrompt(
+                      cwd,
+                      self.config.multiStepContinuation !== false,
+                      // Do not forward opencode's own system prompt into the
+                      // interactive TUI. Live subscription-account testing
+                      // showed that large forwarded payload can trigger Claude
+                      // Code's third-party-app usage gate, while our static
+                      // CLI/AGENTS/continuation prompt remains safe. The
+                      // plugin's own short proxy hints are part of that static
+                      // prompt: without them the model narrates a subagent
+                      // dispatch instead of calling the proxy (h #g74).
+                      [
+                        ...(wiring.taskProxyEnabled ? [SUBAGENT_DISPATCH_HINT] : []),
+                        ...(wiring.backgroundSubagentsSupported ? [BACKGROUND_SUBAGENT_HINT] : []),
+                        ...(wiring.questionProxyActive ? [QUESTION_PROXY_HINT] : []),
+                      ],
+                      {
+                        compressEnabled: wiring.pluginCompressEnabled,
+                        opencodeCompressEnabled: wiring.opencodeToolDefs.some(
+                          (t) => t.name === "compress",
+                        ),
+                        compressionSummary: getCompressionSummary(sk),
+                      },
+                    )
+              if (self.config.interactiveSystemPrompt === false) {
+                log.warn(
+                  "interactive system prompt disabled; opencode agent prompts will not be appended",
+                )
+              }
+              if (interactiveBypassRequested) {
+                log.warn(
+                  "interactiveBypass ignored: Claude Code prompts for bypassPermissions confirmation in the interactive TUI",
+                )
+              }
+              // Same skill bridge as the headless spawn: the TUI's native
+              // Skill tool reads `--plugin-dir` too, and the flag probe
+              // keeps it off a CLI that does not know the flag.
+              const skillPluginDirs = await resolveSkillPluginDirs({
+                cwd,
+                cliPath,
+                enabled: self.config.bridgeOpencodeSkills === true,
+                ...self.skillBridgeSpawn(failover),
+              })
+              if (stoppedBeforeWork()) return
+              // A conversation whose TUI died or was evicted continues where
+              // it was. Without this the key kept its Claude session id, so
+              // the history was not replayed either, and the next turn
+              // started a blank conversation.
+              const resumeSessionId = getClaudeSessionId(sk)
+              const ap = spawnInteractiveProcess({
+                cwd,
+                cliPath,
+                configDir: self.config.configDir,
+                model: spawnModelId,
+                fastMode,
+                mcpConfigPaths: mcp.paths,
+                pluginDirs: skillPluginDirs,
+                permissionsAllow: allow,
+                disallowedTools: wiring.allDisallowed,
+                proxyServer: state.proxyServer,
+                systemPromptFile,
+                ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+                effort: reasoningEffort,
+                resumeSessionId,
+                // The headless spawn's env, so hygiene, effort and the
+                // agent's prompt cache TTL reach both transports alike.
+                env: claudeSpawnEnv({
+                  ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+                  effort: reasoningEffort,
+                  promptCacheTtl,
+                }),
+              })
+              ap.proc.once("exit", (code: number | null) =>
+                noteInteractiveProcessExit(sk, ap, code),
+              )
+              ap.mcpHash = mcp.bridgedHash
+              ap.mcpServers = mcp.allEnabledServerNames
+              setActiveProcess(sk, ap)
+              state.proc = ap.proc
+              state.lineEmitter = ap.lineEmitter
+              state.activeProcess = ap
+              log.info("spawned interactive claude session", {
+                sk,
+                resumed: !!resumeSessionId,
+                cliPath,
+                configDir: self.config.configDir,
+                model: effectiveModelId,
+              })
+            }
+          } else {
+          let spawnSystemPromptFile: string | undefined
+          let spawnProxyServer: ProxyMcpServer | null = null
+          let spawnMcpHash: string | null = null
+          let spawnMcpServers: string[] = []
+
+          if (compactionMode) {
+            // Compaction takes a lean spawn: no MCP servers, no proxy, no
+            // appended system prompt, no disallowed-tools list. The model
+            // is asked for text output only on a single turn — all the
+            // normal tool wiring is pure overhead and adds latency.
+            // Explicitly opt out of `--resume` so a stale id can never
+            // resume into the lean spawn.
+            state.cliArgs = buildCliArgs({
+              sessionKey: sk,
+              skipPermissions,
+              includeSessionId: false,
+              model: spawnModelId,
+              permissionMode: self.config.permissionMode,
+              fastMode,
+              cliVersion,
+            })
+          } else {
+            const {
+              excludeServers,
+              taskProxyEnabled,
+              backgroundSubagentsSupported,
+              questionProxyActive,
+              opencodeToolDefs,
+              pluginCompressEnabled,
+              allDisallowed,
+            } = await resolveProxyWiring()
             const mcp = self.effectiveMcpConfig(
               cwd,
               state.proxyServer?.configPath(),

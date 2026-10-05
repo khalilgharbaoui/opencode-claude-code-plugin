@@ -7,7 +7,8 @@ import {
   type PtySpawner,
   type TurnEnd,
 } from "./claude-session-bun.js"
-import { cliEffortLevel, type ActiveProcess } from "./session-manager.js"
+import { bufferUnattendedLine, cliEffortLevel, type ActiveProcess } from "./session-manager.js"
+import type { ProxyMcpServer } from "./proxy-mcp.js"
 import type { ReasoningEffort } from "./types.js"
 import { log } from "./logger.js"
 
@@ -27,6 +28,12 @@ export interface InteractiveSpawnOptions {
    *  which expose opencode skills to the TUI's native Skill tool. Already
    *  filtered for CLI support, and empty when there is nothing to bridge. */
   pluginDirs?: string[]
+  /** Native tools the proxy serves instead (`--disallowedTools`), so a call
+   *  reaches opencode, its permission prompt and its UI, as on headless. */
+  disallowedTools?: string[]
+  /** The proxy MCP server this session's `--mcp-config` points at. Owned by
+   *  the session from here: closed when its TUI exits. */
+  proxyServer?: ProxyMcpServer | null
   /** permissions.allow rules (e.g. mcp__server__*, Bash, Edit). */
   permissionsAllow?: string[]
   /** Optional permission mode. `bypassPermissions` is ignored for interactive
@@ -133,6 +140,10 @@ export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
       ...opts.mcpConfigPaths,
       "--strict-mcp-config",
     )
+  }
+  // Variadic, like `--mcp-config`: one flag, every name after it.
+  if (opts.disallowedTools && opts.disallowedTools.length > 0) {
+    extraArgs.push("--disallowedTools", ...opts.disallowedTools)
   }
   // `--plugin-dir` is repeatable and scoped to this session only.
   for (const dir of opts.pluginDirs ?? []) {
@@ -307,6 +318,25 @@ export function interactiveResultFrame(opts: {
 }
 
 /**
+ * True for a transcript record a detached turn would lose something by
+ * dropping: an assistant record with reply text. The TUI also writes
+ * bookkeeping records (attachments, snapshots, hook summaries) the whole time
+ * it waits on a proxied call, and keeping those would lead every proxied step
+ * with an empty "between turns" note.
+ */
+export function carriesReplyText(line: string): boolean {
+  try {
+    const rec = JSON.parse(line)
+    if (rec?.type !== "assistant" || !Array.isArray(rec.message?.content)) return false
+    return rec.message.content.some(
+      (block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim(),
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
  * Adapt a ClaudeSession (interactive Bun PTY transport) to the ActiveProcess
  * contract the doStream line handler depends on. The shim's `proc.stdin.write`
  * injects a turn into the live interactive `claude` and re-emits each new JSONL
@@ -335,6 +365,14 @@ export function spawnInteractiveProcess(
   // A plain emitter is what `ChildProcess` is to its listeners. `error` is
   // emitted only when someone listens, because an unheard `error` throws.
   const proc: any = new EventEmitter()
+  // Filled in below; `emit` and the exit hook only run once it is.
+  let ap!: ActiveProcess
+  let proxyClosed = false
+  const closeProxyServer = () => {
+    if (proxyClosed || !opts.proxyServer) return
+    proxyClosed = true
+    void opts.proxyServer.close()
+  }
 
   const session = new ClaudeSession({
     ...opts.tuning,
@@ -370,6 +408,9 @@ export function spawnInteractiveProcess(
       // no code does too, so `hasProcessExited` never mistakes it for alive.
       proc.exitCode = code
       proc.signalCode = code === null ? "SIGTERM" : null
+      // Same as a headless child's exit handler: the server dies with the
+      // process it was serving, whoever owns the session key by now.
+      closeProxyServer()
       log.info("interactive claude exited", { sessionId: session.sessionId, code })
       proc.emit("exit", proc.exitCode, proc.signalCode)
       proc.emit("close", proc.exitCode, proc.signalCode)
@@ -403,7 +444,16 @@ export function spawnInteractiveProcess(
   const runTurn = async (userMsg: string, turnNumber: number): Promise<void> => {
     const current = () => turnNumber === writes
     const emit = (line: string) => {
-      if (current()) lineEmitter.emit("line", line)
+      if (!current()) return
+      // Between the steps of one turn (a proxied call ends the step, and the
+      // next step attaches when opencode sends the result) nobody listens.
+      // Kept exactly as a headless child's stdout is, and shown by the next
+      // turn rather than lost (h #g189).
+      if (lineEmitter.listenerCount("line") === 0) {
+        if (carriesReplyText(line)) bufferUnattendedLine(ap, line)
+        return
+      }
+      lineEmitter.emit("line", line)
     }
     try {
       await ensureStarted()
@@ -423,7 +473,13 @@ export function spawnInteractiveProcess(
             emit(raw)
           },
           undefined,
-          () => emit(heartbeatFrame(session.sessionId, openCalls.newest())),
+          // Only to a listening turn: it feeds that turn's watchdog, and the
+          // TUI redraws its spinner the whole time it waits on a proxied call.
+          () => {
+            if (lineEmitter.listenerCount("line") > 0) {
+              emit(heartbeatFrame(session.sessionId, openCalls.newest()))
+            }
+          },
         )
       // The `result` carries the TURN totals, as a headless one does, so
       // `turnStats` matches the bill; the finish narrows to the last call
@@ -505,6 +561,7 @@ export function spawnInteractiveProcess(
           void unlink(opts.systemPromptFile).catch(() => {})
         }
       }
+      closeProxyServer()
       const started = startPromise !== null
       try {
         session.dispose()
@@ -520,11 +577,13 @@ export function spawnInteractiveProcess(
     },
   })
 
-  return {
+  ap = {
     proc: proc as ActiveProcess["proc"],
     lineEmitter,
-    proxyServer: null,
+    proxyServer: opts.proxyServer ?? null,
     mcpHash: undefined,
+    unattendedLines: [],
+    unattendedDropped: 0,
     systemPromptFile: opts.systemPromptFile,
     cliPath: opts.cliPath,
     interactiveControl: {
@@ -535,6 +594,8 @@ export function spawnInteractiveProcess(
         cancelledThrough = writes
         return session.interrupt(timeoutMs)
       },
+      flushTranscript: () => session.flushTranscript(),
     },
   }
+  return ap
 }

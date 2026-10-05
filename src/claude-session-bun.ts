@@ -531,6 +531,19 @@ export function isTurnDurationRecord(rec: any): boolean {
   return rec?.type === "system" && rec.subtype === "turn_duration"
 }
 
+/** What the running turn has read so far; see `scanTranscript`. */
+interface TurnScan {
+  onRecord: (raw: string, rec: any | null) => void
+  stopReason: string | null
+  /** When records were last read; a terminal stop settles from here. */
+  stopSeenAt: number
+  end: TurnEnd | null
+  /** End signals other than a terminal stop count only after this turn's
+   *  own first user record, so a stale one can never end it. */
+  sawUserRecord: boolean
+  lastBeat: number
+}
+
 /** How a turn ended. */
 export type TurnEnd =
   /** An assistant record with a terminal `stop_reason`. */
@@ -602,6 +615,8 @@ export class ClaudeSession {
   private trustMoves = 0
   private trustMovedAt = 0
   private turn: Promise<unknown> | null = null
+  /** The running turn's read state, shared with `flushTranscript`. */
+  private scan: TurnScan | null = null
   private turnDenied: ScreenState[] = []
   private abandonTurn = false
   private readonly o: Required<
@@ -991,18 +1006,15 @@ export class ClaudeSession {
       }
       await this.submitTurn()
 
-      let stopReason: string | null = null
-      // When the newest terminal stop was read. One API call is written as
-      // one record per content block, every one carrying the call's
-      // `stop_reason` (the reply's text is the LAST of them), so a terminal
-      // stop ends the turn only once the transcript has stayed quiet for
-      // `stopSettleMs`. Ending on the first such record dropped the answer.
-      let stopSeenAt = 0
-      let end: TurnEnd | null = null
-      // End signals other than a terminal stop count only after this turn's
-      // own first user record, so a stale one can never end it.
-      let sawUserRecord = false
-      let lastBeat = Date.now()
+      const scan: TurnScan = {
+        onRecord,
+        stopReason: null,
+        stopSeenAt: 0,
+        end: null,
+        sawUserRecord: false,
+        lastBeat: Date.now(),
+      }
+      this.scan = scan
       const deadline = Date.now() + timeout
 
       while (Date.now() < deadline) {
@@ -1010,49 +1022,27 @@ export class ClaudeSession {
         if (this.aborted) throw new Error("aborted mid-turn")
         const fatalNow = this.fatalError()
         if (fatalNow) throw fatalNow
-        const lines = this.readRawLines()
-        const lastComplete = lines.length - 1 // exclusive bound; trailing/partial line skipped
-        if (lastComplete > this.cursor) {
-          for (let i = this.cursor; i < lastComplete && !end; i++) {
-            const s = lines[i]
-            if (!s || !s.trim()) continue
-            let rec: any = null
-            try {
-              rec = JSON.parse(s)
-            } catch {}
-            onRecord(s, rec)
-            if (!rec) continue
-            if (rec.type === "assistant" && rec.message) {
-              const reason = rec.message.stop_reason
-              // A non-terminal stop after a terminal one is the model going
-              // on (a Stop hook can make it), so the turn is not over.
-              if (typeof reason === "string") {
-                stopReason = TERMINAL_STOP.has(reason) ? reason : null
-              }
-            } else if (rec.type === "user") {
-              if (sawUserRecord && isInterruptRecord(rec)) end = "interrupted"
-              sawUserRecord = true
-            } else if ((sawUserRecord || stopReason) && isTurnDurationRecord(rec)) {
-              end = stopReason ? "stop" : "ended"
+        // `flushTranscript` may have read the end between two polls.
+        if (this.scanTranscript() || scan.end) {
+          if (scan.end) {
+            return {
+              stopReason: scan.end === "stop" ? scan.stopReason : null,
+              end: scan.end,
+              denied: this.turnDenied,
             }
-            this.cursor = i + 1
           }
-          if (!end) this.cursor = lastComplete
-          lastBeat = Date.now()
-          stopSeenAt = Date.now()
-          if (end) return { stopReason: end === "stop" ? stopReason : null, end, denied: this.turnDenied }
           continue
         }
-        if (stopReason && Date.now() - stopSeenAt >= this.o.stopSettleMs) {
-          return { stopReason, end: "stop", denied: this.turnDenied }
+        if (scan.stopReason && Date.now() - scan.stopSeenAt >= this.o.stopSettleMs) {
+          return { stopReason: scan.stopReason, end: "stop", denied: this.turnDenied }
         }
         // Drain the transcript before reacting to exit: a final assistant record
         // can be flushed in the same tick the process exits.
         if (this.exited) throw new Error(this.failureMessage("claude exited mid-turn", true))
         if (this.abandonTurn) return { stopReason: null, end: "interrupted", denied: this.turnDenied }
         const now = Date.now()
-        if (onHeartbeat && now - lastBeat >= this.o.heartbeatMs) {
-          lastBeat = now
+        if (onHeartbeat && now - scan.lastBeat >= this.o.heartbeatMs) {
+          scan.lastBeat = now
           // Only while the TUI is visibly alive (its spinner redraws several
           // times a second): a wedged child must still meet the watchdog.
           if (now - this.lastDataAt < this.o.heartbeatMs) onHeartbeat()
@@ -1061,9 +1051,66 @@ export class ClaudeSession {
       return { stopReason: null, end: null, denied: this.turnDenied }
     } finally {
       this.turn = null
+      this.scan = null
       this.abandonTurn = false
       settle()
     }
+  }
+
+  /**
+   * Read every complete transcript record past the cursor into the running
+   * turn. Returns whether anything new was read. The one place a record is
+   * interpreted, shared by the poll loop and `flushTranscript`.
+   */
+  private scanTranscript(): boolean {
+    const scan = this.scan
+    if (!scan || scan.end) return false
+    const lines = this.readRawLines()
+    const lastComplete = lines.length - 1 // exclusive bound; trailing/partial line skipped
+    if (lastComplete <= this.cursor) return false
+    for (let i = this.cursor; i < lastComplete && !scan.end; i++) {
+      const s = lines[i]
+      if (!s || !s.trim()) {
+        this.cursor = i + 1
+        continue
+      }
+      let rec: any = null
+      try {
+        rec = JSON.parse(s)
+      } catch {}
+      scan.onRecord(s, rec)
+      if (rec) {
+        if (rec.type === "assistant" && rec.message) {
+          const reason = rec.message.stop_reason
+          // A non-terminal stop after a terminal one is the model going on
+          // (a Stop hook can make it), so the turn is not over.
+          if (typeof reason === "string") {
+            scan.stopReason = TERMINAL_STOP.has(reason) ? reason : null
+          }
+        } else if (rec.type === "user") {
+          if (scan.sawUserRecord && isInterruptRecord(rec)) scan.end = "interrupted"
+          scan.sawUserRecord = true
+        } else if ((scan.sawUserRecord || scan.stopReason) && isTurnDurationRecord(rec)) {
+          scan.end = scan.stopReason ? "stop" : "ended"
+        }
+      }
+      this.cursor = i + 1
+    }
+    if (!scan.end) this.cursor = lastComplete
+    scan.lastBeat = Date.now()
+    scan.stopSeenAt = Date.now()
+    return true
+  }
+
+  /**
+   * Hand the running turn every record the TUI has already written, now
+   * rather than at the next poll. The TUI writes a reply's records before it
+   * runs the reply's tools, but a proxied tool's MCP call can reach the
+   * plugin inside one poll interval, and the step it ends must not close
+   * before the text that preceded the call was read. No-op between turns.
+   */
+  flushTranscript(): void {
+    this.scanTranscript()
   }
 
   /**

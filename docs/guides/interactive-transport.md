@@ -25,21 +25,21 @@ Or per-process: `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`.
 - The plugin's appended prompt (Claude CLI context, AGENTS.md guidance, continuation rules). The interactive transport intentionally does not forward opencode's own system prompt, because live testing showed that payload can trigger Claude Code's third-party-app usage gate on subscription accounts.
 - The MCP bridge: bridged servers are passed via `--mcp-config` + `--strict-mcp-config`, and every bridged server is pre-allowed as `mcp__<server>__*`.
 - The [skill bridge](../configuration/skills.md#skill-bridge): the same `--plugin-dir` staging the headless spawn uses, so the TUI's native `Skill` tool can load your opencode skills too.
+- The [tool proxy](../guides/tool-proxy.md): the same proxy MCP server, the same `proxyTools` and the same `--disallowedTools`, so `bash`, `edit`, `write`, `webfetch`, subagent dispatch (`task`, `task_batch`) and, when enabled, `question` and `compress` run in opencode with opencode's own permission prompts and tool rows. Verified live on opencode 1.18.34 and 2.0.22: a proxied `bash` and a `general` subagent, each round trip in the middle of one TUI turn.
 - Model selection, session reuse, and the whole streaming/usage pipeline.
 
 Set `interactiveSystemPrompt: false` only for diagnostics. While disabled, the interactive session will not receive the plugin's CLI context, AGENTS.md guidance, or continuation hints.
 
 ### What it does not support
 
-This is the part to read before turning it on. Three whole features of this plugin are simply absent on the interactive transport:
+This is the part to read before turning it on. Two features of this plugin are absent on the interactive transport:
 
-- **No tool proxy.** The interactive spawn starts no proxy MCP server at all, so `mcp__opencode_proxy__bash`, `edit`, `write`, `webfetch`, `task`, `task_batch`, `question` and `compress` do not exist for that session. Claude uses its own built-in tools directly, which means opencode does not execute them, does not prompt for them, and does not log them. Everything in [Selective tool proxy](../guides/tool-proxy.md) applies to the headless transport only.
 - **No `permissionMode`.** The interactive spawn never passes your `permissionMode` to the CLI, so `"plan"` and the rest have no effect there. Permission handling is the pre-allow list described below and nothing else.
 - **No [`/btw`](../guides/btw.md).** Side questions ride Claude Code's `side_question` control protocol over the headless process's stdio. Asking one in an interactive session returns an error telling you so.
 
 ### What else is different
 
-- **Permissions:** the interactive TUI has no `can_use_tool` control channel, so tools can't be approved per-call through opencode. Built-in tools are pre-allowed via a settings allow list (default `Bash, Edit, Write, Read, WebFetch`; override with `interactiveAllowTools`). `bypassPermissions` is intentionally not used here because Claude Code shows a manual safety confirmation in the TUI and defaults to exit.
+- **Permissions:** a tool the proxy serves runs in opencode and asks there, exactly as on headless. The TUI itself has no `can_use_tool` control channel, so the tools it runs on its own (`Read`, and any tool you take out of `proxyTools`) can't be approved per call through opencode: they are pre-allowed via a settings allow list (default `Bash, Edit, Write, Read, WebFetch`, of which the proxied ones are disabled natively anyway; override with `interactiveAllowTools`). `bypassPermissions` is intentionally not used here because Claude Code shows a manual safety confirmation in the TUI and defaults to exit.
 - **Input is text-only:** images and other non-text blocks are dropped (with a logged warning); tool results are rendered as labeled text.
 - **Output granularity:** text arrives per transcript record, not token-by-token, so it can feel chunkier than headless streaming.
 - **Token counts come from the transcript, one count per API call.** The session JSONL writes one record per content block (thinking, text, tool_use) and every record of a call repeats that call's final usage, so the transport counts each call once, keyed by its message id. The numbers then mean exactly what they do on the headless transport: [`turnStats`](../guides/turn-stats.md) gets the turn's totals and opencode gets the last call's context plus the turn's output. Before this was fixed a four-tool turn reported 1,306 output tokens against a real 653, and its input and cache counts were one call's instead of the turn's. An all-zero `<synthetic>` record (how the CLI writes "Login expired" or a session limit into the transcript) is not counted as a call.

@@ -98,6 +98,8 @@ export interface ActiveProcess {
     turnRunning(): boolean
     /** Esc to the TUI; resolves true once the turn ended. */
     interrupt(timeoutMs: number): Promise<boolean>
+    /** Hand the attached turn every record the TUI has already written. */
+    flushTranscript(): void
   }
   /**
    * True from a stdin write that asks the CLI for work until its terminal
@@ -491,6 +493,10 @@ export function noteInteractiveProcessExit(
   if (activeProcesses.get(sessionKey) !== ap) return
   cancelIdleProcessEviction(sessionKey)
   activeProcesses.delete(sessionKey)
+  // As for a headless child: nothing else could consume these calls' results.
+  if (getPendingProxyCalls(sessionKey).length > 0) {
+    rejectAllPendingProxyCallsForSession(sessionKey, new Error(CHILD_EXITED_MESSAGE))
+  }
   if (code !== 0 && code !== null) {
     claudeSessions.delete(sessionKey)
     forgetResumePoint(sessionKey)

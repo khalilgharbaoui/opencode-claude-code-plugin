@@ -178,3 +178,11 @@ test("error handler registration is add/remove symmetric", () => {
   proc.off("error", handler)
   proc.kill()
 })
+
+test("interactiveExtraArgs disallows the native tools the proxy serves, as one variadic flag", () => {
+  const args = interactiveExtraArgs({ cwd: process.cwd(), disallowedTools: ["Bash", "Edit", "Task"] })
+  const at = args.indexOf("--disallowedTools")
+  assert.deepEqual(args.slice(at, at + 4), ["--disallowedTools", "Bash", "Edit", "Task"])
+  assert.equal(args.filter((arg) => arg === "--disallowedTools").length, 1)
+  assert.equal(interactiveExtraArgs({ cwd: process.cwd(), disallowedTools: [] }).includes("--disallowedTools"), false)
+})

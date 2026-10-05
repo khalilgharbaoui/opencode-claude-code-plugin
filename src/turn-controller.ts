@@ -446,6 +446,11 @@ export function drainNow(state: TurnState): void {
   }
   if (state.drainBuffer.length === 0) return
   if (state.controllerClosed) return
+  // The interactive TUI writes a reply's records before it runs the reply's
+  // tools, but its transcript is polled: read what is already there, or the
+  // text that led to this call lands after the step it belongs to.
+  state.activeProcess?.interactiveControl?.flushTranscript()
+  if (state.controllerClosed) return
   const batch = state.drainBuffer.splice(0, state.drainBuffer.length)
   log.info("draining pending proxy calls into stream finish", {
     sessionKey: state.sessionKey,
