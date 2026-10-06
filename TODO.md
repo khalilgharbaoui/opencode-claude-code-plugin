@@ -121,6 +121,14 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-06: **done** (v0.42.1): "there a 2 PRs open if they are beneficial and good maybe we should
+  consider assimilating them and of cours crediting the author properly". Both by Michael Crawford
+  (@internetisalie), cherry-picked with authorship: #89 (run state read from the session's own
+  directory, so opencode's routine abort stops rejecting parked calls in other workspaces) and #88
+  (user messages beside a proxied tool result reach the CLI). One integration change: #88 is headless
+  only, because a stdin write supersedes the parked PTY turn (h #g204). Credited in `docs/credits.md`,
+  both PRs closed with a thank-you. Live probe blocked by the default account's usage limit; the
+  `appical` account was deliberately not used for a private project. 1,236 tests.
 - 2026-10-06: **done**: "anyway to fix/fill the gaps properly?" then "do the fixables now all of them
   if possible". Every fixable PTY gap filled, each live on opencode 1.18.34 and 2.0.22 with Claude Code
   2.1.288: (0) `transport`/auto/PTY compaction, v0.41.0 (h #g199); (1) MCP hot reload and idle eviction
