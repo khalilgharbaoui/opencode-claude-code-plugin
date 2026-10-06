@@ -78,20 +78,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-05: "anyway to fix/fill the gaps properly?" (PTY transport gaps). Waiting on the
-  maintainer: (0) commit and release the uncommitted #g199 work (`transport`, auto detection, PTY
-  compaction; live on 1.18.34 and 2.0.22, 1,199 tests). Proposed fills, in order: (1) MCP hot reload
-  and idle eviction on PTY (both were blocked on a missing exit code and `--resume`, both since
-  fixed in #g196); (2) `permissionPreset: "read-only"` on PTY via `--restricted` (not print-only in
-  2.1.288's help), a read-only allow list and the existing Esc-deny; (3) `permissionMode: "plan"` on
-  PTY, where the TUI offers `ExitPlanMode` and its approval dialog can be routed through the existing
-  `planModeQuestion` question; (4) images on PTY via a 0600 temp file whose path is pasted;
-  (5) `/btw` on PTY answered from a short-lived `--resume --fork-session` TUI. 2026-10-06 "do the
-  fixables now all of them if possible": (0) released as v0.41.0; (1) committed `ac067ba` (h #g200);
-  (2)+(3) committed `5afafed` (h #g201), all live on both majors; (4) and (5) in progress; nothing
-  pushed or released yet. Not fixable properly:
-  token-by-token streaming (the TUI only writes whole records). Lower value, later: fallback chain
-  and failover form on PTY.
 - 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after
   0.37.1: 17 idle Herdr panes restarted onto their own sessions by `/tmp/oc-restart/
   restart-opencode-panes.py` (quit with `ctrl+x q`, relaunch `opencode -s <id>` in the same pane;
@@ -135,6 +121,14 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-06: **done**: "anyway to fix/fill the gaps properly?" then "do the fixables now all of them
+  if possible". Every fixable PTY gap filled, each live on opencode 1.18.34 and 2.0.22 with Claude Code
+  2.1.288: (0) `transport`/auto/PTY compaction, v0.41.0 (h #g199); (1) MCP hot reload and idle eviction
+  (h #g200); (2) `permissionPreset: "read-only"` as `--restricted` + `dontAsk` and (3) plan mode with the
+  `ExitPlanMode` dialog parked for the operator (h #g201); (4) images as staged paths (h #g202);
+  (5) `/btw` from a short-lived `--fork-session` TUI (h #g203). Not fixable properly: token-by-token
+  streaming (the TUI writes whole records). Still headless-only by choice: the fallback chain and the
+  failover form. 1,220 tests.
 - 2026-10-05: **done**: "do 1", the tool proxy on the interactive transport (h #g198). The interactive
   spawn now gets the same proxy server, `proxyTools` and `--disallowedTools` as headless, so opencode
   runs the tools, asks the permissions and dispatches subagents. Live on 1.18.34 and 2.0.22 (proxied
