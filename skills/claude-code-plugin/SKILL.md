@@ -310,7 +310,9 @@ binary or inconclusive output stays headless. Nothing retries a submitted reques
 another transport. Explicit PTY and an automatic PTY selection require `Bun.Terminal`;
 without it they fail clearly. This changes transport, not account access or billing.
 
-Interactive transport is text-only and reads completed transcript blocks, not token
+Interactive transport takes text plus images (PNG/JPEG/GIF/WebP staged as 0600 files
+whose paths the TUI attaches, deleted after the turn; PDFs and other blocks are
+dropped with a warning) and reads completed transcript blocks, not token
 deltas. It currently re-reads the transcript while polling. Normal interactive turns
 do not forward opencode's system prompt, and have no native `/btw`, account-failover
 form or model-fallback chain. MCP hot reload and `idleProcessTimeoutMs` work as on

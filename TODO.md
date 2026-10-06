@@ -86,7 +86,10 @@ raised, so they survive context compaction; removed when answered, done or dropp
   2.1.288's help), a read-only allow list and the existing Esc-deny; (3) `permissionMode: "plan"` on
   PTY, where the TUI offers `ExitPlanMode` and its approval dialog can be routed through the existing
   `planModeQuestion` question; (4) images on PTY via a 0600 temp file whose path is pasted;
-  (5) `/btw` on PTY answered from a short-lived `--resume --fork-session` TUI. Not fixable properly:
+  (5) `/btw` on PTY answered from a short-lived `--resume --fork-session` TUI. 2026-10-06 "do the
+  fixables now all of them if possible": (0) released as v0.41.0; (1) committed `ac067ba` (h #g200);
+  (2)+(3) committed `5afafed` (h #g201), all live on both majors; (4) and (5) in progress; nothing
+  pushed or released yet. Not fixable properly:
   token-by-token streaming (the TUI only writes whole records). Lower value, later: fallback chain
   and failover form on PTY.
 - 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after

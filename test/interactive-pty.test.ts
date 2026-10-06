@@ -1249,3 +1249,35 @@ test("a dialog frame larger than 16 KB of escape sequences is still read whole",
     { onScreen: (event) => events.push(event) },
   )
 })
+
+test("the shim pastes an image as a staged path and deletes the file after the turn", async () => {
+  const dirs = scratch()
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.later(30, () => t.append(assistantRecord("m1", "end_turn", textBlock("Red")))))
+  try {
+    const { ap, results } = spawnShim(tui, dirs)
+    ;(ap.proc.stdin as any).write(
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "What color?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from("png-bytes").toString("base64") } },
+          ],
+        },
+      }) + "\n",
+    )
+    await waitFor(() => tui.writes.some((w) => w.startsWith("\x1b[200~")))
+    const paste = tui.writes.find((w) => w.startsWith("\x1b[200~"))!
+    const [first, ...rest] = paste.slice("\x1b[200~".length, -"\x1b[201~".length).split("\n")
+    assert.match(first!, /image-[0-9a-f-]+\.png$/)
+    assert.equal(fs.readFileSync(first!, "utf8"), "png-bytes")
+    assert.deepEqual(rest, ["What color?"])
+    await waitFor(() => results().length === 1)
+    await waitFor(() => !fs.existsSync(first!))
+    ;(ap.proc as any).kill()
+  } finally {
+    dirs.cleanup()
+  }
+})

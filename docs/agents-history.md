@@ -2018,3 +2018,21 @@ without it: plan, "Call the file plan-b.txt instead.", "yes", one TUI turn acros
 three opencode turns, 9 API calls) and opencode 2.0.22 under `opencode serve` plus
 `opencode run --server` (read-only; the same three-message plan run). Every file
 the posture should have blocked was absent, every approved one present.
+
+<a id="g202"></a>
+
+#### Images on the interactive transport (2026-10-06)
+
+The PTY dropped every image block, because pasting base64 into a terminal is
+never an option. Measured on Claude Code 2.1.288 instead: a bracketed paste whose
+first line is an absolute path to a PNG becomes `[Image #1]` plus an `image/png`
+content block in the transcript (the CLI also writes a `[Image: source: <path>]`
+meta record), and Haiku read the colour of a solid 32x32 image. So the shim
+stages each PNG, JPEG, GIF or WebP block with `stageImage` (a fresh `0600`
+file, `wx`, in the plugin's `0700` scratch directory, #g158), pastes the paths one
+per line ahead of the text, and unlinks them when the turn ends; the transcript
+keeps the image from the paste on. Through opencode 1.18.34 under `opencode
+serve`, one message carrying a red and a blue image as `file` parts arrived as
+`[Image #1] [Image #2]` with two image blocks and was answered "Red Blue", and
+no staged file was left behind. PDFs and other blocks are still dropped with
+the existing warning: not measured, so not claimed.

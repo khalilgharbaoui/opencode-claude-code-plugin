@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events"
-import { existsSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { existsSync, writeFileSync } from "node:fs"
 import { unlink } from "node:fs/promises"
+import { join } from "node:path"
 import {
   ClaudeSession,
   type ClaudeSessionOptions,
@@ -13,6 +15,7 @@ import type { ProxyMcpServer } from "./proxy-mcp.js"
 import type { ReasoningEffort } from "./types.js"
 import { log } from "./logger.js"
 import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "./plan-mode-question.js"
+import { pluginTmpDir } from "./tmp.js"
 
 export interface InteractiveSpawnOptions {
   cwd: string
@@ -80,16 +83,30 @@ export interface InteractiveSpawnOptions {
   >
 }
 
+/** Image types the TUI attaches from a pasted path, by extension. */
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+}
+
+/** Stages an image's bytes as a file and returns its absolute path, or null. */
+export type ImageSaver = (data: Buffer, extension: string) => string | null
+
 /**
  * doStream writes stream-json user envelopes to stdin
  * (`{"type":"user","message":{content:[...]}}`). The interactive TUI expects
- * plain typed text, so decode the envelope: extract the text blocks and drop
- * anything that can't be typed into a terminal (an image block would paste
- * megabytes of base64 into the chat). Tool results are rendered as labeled
- * text so the model still sees the outcome. Non-envelope input (already plain
+ * plain typed text, so decode the envelope: extract the text blocks, render
+ * tool results as labeled text so the model still sees the outcome, and never
+ * paste base64 into a terminal. With `saveImage`, each PNG, JPEG, GIF or WebP
+ * block is staged as a file whose path is pasted instead, which the TUI turns
+ * back into an image attachment; without it, and for any other block, the
+ * block is dropped with a logged warning. Non-envelope input (already plain
  * text) passes through verbatim.
  */
-export function decodeUserEnvelope(chunk: string): string {
+export function decodeUserEnvelope(chunk: string, saveImage?: ImageSaver): string {
   let parsed: any
   try {
     parsed = JSON.parse(chunk)
@@ -102,10 +119,19 @@ export function decodeUserEnvelope(chunk: string): string {
   if (!Array.isArray(content)) return chunk
 
   const parts: string[] = []
+  const images: string[] = []
   let dropped = 0
   for (const block of content) {
+    const extension =
+      block?.type === "image" && block.source?.type === "base64" && typeof block.source.data === "string"
+        ? IMAGE_EXTENSIONS[String(block.source.media_type).toLowerCase()]
+        : undefined
     if (block?.type === "text" && typeof block.text === "string") {
       parts.push(block.text)
+    } else if (extension && saveImage) {
+      const file = saveImage(Buffer.from(block.source.data, "base64"), extension)
+      if (file) images.push(file)
+      else dropped++
     } else if (block?.type === "tool_result") {
       const v = block.content
       const text =
@@ -129,7 +155,30 @@ export function decodeUserEnvelope(chunk: string): string {
       dropped,
     })
   }
-  return parts.join("\n\n")
+  // The TUI turns a pasted image path into an attachment: measured on
+  // 2.1.288, a path on the paste's first line became "[Image #1]" plus an
+  // image block in the transcript, and the model read the image. One per line,
+  // ahead of the text, which is the shape that was measured.
+  const text = parts.join("\n\n")
+  return images.length > 0 ? [...images, text].filter(Boolean).join("\n") : text
+}
+
+/**
+ * Stage an image for the TUI: a fresh `0600` file in the plugin's `0700`
+ * scratch directory (h #g158), never the operator's tree. The caller deletes
+ * it once the turn is over; the transcript keeps the image itself.
+ */
+export function stageImage(data: Buffer, extension: string): string | null {
+  try {
+    const file = join(pluginTmpDir(), `image-${randomUUID()}.${extension}`)
+    writeFileSync(file, data, { mode: 0o600, flag: "wx" })
+    return file
+  } catch (err) {
+    log.warn("interactive transport could not stage an image", {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
+  }
 }
 
 
@@ -495,7 +544,7 @@ export function spawnInteractiveProcess(
   let queued = 0
   let chain: Promise<void> = Promise.resolve()
 
-  const runTurn = async (userMsg: string, turnNumber: number): Promise<void> => {
+  const runTurn = async (userMsg: string, turnNumber: number, images: string[]): Promise<void> => {
     const current = () => turnNumber === writes
     const emit = (line: string) => {
       if (!current()) return
@@ -575,6 +624,9 @@ export function spawnInteractiveProcess(
       )
       if (proc.listenerCount("error") > 0) proc.emit("error", e)
       else lineEmitter.emit("close")
+    } finally {
+      // Read at paste time; the transcript holds the image from there on.
+      for (const file of images) void unlink(file).catch(() => {})
     }
   }
 
@@ -595,11 +647,11 @@ export function spawnInteractiveProcess(
     await session.interrupt().catch(() => false)
   }
 
-  const enqueueTurn = (userMsg: string): void => {
+  const enqueueTurn = (userMsg: string, images: string[] = []): void => {
     const turnNumber = ++writes
     queued++
     chain = chain
-      .then(() => runTurn(userMsg, turnNumber))
+      .then(() => runTurn(userMsg, turnNumber, images))
       .finally(() => {
         queued--
       })
@@ -620,8 +672,15 @@ export function spawnInteractiveProcess(
           void answerPlan(planApprovalAnswer(raw, planToolUseId))
           return true
         }
-        // doStream writes stream-json envelopes; the TUI needs plain text.
-        enqueueTurn(decodeUserEnvelope(raw))
+        // doStream writes stream-json envelopes; the TUI needs plain text,
+        // with each image staged as a file whose path the TUI attaches.
+        const images: string[] = []
+        const text = decodeUserEnvelope(raw, (data, extension) => {
+          const file = stageImage(data, extension)
+          if (file) images.push(file)
+          return file
+        })
+        enqueueTurn(text, images)
         return true
       },
       end(): void {},
