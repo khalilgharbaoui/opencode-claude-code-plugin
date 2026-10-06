@@ -98,6 +98,10 @@ class FakeTui {
   private draw: (text: string) => void = () => {}
   private resolveExit: (code: number | null) => void = () => {}
   private pasted = false
+  private pastedText = ""
+  /** A fork's parent transcript, copied in ahead of the first prompt as the
+   *  CLI does with `--fork-session`. */
+  private forkSource: string | null = null
   private submitted = 0
   private timers: ReturnType<typeof setTimeout>[] = []
 
@@ -107,11 +111,16 @@ class FakeTui {
       const index = argv.indexOf(flag)
       return index >= 0 ? argv[index + 1] : undefined
     }
+    const configDir = opts.env.CLAUDE_CONFIG_DIR ?? this.configDir
+    const forking = argv.includes("--fork-session")
     this.transcript = interactiveTranscriptPath({
-      configDir: opts.env.CLAUDE_CONFIG_DIR ?? this.configDir,
+      configDir,
       cwd: opts.cwd,
-      sessionId: (at("--resume") ?? at("--session-id"))!,
+      sessionId: (forking ? at("--session-id") : (at("--resume") ?? at("--session-id")))!,
     })
+    this.forkSource = forking
+      ? interactiveTranscriptPath({ configDir, cwd: opts.cwd, sessionId: at("--resume")! })
+      : null
     fs.mkdirSync(path.dirname(this.transcript), { recursive: true })
     if (!fs.existsSync(this.transcript)) fs.writeFileSync(this.transcript, "")
     this.draw = opts.onData
@@ -131,11 +140,15 @@ class FakeTui {
     this.writes.push(data)
     if (data.startsWith("\x1b[200~")) {
       this.pasted = true
+      this.pastedText = data.slice("\x1b[200~".length, -"\x1b[201~".length)
       return
     }
     if (data === "\r" && this.pasted) {
       this.pasted = false
-      this.append(userRecord(`prompt ${this.submitted + 1}`))
+      if (this.forkSource && this.submitted === 0 && fs.existsSync(this.forkSource)) {
+        fs.appendFileSync(this.transcript, fs.readFileSync(this.forkSource, "utf8"))
+      }
+      this.append(userRecord(this.pastedText))
       this.turns[this.submitted++]?.(this)
       return
     }
@@ -1276,6 +1289,60 @@ test("the shim pastes an image as a staged path and deletes the file after the t
     assert.deepEqual(rest, ["What color?"])
     await waitFor(() => results().length === 1)
     await waitFor(() => !fs.existsSync(first!))
+    ;(ap.proc as any).kill()
+  } finally {
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// /btw: a short-lived fork of the conversation (h #g203).
+// ---------------------------------------------------------------------------
+
+test("/btw on a TUI asks a fork of the conversation and never writes the main transcript", async () => {
+  const dirs = scratch()
+  const tuis: FakeTui[] = []
+  const spawner: PtySpawner = (argv, ptyOptions) => {
+    const tui = new FakeTui()
+    tui.turns.push(
+      tuis.length === 0
+        ? (t) => t.append(assistantRecord("m1", "end_turn", textBlock("The codeword is ORCHID.")))
+        : (t) => t.later(10, () => t.append(assistantRecord("a1", "end_turn", textBlock("ORCHID")))),
+    )
+    tuis.push(tui)
+    return tui.spawner(argv, ptyOptions)
+  }
+  try {
+    const ap = spawnInteractiveProcess({ cwd: dirs.cwd, configDir: dirs.configDir, env: {}, spawnPty: spawner, tuning: FAST })
+    const lines: any[] = []
+    ap.lineEmitter.on("line", (raw: string) => lines.push(JSON.parse(raw)))
+    ;(ap.proc.stdin as any).write(
+      JSON.stringify({ type: "user", message: { role: "user", content: "remember ORCHID" } }) + "\n",
+    )
+    await waitFor(() => lines.some((line) => line.type === "result"))
+    const main = tuis[0]!
+    const mainSessionId = main.argv[main.argv.indexOf("--session-id") + 1]
+    const mainBefore = fs.readFileSync(main.transcript, "utf8")
+
+    const answer = await ap.interactiveControl!.askAside!("what was the codeword?", {
+      history: [{ question: "q0", response: "a0" }],
+    })
+    // The copied history ends on the main conversation's own reply; reading it
+    // as the fork's answer would have returned "The codeword is ORCHID.".
+    assert.equal(answer, "ORCHID")
+    const fork = tuis[1]!
+    assert(fork.argv.includes("--fork-session"))
+    assert.equal(fork.argv[fork.argv.indexOf("--resume") + 1], mainSessionId)
+    assert.notEqual(fork.argv[fork.argv.indexOf("--session-id") + 1], mainSessionId)
+    assert.equal(fork.argv[fork.argv.indexOf("--permission-mode") + 1], "dontAsk")
+    assert(!fork.argv.includes("--settings"), "nothing is pre-approved in the fork")
+    const paste = fork.writes.find((w) => w.startsWith("\x1b[200~"))!
+    assert.match(paste, /Side question/)
+    assert.match(paste, /Earlier side question: q0\nYour answer: a0/)
+    assert.match(paste, /what was the codeword\?/)
+    assert.equal(fs.readFileSync(main.transcript, "utf8"), mainBefore, "the main conversation is never written")
+    await waitFor(() => !fs.existsSync(fork.transcript))
+    assert.notEqual(fork.exitCode, undefined, "the fork's TUI is closed")
     ;(ap.proc as any).kill()
   } finally {
     dirs.cleanup()

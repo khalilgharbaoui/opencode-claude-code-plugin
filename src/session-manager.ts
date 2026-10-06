@@ -99,6 +99,16 @@ export interface ActiveProcess {
     /** True while the TUI is parked on an `ExitPlanMode` approval: the next
      *  message answers it instead of being a new turn. */
     planApprovalPending?(): boolean
+    /** Answer a `/btw` from a short-lived fork of this conversation, which
+     *  shares its prompt cache and never writes to it (h #g203). */
+    askAside?(
+      question: string,
+      options: {
+        history?: readonly { question: string; response: string }[]
+        timeoutMs?: number
+        abortSignal?: AbortSignal
+      },
+    ): Promise<string>
     /** Esc to the TUI; resolves true once the turn ended. */
     interrupt(timeoutMs: number): Promise<boolean>
     /** Hand the attached turn every record the TUI has already written. */

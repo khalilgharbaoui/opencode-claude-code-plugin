@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process"
 import { cliSupportsSideQuestion, type CliVersion } from "./cli-version.js"
 import type { ActiveProcess } from "./session-manager.js"
 
-type SideQuestionProcess = Pick<ActiveProcess, "proc" | "lineEmitter">
+type SideQuestionProcess = Pick<ActiveProcess, "proc" | "lineEmitter" | "interactiveControl">
 
 export interface SideQuestionResult {
   response: string
@@ -149,7 +149,28 @@ export async function requestSideQuestion(
   if (!question) return { response: SIDE_QUESTION_USAGE, synthetic: true }
   options.abortSignal?.throwIfAborted()
   const { proc, lineEmitter } = activeProcess
-  if (options.interactive || !proc.stdout) {
+  // The interactive TUI has no control channel, and its own `/btw` shows the
+  // answer only on screen, so the aside is answered by a short-lived fork of
+  // the conversation instead (h #g203). Still one at a time per process.
+  if (options.interactive) {
+    const askAside = activeProcess.interactiveControl?.askAside
+    if (!askAside) throw new Error("/btw needs a live interactive Claude Code session.")
+    if (pendingProcesses.has(proc)) {
+      throw new Error("Wait for the current /btw to finish before asking another.")
+    }
+    pendingProcesses.add(proc)
+    try {
+      const response = await askAside(question, {
+        ...(options.history === undefined ? {} : { history: options.history }),
+        timeoutMs: options.timeoutMs ?? 120_000,
+        ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+      })
+      return { response, synthetic: false }
+    } finally {
+      pendingProcesses.delete(proc)
+    }
+  }
+  if (!proc.stdout) {
     throw new Error("/btw requires the headless Claude Code transport; interactive sessions are not supported.")
   }
   if (!cliSupportsSideQuestion(options.cliVersion)) {

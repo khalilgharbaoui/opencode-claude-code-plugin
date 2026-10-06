@@ -228,6 +228,23 @@ export function planApprovalAnswer(raw: string, toolUseId: string): PlanApproval
 }
 
 /**
+ * What a `/btw` fork is asked. The headless `side_question` carries the CLI's
+ * own framing; a fork is an ordinary turn, so the framing is ours: answer from
+ * the conversation, briefly, without tools, and leave the task alone. Earlier
+ * asides ride along the way the control request's `history` does.
+ */
+export function asidePrompt(
+  question: string,
+  history: readonly { question: string; response: string }[] = [],
+): string {
+  return [
+    "(Side question, asked while the main task continues elsewhere. Answer it from this conversation alone, briefly and without using any tools. Do not continue or change the main task.)",
+    ...history.map((exchange) => `Earlier side question: ${exchange.question}\nYour answer: ${exchange.response}`),
+    question.trim(),
+  ].join("\n\n")
+}
+
+/**
  * The CLI flags an interactive spawn adds after `ClaudeSession`'s own
  * `--session-id` (or `--resume`) / `--model` / `--setting-sources`. Exported
  * so the spawn arguments can be checked without a PTY.
@@ -647,6 +664,54 @@ export function spawnInteractiveProcess(
     await session.interrupt().catch(() => false)
   }
 
+  // `/btw` on a TUI (h #g203): a short-lived fork of this conversation
+  // (`--resume <id> --fork-session`) with the main spawn's own arguments, so
+  // the prompt cache is shared (measured on 2.1.288: 27,621 cache-read tokens
+  // and none written for a fork of a 27K-token conversation), under `dontAsk`
+  // with nothing pre-approved, so it cannot run a tool. The main transcript is
+  // never written; the fork's copy is deleted once it has answered. A fork can
+  // be taken mid-turn: the CLI closes the unfinished turn in the copy.
+  const askAside = async (
+    question: string,
+    options: {
+      history?: readonly { question: string; response: string }[]
+      timeoutMs?: number
+      abortSignal?: AbortSignal
+    },
+  ): Promise<string> => {
+    const forked = existsSync(session.jsonlPath)
+    const aside = new ClaudeSession({
+      ...opts.tuning,
+      cwd: opts.cwd,
+      cliPath: opts.cliPath,
+      configDir: opts.configDir,
+      model: opts.model,
+      settingSources: opts.settingSources === undefined ? null : opts.settingSources,
+      extraArgs: interactiveExtraArgs({ ...opts, permissionsAllow: [], permissionMode: "dontAsk" }),
+      ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
+      effort: opts.effort ? cliEffortLevel(opts.effort) : undefined,
+      env: opts.env,
+      spawnPty: opts.spawnPty,
+      signal: options.abortSignal,
+      ...(forked ? { forkOf: session.sessionId } : {}),
+    })
+    log.info("btw: asking a fork of the interactive session", {
+      sessionId: session.sessionId,
+      asideSessionId: aside.sessionId,
+      forked,
+    })
+    try {
+      await aside.start()
+      const result = await aside.ask(asidePrompt(question, options.history), options.timeoutMs)
+      const text = result.text.trim()
+      if (!text) throw new Error("the side question got no answer")
+      return text
+    } finally {
+      aside.dispose()
+      void unlink(aside.jsonlPath).catch(() => {})
+    }
+  }
+
   const enqueueTurn = (userMsg: string, images: string[] = []): void => {
     const turnNumber = ++writes
     queued++
@@ -733,6 +798,7 @@ export function spawnInteractiveProcess(
       },
       flushTranscript: () => session.flushTranscript(),
       planApprovalPending: () => session.pendingPlanApproval !== null,
+      askAside,
     },
   }
   return ap

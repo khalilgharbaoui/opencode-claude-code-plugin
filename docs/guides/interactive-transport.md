@@ -38,9 +38,7 @@ Set `interactiveSystemPrompt: false` only for diagnostics. While disabled, the i
 
 ### What it does not support
 
-This is the part to read before turning it on. One feature of this plugin is absent on the interactive transport:
-
-- **No [`/btw`](../guides/btw.md).** Side questions ride Claude Code's `side_question` control protocol over the headless process's stdio. Asking one in an interactive session returns an error telling you so.
+The features that differ are listed below. [`/btw`](../guides/btw.md) works, answered by a short-lived fork of the conversation rather than the headless side channel; the account-failover form and the model fallback chain are headless-only.
 
 ### What else is different
 

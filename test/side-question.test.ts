@@ -667,3 +667,30 @@ test("provider empty /btw renders usage without a live session or CLI invocation
     await fake.cleanup()
   }
 })
+
+test("an interactive process answers through its fork, one aside at a time", async () => {
+  const fake = fakeProcess()
+  const calls: any[] = []
+  let release!: (answer: string) => void
+  ;(fake.activeProcess as any).interactiveControl = {
+    askAside: (question: string, opts: any) => {
+      calls.push({ question, opts })
+      return new Promise<string>((resolve) => (release = resolve))
+    },
+  }
+  const history = [{ question: "q0", response: "a0" }]
+  const first = requestSideQuestion(fake.activeProcess, " ping ", { ...options, interactive: true, history })
+  await assert.rejects(
+    requestSideQuestion(fake.activeProcess, "again", { ...options, interactive: true }),
+    /Wait for the current \/btw/,
+  )
+  release("pong")
+  assert.deepEqual(await first, { response: "pong", synthetic: false })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].question, "ping")
+  assert.deepEqual(calls[0].opts.history, history)
+  assert.equal(calls[0].opts.timeoutMs, options.timeoutMs, "the caller's deadline is passed through")
+  // Nothing goes to stdin: the TUI has no control channel.
+  assert.equal(fake.writes.length, 0)
+  assert.equal(isSideQuestionPending(fake.activeProcess), false)
+})

@@ -140,6 +140,16 @@ export interface ClaudeSessionOptions {
   /** Continue this Claude session (`--resume <id>`) instead of starting a new
    *  one. The CLI appends to the same `<id>.jsonl`, measured on 2.1.288. */
   resumeSessionId?: string
+  /**
+   * Fork this Claude session instead: this session (its own `sessionId`)
+   * starts from a copy of that conversation and the original is never written
+   * (`--session-id <own> --resume <id> --fork-session`). Measured on 2.1.288:
+   * the copy keeps the parent's records and uuids with the session id
+   * rewritten, and a parent caught mid-turn is closed in the copy with a
+   * synthetic "No response requested." reply, so the first turn reads nothing
+   * before its own prompt record.
+   */
+  forkOf?: string
   /** The whole child environment. Defaults to `interactiveSpawnEnv`; the
    *  plugin passes the headless spawn's env so both transports get the same
    *  hygiene, effort, cache TTL and thinking variables. `CLAUDE_CONFIG_DIR`
@@ -594,6 +604,17 @@ interface TurnScan {
    *  own first user record, so a stale one can never end it. */
   sawUserRecord: boolean
   lastBeat: number
+  /** A fork's first turn: the normalized prompt whose record ends the copied
+   *  history. Nothing before it is read; null once it was seen. */
+  awaitingOwnPrompt: string | null
+}
+
+const normalizedPrompt = (text: string) => text.replace(/\s+/g, " ").trim()
+
+/** Whether a record is the user record a pasted prompt became. */
+function isOwnPromptRecord(rec: any, normalized: string): boolean {
+  const content = rec?.type === "user" ? rec.message?.content : undefined
+  return typeof content === "string" && normalizedPrompt(content) === normalized
 }
 
 /** How a turn ended. */
@@ -652,6 +673,10 @@ export class ClaudeSession {
   private aborted = false
   private readonly signal?: AbortSignal
   private readonly resumeSessionId?: string
+  private readonly forkOf?: string
+  /** A fork whose first turn has not started: its transcript opens with the
+   *  parent's copied conversation, which belongs to no turn of this session. */
+  private forkPending = false
   private readonly env?: Record<string, string | undefined>
   private readonly onScreen?: (event: ScreenEvent) => void
   private readonly onExit?: (code: number | null) => void
@@ -692,6 +717,7 @@ export class ClaudeSession {
       | "ignoreAnthropicApiKey"
       | "effort"
       | "resumeSessionId"
+      | "forkOf"
       | "env"
       | "onScreen"
       | "onExit"
@@ -714,7 +740,9 @@ export class ClaudeSession {
     this.configDir = resolveConfigDir(opts.configDir)
     this.explicitConfigDir = opts.configDir ? this.configDir : undefined
     this.signal = opts.signal
-    this.resumeSessionId = opts.resumeSessionId
+    this.resumeSessionId = opts.forkOf ? undefined : opts.resumeSessionId
+    this.forkOf = opts.forkOf
+    this.forkPending = !!opts.forkOf
     this.env = opts.env
     this.onScreen = opts.onScreen
     this.onExit = opts.onExit
@@ -768,9 +796,11 @@ export class ClaudeSession {
 
   /** The CLI arguments this session spawns with. */
   spawnArgs(): string[] {
-    const args: string[] = this.resumeSessionId
-      ? ["--resume", this.resumeSessionId]
-      : ["--session-id", this.sessionId]
+    const args: string[] = this.forkOf
+      ? ["--session-id", this.sessionId, "--resume", this.forkOf, "--fork-session"]
+      : this.resumeSessionId
+        ? ["--resume", this.resumeSessionId]
+        : ["--session-id", this.sessionId]
     if (this.o.model) args.push("--model", this.o.model)
     if (this.o.settingSources !== null && this.o.settingSources !== undefined) {
       args.push("--setting-sources", this.o.settingSources)
@@ -1092,7 +1122,9 @@ export class ClaudeSession {
         end: null,
         sawUserRecord: false,
         lastBeat: Date.now(),
+        awaitingOwnPrompt: this.forkPending ? normalizedPrompt(prompt) : null,
       }
+      this.forkPending = false
       this.scan = scan
       const deadline = Date.now() + timeout
 
@@ -1160,6 +1192,13 @@ export class ClaudeSession {
       try {
         rec = JSON.parse(s)
       } catch {}
+      if (scan.awaitingOwnPrompt !== null) {
+        if (!isOwnPromptRecord(rec, scan.awaitingOwnPrompt)) {
+          this.cursor = i + 1
+          continue
+        }
+        scan.awaitingOwnPrompt = null
+      }
       // Before the record is handed on: whoever reads it may ask at once
       // whether a plan approval is pending.
       if (rec) this.notePlanApproval(rec)

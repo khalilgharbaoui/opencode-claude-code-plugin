@@ -2036,3 +2036,36 @@ serve`, one message carrying a red and a blue image as `file` parts arrived as
 `[Image #1] [Image #2]` with two image blocks and was answered "Red Blue", and
 no staged file was left behind. PDFs and other blocks are still dropped with
 the existing warning: not measured, so not claimed.
+
+<a id="g203"></a>
+
+#### `/btw` on the interactive transport, from a fork (2026-10-06)
+
+The TUI has no control channel, so `side_question` cannot be sent. Its own
+`/btw` was measured first (2.1.288): typed mid-turn it opens an overlay
+"/btw <question> · Answering… Esc to close" and then "· Paris. ↑/↓ scroll · c to
+copy · f to fork · Esc to close"; nothing is written to the transcript, a long
+answer scrolls, and a second `/btw` typed while the overlay is open went into the
+overlay, whose `c` and `f` keys copy and fork. Not usable.
+
+A fork is: `--session-id <new> --resume <main> --fork-session` writes a new
+transcript that starts with a copy of the parent's records (same uuids, session id
+rewritten) and never touches the parent. Measured against a two-turn, 27K-token
+conversation on Haiku 4.5: a fork with identical arguments answered the codeword
+with 27,184 cache-read and 437 written; with `--permission-mode dontAsk` and an
+empty allow list, 27,621 read and 0 written, so the posture does not break the
+cache; a fork taken while the main turn was streaming answered too (the CLI closes
+the unfinished turn in the copy with a synthetic "No response requested."), and
+the main turn finished normally. The main transcript's line count was unchanged
+by all three. A first probe returned the parent's first reply as the answer,
+because the copy is written at submit time: a fork's first turn therefore skips
+every record until its own prompt record.
+
+Live with Claude Code 2.1.288 and `transport: "interactive"`: opencode 1.18.34
+under `opencode serve`, an idle `/btw` answered `KESTREL` in about 5 s, and a
+mid-turn one wrote its receipt into the running turn, then `KESTREL` inline 5.2 s
+later, and the `/btw` message was dropped as on headless (the history of the first
+aside rode along); opencode 2.0.22, the registered `/btw` command through
+`session.command` answered `PLOVER` 5 s after it was queued. V2's `opencode run`
+stores its message argument wrapped in quotes (`"\"...\""` in its own database),
+so `/btw` cannot be probed through `run`; that is the CLI, not the plugin.
