@@ -2101,3 +2101,32 @@ is headless only (`interactiveControl` present means skip); a PTY session keeps
 the old behaviour of not delivering such a message. A test pins it, and removing
 the gate turns it red. Forwarding on the PTY would need the TUI's own mid-turn
 input queue, measured live, before it can be wired.
+
+<a id="g205"></a>
+
+#### A measured-version contract for the interactive transport, not a gate (2026-10-06)
+
+The backlog item read "version gate the transport ... refuse unknown versions
+loudly". Built as a contract instead, for two reasons measured against the code.
+The hang it cited (a CLI writing `stop_reason: null`) already ends on the TUI's
+`system/turn_duration` record (`end: "ended"`, #g196), so it needs a release that
+drops both signals. And refusing unknown versions defeats the transport's
+purpose: `auto` selects the PTY precisely when a NEW CLI has dropped `--print`,
+which is by definition a version nobody measured.
+
+So `INTERACTIVE_MEASURED_CLI` (2.1.288) records the newest version the PTY was
+run end to end on. A newer one logs one WARN per version per process, from the
+prologue, the turn going ahead; `/claude-code-doctor` shows a measured-on row
+while the PTY is requested or running and flags a newer CLI. Bump the constant
+only after a live run.
+
+Same change, the reporting gap the 0.42.0 skill audit left open: the startup
+block's `interactiveTransport` read only the legacy flag. It now carries
+`transport` (the requested mode through `requestedTransport`, `invalid` for a
+typo) and `interactiveTransport` is true for either spelling; the doctor's
+transport row says what was asked for and what this conversation is on, and each
+live process row has a transport column read off `interactiveControl`.
+
+Still open: a third turn-end signal from the TUI's own idle screen, which needs
+live turns to measure (blocked today by the default account's usage limit), and
+recorded per-version golden files.

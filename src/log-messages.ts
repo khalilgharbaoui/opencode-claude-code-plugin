@@ -125,6 +125,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "skipping remote MCP server with no url",
   "stale scratch directory sweep failed",
   "task_batch resolving with child results missing",
+  "the interactive transport has not been measured on this Claude Code version; it reads the TUI's screen and transcript, which a new release can change. If a turn hangs or a dialog is not handled, run /claude-code-doctor bundle and report it",
   "this opencode process is running an older plugin build than the one on disk",
   "timed out pending proxy call",
   "turn abort listener threw",

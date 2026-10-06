@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 
 import { detectCliVersion } from "./cli-version.js"
+import { requestedTransport } from "./transport.js"
 import { log } from "./logger.js"
 import { mergeOpencodeMcp } from "./mcp-bridge.js"
 import {
@@ -38,6 +39,14 @@ export interface StartupDiagnostics {
    * one for the provider the operator is actually running under.
    */
   permissionPresets: PermissionPresetSummary[]
+  /**
+   * The transport asked for, as `requestedTransport` resolves it: `transport`
+   * first, then the legacy `interactive` flag and its env var. `auto` is a
+   * request, not a route: it stays headless until the CLI refuses `--print`,
+   * so a spawn's own log line is still what proves which one ran.
+   */
+  transport: "auto" | "headless" | "interactive" | "invalid"
+  /** True when the PTY was requested by either spelling. */
   interactiveTransport: boolean
   /** ExitPlanMode approval routed through opencode's `question` tool. */
   planModeQuestion: boolean
@@ -193,6 +202,16 @@ export function collectStartupDiagnostics(
     })
   }
 
+  let transport: StartupDiagnostics["transport"]
+  try {
+    transport = requestedTransport({
+      transport: firstOption(providers, "transport") as never,
+      interactive: firstOption(providers, "interactive") as boolean | undefined,
+    })
+  } catch {
+    transport = "invalid"
+  }
+
   return {
     plugin: pluginVersion(),
     opencode: opencodeVersion ?? process.env.OPENCODE_VERSION ?? "unknown",
@@ -205,9 +224,8 @@ export function collectStartupDiagnostics(
     permissionPresets: Object.entries(providers).map(([name, entry]) =>
       summarizePermissionPreset(name, entry?.options),
     ),
-    interactiveTransport:
-      firstOption(providers, "interactive") === true ||
-      process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT === "1",
+    transport,
+    interactiveTransport: transport === "interactive",
     planModeQuestion: firstOption(providers, "planModeQuestion") === true,
     anthropicApiKeyInEnv: Boolean(
       process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,

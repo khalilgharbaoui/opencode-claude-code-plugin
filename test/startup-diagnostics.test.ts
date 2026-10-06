@@ -276,3 +276,22 @@ test("detectOpencodeVersion returns undefined when the binary fails", async () =
     resetOpencodeVersionProbe()
   }
 })
+
+test("collectStartupDiagnostics reports the requested transport, by either spelling", () => {
+  const previous = process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT
+  try {
+    delete process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT
+    const of = (options: Record<string, unknown>) => collectStartupDiagnostics({ "claude-code": { options } })
+    assert.equal(of({}).transport, "headless")
+    assert.equal(of({ transport: "auto" }).transport, "auto")
+    assert.equal(of({ transport: "auto" }).interactiveTransport, false, "auto is a request, not a route")
+    assert.equal(of({ transport: "interactive" }).transport, "interactive")
+    assert.equal(of({ transport: "interactive" }).interactiveTransport, true)
+    // An explicit transport wins over the legacy flag.
+    assert.equal(of({ transport: "headless", interactive: true }).transport, "headless")
+    assert.equal(of({ transport: "pty" }).transport, "invalid")
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT
+    else process.env.CLAUDE_CODE_INTERACTIVE_TRANSPORT = previous
+  }
+})

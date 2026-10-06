@@ -128,6 +128,7 @@ grep "plugin ready" ~/.local/share/opencode-claude-code/plugin.log
       "overrides": ["skipPermissions: forced to false; ..."]
     }
   ],
+  "transport": "headless",
   "interactiveTransport": false,
   "anthropicApiKeyInEnv": false,
   "claudeCli": { "path": "claude", "version": "2.1.211 (Claude Code)" }

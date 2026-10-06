@@ -1350,6 +1350,8 @@ export interface ActiveProcessSnapshot {
   ageMs?: number
   effort?: ReasoningEffort
   attached: boolean
+  /** Which transport this process is: the PTY shim carries `interactiveControl`. */
+  transport: "headless" | "interactive"
   proxyUrl?: string
   /**
    * Tail of the child's stderr, when something upstream of this module is
@@ -1378,6 +1380,7 @@ export function snapshotActiveProcesses(now = Date.now()): ActiveProcessSnapshot
       ageMs: ap.startedAt === undefined ? undefined : Math.max(0, now - ap.startedAt),
       effort: ap.effort,
       attached: ap.lineEmitter.listenerCount("line") > 0,
+      transport: ap.interactiveControl ? "interactive" : "headless",
       proxyUrl: ap.proxyServer?.url,
       lastStderr: typeof lastStderr === "string" ? lastStderr : undefined,
     })

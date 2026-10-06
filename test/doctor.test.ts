@@ -66,6 +66,7 @@ const report: DoctorReport = {
     },
   ],
   transport: "headless",
+  transportInUse: "headless",
   planModeQuestion: false,
   turnStats: true,
   anthropicApiKeyInEnv: false,
@@ -80,6 +81,7 @@ const report: DoctorReport = {
       ageMs: 125_000,
       effort: "high",
       attached: true,
+      transport: "headless",
       proxyUrl: "http://127.0.0.1:51234/mcp",
       lastStderr: "warning: something happened\n",
     },
@@ -110,10 +112,10 @@ test("the report names every field a bug report needs, and nothing secret", () =
     "| proxyTools | Bash, Edit, Write, WebFetch, Task |",
     "| MCP servers (on disk) | github |",
     "| permissionPreset | claude-code-default: none, claude-code-work: read-only |",
-    "| transport | headless |",
+    "| transport | headless; this conversation: headless |",
     "| turnStats | true |",
     "| ANTHROPIC_API_KEY in env | no |",
-    "| ses_abc | claude-opus-5 | 4242 | yes | 2m | high |",
+    "| ses_abc | claude-opus-5 | headless | 4242 | yes | 2m | high |",
     "| task | `call_1` | 30.0s | 1h 0m |",
     "| http://127.0.0.1:51234/mcp | 401, good |",
     "warning: something happened",
@@ -688,4 +690,29 @@ test("describeSessionKey pulls the model and opencode session back out", () => {
     compaction: true,
   })
   assert.equal(describeSessionKey("garbage").model, "unknown")
+})
+
+test("the transport row says what was asked for and what this conversation is on", () => {
+  const plain = formatDoctorReport(report)
+  assert.match(plain, /\| transport \| headless; this conversation: headless \|/)
+  assert.doesNotMatch(plain, /measured on/, "no PTY requested or running: no measured-version row")
+
+  const auto = formatDoctorReport({
+    ...report,
+    transport: "auto",
+    interactiveMeasured: { measured: "2.1.288", unmeasured: false },
+  })
+  assert.match(auto, /auto \(headless until claude refuses `--print`\); this conversation: headless/)
+  assert.match(auto, /\| interactive transport measured on \| Claude Code 2\.1\.288 \|/)
+
+  const newer = formatDoctorReport({
+    ...report,
+    transport: "interactive",
+    transportInUse: "interactive",
+    claudeCli: { ...report.claudeCli, version: "2.1.300" },
+    interactiveMeasured: { measured: "2.1.288", unmeasured: true },
+    processes: [{ ...report.processes[0], transport: "interactive" }],
+  })
+  assert.match(newer, /this CLI, 2\.1\.300, is newer and unmeasured/)
+  assert.match(newer, /\| ses_abc \| claude-opus-5 \| interactive \|/)
 })

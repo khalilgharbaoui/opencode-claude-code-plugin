@@ -859,9 +859,14 @@ options an applied preset replaced), `interactiveTransport`, `planModeQuestion`,
 (`not detected` means the binary did not answer `--version`, which also disables
 version-gated flags). Cwd is a startup fallback snapshot, not the per-session spawn
 directory. MCP names are disk discovery, not proof of live connectivity. The startup
-`interactiveTransport` boolean reports the legacy preference only, not the new
-`transport` selection or proof that Bun PTY transport was used. Check a
-relevant, redacted spawn/bridge entry for actual routing after an approved normal turn.
+`transport` field is the requested mode (`auto` / `headless` / `interactive` /
+`invalid`, resolved as the provider resolves it) and `interactiveTransport` is true
+when `interactive` was requested by either spelling; neither proves the PTY ran
+(`auto` stays headless until the CLI refuses `--print`). `/claude-code-doctor`'s
+live-process rows carry a per-process transport column, which is the proof; the
+spawn log line is the other. The PTY was measured on Claude Code 2.1.288: a newer
+CLI logs one WARN per version ("has not been measured") and the doctor flags it,
+but nothing is refused.
 
 Useful log lines to search for (redact payloads): `spawning new claude process`,
 `bridged opencode skills into claude`, `interrupt sent for aborted turn`, `btw:`,

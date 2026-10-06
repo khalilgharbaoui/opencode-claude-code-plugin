@@ -4,7 +4,11 @@ import {
   type BackgroundSubagentGate,
   type BackgroundTaskLedger,
 } from "./background-tasks.js"
-import { detectCliVersion } from "./cli-version.js"
+import {
+  detectCliVersion,
+  INTERACTIVE_MEASURED_CLI,
+  isUnmeasuredInteractiveCli,
+} from "./cli-version.js"
 import {
   buildLogBundleSection,
   createRedactionContext,
@@ -155,7 +159,16 @@ export interface DoctorReport {
   mcpServers: string[]
   /** One row per provider; `none` where no preset is configured. */
   permissionPresets: PermissionPresetSummary[]
-  transport: "headless" | "interactive"
+  /** What was requested (`auto` / `headless` / `interactive` / `invalid`). */
+  transport: string
+  /** The transport the conversation running this command is on. */
+  transportInUse: "headless" | "interactive"
+  /**
+   * The newest Claude Code the interactive transport was measured on, and
+   * whether the installed one is newer. Shown only when the PTY is requested
+   * or running, because nothing else reads the TUI.
+   */
+  interactiveMeasured?: { measured: string; unmeasured: boolean }
   planModeQuestion: boolean
   turnStats: boolean
   anthropicApiKeyInEnv: boolean
@@ -253,7 +266,20 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push(`| proxyTools | ${list(report.proxyTools)} |`)
   lines.push(`| MCP servers (on disk) | ${list(report.mcpServers)} |`)
   lines.push(`| permissionPreset | ${describePermissionPresets(report.permissionPresets)} |`)
-  lines.push(`| transport | ${report.transport} |`)
+  lines.push(
+    `| transport | ${report.transport}${
+      report.transport === "auto" ? " (headless until claude refuses `--print`)" : ""
+    }; this conversation: ${report.transportInUse} |`,
+  )
+  if (report.interactiveMeasured) {
+    lines.push(
+      `| interactive transport measured on | Claude Code ${report.interactiveMeasured.measured}${
+        report.interactiveMeasured.unmeasured
+          ? ` (this CLI, ${report.claudeCli.version}, is newer and unmeasured: if a turn hangs, send \`/claude-code-doctor bundle\`)`
+          : ""
+      } |`,
+    )
+  }
   lines.push(`| planModeQuestion | ${report.planModeQuestion} |`)
   lines.push(`| turnStats | ${report.turnStats} |`)
   lines.push(`| ANTHROPIC_API_KEY in env | ${report.anthropicApiKeyInEnv ? "yes" : "no"} |`)
@@ -278,11 +304,11 @@ export function formatDoctorReport(report: DoctorReport): string {
   if (report.processes.length === 0) {
     lines.push("None. The next message in a Claude Code session spawns one.")
   } else {
-    lines.push("| session | model | pid | in flight | age | effort |")
-    lines.push("|---|---|---|---|---|---|")
+    lines.push("| session | model | transport | pid | in flight | age | effort |")
+    lines.push("|---|---|---|---|---|---|---|")
     for (const proc of report.processes) {
       lines.push(
-        `| ${proc.session}${proc.compaction ? " (compaction)" : ""} | ${proc.model} | ${
+        `| ${proc.session}${proc.compaction ? " (compaction)" : ""} | ${proc.model} | ${proc.transport} | ${
           proc.pid ?? "unknown"
         } | ${proc.inFlight ? "yes" : "no"} | ${formatAge(proc.ageMs)} | ${proc.effort ?? "inherited"} |`,
       )
@@ -602,7 +628,14 @@ export async function gatherDoctorReport(
     proxyTools: base.proxyTools,
     mcpServers: base.mcpServers,
     permissionPresets: base.permissionPresets,
-    transport: options.interactive || base.interactiveTransport ? "interactive" : "headless",
+    transport: base.transport,
+    transportInUse: options.interactive ? "interactive" : "headless",
+    interactiveMeasured:
+      base.transport !== "headless" ||
+      options.interactive ||
+      processes.some((proc) => proc.transport === "interactive")
+        ? { measured: INTERACTIVE_MEASURED_CLI, unmeasured: isUnmeasuredInteractiveCli(cli) }
+        : undefined,
     planModeQuestion: base.planModeQuestion,
     turnStats: options.turnStats,
     anthropicApiKeyInEnv: base.anthropicApiKeyInEnv,

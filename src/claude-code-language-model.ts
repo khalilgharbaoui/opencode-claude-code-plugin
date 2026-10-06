@@ -119,6 +119,7 @@ import {
   cliSupportsRestricted,
   detectCliSupportsFlag,
   detectCliVersion,
+  reportUnmeasuredInteractiveCli,
 } from "./cli-version.js"
 import { interactivePermissionPosture, isReadOnlyPermissionMode } from "./permission-presets.js"
 import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
@@ -1461,6 +1462,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return abortedBeforeWork("waiting for opencode's MCP status and the CLI version")
     }
     const [runtimeStatus, cliVersion] = prologue.value
+    if (useInteractive) reportUnmeasuredInteractiveCli(cliVersion)
 
     // The read-only preset on the TUI is `--restricted` plus `dontAsk`
     // (`interactivePermissionPosture`, h #g201). A CLI that lacks either is

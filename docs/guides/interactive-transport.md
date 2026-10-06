@@ -25,6 +25,7 @@ With `transport` unset, the default remains headless. `interactive: true` or `CL
 
 - opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. Explicit `transport: "interactive"` and an automatic PTY selection fail clearly when it is absent. The legacy `interactive` option still falls back to headless. Both opencode 1.x and 2.x provide it: verified live on 1.18.34 and 2.0.22 with Claude Code 2.1.288. On opencode 2 the option goes under `providers.claude-code.settings` instead of `provider.claude-code.options`.
 - A working, authenticated `claude` using the account you intend. Transport selection cannot repair an expired login or a usage limit.
+- **Measured on Claude Code 2.1.288.** The transport reads the TUI's screen and its transcript, and neither is a published contract, so a newer release can change what it relies on. A newer CLI is not refused (this transport exists for the day a new release drops `--print`); the plugin logs one warning per new version and `/claude-code-doctor` flags it. If a turn hangs or a dialog is not handled on a newer CLI, `/claude-code-doctor bundle` is the report to send.
 
 ### What carries over from the headless transport
 

@@ -260,6 +260,47 @@ export function cliSupportsDontAsk(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 1, patch: 263 })
 }
 
+/**
+ * The newest Claude Code the interactive transport was measured on end to end
+ * (h #g205). The PTY reads the TUI's screen and its transcript, and neither is
+ * a published contract, so a newer CLI is reported, never refused: the
+ * transport exists for the day a new CLI drops `--print`, and refusing
+ * unmeasured versions would switch it off exactly then.
+ */
+export const INTERACTIVE_MEASURED_CLI = "2.1.288"
+
+const INTERACTIVE_MEASURED = { major: 2, minor: 1, patch: 288 }
+
+/** True when `v` is known and newer than `INTERACTIVE_MEASURED_CLI`. */
+export function isUnmeasuredInteractiveCli(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, INTERACTIVE_MEASURED) && !(
+    v.major === INTERACTIVE_MEASURED.major &&
+    v.minor === INTERACTIVE_MEASURED.minor &&
+    v.patch === INTERACTIVE_MEASURED.patch
+  )
+}
+
+const warnedUnmeasuredInteractive = new Set<string>()
+
+/**
+ * One WARN per CLI version per process when the interactive transport runs on
+ * a Claude Code newer than it was measured on. The turn goes ahead.
+ */
+export function reportUnmeasuredInteractiveCli(v: CliVersion | null): void {
+  if (!v || !isUnmeasuredInteractiveCli(v) || warnedUnmeasuredInteractive.has(v.raw)) return
+  warnedUnmeasuredInteractive.add(v.raw)
+  log.warn(
+    "the interactive transport has not been measured on this Claude Code version; it reads the TUI's screen and transcript, which a new release can change. If a turn hangs or a dialog is not handled, run /claude-code-doctor bundle and report it",
+    { cliVersion: v.raw, measuredCli: INTERACTIVE_MEASURED_CLI },
+  )
+}
+
+/** Test seam. */
+export function _resetUnmeasuredInteractiveWarnings(): void {
+  warnedUnmeasuredInteractive.clear()
+}
+
 /** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
 export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
   if (!v) return false
