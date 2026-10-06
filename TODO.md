@@ -128,7 +128,8 @@ Nothing parked.
   `ExitPlanMode` dialog parked for the operator (h #g201); (4) images as staged paths (h #g202);
   (5) `/btw` from a short-lived `--fork-session` TUI (h #g203). Not fixable properly: token-by-token
   streaming (the TUI writes whole records). Still headless-only by choice: the fallback chain and the
-  failover form. 1,220 tests.
+  failover form. 1,220 tests. Released as **v0.42.0** (CI publish green, registry shasum `087e0fa3`
+  matches the step's notice).
 - 2026-10-05: **done**: "do 1", the tool proxy on the interactive transport (h #g198). The interactive
   spawn now gets the same proxy server, `proxyTools` and `--disallowedTools` as headless, so opencode
   runs the tools, asks the permissions and dispatches subagents. Live on 1.18.34 and 2.0.22 (proxied
