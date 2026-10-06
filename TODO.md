@@ -121,6 +121,13 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-06: **done** (v0.42.2): "carry on with the most recommended". The P2 "version gate the
+  transport" built as a contract instead of a gate (h #g205): refusing unknown CLI versions would
+  switch the PTY off on exactly the release that drops `--print`, and the cited `stop_reason: null`
+  hang already ends on `turn_duration`. One WARN per CLI newer than 2.1.288, a doctor row, the
+  requested transport in the startup block, a transport column per live process. Doctor live on
+  1.18.34. Still open: an idle-screen turn-end signal and recorded golden files, both needing live
+  turns (default account limited today). 1,239 tests.
 - 2026-10-06: **done** (v0.42.1): "there a 2 PRs open if they are beneficial and good maybe we should
   consider assimilating them and of cours crediting the author properly". Both by Michael Crawford
   (@internetisalie), cherry-picked with authorship: #89 (run state read from the session's own
