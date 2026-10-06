@@ -2922,6 +2922,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // has not already sent.
           const forwardTrailingUserMessages = (): number => {
             if (compactionMode || !state.activeProcess) return 0
+            // Headless only. A write to the interactive shim is a new TUI turn
+            // that supersedes the one parked in this proxy call, whose `result`
+            // would then be dropped and this turn never finish (h #g204).
+            if (state.activeProcess.interactiveControl) return 0
             const trailing = getTrailingUserMessages(effectivePrompt, {
               stripContextReminders: self.stripContextRemindersEnabled(),
             })

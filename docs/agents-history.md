@@ -2069,3 +2069,35 @@ aside rode along); opencode 2.0.22, the registered `/btw` command through
 `session.command` answered `PLOVER` 5 s after it was queued. V2's `opencode run`
 stores its message argument wrapped in quotes (`"\"...\""` in its own database),
 so `/btw` cannot be probed through `run`; that is the CLI, not the plugin.
+
+<a id="g204"></a>
+
+#### Two proxied-call fixes absorbed from @internetisalie (2026-10-06)
+
+PR #89 and PR #88 by Michael Crawford, cherry-picked with authorship preserved
+from their 0.38.0 base; only the test-file layout (`test-*.ts` to
+`test/*.test.ts`), the hand-kept test list (now the glob) and `AGENTS.md`
+placement needed resolving.
+
+- **#89, run state from the session's own directory.** opencode keeps one
+  `session.status` map per workspace directory and the plugin's client is scoped
+  to whichever directory loaded it last, so a session in another workspace read
+  `idle` and every routine opencode abort at a tool boundary (#g26) rejected its
+  parked call. Measured by the author: 111 rejections in 2.5 days of one
+  machine's transcripts. V2 is unaffected: its client shim has no
+  `session.status`, so `fetchSessionRunState` still returns `unknown` before any
+  directory lookup.
+- **#88, user messages beside a proxied tool result.** The matched-results
+  branch wrote no user envelope, so a notice or steered prompt opencode promoted
+  at that step boundary never reached the CLI. Forwarded now, 250 ms ahead of
+  resolving the parked calls, once per boundary. Measured by the author: 60 of 60
+  notices delivered over a 4-hour soak, 27 of 30 the hour before.
+
+One integration change on absorb: #88 predates the proxy on the interactive
+transport (#g198). There a stdin write is a new TUI turn, and a newer write
+supersedes the running one, whose `result` is then dropped, so forwarding would
+have left the tool-result turn waiting on a result that never comes. Forwarding
+is headless only (`interactiveControl` present means skip); a PTY session keeps
+the old behaviour of not delivering such a message. A test pins it, and removing
+the gate turns it red. Forwarding on the PTY would need the TUI's own mid-turn
+input queue, measured live, before it can be wired.

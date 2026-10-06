@@ -25,6 +25,7 @@ Made and maintained by [@khalilgharbaoui](https://github.com/khalilgharbaoui) (K
 | [@acastro2](https://github.com/acastro2) (Alexandre Castro) | Found and fixed CLI tool results being emitted under a different name than their call, which made opencode 2 abort every turn that used a Claude-side MCP server (PR #46). | PR #46 |
 | [@bangnh1](https://github.com/bangnh1) | Independently found and diagnosed the turn-summed usage that tripped auto-compaction after a single prompt, measured on opencode 2 (PR #62; the fix landed as PR #63), and fixed opencode 2's MCP config layout (`mcp.servers`, `disabled`, `providers.<id>.settings`) with opt-in Code Mode `execute` proxying (PR #67). | PR #62, PR #67 |
 | [@JWebCoder](https://github.com/JWebCoder) (joao moura) | Diagnosed that auto-continue never fires on current CLIs (PR #15). | PR #15 |
+| [@internetisalie](https://github.com/internetisalie) (Michael Crawford) | Found and fixed, each measured over days of real transcripts, two ways a proxied tool call went wrong: a session in another workspace read as idle, so opencode's routine abort at a tool boundary rejected the call and told the model the user had interrupted it (PR #89), and user messages opencode promoted beside a tool result (background-PTY notices, steered prompts) never reached the CLI (PR #88). | PR #88, PR #89 |
 
 Commit hashes are on the contributors' forks where the work was cherry-picked; `git log --author` on this repo shows the preserved authorship.
 

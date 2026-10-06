@@ -276,3 +276,48 @@ test("an abort inside the head start leaves no completion for a call the CLI was
     deleteClaudeSessionId(sk)
   }
 })
+
+test("the interactive transport is never forwarded to: the write would supersede the parked turn", async () => {
+  const cwd = process.cwd()
+  const modelId = "claude-test-forward-user-content-pty"
+  const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const writes: string[] = []
+  const proc = Object.assign(new EventEmitter(), {
+    stdin: { write: (line: string) => { writes.push(line); return true } },
+    kill: () => true,
+  }) as unknown as ChildProcess
+  // The PTY shim's marker. Its stdin turns every write into a new TUI turn.
+  const active: ActiveProcess = {
+    proc,
+    lineEmitter: new EventEmitter(),
+    unattendedLines: [],
+    interactiveControl: {
+      turnRunning: () => true,
+      interrupt: async () => true,
+      flushTranscript: () => {},
+    },
+  }
+  const channel = { closed: false }
+  const model = createClaudeCode({
+    cwd, cliPath: process.execPath, bridgeOpencodeMcp: false,
+    proxyOpencodeMcpTools: false, proxyTools: [], autoContinueIncompleteTurns: false,
+  }).languageModel(modelId)
+  try {
+    setActiveProcess(sk, active)
+    setClaudeSessionId(sk, "forward-session")
+    queuePendingProxyCall(sk, { id: "call-P", toolName: "bash", input: {}, channel, resolve: () => {}, reject: () => {} })
+    markPendingProxyCallEmitted("call-P")
+    const result = await model.doStream({
+      tools: [{ type: "function", name: "bash", inputSchema: { type: "object" } }],
+      prompt: [userText("Start."), assistantCalls("call-P"), toolResult("call-P", "result P"), userText(NOTICE)] as any,
+    })
+    await eventually("the matched call resolved", () => getPendingProxyCalls(sk).length === 0)
+    // Finished before asserting, so a failure cannot leave its watchdogs running.
+    await finishTurn(active, result.stream)
+    assert.deepEqual(writes, [], "nothing is written to the shim's stdin")
+  } finally {
+    rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+    deleteActiveProcess(sk)
+    deleteClaudeSessionId(sk)
+  }
+})
