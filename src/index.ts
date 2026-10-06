@@ -153,8 +153,18 @@ export function _resetPlanModeWarningForTests(): void {
   warnedPlanModeNoExit = false
 }
 
-export function warnIfPlanModeCannotExit(permissionMode: string | undefined): void {
+export function warnIfPlanModeCannotExit(
+  permissionMode: string | undefined,
+  transport?: { transport?: string; interactive?: boolean },
+): void {
   if (permissionMode !== "plan") return
+  // The interactive TUI offers `ExitPlanMode`, and its approval dialog goes to
+  // the operator (h #g201), so plan mode can be left there. `auto` usually
+  // lands on headless, which keeps the warning.
+  const interactive =
+    transport?.transport === "interactive" ||
+    (transport?.transport === undefined && transport?.interactive === true)
+  if (interactive) return
   if (warnedPlanModeNoExit) return
   warnedPlanModeNoExit = true
   log.warn(
@@ -217,7 +227,7 @@ export function createClaudeCode(
   const preset = applyPermissionPreset(settings, DEFAULT_PROXY_TOOL_NAMES)
   // A preset drops any configured `permissionMode`, so the plan-mode warning
   // would be about a mode this provider is not running in.
-  warnIfPlanModeCannotExit(preset ? undefined : settings.permissionMode)
+  warnIfPlanModeCannotExit(preset ? undefined : settings.permissionMode, settings)
   const cliPath =
     settings.cliPath ?? process.env.CLAUDE_CLI_PATH ?? "claude"
   const providerName = settings.providerID ?? settings.name ?? "claude-code"

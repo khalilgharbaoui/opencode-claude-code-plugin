@@ -96,6 +96,9 @@ export interface ActiveProcess {
    */
   interactiveControl?: {
     turnRunning(): boolean
+    /** True while the TUI is parked on an `ExitPlanMode` approval: the next
+     *  message answers it instead of being a new turn. */
+    planApprovalPending?(): boolean
     /** Esc to the TUI; resolves true once the turn ended. */
     interrupt(timeoutMs: number): Promise<boolean>
     /** Hand the attached turn every record the TUI has already written. */

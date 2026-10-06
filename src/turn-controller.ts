@@ -437,6 +437,31 @@ export function finishWithQuestionCall(
   } catch {}
 }
 
+/**
+ * End this step on the plan an interactive TUI is parked on, when there is no
+ * question tool to ask through (`planModeQuestion` off): the plan is already
+ * written as text, and the operator's next message is the decision, which the
+ * shim types into the parked dialog instead of starting a new turn (h #g201).
+ * A finished reply, not a tool call.
+ */
+export function finishAwaitingPlanApproval(state: TurnState): void {
+  if (state.controllerClosed) return
+  state.endTextBlock()
+  state.controller.enqueue({
+    type: "finish",
+    finishReason: state.toFinishReason("stop"),
+    usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
+    providerMetadata: {
+      "claude-code": state.resultMeta,
+    },
+  })
+  state.controllerClosed = true
+  state.cleanupTurn()
+  try {
+    state.controller.close()
+  } catch {}
+}
+
 // ---- The batched drain ----------------------------------------------------
 
 export function drainNow(state: TurnState): void {

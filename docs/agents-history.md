@@ -1974,3 +1974,47 @@ Live with Claude Code 2.1.288 on opencode 1.18.34 under `opencode serve`,
   process` 15.0 s after `interactive turn ended`, the TUI gone, and the next
   message spawned with `"resumed":true` and answered `KESTREL`.
 - Stopping each probe's `opencode serve` took its TUIs with it.
+
+<a id="g201"></a>
+
+#### Read-only and plan mode on the interactive transport (2026-10-06)
+
+#g199 refused both on a PTY because the TUI has no `can_use_tool` channel and
+`--permission-prompts` is print-only. Measured on Claude Code 2.1.288 instead of
+assumed:
+
+- **`--restricted` boots a TUI**, and `--permission-mode dontAsk` (in the help of
+  2.1.263, 2.1.280 and 2.1.288) refuses anything not pre-approved without a
+  dialog: a direct TUI asked to Read, Write and call an MCP tool read the file,
+  got "Write is disabled for this session" and "Permission denied in don't ask
+  mode", and ended on `end_turn`. A dialog could only have been answered with
+  Esc, which ends the whole turn. So `read-only` on a PTY is `--restricted`, the
+  preset's `--disallowedTools`, an allow list of `Read` alone and `dontAsk`.
+- **The plan approval dialog, verbatim:** "Claude has written up a plan and is
+  ready to execute. Would you like to proceed? ❯ 1. Yes, auto-accept edits
+  2. Yes, manually approve edits 3. Tell Claude what to change". Pressing `2`
+  produced the CLI's own "User has approved your plan" result and the same turn
+  wrote the file; `3`, typed words and Enter produced an `is_error` result
+  ending "the user said: <words>", and the model re-planned. Choices are read off
+  the drawn dialog, never assumed.
+- **Plan mode writes its plan with the native Write**, to
+  `~/.claude/plans/<slug>.md`. With `write` proxied the native tool is disabled,
+  the model fell back to `mcp__opencode_proxy__write`, and plan mode asked before
+  it despite the allow list (a safety property worth keeping), which on a TUI is
+  a dialog only Esc answers: the turn died interrupted. Plan mode on a PTY
+  therefore keeps the native Write and Edit.
+- **A redraw of an answered dialog** arrives while the TUI takes the key, so a
+  parked dialog is keyed by its `ExitPlanMode` id and an answered id never parks
+  again. **A dialog drawn before its record was read** never redraws on its own,
+  so reading the record schedules a screen check.
+- **The screen window was too small.** One redraw with the dialog up measured
+  15,379 raw characters against a 16,384 window; a busier frame (V2) pushed the
+  question out and the dialog went unrecognised until a later redraw. 64 KB.
+  The regression test fails at 16 KB.
+
+Live with Haiku 4.5: opencode 1.18.34 under `opencode serve` (read-only; plan
+with `planModeQuestion`, approved through `POST /question/{id}/reply`; plan
+without it: plan, "Call the file plan-b.txt instead.", "yes", one TUI turn across
+three opencode turns, 9 API calls) and opencode 2.0.22 under `opencode serve` plus
+`opencode run --server` (read-only; the same three-message plan run). Every file
+the posture should have blocked was absent, every approved one present.

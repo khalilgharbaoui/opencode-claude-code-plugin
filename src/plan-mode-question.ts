@@ -3,7 +3,7 @@ export const QUESTION_TOOL_NAME = "question"
 export const APPROVED_EXIT_PLAN_MODE_MESSAGE =
   "User has approved your plan. You can now start coding. Start with updating your todo list if applicable."
 
-const REJECTED_EXIT_PLAN_MODE_PREFIX =
+export const REJECTED_EXIT_PLAN_MODE_PREFIX =
   "The user doesn't want to proceed with this tool use. The tool use was rejected. To tell you how to proceed, the user said:"
 
 const PLAN_MODE_APPROVAL_QUESTION = "Do you want to proceed with this plan?"

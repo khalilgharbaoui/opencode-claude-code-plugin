@@ -114,7 +114,13 @@ import {
   getCompressionSummary,
 } from "./compression-store.js"
 import { log } from "./logger.js"
-import { detectCliSupportsFlag, detectCliVersion } from "./cli-version.js"
+import {
+  cliSupportsDontAsk,
+  cliSupportsRestricted,
+  detectCliSupportsFlag,
+  detectCliVersion,
+} from "./cli-version.js"
+import { interactivePermissionPosture, isReadOnlyPermissionMode } from "./permission-presets.js"
 import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
 import { findResumePoint, recordResumePoint } from "./session-resume-store.js"
@@ -907,10 +913,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         : await Promise.race([selectTransport(transport, this.config.cliPath), turnAbort.whenAborted])
     if (turnAbort.aborted) return abortedBeforeWork("selecting the transport")
     const useInteractive = selectedTransport === "interactive"
-    if (useInteractive && !compactionMode && !doctor &&
-      (this.config.permissionPreset === "read-only" || this.config.permissionMode === "plan")) {
-      throw new Error("Interactive Claude transport cannot enforce the read-only preset or plan mode. Use the headless transport for this permission posture.")
-    }
     const interactiveBypassRequested =
       this.config.interactiveBypass ??
       flagOn(process.env.CLAUDE_CODE_INTERACTIVE_BYPASS)
@@ -1378,7 +1380,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
         stripContextReminders: this.stripContextRemindersEnabled(),
       })
-    const resolvedProxy = compactionMode ? null : this.resolvedProxyTools()
+    // Plan mode on the TUI writes its plan to `~/.claude/plans/` with Claude's
+    // own Write, which proxying `write` disables, and before approval it asks
+    // before ANY write, an allow-listed proxied one included: on a TUI that is
+    // a dialog only Esc can answer, and the turn dies (measured on 2.1.288,
+    // h #g201). So in plan mode the TUI keeps its own Write and Edit, which
+    // plan mode itself confines to the plan file until the plan is approved.
+    const ptyPlanMode = useInteractive && !compactionMode && this.config.permissionMode === "plan"
+    const resolvedProxy = compactionMode
+      ? null
+      : ptyPlanMode
+        ? (this.resolvedProxyTools()?.filter((def) => def.name !== "write" && def.name !== "edit") ?? null)
+        : this.resolvedProxyTools()
     const loadLiveToolInfo = this.createLiveToolInfoLoader()
     // Resolved here, not inside the stream body: the ExitPlanMode branches
     // run in a synchronous line handler and a reused process never reaches
@@ -1443,6 +1456,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return abortedBeforeWork("waiting for opencode's MCP status and the CLI version")
     }
     const [runtimeStatus, cliVersion] = prologue.value
+
+    // The read-only preset on the TUI is `--restricted` plus `dontAsk`
+    // (`interactivePermissionPosture`, h #g201). A CLI that lacks either is
+    // refused here, before any work, never given an approximation.
+    const ptyReadOnly =
+      useInteractive && !compactionMode && !doctor && isReadOnlyPermissionMode(this.config.permissionMode)
+    const ptyReadOnlySupported = cliSupportsRestricted(cliVersion) && cliSupportsDontAsk(cliVersion)
+    if (ptyReadOnly && !ptyReadOnlySupported) {
+      throw new Error(
+        "The read-only preset on the interactive transport needs Claude Code 2.1.263 or newer (--restricted and --permission-mode dontAsk). Update claude, or use the headless transport.",
+      )
+    }
 
     // Whether a usage limit on this account should end the turn with the
     // switch form. Resolved here, in the prologue, for the same reason the
@@ -2132,6 +2157,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // the history was not replayed either, and the next turn
               // started a blank conversation.
               const resumeSessionId = getClaudeSessionId(sk)
+              const posture = interactivePermissionPosture({
+                permissionMode: self.config.permissionMode,
+                allow,
+                supportsReadOnly: ptyReadOnlySupported,
+              })
+              // Unreachable past the prologue's refusal; kept so a posture
+              // the TUI cannot hold can never spawn one.
+              if (!posture) throw new Error("the interactive transport cannot hold this permission posture")
               const ap = spawnInteractiveProcess({
                 cwd,
                 cliPath,
@@ -2140,7 +2173,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 fastMode,
                 mcpConfigPaths: mcp.paths,
                 pluginDirs: skillPluginDirs,
-                permissionsAllow: allow,
+                permissionsAllow: posture.allow,
+                permissionMode: posture.permissionMode,
+                restricted: posture.restricted,
                 disallowedTools: wiring.allDisallowed,
                 proxyServer: state.proxyServer,
                 systemPromptFile,
@@ -2297,7 +2332,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // `result` closes us before our own answer arrives. Skipped for
           // tool-result turns: there the CLI is deliberately parked inside a
           // proxy MCP call waiting for the result we are about to deliver.
-          if (state.activeProcess && !hasMatchedPendingResults && isTurnInFlight(state.activeProcess)) {
+          // Nor while an interactive TUI is parked on a plan approval: this
+          // turn's message is the decision on it (h #g201).
+          if (
+            state.activeProcess &&
+            !hasMatchedPendingResults &&
+            !state.activeProcess.interactiveControl?.planApprovalPending?.() &&
+            isTurnInFlight(state.activeProcess)
+          ) {
             log.warn("previous turn still in flight; interrupting it", { sk })
             const idle = await interruptTurn(state.activeProcess)
             if (!idle) {
@@ -2586,6 +2628,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           compactionMode,
           fastMode,
           planModeQuestionActive,
+          interactive: useInteractive,
           sourceAccount,
           failoverAskActive,
           usageLimitNoteActive,

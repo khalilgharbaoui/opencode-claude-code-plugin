@@ -613,3 +613,21 @@ test("no plan-mode warning for other permission modes", async () => {
 
   assert.deepEqual(lines, [])
 })
+
+test("no plan-mode warning on the interactive transport, which offers ExitPlanMode", async () => {
+  const { warnIfPlanModeCannotExit, _resetPlanModeWarningForTests } = await import(
+    "../src/index.js"
+  )
+
+  _resetPlanModeWarningForTests()
+  const lines = captureLogs(() => {
+    warnIfPlanModeCannotExit("plan", { transport: "interactive" })
+    warnIfPlanModeCannotExit("plan", { interactive: true })
+  })
+  assert.deepEqual(lines, [])
+  // An explicit transport wins over the legacy boolean, and auto keeps it.
+  const kept = captureLogs(() => {
+    warnIfPlanModeCannotExit("plan", { transport: "auto", interactive: true })
+  })
+  assert.equal(kept.length, 1)
+})

@@ -3,12 +3,14 @@ import { test } from "node:test"
 import {
   READ_ONLY_DENIED_PROXY_TOOLS,
   READ_ONLY_DISALLOWED_CLI_TOOLS,
+  interactivePermissionPosture,
   isReadOnlyPermissionMode,
   isUnknownPreset,
   resolvePermissionPreset,
   type ResolvedPermissionPreset,
 } from "../src/permission-presets.js"
 import {
+  cliSupportsDontAsk,
   cliSupportsPermissionPrompts,
   cliSupportsRestricted,
   type CliVersion,
@@ -381,4 +383,30 @@ test("the preset's deny reaches the control-request handler", async () => {
   for (const tool of ["Write", "Bash", "mcp__github__create_issue"]) {
     assert.equal(controlRequestBehaviorForTool(model.config, tool), "deny", tool)
   }
+})
+
+test("the interactive transport holds read-only with --restricted, dontAsk and a read-only allow list", () => {
+  const allow = ["mcp__github__*", "mcp__opencode_proxy__*", "Bash", "Edit", "Write", "Read", "WebFetch", "Bash(git status)"]
+  assert.deepEqual(
+    interactivePermissionPosture({ permissionMode: READ_ONLY_PERMISSION_MODE, allow, supportsReadOnly: true }),
+    { permissionMode: "dontAsk", restricted: true, allow: ["Read"] },
+  )
+  // Fails closed on a CLI that cannot hold it, never an approximation.
+  assert.equal(
+    interactivePermissionPosture({ permissionMode: READ_ONLY_PERMISSION_MODE, allow, supportsReadOnly: false }),
+    null,
+  )
+  // Every other mode is the CLI's own, plan included, and the list is untouched.
+  for (const mode of ["plan", "acceptEdits", undefined]) {
+    assert.deepEqual(
+      interactivePermissionPosture({ permissionMode: mode, allow, supportsReadOnly: false }),
+      { permissionMode: mode, restricted: false, allow },
+    )
+  }
+})
+
+test("dontAsk is gated at the oldest CLI measured with it", () => {
+  assert.equal(cliSupportsDontAsk(null), false)
+  assert.equal(cliSupportsDontAsk({ major: 2, minor: 1, patch: 262, raw: "2.1.262" } as any), false)
+  assert.equal(cliSupportsDontAsk({ major: 2, minor: 1, patch: 263, raw: "2.1.263" } as any), true)
 })

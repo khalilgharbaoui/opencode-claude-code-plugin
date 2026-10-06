@@ -84,6 +84,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "interactive system prompt disabled; opencode agent prompts will not be appended",
   "interactive transport cancelled the usage-limit auto-continue",
   "interactive transport cannot continue",
+  "interactive transport could not answer the plan approval; stopping the turn",
   "interactive transport denied a permission prompt",
   "interactive transport dropped non-text content blocks",
   "interactive turn failed",

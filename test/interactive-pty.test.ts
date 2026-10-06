@@ -25,6 +25,7 @@ import {
   interactiveTranscriptPath,
   isInterruptRecord,
   isTurnDurationRecord,
+  planApprovalKeys,
   stripTerminal,
   type ClaudeSessionOptions,
   type PtySpawner,
@@ -34,9 +35,12 @@ import {
   OpenToolCalls,
   carriesReplyText,
   heartbeatFrame,
+  interactiveExtraArgs,
   interactiveResultFrame,
+  planApprovalAnswer,
   spawnInteractiveProcess,
 } from "../src/claude-session-wrapper.js"
+import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "../src/plan-mode-question.js"
 import { describeResultFailure, parseToolProgress } from "../src/cli-events.js"
 import {
   deleteActiveProcess,
@@ -209,16 +213,35 @@ test("auto survives removed print flags on both hosts, including lean compaction
     },
   } })
   try {
-    for (const posture of [{ permissionMode: "plan" as const }, { permissionPreset: "read-only" as const }]) {
-      const restricted = createClaudeCode({
+    // Automatic selection keeps the requested posture on the PTY (h #g201):
+    // plan mode is the CLI's own, read-only is `--restricted` plus `dontAsk`
+    // with nothing but read-only tools pre-approved.
+    for (const [posture, expected] of [
+      [{ permissionMode: "plan" as const }, { mode: "plan", restricted: false }],
+      [{ permissionPreset: "read-only" as const }, { mode: "dontAsk", restricted: true }],
+    ] as const) {
+      const modelId = `claude-test-no-print-posture-${expected.mode}`
+      const postured = createClaudeCode({
         transport: "auto", cliPath, cwd: dirs.cwd, configDir: dirs.configDir,
-        bridgeOpencodeMcp: false, proxyTools: [], ...posture,
-      }).languageModel("claude-test-no-print-restricted")
-      await assert.rejects(restricted.doStream({
+        bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false, ...posture,
+      }).languageModel(modelId)
+      const result = await postured.doStream({
         prompt: [{ role: "user", content: [{ type: "text", text: "reply" }] }],
         tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
-      }), /cannot enforce/)
-      assert.equal(children.length, 0, "automatic selection must not relax the requested posture")
+      })
+      for await (const _part of result.stream) {}
+      const child = children.at(-1)!
+      assert.equal(child.argv[child.argv.indexOf("--permission-mode") + 1], expected.mode)
+      assert.equal(child.argv.includes("--restricted"), expected.restricted)
+      const allow = JSON.parse(child.argv[child.argv.indexOf("--settings") + 1]).permissions.allow
+      if (expected.restricted) {
+        assert.deepEqual(allow, ["Read"], "no write tool and no MCP wildcard is pre-approved")
+        const disallowed = child.argv.slice(child.argv.indexOf("--disallowedTools") + 1)
+        for (const tool of ["Bash", "Write", "Edit", "WebFetch"]) assert(disallowed.includes(tool), tool)
+      } else {
+        assert(allow.includes("mcp__opencode_proxy__*"))
+      }
+      deleteActiveProcess(sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`))
     }
     for (const hostApi of ["v1", "v2"] as const) {
       const modelId = `claude-test-no-print-${hostApi}`
@@ -948,4 +971,281 @@ test("deleteActiveProcessAndWait waits for the interactive shim to exit", async 
   } finally {
     dirs.cleanup()
   }
+})
+
+// ---------------------------------------------------------------------------
+// Plan mode: `ExitPlanMode`'s approval dialog is the operator's (h #g201).
+// ---------------------------------------------------------------------------
+
+/** Verbatim from Claude Code 2.1.288, as `stripTerminal` reads it. */
+const PLAN_DIALOG =
+  "Claude has written up a plan and is ready to execute. Would you like to proceed? " +
+  "❯ 1. Yes, auto-accept edits 2. Yes, manually approve edits 3. Tell Claude what to change " +
+  "shift+tab to approve with this feedback ctrl+g to edit in Sublime"
+
+const exitPlanRecord = (id: string) =>
+  assistantRecord(`m-${id}`, "tool_use", {
+    type: "tool_use",
+    id,
+    name: "ExitPlanMode",
+    input: { plan: "Create plan.txt." },
+  })
+const planResultRecord = (id: string, content: string, isError = false) => ({
+  type: "user",
+  message: {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }],
+  },
+})
+
+test("the plan approval dialog is recognised, and a reply quoting it is not", () => {
+  assert.equal(classifyScreen(PLAN_DIALOG)?.kind, "plan-approval")
+  assert.equal(classifyScreen("Here is my plan. Would you like to proceed? Let me know."), null)
+  assert.deepEqual(planApprovalKeys(PLAN_DIALOG), { approve: "2", reject: "3", rejectTakesText: true })
+  // The older wording: "and", and a rejection that takes no text.
+  assert.deepEqual(
+    planApprovalKeys(
+      "Would you like to proceed? ❯ 1. Yes, and auto-accept edits 2. Yes, and manually approve edits 3. No, keep planning",
+    ),
+    { approve: "2", reject: "3", rejectTakesText: false },
+  )
+})
+
+test("a plan approval parks the turn until the operator decides, then the turn goes on", async () => {
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append(exitPlanRecord("plan-1"))
+    t.later(20, () => t.screen(PLAN_DIALOG))
+  })
+  const onWrite = tui.onWrite.bind(tui)
+  tui.onWrite = (data: string) => {
+    onWrite(data)
+    if (data === "2") {
+      tui.append(
+        planResultRecord("plan-1", "User has approved your plan. You can now start coding."),
+        assistantRecord("m-done", "end_turn", textBlock("done")),
+      )
+    }
+  }
+  const events: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      const turn = session.tailTurn("plan it", () => {})
+      await waitFor(() => session.pendingPlanApproval === "plan-1")
+      await waitFor(() => events.some((event) => event.action === "parked"))
+      // Parked, not answered: no key and no Esc reaches the dialog on its own.
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      assert.equal(tui.writes.includes("2"), false)
+      assert.equal(tui.escCount, 0)
+      assert.equal(await session.answerPlanApproval({ approved: true }), true)
+      const result = await turn
+      assert.equal(result.end, "stop")
+      assert.equal(session.pendingPlanApproval, null)
+    },
+    { onScreen: (event) => events.push(event) },
+  )
+  assert.deepEqual(
+    events.map((event) => [event.kind, event.action]),
+    [["plan-approval", "parked"]],
+  )
+})
+
+test("a rejected plan is answered with the operator's words, and the next dialog only once drawn", async () => {
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append(exitPlanRecord("plan-1"))
+    t.later(20, () => t.screen(PLAN_DIALOG))
+  })
+  let feedback: string | null = null
+  let secondDrawn = false
+  let answeredBeforeDraw = false
+  const onWrite = tui.onWrite.bind(tui)
+  tui.onWrite = (data: string) => {
+    onWrite(data)
+    if (data === "3") return tui.screen("❯ 3. Tell Claude what to change")
+    if (data === "2") {
+      if (!secondDrawn) answeredBeforeDraw = true
+      tui.append(
+        planResultRecord("plan-2", "User has approved your plan."),
+        assistantRecord("m-done", "end_turn", textBlock("done")),
+      )
+      return
+    }
+    if (data === "\r" && feedback === null) return
+    if (data === "\r") {
+      tui.append(
+        planResultRecord("plan-1", `${REJECTED_EXIT_PLAN_MODE_PREFIX}\n${feedback}`, true),
+        exitPlanRecord("plan-2"),
+      )
+      tui.later(120, () => {
+        secondDrawn = true
+        tui.screen(PLAN_DIALOG)
+      })
+      return
+    }
+    if (!data.startsWith("\x1b") && tui.writes.includes("3")) feedback = data
+  }
+  await withSession(tui, async (session) => {
+    await session.start()
+    const turn = session.tailTurn("plan it", () => {})
+    await waitFor(() => session.pendingPlanApproval === "plan-1")
+    assert.equal(
+      await session.answerPlanApproval({ approved: false, feedback: "Name it\nplan-b.txt" }),
+      true,
+    )
+    // One line: a raw newline would submit the field early.
+    assert.equal(feedback, "Name it plan-b.txt")
+    await waitFor(() => session.pendingPlanApproval === "plan-2")
+    // Asked before the second dialog is drawn: it waits for the draw.
+    assert.equal(await session.answerPlanApproval({ approved: true }), true)
+    assert.equal(answeredBeforeDraw, false)
+    assert.equal((await turn).end, "stop")
+  })
+})
+
+test("planApprovalAnswer reads the bridge's result and the operator's typed reply", () => {
+  const envelope = (content: unknown) => JSON.stringify({ type: "user", message: { role: "user", content } })
+  assert.deepEqual(
+    planApprovalAnswer(envelope([{ type: "tool_result", tool_use_id: "p", content: "User has approved your plan." }]), "p"),
+    { approved: true },
+  )
+  assert.deepEqual(
+    planApprovalAnswer(
+      envelope([{ type: "tool_result", tool_use_id: "p", is_error: true, content: `${REJECTED_EXIT_PLAN_MODE_PREFIX}\nuse b` }]),
+      "p",
+    ),
+    { approved: false, feedback: "use b" },
+  )
+  // Without the bridge: only a bare yes approves; host annotations are not words.
+  assert.deepEqual(
+    planApprovalAnswer(envelope([{ type: "text", text: "Yes. <dcp-message-id>m0042</dcp-message-id>" }]), "p"),
+    { approved: true },
+  )
+  assert.deepEqual(
+    planApprovalAnswer(
+      envelope([
+        { type: "text", text: "yes, but call it b.txt" },
+        { type: "text", text: "<system-reminder>be brief</system-reminder>" },
+      ]),
+      "p",
+    ),
+    { approved: false, feedback: "yes, but call it b.txt" },
+  )
+})
+
+test("the shim answers a parked plan with what is written next instead of starting a turn", async () => {
+  for (const [written, key] of [
+    [
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "plan-1", content: "ok" }] },
+      }),
+      "2",
+    ],
+    [JSON.stringify({ type: "user", message: { role: "user", content: "yes" } }), "2"],
+    [JSON.stringify({ type: "user", message: { role: "user", content: "call it b.txt" } }), "3"],
+  ] as const) {
+    const dirs = scratch()
+    const tui = new FakeTui()
+    tui.turns.push((t) => {
+      t.append(exitPlanRecord("plan-1"))
+      t.later(20, () => t.screen(PLAN_DIALOG))
+    })
+    const onWrite = tui.onWrite.bind(tui)
+    tui.onWrite = (data: string) => {
+      onWrite(data)
+      if (data === "2" || (data === "\r" && tui.writes.includes("3"))) {
+        tui.append(
+          planResultRecord("plan-1", data === "2" ? "approved" : `${REJECTED_EXIT_PLAN_MODE_PREFIX}\nx`, data !== "2"),
+          assistantRecord("m-done", "end_turn", textBlock("done")),
+        )
+      }
+    }
+    try {
+      const { ap, write, results } = spawnShim(tui, dirs)
+      write("plan it")
+      await waitFor(() => ap.interactiveControl?.planApprovalPending?.() === true)
+      ;(ap.proc.stdin as any).write(written + "\n")
+      await waitFor(() => results().length === 1)
+      assert(tui.writes.includes(key), `${written} answered with ${key}`)
+      assert.equal(results()[0].subtype, "success")
+      // One prompt was ever pasted: the answer started no turn of its own.
+      assert.equal(tui.writes.filter((w) => w.startsWith("\x1b[200~")).length, 1)
+      assert.equal(ap.interactiveControl?.planApprovalPending?.(), false)
+      ;(ap.proc as any).kill()
+    } finally {
+      dirs.cleanup()
+    }
+  }
+})
+
+test("the read-only posture reaches the TUI as --restricted and dontAsk", () => {
+  const args = interactiveExtraArgs({ cwd: "/w", restricted: true, permissionMode: "dontAsk", permissionsAllow: ["Read"] })
+  assert(args.includes("--restricted"))
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk")
+  assert.equal(args[args.indexOf("--settings") + 1], JSON.stringify({ permissions: { allow: ["Read"] } }))
+  assert(!interactiveExtraArgs({ cwd: "/w" }).includes("--restricted"))
+})
+
+test("a redraw of an answered dialog is never parked, and a dialog drawn before its record still is", async () => {
+  const tui = new FakeTui()
+  // Drawn first, recorded after, and never drawn again.
+  tui.turns.push((t) => {
+    t.screen(PLAN_DIALOG)
+    t.later(60, () => t.append(exitPlanRecord("plan-1")))
+  })
+  const onWrite = tui.onWrite.bind(tui)
+  tui.onWrite = (data: string) => {
+    onWrite(data)
+    if (data !== "2") return
+    // The TUI repaints the dialog while it takes the key, then records it.
+    tui.screen(PLAN_DIALOG)
+    tui.later(80, () =>
+      tui.append(
+        planResultRecord("plan-1", "User has approved your plan."),
+        assistantRecord("m-done", "end_turn", textBlock("done")),
+      ),
+    )
+  }
+  const events: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      const turn = session.tailTurn("plan it", () => {})
+      await waitFor(() => session.pendingPlanApproval === "plan-1")
+      assert.equal(await session.answerPlanApproval({ approved: true }), true)
+      assert.equal((await turn).end, "stop")
+    },
+    { onScreen: (event) => events.push(event) },
+  )
+  assert.equal(events.filter((event) => event.action === "parked").length, 1)
+})
+
+test("a dialog frame larger than 16 KB of escape sequences is still read whole", async () => {
+  // Measured: one redraw with a plan approval up was 15,379 raw characters,
+  // and a busier frame pushed the question out of a 16 KB window.
+  const styled = (text: string) => text.split(" ").map((word) => `\x1b[38;5;245m${word}\x1b[39m`).join(" ")
+  const frame =
+    styled("Claude has written up a plan and is ready to execute. Would you like to proceed?") +
+    "\x1b[2m\x1b[22m".repeat(2_000) +
+    styled("❯ 1. Yes, auto-accept edits 2. Yes, manually approve edits 3. Tell Claude what to change")
+  assert(frame.length > 16 * 1024)
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append(exitPlanRecord("plan-1"))
+    t.later(20, () => t.screen(frame))
+  })
+  const events: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      void session.tailTurn("plan it", () => {}).catch(() => {})
+      await waitFor(() => events.some((event) => event.action === "parked"))
+    },
+    { onScreen: (event) => events.push(event) },
+  )
 })

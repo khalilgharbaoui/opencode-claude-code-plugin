@@ -4,6 +4,7 @@ import { unlink } from "node:fs/promises"
 import {
   ClaudeSession,
   type ClaudeSessionOptions,
+  type PlanApprovalAnswer,
   type PtySpawner,
   type TurnEnd,
 } from "./claude-session-bun.js"
@@ -11,6 +12,7 @@ import { bufferUnattendedLine, cliEffortLevel, type ActiveProcess } from "./sess
 import type { ProxyMcpServer } from "./proxy-mcp.js"
 import type { ReasoningEffort } from "./types.js"
 import { log } from "./logger.js"
+import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "./plan-mode-question.js"
 
 export interface InteractiveSpawnOptions {
   cwd: string
@@ -38,6 +40,8 @@ export interface InteractiveSpawnOptions {
   proxyServer?: ProxyMcpServer | null
   /** permissions.allow rules (e.g. mcp__server__*, Bash, Edit). */
   permissionsAllow?: string[]
+  /** `--restricted`, for the read-only preset (`interactivePermissionPosture`). */
+  restricted?: boolean
   /** Optional permission mode. `bypassPermissions` is ignored for interactive
    *  sessions because Claude Code shows a safety confirmation screen first. */
   permissionMode?: string
@@ -129,6 +133,51 @@ export function decodeUserEnvelope(chunk: string): string {
 }
 
 
+const APPROVAL_WORDS =
+  /^(?:y|yes|yep|yeah|ok|okay|sure|approve|approved|proceed|go|go ahead|do it|lgtm)[.!\s]*$/i
+const HOST_ANNOTATIONS =
+  /<(?:dcp-)?system-reminder>[\s\S]*?<\/(?:dcp-)?system-reminder>|<dcp-message-id>[^<]*<\/dcp-message-id>/g
+
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((item: any) => (item?.type === "text" && typeof item.text === "string" ? item.text : ""))
+    .join("\n")
+}
+
+/**
+ * The operator's decision, out of the message written while the TUI is parked
+ * on a plan approval (h #g201). With the `planModeQuestion` bridge it is the
+ * `tool_result` envelope `consumeExitPlanModeQuestionResult` builds for this
+ * `ExitPlanMode` call; without it, it is whatever the operator typed next,
+ * which is approval only when it says nothing but yes. Anything else is what
+ * Claude is told to change. opencode's reminders and opencode-dcp's id tag are
+ * the host's, never the operator's words.
+ */
+export function planApprovalAnswer(raw: string, toolUseId: string): PlanApprovalAnswer {
+  let parsed: any
+  try {
+    parsed = JSON.parse(raw)
+  } catch {}
+  const content = parsed?.type === "user" ? parsed.message?.content : undefined
+  if (Array.isArray(content)) {
+    const result = content.find(
+      (block: any) => block?.type === "tool_result" && block.tool_use_id === toolUseId,
+    )
+    if (result) {
+      if (result.is_error !== true) return { approved: true }
+      const text = toolResultText(result.content)
+      const feedback = text.startsWith(REJECTED_EXIT_PLAN_MODE_PREFIX)
+        ? text.slice(REJECTED_EXIT_PLAN_MODE_PREFIX.length)
+        : text
+      return { approved: false, feedback: feedback.trim() || "no" }
+    }
+  }
+  const typed = decodeUserEnvelope(raw).replace(HOST_ANNOTATIONS, "").trim()
+  return APPROVAL_WORDS.test(typed) ? { approved: true } : { approved: false, feedback: typed || "no" }
+}
+
 /**
  * The CLI flags an interactive spawn adds after `ClaudeSession`'s own
  * `--session-id` (or `--resume`) / `--model` / `--setting-sources`. Exported
@@ -137,6 +186,7 @@ export function decodeUserEnvelope(chunk: string): string {
 export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
   const extraArgs: string[] = []
   if (opts.tools) extraArgs.push("--tools", opts.tools.join(","))
+  if (opts.restricted) extraArgs.push("--restricted")
   if (opts.mcpConfigPaths && opts.mcpConfigPaths.length > 0) {
     extraArgs.push(
       "--mcp-config",
@@ -404,6 +454,7 @@ export function spawnInteractiveProcess(
       if (event.action === "accepted") log.info("interactive transport accepted a prompt", data)
       else if (event.action === "fatal") log.error("interactive transport cannot continue", data)
       else if (event.action === "denied") log.warn("interactive transport denied a permission prompt", data)
+      else if (event.action === "parked") log.info("interactive transport is waiting on a plan approval", data)
       else log.warn("interactive transport cancelled the usage-limit auto-continue", data)
     },
     onExit: (code) => {
@@ -527,6 +578,23 @@ export function spawnInteractiveProcess(
     }
   }
 
+  // The answer continues the parked turn: no write number is taken, so that
+  // turn stays current and its records reach whichever turn now listens. A
+  // dialog that cannot be answered is not left to wait out the turn timeout.
+  const answerPlan = async (answer: PlanApprovalAnswer): Promise<void> => {
+    log.info("interactive transport answering a plan approval", {
+      sessionId: session.sessionId,
+      approved: answer.approved,
+    })
+    const answered = await session.answerPlanApproval(answer).catch(() => false)
+    if (answered) return
+    log.warn("interactive transport could not answer the plan approval; stopping the turn", {
+      sessionId: session.sessionId,
+    })
+    cancelledThrough = writes
+    await session.interrupt().catch(() => false)
+  }
+
   const enqueueTurn = (userMsg: string): void => {
     const turnNumber = ++writes
     queued++
@@ -545,6 +613,13 @@ export function spawnInteractiveProcess(
           typeof chunk === "string" && chunk.endsWith("\n")
             ? chunk.slice(0, -1)
             : chunk
+        // While the TUI is parked on a plan approval, what is written is the
+        // decision on it, not a new turn (h #g201).
+        const planToolUseId = session.pendingPlanApproval
+        if (planToolUseId) {
+          void answerPlan(planApprovalAnswer(raw, planToolUseId))
+          return true
+        }
         // doStream writes stream-json envelopes; the TUI needs plain text.
         enqueueTurn(decodeUserEnvelope(raw))
         return true
@@ -598,6 +673,7 @@ export function spawnInteractiveProcess(
         return session.interrupt(timeoutMs)
       },
       flushTranscript: () => session.flushTranscript(),
+      planApprovalPending: () => session.pendingPlanApproval !== null,
     },
   }
   return ap

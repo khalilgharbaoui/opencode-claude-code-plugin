@@ -248,6 +248,18 @@ export function cliSupportsPermissionPrompts(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 1, patch: 263 })
 }
 
+/**
+ * `--permission-mode dontAsk`: deny anything not pre-approved, without a
+ * prompt. Present in the `--help` of every binary on hand (2.1.263, 2.1.280,
+ * 2.1.288), so the gate sits at the oldest. The interactive transport's
+ * read-only preset needs it (h #g201): a TUI permission dialog can only be
+ * answered with Esc, which ends the whole turn.
+ */
+export function cliSupportsDontAsk(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 263 })
+}
+
 /** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
 export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
   if (!v) return false

@@ -287,6 +287,45 @@ export function summarizePermissionPreset(
 }
 
 /**
+ * A permission posture as the interactive TUI can hold it (h #g201).
+ *
+ * The TUI has no `can_use_tool` channel and `--permission-prompts` is
+ * print-only, so the headless denier does not exist there. What does:
+ * `--restricted` (a 2.1.288 TUI boots with it), `--disallowedTools`, the allow
+ * list in `--settings`, and `--permission-mode dontAsk`, which refuses anything
+ * not pre-approved WITHOUT a dialog and lets the turn go on. Measured on 2.1.288:
+ * `Read` worked, `Write` was "disabled for this session", an MCP call was
+ * "Permission denied in don't ask mode", and the turn ended on `end_turn`.
+ * A dialog could only be answered with Esc, which ends the turn instead.
+ *
+ * `read-only` drops every MCP wildcard and every tool the preset refuses from
+ * the allow list, so what the headless preset denies is denied here too: the
+ * proxy's remaining tools and bridged MCP tools prompt there and are refused,
+ * and here they are not pre-approved and are refused. Any other mode is the
+ * CLI's own (`plan` included: the TUI offers `ExitPlanMode`, and its approval
+ * goes to the operator). Null, never an approximation, when the CLI cannot
+ * hold `read-only`: the caller refuses the turn.
+ */
+export function interactivePermissionPosture(input: {
+  permissionMode: string | undefined
+  allow: string[]
+  supportsReadOnly: boolean
+}): { permissionMode: string | undefined; restricted: boolean; allow: string[] } | null {
+  if (!isReadOnlyPermissionMode(input.permissionMode)) {
+    return { permissionMode: input.permissionMode, restricted: false, allow: input.allow }
+  }
+  if (!input.supportsReadOnly) return null
+  const refused = new Set<string>(READ_ONLY_DISALLOWED_CLI_TOOLS)
+  return {
+    permissionMode: "dontAsk",
+    restricted: true,
+    allow: input.allow.filter(
+      (rule) => !rule.startsWith("mcp__") && !refused.has(rule.split("(")[0]!.trim()),
+    ),
+  }
+}
+
+/**
  * Whether this spawn's permission mode is the read-only preset's internal
  * token. `buildCliArgs` uses it to decide between `--permission-mode` and the
  * restricted flag set; keeping the comparison here means the token's spelling

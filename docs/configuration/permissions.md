@@ -55,6 +55,15 @@ plugin's own denial of every permission request, and it warns naming what is
 missing. Below 2.1.258 you lose the cwd confinement on reads; below 2.1.263 the
 denial happens in the plugin rather than in the CLI, one layer instead of two.
 
+**On the [interactive transport](../guides/interactive-transport.md)** the
+preset holds the same way with the TUI's own controls: `--restricted`, the same
+`--disallowedTools`, an allow list holding only `Read` (no MCP server, no write
+tool), and `--permission-mode dontAsk`, which refuses anything else without a
+dialog and lets the turn go on. It needs Claude Code 2.1.263 or newer; on an
+older CLI the turn is refused rather than run with a weaker posture. Measured on
+2.1.288 through opencode 1.18.34 and 2.0.22: `Read` answered, `Write` and `Bash`
+were unavailable, and nothing was written.
+
 Measured end to end on CLI 2.1.280 and `claude-haiku-4-5`: a turn under the
 preset asked to write a file and run a command did neither, the file was never
 created, and the CLI's own `permission_denials` recorded the single blocked
@@ -71,6 +80,15 @@ Set `permissionMode: "plan"` to forward `--permission-mode plan` to Claude. The 
 
 By default that prompt is text: the plan is rendered as markdown, followed by `**Do you want to proceed with this plan?** (yes/no)`, and you answer in your next message.
 
+### Plan mode on the interactive transport
+
+The [interactive transport](../guides/interactive-transport.md) is where plan mode can actually be left. The TUI offers Claude `ExitPlanMode`, writes the plan to `~/.claude/plans/`, and then waits on its own approval dialog. The plugin never answers that dialog for you: the turn ends showing the plan, and your answer is the decision.
+
+- **Approve** with a bare yes (`yes`, `ok`, `proceed`, `lgtm`...), or `yes` in the form with `planModeQuestion`. The plugin picks "Yes, manually approve edits" and the same Claude turn carries on and does the work.
+- **Anything else** is what Claude should change. The plugin picks "Tell Claude what to change" and types your words, Claude revises the plan, and you are asked again.
+
+To write its plan file Claude needs its own `Write`, so in plan mode on this transport the proxy does not serve `write` and `edit`: Claude's own `Write` and `Edit` stay enabled, confined by plan mode to the plan file until you approve, and pre-allowed by `interactiveAllowTools` afterwards. Measured on Claude Code 2.1.288 through opencode 1.18.34 (with and without `planModeQuestion`) and 2.0.22: a plan approved by form and by a typed `yes`, and a rejection carrying "Call the file plan-b.txt instead" that came back as a revised plan.
+
 ### Approval as a real form (`planModeQuestion`, opt-in)
 
 Set `planModeQuestion: true` to route the approval through opencode's native `question` tool instead:
@@ -84,7 +102,7 @@ Set `planModeQuestion: true` to route the approval through opencode's native `qu
 
 The plan is still rendered, but the turn then ends on `tool-calls` and opencode runs its own `question` tool, so approval is a form rather than prose. Your answer is fed back to the CLI as the `tool_result` for the original `ExitPlanMode` call, which is what actually unlocks plan mode on the Claude side. A "yes" typed as ordinary text never does that. Anything other than picking `yes` (including custom text) comes back as rejection feedback the model is told to act on.
 
-> **This cannot currently fire on the default headless transport, so leaving it off costs you nothing.** The form it delivers through works (see [AskUserQuestion](#askuserquestion)), but headless `--print` does not offer the model an `ExitPlanMode` tool at all on CLI 2.1.258, and the bridge keys on that tool call. Measured three ways: asked directly for its tool list in plan mode, the CLI returned `Agent, Bash, Edit, ListAgents, Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow, Write` and nothing else; asked to do work it said "I'm unable to exit plan mode from within the tool set available to me"; and a full probe through this plugin with `planModeQuestion: true` produced no `ExitPlanMode` anywhere in `plugin.log` while the model asked for approval in prose. The name is still known to the CLI (`--disallowedTools ExitPlanMode` validates silently, where a bogus name warns), so this reads as headless dormancy rather than removal, the same shape as the [`AskUserQuestion` fallback](#askuserquestion). The text path below is what you actually get, and it works. Re-run those probes on a newer CLI before assuming the bridge is reachable. On opencode builds with no `question` registry entry the plugin silently keeps the text path (look for `plan-mode question gate` in the log).
+> **On the default headless transport this cannot fire, so leaving it off costs you nothing there**; on the [interactive transport](#plan-mode-on-the-interactive-transport) it works. The form it delivers through works (see [AskUserQuestion](#askuserquestion)), but headless `--print` does not offer the model an `ExitPlanMode` tool at all on CLI 2.1.258, and the bridge keys on that tool call. Measured three ways: asked directly for its tool list in plan mode, the CLI returned `Agent, Bash, Edit, ListAgents, Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow, Write` and nothing else; asked to do work it said "I'm unable to exit plan mode from within the tool set available to me"; and a full probe through this plugin with `planModeQuestion: true` produced no `ExitPlanMode` anywhere in `plugin.log` while the model asked for approval in prose. The name is still known to the CLI (`--disallowedTools ExitPlanMode` validates silently, where a bogus name warns), so this reads as headless dormancy rather than removal, the same shape as the [`AskUserQuestion` fallback](#askuserquestion). The text path below is what you actually get, and it works. Re-run those probes on a newer CLI before assuming the bridge is reachable. On opencode builds with no `question` registry entry the plugin silently keeps the text path (look for `plan-mode question gate` in the log).
 
 Approval bridge contributed by [@CollieIsCute](https://github.com/CollieIsCute).
 

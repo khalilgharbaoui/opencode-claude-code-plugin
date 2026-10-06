@@ -46,6 +46,7 @@ import {
   clearStartWatchdog,
   deliverPendingCompletions,
   finishWithQuestionCall,
+  finishAwaitingPlanApproval,
   noteProxyActivity,
   noteReasoning,
   noteToolActivity,
@@ -82,6 +83,8 @@ export interface StreamParserContext {
   compactionMode: boolean
   fastMode: boolean
   planModeQuestionActive: boolean
+  /** The interactive transport, whose TUI parks on `ExitPlanMode`'s dialog. */
+  interactive: boolean
   /** The account this turn spawned on; the account-block note names it. */
   sourceAccount: string
   /** Whether a usage limit should end the turn on the switch form. */
@@ -807,6 +810,13 @@ export function createLineHandler(
                 delta: `\n\n${plan}\n\n---\n**Do you want to proceed with this plan?** (yes/no)\n`,
               })
               state.endTextBlock()
+              // The TUI is parked on the approval dialog and will draw
+              // nothing more until it is answered, so this step ends here and
+              // the operator's reply answers it (h #g201).
+              if (ctx.interactive) {
+                finishAwaitingPlanApproval(state)
+                return
+              }
             } else if (
               isWebSearchTool(block.name) &&
               isWebSearchHandledByCli(ctx.config.webSearch)

@@ -38,9 +38,8 @@ Set `interactiveSystemPrompt: false` only for diagnostics. While disabled, the i
 
 ### What it does not support
 
-This is the part to read before turning it on. Two features of this plugin are absent on the interactive transport:
+This is the part to read before turning it on. One feature of this plugin is absent on the interactive transport:
 
-- **No `permissionMode`.** Permission handling is the pre-allow list described below. A normal turn with `permissionMode: "plan"` or `permissionPreset: "read-only"` refuses PTY selection, including automatic fallback, because the transport cannot enforce that posture. Other `permissionMode` values are not forwarded.
 - **No [`/btw`](../guides/btw.md).** Side questions ride Claude Code's `side_question` control protocol over the headless process's stdio. Asking one in an interactive session returns an error telling you so.
 
 ### What else is different
@@ -52,6 +51,12 @@ This is the part to read before turning it on. Two features of this plugin are a
 - **How a turn finishes:** a turn that reaches a terminal stop reason (`end_turn`, `stop_sequence`, `max_tokens`) finishes exactly as a headless turn does, so it is an ordinary completed reply and [`turnStats`](../guides/turn-stats.md) applies to it. `max_tokens` is deliberately a completed turn rather than a failure: the call happened and billed, and the truncation is what auto-continue reads. Before this was fixed every interactive turn finished as an error instead, which also suppressed the stats footer.
 - **Turn timeout:** a turn that produces no terminal stop within 30 minutes is reported honestly as an error result (visible truncation), not silently ended.
 
+### Permission modes
+
+- **`permissionMode`** is forwarded to the TUI as `--permission-mode`, except `bypassPermissions` (its confirmation screen defaults to exit).
+- **`permissionPreset: "read-only"`** holds with the TUI's own controls: `--restricted`, the preset's `--disallowedTools`, an allow list of only `Read`, and `--permission-mode dontAsk`, which refuses anything else without a dialog and lets the turn go on. Needs Claude Code 2.1.263 or newer; an older CLI refuses the turn rather than weaken the posture. See [Read-only mode](../configuration/permissions.md#read-only-mode).
+- **`permissionMode: "plan"`** can be left here, unlike headless: the TUI offers `ExitPlanMode` and parks on its approval dialog until you decide, by reply or by the `planModeQuestion` form. See [Plan mode on the interactive transport](../configuration/permissions.md#plan-mode-on-the-interactive-transport).
+
 ### What it answers on your behalf
 
 The TUI has no control channel, so everything it is blocked on is drawn on the screen. The transport reads the screen for the few prompts a turn cannot get past alone, and only once the TUI has stopped drawing, so a reply that merely contains the same words is never mistaken for one:
@@ -60,6 +65,8 @@ The TUI has no control channel, so everything it is blocked on is drawn on the s
 - **Not logged in** and **first-run setup** fail the start with the command to run, instead of waiting out the turn.
 - **A tool permission dialog** is denied with Esc, because there is nobody at that terminal to ask. The denial ends the turn as an interrupted one and is reported in the result's `permission_denials` with the tool's name and id. Widen `interactiveAllowTools` for a tool you want to run.
 - **The usage-limit screen's "continuing automatically at <time>"** is cancelled, or the turn would rerun hours later with nobody watching.
+
+The plan approval dialog is the one it does **not** answer: it waits for your decision, then presses the matching choice, read off the dialog itself.
 
 ### How a turn behaves
 

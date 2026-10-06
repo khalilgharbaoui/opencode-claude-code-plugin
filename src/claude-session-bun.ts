@@ -157,6 +157,8 @@ export interface ClaudeSessionOptions {
   /** How long the transcript must stay quiet after a terminal stop_reason
    *  before the turn counts as ended (the call's remaining records). */
   stopSettleMs?: number
+  /** How long `answerPlanApproval` waits for the dialog to be drawn. */
+  planDialogWaitMs?: number
   /** Told about every screen the session acted on. */
   onScreen?: (event: ScreenEvent) => void
   /** Told once when the child is gone, with its exit code when it has one. */
@@ -216,6 +218,9 @@ export type ScreenKind =
   | "onboarding"
   /** A tool permission dialog. Denied: there is nobody here to ask. */
   | "permission"
+  /** `ExitPlanMode`'s approval dialog. Never answered by the session on its
+   *  own: it parks until `answerPlanApproval` brings the operator's decision. */
+  | "plan-approval"
   /** The usage-limit screen's armed "continuing automatically at <time>".
    *  Cancelled, or the turn reruns later with nobody watching. */
   | "auto-continue"
@@ -227,7 +232,7 @@ export interface ScreenState {
 }
 
 export interface ScreenEvent extends ScreenState {
-  action: "accepted" | "denied" | "cancelled" | "fatal"
+  action: "accepted" | "denied" | "cancelled" | "fatal" | "parked"
 }
 
 function words(text: string): string {
@@ -266,6 +271,17 @@ const SCREEN_PATTERNS: ReadonlyArray<{ kind: ScreenKind; pattern: RegExp }> = [
         words("Is this a project you created or one you trust?"),
         words("Yes, I trust this folder"),
       ].join("|"),
+      "i",
+    ),
+  },
+  {
+    // Measured verbatim on 2.1.288: "Claude has written up a plan and is ready
+    // to execute. Would you like to proceed? ❯ 1. Yes, auto-accept edits
+    // 2. Yes, manually approve edits 3. Tell Claude what to change". The
+    // numbered last choice is what a reply quoting the question never has.
+    kind: "plan-approval",
+    pattern: new RegExp(
+      `${words("Would you like to proceed?")}[\\s\\S]{0,400}?\\d\\s*\\.\\s*(?:${words("Tell Claude what to change")}|${words("No, keep planning")})`,
       "i",
     ),
   },
@@ -316,6 +332,37 @@ export function highlightedChoice(text: string): "yes" | "no" | null {
     last = match[1]!.toLowerCase()
   }
   return last === "yes" || last === "no" ? last : null
+}
+
+/** The operator's decision on an `ExitPlanMode` approval dialog. */
+export interface PlanApprovalAnswer {
+  approved: boolean
+  /** What to tell Claude instead, when not approved. */
+  feedback?: string
+}
+
+/**
+ * Which keys answer a plan approval dialog, read off the dialog itself rather
+ * than assumed, because the CLI has numbered these choices differently over
+ * time. Approval is "manually approve edits", the choice that changes nothing
+ * else about the session's permissions; "auto-accept" only when that is the
+ * only Yes drawn. Rejection is "Tell Claude what to change", which takes the
+ * operator's words (measured on 2.1.288: the CLI hands them to the model in the
+ * `ExitPlanMode` result), or an older "No, keep planning", which takes none.
+ */
+export function planApprovalKeys(text: string): {
+  approve: string | null
+  reject: string | null
+  rejectTakesText: boolean
+} {
+  const approve =
+    /(\d)\s*\.\s*Yes,?\s*(?:and\s*)?manually\s*approve\s*edits/i.exec(text)?.[1] ??
+    /(\d)\s*\.\s*Yes,?\s*(?:and\s*)?auto-?\s*accept\s*edits/i.exec(text)?.[1] ??
+    null
+  const tell = /(\d)\s*\.\s*Tell\s*Claude\s*what\s*to\s*change/i.exec(text)?.[1]
+  if (tell) return { approve, reject: tell, rejectTakesText: true }
+  const keep = /(\d)\s*\.\s*No,?\s*keep\s*planning/i.exec(text)?.[1] ?? null
+  return { approve, reject: keep, rejectTakesText: false }
 }
 
 /** The first recognised screen in this text, or null. Pure. */
@@ -498,7 +545,12 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** Raw terminal output kept for diagnostics and for reading the screen. */
 const RAW_KEEP_CHARS = 64 * 1024
-const SCREEN_WINDOW_CHARS = 16 * 1024
+// One full redraw of a busy 200x50 TUI frame is close to 16 KB of escape
+// sequences (measured at 15,379 with a plan approval dialog up, 2.1.288), so a
+// smaller window loses the top of a dialog the moment the frame grows: the
+// plan approval's question slid out and the dialog went unrecognised until a
+// later redraw (h #g201). The window is cleared after every action anyway.
+const SCREEN_WINDOW_CHARS = 64 * 1024
 
 /**
  * The text the TUI writes as a user record when a turn is interrupted: Esc on
@@ -618,6 +670,15 @@ export class ClaudeSession {
   /** The running turn's read state, shared with `flushTranscript`. */
   private scan: TurnScan | null = null
   private turnDenied: ScreenState[] = []
+  /** The running turn's `ExitPlanMode` call that has no result yet. */
+  private planApprovalToolUseId: string | null = null
+  /** The approval dialog as drawn for one `ExitPlanMode` call, until it is
+   *  answered. Keyed by the call, so a redraw of a dialog already answered
+   *  (the TUI repaints it while it takes the key, measured on 2.1.288) can
+   *  never stand in for the next call's dialog. */
+  private planDialog: { id: string; text: string } | null = null
+  /** This turn's `ExitPlanMode` calls already answered. */
+  private readonly answeredPlans = new Set<string>()
   private abandonTurn = false
   private readonly o: Required<
     Omit<
@@ -698,6 +759,10 @@ export class ClaudeSession {
       // could declare the TUI ready and paste a prompt into it.
       permissionQuietMs: opts.permissionQuietMs ?? 1_000,
       stopSettleMs: opts.stopSettleMs ?? 750,
+      // The decision arrives after opencode's own question round trip, by
+      // which time the dialog has long been drawn; this only bounds a TUI
+      // that never draws it.
+      planDialogWaitMs: opts.planDialogWaitMs ?? 30_000,
     }
   }
 
@@ -785,6 +850,10 @@ export class ClaudeSession {
     if (this.o.debug) process.stdout.write(chunk)
     // Act on a screen only once the TUI has stopped drawing: a dialog sits
     // still, while model text that merely contains the words keeps moving.
+    this.scheduleScreenCheck()
+  }
+
+  private scheduleScreenCheck(): void {
     this.clearScreenTimer()
     this.screenTimer = setTimeout(() => {
       this.screenTimer = null
@@ -851,6 +920,16 @@ export class ClaudeSession {
         this.write("\x1b")
         action = "cancelled"
         break
+      case "plan-approval": {
+        // Parked, not answered: the decision is the operator's. Only for the
+        // call the transcript says is waiting, once, and never for one that
+        // was answered already.
+        const id = this.planApprovalToolUseId
+        if (!this.turn || !id || this.answeredPlans.has(id) || this.planDialog?.id === id) return null
+        this.planDialog = { id, text }
+        action = "parked"
+        break
+      }
       case "login":
       case "onboarding":
         action = "fatal"
@@ -1053,6 +1132,9 @@ export class ClaudeSession {
       this.turn = null
       this.scan = null
       this.abandonTurn = false
+      this.planApprovalToolUseId = null
+      this.planDialog = null
+      this.answeredPlans.clear()
       settle()
     }
   }
@@ -1078,6 +1160,9 @@ export class ClaudeSession {
       try {
         rec = JSON.parse(s)
       } catch {}
+      // Before the record is handed on: whoever reads it may ask at once
+      // whether a plan approval is pending.
+      if (rec) this.notePlanApproval(rec)
       scan.onRecord(s, rec)
       if (rec) {
         if (rec.type === "assistant" && rec.message) {
@@ -1111,6 +1196,87 @@ export class ClaudeSession {
    */
   flushTranscript(): void {
     this.scanTranscript()
+  }
+
+  /** Track the turn's `ExitPlanMode` call from the transcript: opened by the
+   *  assistant record that makes it, closed by the result that answers it. */
+  private notePlanApproval(rec: any): void {
+    const content = rec?.message?.content
+    if (!Array.isArray(content)) return
+    if (rec.type === "assistant") {
+      for (const block of content) {
+        if (block?.type === "tool_use" && block.name === "ExitPlanMode" && typeof block.id === "string") {
+          this.planApprovalToolUseId = block.id
+          // The dialog may already be drawn and sitting still, and a still
+          // screen sends nothing that would make it read again.
+          this.scheduleScreenCheck()
+        }
+      }
+    } else if (rec.type === "user" && this.planApprovalToolUseId) {
+      const answered = content.some(
+        (block: any) => block?.type === "tool_result" && block.tool_use_id === this.planApprovalToolUseId,
+      )
+      if (answered) {
+        if (this.planDialog?.id === this.planApprovalToolUseId) this.planDialog = null
+        this.planApprovalToolUseId = null
+      }
+    }
+  }
+
+  /**
+   * The running turn's unanswered `ExitPlanMode` call id, or null. While it is
+   * set the TUI is parked on (or about to draw) the approval dialog, and the
+   * next message is the operator's decision, not a new turn.
+   */
+  get pendingPlanApproval(): string | null {
+    return this.turn ? this.planApprovalToolUseId : null
+  }
+
+  /**
+   * Answer the plan approval dialog the running turn is parked on. Waits up to
+   * `planDialogWaitMs` for it to be drawn, because the transcript records the
+   * call before the TUI draws the dialog, and resolves false when there is
+   * none to answer or the drawn dialog has no matching choice.
+   */
+  async answerPlanApproval(
+    answer: PlanApprovalAnswer,
+    timeoutMs = this.o.planDialogWaitMs,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    let dialog = this.planDialog
+    while (!dialog || dialog.id !== this.planApprovalToolUseId) {
+      if (!this.turn || this.exited || Date.now() >= deadline) return false
+      // A dialog drawn before its call's record was read is still in the
+      // window, and a TUI parked on it draws nothing that would read it again.
+      if (Date.now() - this.lastDataAt >= this.o.permissionQuietMs) this.checkScreen()
+      await delay(this.o.pollMs)
+      dialog = this.planDialog
+    }
+    const keys = planApprovalKeys(dialog.text)
+    const key = answer.approved ? keys.approve : keys.reject
+    if (!key) return false
+    this.answeredPlans.add(dialog.id)
+    this.planDialog = null
+    this.screen = ""
+    this.write(key)
+    if (answer.approved || !keys.rejectTakesText) return true
+    // The choice opens a text field; type into it once it is drawn. One line:
+    // a raw newline would submit early.
+    await this.waitForQuiet()
+    const text = (answer.feedback ?? "").replace(/\s+/g, " ").trim() || "no"
+    this.write(text)
+    await delay(this.o.submitMinMs)
+    this.write("\r")
+    return true
+  }
+
+  /** Wait until the PTY has been quiet for `permissionQuietMs`, at most 3 s. */
+  private async waitForQuiet(): Promise<void> {
+    const until = Date.now() + 3_000
+    await delay(Math.min(this.o.permissionQuietMs, 3_000))
+    while (Date.now() < until && Date.now() - this.lastDataAt < this.o.permissionQuietMs) {
+      await delay(25)
+    }
   }
 
   /**
