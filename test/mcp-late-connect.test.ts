@@ -283,7 +283,6 @@ test("every unsafe boundary holds the reload off, in its own words", () => {
   assert.equal(decision({ enabled: false }).verdict, "off")
   assert.equal(decision({ compactionMode: true }).verdict, "skipped-compaction")
   assert.equal(decision({ hasActiveProcess: false }).verdict, "no-process")
-  assert.equal(decision({ interactive: true }).verdict, "skipped-interactive")
   assert.equal(decision({ pendingProxyCalls: 1 }).verdict, "deferred-proxy-calls")
   assert.equal(decision({ turnInFlight: true }).verdict, "deferred-turn-in-flight")
   assert.equal(decision({ planQuestionPending: true }).verdict, "deferred-plan-question")
@@ -291,7 +290,6 @@ test("every unsafe boundary holds the reload off, in its own words", () => {
     "off",
     "skipped-compaction",
     "no-process",
-    "skipped-interactive",
     "deferred-proxy-calls",
     "deferred-turn-in-flight",
     "deferred-plan-question",
@@ -302,7 +300,7 @@ test("every unsafe boundary holds the reload off, in its own words", () => {
         enabled: held !== "off",
         hasActiveProcess: held !== "no-process",
         compactionMode: held === "skipped-compaction",
-        interactive: held === "skipped-interactive",
+        interactive: false,
         turnInFlight: held === "deferred-turn-in-flight",
         pendingProxyCalls: held === "deferred-proxy-calls" ? 1 : 0,
         planQuestionPending: held === "deferred-plan-question",
@@ -315,6 +313,15 @@ test("every unsafe boundary holds the reload off, in its own words", () => {
       `${held} must not reload`,
     )
   }
+})
+
+test("the interactive transport reloads like headless (h #g200)", () => {
+  const result = decision({ interactive: true })
+  assert.equal(result.verdict, "reload")
+  assert.equal(result.reload, true)
+  // Its safety gates still hold it off exactly as they do headless.
+  assert.equal(decision({ interactive: true, turnInFlight: true }).verdict, "deferred-turn-in-flight")
+  assert.equal(decision({ interactive: true, pendingProxyCalls: 1 }).verdict, "deferred-proxy-calls")
 })
 
 test("a flapping server does not buy a respawn on every turn", () => {

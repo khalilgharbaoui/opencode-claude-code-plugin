@@ -64,8 +64,6 @@ export type McpHotReloadVerdict =
   | "skipped-compaction"
   /** The bridged server set is what the live process already has. */
   | "unchanged"
-  /** The interactive transport has no verified replacement path. */
-  | "skipped-interactive"
   /** A proxied call is still in the air; replacing the process would lose it. */
   | "deferred-proxy-calls"
   /** The live process is still working on a turn. */
@@ -92,6 +90,11 @@ export interface McpHotReloadInput {
   enabled: boolean
   hasActiveProcess: boolean
   compactionMode: boolean
+  /**
+   * Which transport the live process uses. Informational since #g200: the
+   * PTY shim reports a real exit code and a fresh spawn resumes with
+   * `--resume`, so a reload works the same on both.
+   */
   interactive: boolean
   turnInFlight: boolean
   pendingProxyCalls: number
@@ -134,7 +137,6 @@ export function decideMcpHotReload(
   const previousHash = input.previousHash ?? null
   if (previousHash === input.currentHash) return decide("unchanged")
 
-  if (input.interactive) return decide("skipped-interactive")
   if (input.pendingProxyCalls > 0) return decide("deferred-proxy-calls")
   if (input.turnInFlight) return decide("deferred-turn-in-flight")
   if (input.planQuestionPending) return decide("deferred-plan-question")

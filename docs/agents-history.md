@@ -1952,3 +1952,25 @@ the real `doStream` without Bun for explicit interactive, plan, read-only and au
 settings, asserting a doctor report rather than a transport error. The skill's
 recipes describe selected-transport subagents, conservative automatic selection,
 the remaining PTY limitations and unavailable headless usage.
+
+<a id="g200"></a>
+
+#### MCP hot reload and idle eviction on the interactive transport (2026-10-06)
+
+Both had been switched off for the PTY for the same two reasons: the shim had no
+`exitCode`, so `deleteActiveProcessAndWait` read it as already exited and leaked
+the live TUI, and a fresh PTY spawn could not `--resume`. #g196 removed both, so
+`decideMcpHotReload` no longer has a `skipped-interactive` verdict and
+`scheduleIdleProcessEviction` runs after an interactive turn like a headless one.
+
+Live with Claude Code 2.1.288 on opencode 1.18.34 under `opencode serve`,
+`transport: "interactive"`:
+
+- **Hot reload:** a turn that set a codeword, then `cbm` (codebase-memory-mcp)
+  added to the config. The next turn logged `opencode MCP servers changed,
+  respawning claude {"joined":["cbm"]}`, the new TUI spawned with
+  `"resumed":true`, answered the codeword and listed the 14 `mcp__cbm__` tools.
+- **Idle eviction:** `idleProcessTimeoutMs: 15000`. `evicting idle claude
+  process` 15.0 s after `interactive turn ended`, the TUI gone, and the next
+  message spawned with `"resumed":true` and answered `KESTREL`.
+- Stopping each probe's `opencode serve` took its TUIs with it.

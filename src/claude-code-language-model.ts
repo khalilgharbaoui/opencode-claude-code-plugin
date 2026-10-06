@@ -2563,7 +2563,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           state.controllerClosed = true
           cleanupTurn()
-          if (!useInteractive && !compactionMode) {
+          // Both transports: an evicted TUI is replaced on the next message
+          // with `--resume`, exactly as a headless child is (h #g200).
+          if (!compactionMode) {
             scheduleIdleProcessEviction(
               sk,
               resolveIdleProcessTimeoutMs(self.config.idleProcessTimeoutMs),

@@ -44,7 +44,10 @@ import {
   getClaudeSessionId,
   interruptTurn,
   isTurnInFlight,
+  deleteActiveProcessAndWait,
+  isIdleProcessEvictionScheduled,
   noteInteractiveProcessExit,
+  scheduleIdleProcessEviction,
   setActiveProcess,
   setClaudeSessionId,
   sessionKey,
@@ -868,6 +871,80 @@ test("the shim owns its proxy server and closes it once", async () => {
     ap.proc.kill()
     await exited
     assert.equal(closed, 1)
+  } finally {
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Idle eviction and MCP hot reload on the PTY (h #g200). Both replace the
+// process with `deleteActiveProcess` or `deleteActiveProcessAndWait`; the
+// next message spawns again with `--resume` from the kept session id.
+// ---------------------------------------------------------------------------
+
+test("idle eviction kills an idle interactive shim and keeps its Claude session", async () => {
+  const dirs = scratch()
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.append(assistantRecord("m1", "end_turn", textBlock("hello"))))
+  const key = "idle-pty-key"
+  try {
+    const { ap, write, results } = spawnShim(tui, dirs)
+    setActiveProcess(key, ap)
+    setClaudeSessionId(key, "sess-idle")
+    write("hi")
+    await waitFor(() => results().length === 1)
+    const exited = once(ap.proc as any, "exit")
+    scheduleIdleProcessEviction(key, 30)
+    await exited
+    assert.equal(getActiveProcess(key), undefined)
+    assert.equal(tui.exitCode, null, "the TUI was killed")
+    assert.equal(getClaudeSessionId(key), "sess-idle", "kept for --resume")
+  } finally {
+    deleteActiveProcess(key)
+    dirs.cleanup()
+  }
+})
+
+test("idle eviction re-arms instead of killing a running interactive turn", async () => {
+  const dirs = scratch()
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.later(150, () => t.append(assistantRecord("m1", "end_turn", textBlock("slow")))))
+  const key = "idle-pty-busy"
+  try {
+    const { ap, write, results } = spawnShim(tui, dirs)
+    setActiveProcess(key, ap)
+    write("hi")
+    await waitFor(() => isTurnInFlight(ap))
+    scheduleIdleProcessEviction(key, 20)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // Checked before `getActiveProcess`, which cancels the timer by design.
+    assert.equal(isIdleProcessEvictionScheduled(key), true, "re-armed")
+    assert.equal(getActiveProcess(key), ap, "a running turn is never evicted")
+    await waitFor(() => results().length === 1)
+    assert.equal(results()[0].subtype, "success")
+  } finally {
+    deleteActiveProcess(key)
+    dirs.cleanup()
+  }
+})
+
+test("deleteActiveProcessAndWait waits for the interactive shim to exit", async () => {
+  const dirs = scratch()
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.append(assistantRecord("m1", "end_turn", textBlock("hello"))))
+  const key = "reload-pty-key"
+  try {
+    const { ap, write, results } = spawnShim(tui, dirs)
+    setActiveProcess(key, ap)
+    write("hi")
+    await waitFor(() => results().length === 1)
+    // The hot-reload path. Before #g196 the shim had no exit code, so this
+    // returned at once without ever killing the TUI.
+    assert.equal(await deleteActiveProcessAndWait(key, { exitTimeoutMs: 2_000 }), true)
+    assert.equal(tui.exitCode, null, "the TUI was killed")
+    // A killed child: no code, a signal, which is what `hasProcessExited` reads.
+    assert.equal((ap.proc as any).signalCode, "SIGTERM", "the shim reports the exit")
+    assert.equal(getActiveProcess(key), undefined)
   } finally {
     dirs.cleanup()
   }
