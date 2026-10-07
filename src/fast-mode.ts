@@ -38,6 +38,11 @@ export function _resetFastModeWarnings(): void {
 }
 
 /**
+ * Which frame carried the state. A turn reports twice and they can disagree.
+ */
+export type FastModePhase = "init" | "result"
+
+/**
  * Report what actually happened to a fast-mode request.
  *
  * Fast mode fails soft: an ineligible account or a rate-limit cooldown drops
@@ -51,21 +56,39 @@ export function _resetFastModeWarnings(): void {
  * purpose). It is deduped per reason per process because the blocking
  * conditions are account-level and would otherwise repeat on every respawn.
  * Cooldown stays quieter: it is transient and clears on its own.
+ *
+ * **Only the `result` frame may say the request was honoured.** Measured live
+ * on 2.1.288 against an account with usage credits turned off: the
+ * `system`/`init` frame carried `fast_mode_state: "on"` with no reason, and
+ * the terminal `result` carried `"off"` with `extra_usage_disabled`, after a
+ * turn that had already run and billed at standard Opus rates. Reading init
+ * alone, which is what this did until h #g221, therefore logged "fast mode
+ * active" for a turn that was never fast and never warned at all: the exact
+ * silent downgrade this function exists to break. An `off` at init is still
+ * reported, because a reason the CLI already knows there (a disabling env var,
+ * say) is true for the turn either way and the dedup keeps the result frame
+ * from repeating it.
  */
 export function reportFastModeState(
   msg: ClaudeStreamMessage,
   requested: boolean,
+  phase: FastModePhase = "result",
 ): void {
   const state = msg.fast_mode_state
   if (!state) return
 
   if (!requested) {
     // Nothing was asked for. Only interesting at debug level.
-    log.debug("fast mode state", { state })
+    log.debug("fast mode state", { state, phase })
     return
   }
 
   if (state === "on") {
+    if (phase === "init") {
+      // A prediction, not a verdict. See the note above.
+      log.debug("fast mode reported on at session start", { state, phase })
+      return
+    }
     log.info("fast mode active", { state })
     return
   }

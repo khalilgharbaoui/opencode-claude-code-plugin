@@ -115,6 +115,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `accountFailover` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` opens the switch form**, so unset and `"off"` behave identically. `"ask"` ends a usage-limited turn on opencode's native `question` form listing the other configured accounts, and continues the task on the pick inside the same opencode turn. Only ever fires with more than one account configured. The pick is sticky for the LIMITED account until the limit's reset time (or until opencode restarts when the CLI reported none), so it covers every session on that account and subagents follow their parent; child sessions are never shown the form. Leaving it unanswered waits and costs nothing. `stop`, a dismissal, or text that is not one of the offered accounts ends the turn the way a limited turn ends without the form. Triggered only by a rejected `rate_limit_event`, one of the two known account-limit error texts, or one of the five account-level failure kinds the CLI names on its own error reply (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`); never by a generic failure. Never on compaction turns; both transports (the TUI's limit reply carries the same `error: "rate_limit"` kind). A switch carries the Claude conversation to the target account's config dir and resumes it there (`crossAccountResume`, default on) and only replays the thread as text when that copy is refused; either way, MCP servers configured only in the limited account's Claude profile are gone. With the default `"off"`, a limited turn ends on one `▌ **usage limit:**` note instead (see "When an account runs out of usage"). |
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
+| `accountInProcess` | boolean | unset/derived | Set by the config hook on Windows, where there is no per-account wrapper script: the spawn exports `CLAUDE_CONFIG_DIR` itself and strips the `@<account>` marker off `--model`. Do not hand-wire it. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
 | `defaultSubagentCacheTtl` | string | unset | Prompt cache TTL (`5m` / `1h`) for discovered `mode: subagent` agents that declare no `cacheTtl`; the agent's own value takes precedence. Unset leaves the CLI's default (1 hour on a subscription). Unknown values warn and change nothing. Headless and interactive spawns, never compaction. |
 | `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when the `accountFailover` form is not taking the turn, which is the case whenever it is `"off"` (its default) or has no other account to offer; with `"ask"` and another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction or title stubs; both transports. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
@@ -359,11 +360,24 @@ models have no suffix, other accounts have `@<account>` (`claude-opus-5@work`). 
 normalize to lowercase hyphen-separated ids, so choose distinct simple names.
 After the user approves login, they authenticate each non-default account interactively,
 for example `CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login`, using the chosen
-binary. Never copy credentials between accounts. The generated wrapper strips the model
-suffix and sets the config dir. Existing `CLAUDE.md`, `settings.json`, `skills/`,
-`agents/`, `commands/`, `plugins/` in `~/.claude` are symlinked only when targets are
-missing; existing targets stay untouched. This shares capabilities/settings, not an
-isolation boundary. Auth/session files are not part of the shared list.
+binary. Never copy credentials between accounts. The model suffix is stripped and the
+config dir set by the generated bash wrapper on macOS and Linux; on **Windows there is
+no wrapper at all** and the plugin does both itself on the spawn (`accountInProcess`),
+because a `.cmd` forwarding `%*` would re-parse every argument a third time. Existing
+`CLAUDE.md`, `settings.json`, `skills/`, `agents/`, `commands/`, `plugins/` in
+`~/.claude` are linked only when targets are missing; existing targets stay untouched.
+Directories become junctions on Windows; a file there falls back symlink -> hard link ->
+copy, and a copy warns because it does not follow later edits. This shares
+capabilities/settings, not an isolation boundary. Auth/session files are not part of the
+shared list.
+
+Each provider's display name carries the account's plan tier when it can be read:
+`Claude Code (Work, Max 20x)`, also `Max 5x`, `Max`, `Pro`, `Team`, `Enterprise`. It
+comes from `organizationType` plus `organizationRateLimitTier` in
+`<config dir>/.claude.json` (the default account also falls back to the legacy
+`~/.claude.json`), read-only, no token and no spawn, and nothing else in that file is
+ever displayed or logged. Unreadable or unrecognised means no suffix. There is no
+option for it.
 
 ### When an account runs out of usage
 
@@ -859,7 +873,10 @@ Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 - The `-fast` ids are this plugin's own markers. They spawn the base model with
   `--settings '{"fastMode":true}'` (Claude Code 2.1.220+). Fast mode fails soft: an
   ineligible account runs at standard speed and the plugin logs a warning naming the
-  reason. Switch to a non-fast id rather than silently enabling paid usage credits.
+  reason, read off the terminal `result` rather than the `system`/`init` frame, which
+  is optimistic (2.1.288 says `"on"` at init and `"off" / extra_usage_disabled` at the
+  end for an account with usage credits off).
+  Switch to a non-fast id rather than silently enabling paid usage credits.
   Review eligibility/billing with the user; the enabled state needs live verification
   on their account. CLI floors are gates, not proof of model access.
 - `claude-sonnet-5-5` needs Claude Code 2.1.284+ to run on its real limits. An older CLI

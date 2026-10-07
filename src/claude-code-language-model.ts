@@ -64,6 +64,7 @@ import {
   isAccountFailoverQuestionActive,
   resolveFailoverSpawn,
   setAccountOverride,
+  stripAccountSuffix,
   type FailoverSpawn,
 } from "./account-failover.js"
 import {
@@ -88,6 +89,7 @@ import {
 } from "./runtime-status.js"
 import {
   getActiveProcess,
+  processBelongsToAnotherAccount,
   setActiveProcess,
   noteInteractiveProcessExit,
   claudeSpawnEnv,
@@ -995,6 +997,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         interactive: !!useInteractive,
         turnStats: this.config.turnStats === true,
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
+        // Where the plugin applies the account itself rather than through a
+        // wrapper (`accountInProcess`, Windows), the `/cost` spawn needs the
+        // same config dir a turn gets, or it reports the default account's
+        // plan usage instead of this provider's.
+        configDir: this.config.accountInProcess ? this.config.configDir : undefined,
         // `/claude-code-doctor usage` opts into the CLI's own plan-usage
         // report; anything else here is ignored, as it always has been.
         argument: doctor.rest,
@@ -1243,15 +1250,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // was spawned as, and the interactive shim carries the path it was spawned
     // with too (h #g209), so a TUI on the limited account is replaced the same
     // way. The CONVERSATION is a separate question, answered just below.
+    // The `CLAUDE_CONFIG_DIR` this turn's spawn exports for itself, which is
+    // only where no wrapper script carries the account (`accountInProcess`,
+    // Windows, h #g221). Undefined everywhere else, so every POSIX install is
+    // on exactly the path it was before.
+    const spawnConfigDir = this.config.accountInProcess
+      ? this.skillBridgeSpawn(failover).configDir
+      : undefined
     const processForAccount = getActiveProcess(sk)
     if (
       !compactionMode &&
-      processForAccount?.cliPath &&
-      processForAccount.cliPath !== cliPath
+      processBelongsToAnotherAccount(processForAccount, cliPath, spawnConfigDir)
     ) {
       log.notice("claude process belongs to another account; starting fresh", {
         sessionKey: sk,
-        was: processForAccount.cliPath,
+        was: processForAccount?.cliPath,
         now: cliPath,
         failedOver: failover.failedOver,
       })
@@ -1325,8 +1338,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     } else if (
       !compactionMode &&
       sessionBeforeAccountCheck &&
-      processForAccount?.cliPath &&
-      processForAccount.cliPath !== cliPath
+      processBelongsToAnotherAccount(processForAccount, cliPath, spawnConfigDir)
     ) {
       // The carry is off, or there is only one account: the account this turn
       // spawns cannot see that transcript either way.
@@ -1512,8 +1524,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // `effectiveModelId` stays intact for session keys, logs, and metadata;
     // only the name handed to the CLI gets the `-fast` marker stripped, and
     // (on a failover) the `@account` suffix the other account's wrapper would
-    // not recognise.
-    const { model: spawnModelId, fast: fastMode } = parseModelId(failover.modelId)
+    // not recognise. Where there is no wrapper at all (`accountInProcess`,
+    // Windows) the marker comes off here on every turn: nothing downstream
+    // would strip it and the CLI has no such model (h #g221).
+    const { model: spawnModelId, fast: fastMode } = parseModelId(
+      this.config.accountInProcess
+        ? stripAccountSuffix(failover.modelId)
+        : failover.modelId,
+    )
 
     const exitPlanModeQuestionResult = compactionMode
       ? null
@@ -2520,6 +2538,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               self.config.ignoreAnthropicApiKey,
               reasoningEffort,
               promptCacheTtl,
+              spawnConfigDir,
             )
             ap.mcpServers = spawnMcpServers
             state.proc = ap.proc

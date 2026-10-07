@@ -1,4 +1,13 @@
-import { chmod, lstat, mkdir, readlink, symlink, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  readlink,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import path from "node:path"
 import { log } from "./logger.js"
 
@@ -36,8 +45,13 @@ export function accountProviderId(account: string): string {
   return `${BASE_PROVIDER_ID}-${normalizeAccountName(account)}`
 }
 
-export function accountDisplayName(account: string): string {
-  return `Claude Code (${titleizeAccount(account)})`
+export function accountDisplayName(account: string, tier?: string): string {
+  const name = titleizeAccount(account)
+  // `Claude Code (Work, Max 20x)`. The tier is omitted whenever it cannot be
+  // read, so an account the plugin knows nothing about is named exactly as it
+  // always was. See `src/account-tier.ts` for where it comes from and for the
+  // fields that must never reach here.
+  return `Claude Code (${tier ? `${name}, ${tier}` : name})`
 }
 
 export function accountModelSuffix(account: string): string | undefined {
@@ -76,10 +90,34 @@ export function expandHome(value: string): string {
   return value
 }
 
+/**
+ * What a spawn needs to run as one account.
+ *
+ * On POSIX `cliPath` is the generated wrapper script and it does everything:
+ * the caller spawns it and the account is applied inside. On Windows there is
+ * no script (see `writeAccountWrapper`), so `cliPath` is the base CLI and
+ * `accountInProcess` tells the caller it owns the two jobs the wrapper would
+ * have done: export `CLAUDE_CONFIG_DIR` and take the `@<account>` marker off
+ * the `--model` value.
+ */
+export interface AccountRuntime {
+  cliPath: string
+  configDir?: string
+  /** See `AccountRuntime`. Set on Windows only, and never for `default`. */
+  accountInProcess?: boolean
+}
+
+export interface AccountRuntimeDeps {
+  /** Defaults to `process.platform`. Injected so the plan is testable off Windows. */
+  platform?: string
+}
+
 export async function ensureAccountRuntime(
   account: string,
   baseCliPath: string,
-): Promise<{ cliPath: string; configDir?: string }> {
+  deps: AccountRuntimeDeps = {},
+): Promise<AccountRuntime> {
+  const platform = deps.platform ?? process.platform
   const configDir = accountConfigDir(account)
 
   if (!configDir) return { cliPath: baseCliPath }
@@ -88,13 +126,29 @@ export async function ensureAccountRuntime(
   await mkdir(expandedConfigDir, { recursive: true })
 
   try {
-    await ensureSharedCapabilities(expandedConfigDir)
+    await ensureSharedCapabilities(expandedConfigDir, platform)
   } catch (err) {
     log.warn("failed to symlink shared capabilities; continuing anyway", {
       account,
       configDir: expandedConfigDir,
       error: String(err),
     })
+  }
+
+  // Windows gets no wrapper at all, and that is the safe answer rather than
+  // the lazy one (h #g221). A `.cmd` twin of the bash script would have to
+  // forward its arguments with `%*`, which is a THIRD cmd.exe parse on top of
+  // the two `quoteBatchArgument` is proven against (our `cmd /c` line, then
+  // the npm `claude.cmd` shim's own `%*`), and it would have to re-quote the
+  // one argument it rewrites, in batch, where there is no reliable quoter.
+  // Everything the wrapper does is two lines of JavaScript, so it is done
+  // here instead of in a language that was measured injectable (h #g217).
+  if (platform === "win32") {
+    return {
+      cliPath: baseCliPath,
+      configDir: expandedConfigDir,
+      accountInProcess: true,
+    }
   }
 
   const cliPath = await writeAccountWrapper(
@@ -106,11 +160,26 @@ export async function ensureAccountRuntime(
   return { cliPath, configDir: expandedConfigDir }
 }
 
-async function ensureSharedCapabilities(targetRoot: string): Promise<void> {
+async function ensureSharedCapabilities(
+  targetRoot: string,
+  platform: string,
+): Promise<void> {
   const sourceRoot = expandHome("~/.claude")
 
   for (const item of SHARED_CAPABILITY_ITEMS) {
-    await ensureSharedCapabilityItem(sourceRoot, targetRoot, item)
+    // One capability that cannot be shared must not cost the others theirs.
+    // On Windows a file symlink needs Developer Mode or an elevated process,
+    // so `CLAUDE.md` failing is the ordinary case and `skills` has nothing to
+    // do with it.
+    try {
+      await ensureSharedCapabilityItem(sourceRoot, targetRoot, item, platform)
+    } catch (err) {
+      log.warn("could not share a Claude capability with the account", {
+        item,
+        target: path.join(targetRoot, item),
+        error: String(err),
+      })
+    }
   }
 }
 
@@ -118,6 +187,7 @@ async function ensureSharedCapabilityItem(
   sourceRoot: string,
   targetRoot: string,
   item: string,
+  platform: string,
 ): Promise<void> {
   const source = path.join(sourceRoot, item)
   const target = path.join(targetRoot, item)
@@ -151,15 +221,53 @@ async function ensureSharedCapabilityItem(
     // Missing target is expected.
   }
 
-  const type = sourceStat.isDirectory()
-    ? process.platform === "win32"
-      ? "junction"
-      : "dir"
-    : "file"
+  if (sourceStat.isDirectory()) {
+    // A junction is the one Windows link an unprivileged process may always
+    // create, and it behaves like a directory symlink for everything the CLI
+    // does with these trees.
+    await symlink(source, target, platform === "win32" ? "junction" : "dir")
+    return
+  }
 
-  await symlink(source, target, type)
+  if (platform !== "win32") {
+    await symlink(source, target, "file")
+    return
+  }
+
+  // A FILE link on Windows is the privileged one. A hard link is the next
+  // best thing and needs no privilege on NTFS: the account dir and `~/.claude`
+  // are the same bytes, so an in-place edit to either is seen by both. An
+  // editor that writes a replacement file instead breaks the link, which is
+  // why the copy below is last rather than first: it is a point-in-time
+  // snapshot and silently goes stale.
+  try {
+    await symlink(source, target, "file")
+    return
+  } catch {
+    // Developer Mode is off, or the volume refuses symlinks.
+  }
+  try {
+    await link(source, target)
+    return
+  } catch {
+    // Different volume, or a filesystem with no hard links.
+  }
+  await copyFile(source, target)
+  log.warn(
+    "copied a shared Claude capability into the account config dir instead of linking it; later edits to the original will not be picked up",
+    { item, target },
+  )
 }
 
+/**
+ * The POSIX half of `ensureAccountRuntime`: a bash script that exports the
+ * account's `CLAUDE_CONFIG_DIR`, strips the `@<account>` marker off the
+ * `--model` value and execs the base CLI with everything else untouched.
+ *
+ * Deliberately not ported to Windows. See the `win32` branch above for why a
+ * `.cmd` twin is the wrong shape there, and `src/windows-spawn.ts` for what
+ * cmd.exe does to an argument that is parsed twice.
+ */
 async function writeAccountWrapper(
   account: string,
   baseCliPath: string,

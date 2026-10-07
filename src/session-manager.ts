@@ -72,6 +72,14 @@ export interface ActiveProcess {
   cliPath?: string
   cliArgs?: string[]
   /**
+   * The `CLAUDE_CONFIG_DIR` this child was spawned with, where the plugin set
+   * it itself (`accountInProcess`, Windows). It is the account identity there,
+   * because every account shares one binary when no wrapper is generated, so
+   * `cliPath` alone cannot tell two accounts apart. Undefined on POSIX, where
+   * the wrapper path already names the account.
+   */
+  configDir?: string
+  /**
    * How many of the plain user messages after the assistant message at
    * `assistantIndex` a tool-result turn has already written to this child. A
    * later tool-result turn for the same boundary (parallel proxy calls finish
@@ -295,6 +303,13 @@ export function claudeSpawnEnv(opts?: {
   effort?: ReasoningEffort
   /** Prompt cache TTL (`5m` / `1h`) for this spawn; wins over the shell. */
   promptCacheTtl?: string
+  /**
+   * `CLAUDE_CONFIG_DIR` for this spawn. Passed only where the plugin applies
+   * an account itself (`accountInProcess`, Windows); on POSIX the per-account
+   * wrapper exports it and this stays undefined, so a default install's
+   * environment is untouched.
+   */
+  configDir?: string
 }): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -324,6 +339,14 @@ export function claudeSpawnEnv(opts?: {
   // set when an agent actually asked, so the CLI's own default survives.
   if (opts?.promptCacheTtl) {
     env.CLAUDE_CODE_PROMPT_CACHE_TTL = opts.promptCacheTtl
+  }
+
+  // The account, where no wrapper script carries it. Set only for a configured
+  // account's own directory: the CLI reports itself logged out when
+  // CLAUDE_CONFIG_DIR names the default `~/.claude` (h #g196), so the caller
+  // passes nothing for the default account and nothing changes here.
+  if (opts?.configDir) {
+    env.CLAUDE_CONFIG_DIR = opts.configDir
   }
 
   // Force subscription auth: with an API key in the env, Claude Code bills
@@ -501,6 +524,28 @@ export function getActiveProcess(key: string): ActiveProcess | undefined {
     touch(key)
   }
   return ap
+}
+
+/**
+ * Whether a live child was spawned as a DIFFERENT account than the one this
+ * turn is about to use, which is what makes it unusable: a child speaks to
+ * the CLI it was started as, under the config dir it was started with.
+ *
+ * Two signals, because the account is carried differently per platform. On
+ * POSIX the per-account wrapper path IS the account, so `cliPath` answers it
+ * alone and `configDir` is never recorded. On Windows there is no wrapper, so
+ * every account runs the same binary and only `CLAUDE_CONFIG_DIR` separates
+ * them (h #g221). Either side being unrecorded means "cannot tell", which
+ * keeps the process, exactly as the `cliPath` check alone always has.
+ */
+export function processBelongsToAnotherAccount(
+  active: ActiveProcess | undefined,
+  cliPath: string,
+  configDir: string | undefined,
+): boolean {
+  if (!active) return false
+  if (active.cliPath && active.cliPath !== cliPath) return true
+  return !!active.configDir && active.configDir !== configDir
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {
@@ -932,6 +977,7 @@ export function spawnClaudeProcess(
   ignoreAnthropicApiKey?: boolean,
   effort?: ReasoningEffort,
   promptCacheTtl?: string,
+  configDir?: string,
 ): ActiveProcess {
   evictIfNeeded()
   log.info("spawning new claude process", {
@@ -941,6 +987,7 @@ export function spawnClaudeProcess(
     sessionKey,
     effort,
     promptCacheTtl,
+    configDir,
   })
 
   // Never `shell: true`. On Windows the plan resolves `claude` to a real file
@@ -951,7 +998,7 @@ export function spawnClaudeProcess(
   const proc = spawn(plan.file, plan.args, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort, promptCacheTtl }),
+    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort, promptCacheTtl, configDir }),
     windowsVerbatimArguments: plan.windowsVerbatimArguments,
   })
 
@@ -968,6 +1015,7 @@ export function spawnClaudeProcess(
     startedAt: Date.now(),
     cliPath,
     cliArgs: [...cliArgs],
+    configDir,
     unattendedLines: [],
     unattendedDropped: 0,
   }
@@ -1199,6 +1247,7 @@ export function respawnActiveProcess(
     ignoreAnthropicApiKey,
     old.effort,
     old.promptCacheTtl,
+    old.configDir,
   )
   // The replacement reuses the old child's `cliArgs`, so it reuses its MCP
   // config: `mcpHash` rides along above and the server names it names have
