@@ -106,15 +106,15 @@ Nothing parked.
   `can_use_tool` rewriting, tool-result repair, session tools, tier labels.
   Batch 1 **done** (v0.46.1): (1a) incremental transcript reads, PR #96, h #g216; (1b) Windows spawn
   quoting with a Windows CI job, PR #95, h #g217 (accounts on Windows still need a `.cmd` wrapper).
-- 2026-09-23: opencode 2, the checks that were not possible before release. (1) **Done
-  2026-09-27**: install by npm name works on 2.0.16 (`@0.27.0`, with and without a provider
-  block; `@0.28.1` is still hidden from this Mac by Aikido's age filter). (2) Account
-  failover and the plan-mode form on V2, which need a real usage limit and a headless
-  `ExitPlanMode`. (3) Permission prompts in the V2 TUI: every probe ran with `--auto`.
-  Sandbox moved to 2.0.16 the same day; evidence in `V2.md`.
-
+  Batch 2 **done** (v0.47.0): (2a) cross-account carry by transcript copy, `crossAccountResume`,
+  PR #97, h #g218 (a switch between two real logins still unmeasured); (2b) every live gap passed,
+  PR #98, h #g219, which also answers the 2026-09-23 opencode 2 items (2) and (3) below.
 ## Done
 
+- 2026-10-07: **done**: opencode 2, the checks that were not possible before release (2026-09-23).
+  (1) npm-name install on 2.0.16, done 2026-09-27; (2) account failover form and switch, and the
+  plan-mode form, live on 2.0.22; (3) a permission prompt in front of a proxied call, live on 2.0.22
+  (h #g219, v0.47.0).
 - 2026-10-07: **done** (v0.46.0): "two issues opened on github lets address them properly", in two
   lanes. #90 (PR #93): a compaction turn that errors fails as an error instead of storing the CLI's
   sentence as the summary; a limited turn finishes as `error` with its note (h #g214). #91 (PR #94):
