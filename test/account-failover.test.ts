@@ -599,6 +599,52 @@ function withDcpTag(value: string, id = "m0795"): string {
   return `${value}\n<dcp-message-id>${id}</dcp-message-id>`
 }
 
+/**
+ * opencode 2 answers the form through its own `Form` surface rather than a
+ * `question` route, and the worry recorded in TODO.md was that its answer shape
+ * would differ. Measured live on 2.0.22 (h #g219): the form arrives at
+ * `GET /api/session/{id}/form` with `metadata.kind: "question"`, is answered
+ * with `{"answer":{"q0":"<label>"}}`, and the tool result it writes back is
+ * V1's own sentence inside a `content` array of text blocks. So there is no V2
+ * branch anywhere in the unwrapper, and this test is what keeps it that way:
+ * the array form has to reach the same verdict as the plain string.
+ */
+test("opencode 2's content-array answer switches exactly as opencode 1's string does", () => {
+  const call = createAccountFailoverQuestionCall("sk-v2", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+    resetsAt: 1_790_170_000,
+  })
+  const question = call.input.questions[0].question
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-v2",
+      answer(call.toolCallId, {
+        type: "content",
+        value: [{ type: "text", text: opencodeAnswer(question, "default") }],
+      }) as any,
+    ),
+    { kind: "switch", target: "default", sourceAccount: "appical", resetsAt: 1_790_170_000 },
+  )
+
+  // `stop` through the same shape, so the V2 path cannot silently switch on a
+  // refusal either.
+  const stopCall = createAccountFailoverQuestionCall("sk-v2-stop", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-v2-stop",
+      answer(stopCall.toolCallId, {
+        type: "content",
+        value: [{ type: "text", text: opencodeAnswer(stopCall.input.questions[0].question, "stop") }],
+      }) as any,
+    ),
+    { kind: "stop", reason: "the operator chose to stop" },
+  )
+})
+
 test("opencode's own answer sentence switches, although the question has quotes", () => {
   const call = createAccountFailoverQuestionCall("sk-real", {
     sourceAccount: "appical",

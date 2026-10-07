@@ -2826,3 +2826,155 @@ are the evidence above: 37675796821 is the caret version creating `pwned.txt`
 to fix (778 of 779).
 
 `test/windows-spawn.test.ts`, `.github/workflows/ci-windows.yml`.
+
+<a id="g219"></a>
+
+#### Six verification gaps closed with live runs: the account switch on both majors, the V2 plan form, a V2 permission prompt, compress, both watchdogs, abort-then-interrupt (2026-10-07)
+
+Six behaviours had been asserted by unit tests and described in AGENTS.md as
+"not yet live-verified" or "not live-verified end to end", each because the live
+run needed something a test cannot produce: a real usage limit, an answer posted
+back into a running turn, or a CLI that goes silent. All six were run. **All six
+pass. No plugin code changed.** What follows is what each one actually did,
+because the next person to doubt one of these should be able to read the
+measurement rather than re-run it.
+
+**Probe discipline.** Every run got its own scratch `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `TMPDIR` and cwd, the plugin
+loaded from this lane's worktree (`file://<worktree>` on 1.x, `<worktree>/dist`
+on 2.x), and `plugin ready` asserted to appear exactly once in each
+`plugin.log`. opencode 1.18.35 from PATH on 4780x/4781x, opencode 2.0.22 from
+`~/opencode-v2-sandbox/bin/opencode` as a password-protected private `serve`
+(never `opencode service start`, never `opencode pair`). Real inference used the
+**default** Claude account and `claude-haiku-4-5` only. Where a usage limit was
+needed, `cliPath` pointed at a scratch fake `claude` answering `--version` with
+`2.1.288` and emitting a limited turn's exact frames.
+
+**1. The account-failover switch, opencode 1.18.35 (PASS).** `accounts:
+["alpha"]`, `accountFailover: "ask"`, the fake CLI rejecting when reached through
+the `alpha` wrapper (`CLAUDE_CONFIG_DIR` set) and answering as the bare binary.
+The limited turn logged `Claude account "alpha" is out of usage; asking which
+account to continue on`, and `GET /question` held the form with both options and
+the reset time. `POST /question/{id}/reply {"answers":[["default"]]}` was
+accepted, and the stored tool result is opencode's own sentence,
+`User has answered your questions: "<question>"="default". You can now continue
+with the user's answers in mind.`, which `unwrapOpencodeQuestionResult` read
+correctly. The next spawn recorded by the fake has **`configDir: null`** (the
+bare binary, so the `default` account) and `--model claude-haiku-4-5` with the
+`@alpha` marker stripped, and the reply carried the
+`▌ **account failover:**` note followed by the target account's answer. This is
+the first live run of the switch itself; the form alone had been seen on
+2026-09-28 and 2026-10-03.
+
+**2. The same on opencode 2.0.22 (PASS), and V2 needs no unwrapper branch.** Same
+config under `providers.claude-code.settings`. The form arrives as one of V2's
+own `Form` surfaces: `GET /api/session/{id}/form` returns
+`{id: "frm_...", metadata: {kind: "question", tool: {...}}, fields: [{key: "q0",
+type: "string", options: [{value: "default"}, {value: "stop"}]}]}`, answered with
+`POST .../form/{formID}/reply {"answer":{"q0":"default"}}` (204 No Content).
+**The tool result V2 writes back is byte-for-byte the shape V1 writes**, the same
+`User has answered your questions: "<q>"="default".` sentence in
+`state.content[0].text`, so the V2 answer shape the TODO worried about does not
+exist at the layer the plugin reads. The next spawn ran the bare fake with
+`CLAUDE_CONFIG_DIR` unset and the marker stripped, exactly as on 1.x.
+
+**3. `planModeQuestion` on the interactive transport, opencode 2.0.22 (PASS).**
+`interactive: true`, `permissionMode: "plan"`, `planModeQuestion: true`, the real
+`claude` 2.1.288 on the default account. The TUI parked 2.1.288's approval dialog
+(`interactive transport is waiting on a plan approval`, detail `Would you like to
+proceed? ❯ 1. Yes, auto-accept edits 2. Yes, manually approve edits 3. Tell
+Claude what to change`), the plugin raised its `Plan approval` form keyed
+`exit_plan_question_toolu_...`, `yes` through the `Form` route produced `sending
+plan approval decision to claude` and `interactive transport answering a plan
+approval {approved: true}`, and **the same TUI turn** then wrote
+`plan-probe.txt` containing `LANEPLAN` and ended `{"end":"stop","stopReason":
+"end_turn","apiCalls":4}`. (h #g201) had this on 1.18.34 only.
+
+**4. A permission prompt in front of a proxied call, opencode 2.0.22 (PASS).**
+Every V2 probe before this ran with `--auto`, so the prompt path had never been
+exercised there. Config `permissions: [{action: "*", resource: "*", effect:
+"allow"}, {action: "write"|"edit", resource: "*", effect: "ask"}]`, headless
+transport, default `proxyTools`. The model first tried the CLI's own `Write`
+(refused, `--disallowedTools`), then called `mcp__opencode_proxy__write`. The
+call was queued and the step drained; opencode raised
+`GET /api/session/{id}/permission` with `action: "edit"`, the resource and the
+patch; the call sat parked for the twelve seconds the answer took; and
+`POST .../permission/{requestID}/reply {"decision":"once"}` produced `resolving
+pending proxy call from tool result prompt` and `resolved pending proxy call` in
+the same step. `perm-probe.txt` was written. So (h #g27)'s rule, that the proxy
+deadline must not count the operator's time on a prompt, holds on V2 as well.
+
+**5. The compress tool end to end, Claude Code 2.1.288 + opencode 1.18.35
+(PASS).** `proxyTools: ["Bash", "Compress"]`. Turn one seeded a build identifier.
+Turn two called `mcp__opencode_proxy__compress` and logged `compress stored
+summary; session resets next turn {summaryLength: 50}`. Turn three logged
+`compress reset: dropped claude process and session id`, spawned a **new** child
+with no `--resume` (the old one exited 143), and that child answered with the
+identifier. The new spawn's `--append-system-prompt-file` opens with
+`## Summary of earlier work (context was compressed)` followed by the summary,
+and carries `CLAUDE_CLI_COMPRESS_NOTE`'s three lines rather than the ordinary
+context note. AGENTS.md had said "Not live-verified end to end" while
+`docs/guides/tool-proxy.md` already recorded a 2.1.263 / 1.18.31 run; both now
+say the same thing.
+
+**6. Both watchdogs, through a real `opencode serve` (PASS).** A fake `claude`
+with two silence modes and the env seams shortened to 5 s.
+`CLAUDE_CODE_RESULT_FALLBACK_MS`: the child emitted `system`/`init` and one text
+delta and then nothing, and at exactly 5 s the WARN beginning `result fallback
+timer fired` appeared, the reply carried `▌ **stream
+timeout:** … went silent for 5s …`, and the turn finished as an error.
+`CLAUDE_CODE_START_WATCHDOG_MS`: a reused process that wrote **no** stdout after
+the envelope write produced `no stdout after envelope write; respawning claude
+process to resume conversation` at 5 s, and the fake recorded the respawn's argv
+ending `--resume watchdog-session`; the respawned child answered and the turn
+recovered with the operator seeing nothing. With the fake also silent on a
+`--resume` spawn, the second fire logged `claude process still silent after
+respawn; ending turn` at 5 s and the turn ended with `Claude process produced no
+output after the envelope write (start watchdog timeout).`
+
+**7. Abort then interrupt, Claude Code 2.1.288 + opencode 1.18.35 (PASS).** A
+2000-word essay was aborted 11 s in with `POST /session/{id}/abort`. The plugin
+logged `abort signal received mid-turn, starting grace period`; **21 ms later**
+the CLI's `result` arrived as `error_during_execution` with `costUsd: 0`,
+`outputTokens: 0` and `durationApiMs: 0`; then `interrupt sent for aborted turn
+{idle: true}`. The decisive evidence is the CLI's own transcript, which records a
+`user` entry of **`[Request interrupted by user]`** immediately after a truncated
+assistant record whose `stop_reason` is `null`: the CLI received the control
+request and stopped the request rather than running it out. The next turn on the
+same opencode session **reused the same process and the same Claude session id**
+(`e3e675d3-…`) and answered normally at $0.0078, so an interrupt ends the turn
+without ending the conversation.
+
+**A V2 probe trap found on the way, and it is not ours.** On 2.0.22 a provider's
+`package` is not only a label: opencode npm-installs the name inside
+`V2_PLUGIN_PACKAGE`'s `aisdk:` prefix when the model is first asked for, and
+calls that copy's provider factory beside the configured one. With the plugin
+loaded from a local `dist`, the npm copy resolved to **0.40.0** on this machine
+(Aikido's minimum-package-age filter again) and wrote 0.40.0's plan-mode WARN
+into the same `plugin.log` as the local build. That cost an hour: the line claims
+headless Claude Code has no `ExitPlanMode`, the current source gates it off for
+an interactive transport, and the gate was proven correct both in isolation and
+with a stack trace before the second copy was found at
+`<XDG_CACHE_HOME>/opencode/npm/@khalilgharbaoui/opencode-claude-code-plugin@latest/`.
+It serves nothing (the `sdk` hook replaces `event.sdk`, and the turn ran on the
+local build) and `plugin ready` still appears exactly once, because `setup()`
+runs only for the configured plugin. The lesson for the next V2 probe: **two
+builds write to that log**, so a line the local source cannot produce is the npm
+copy's. This corrects "package is only a label" in (h #g32); which copy answers a
+turn is unchanged.
+
+**The other probe trap, cheaper but just as blocking.** V2's
+`POST /api/session/{id}/prompt` takes `{text}` only, with the model set
+separately by `POST /api/session/{id}/model`
+(`{"model":{"providerID":…,"id":…}}`), and it **returns as soon as the message is
+recorded**. A driver that treats it like 1.x's `POST /session/{id}/message` and
+waits on the response sees neither the form nor the permission request, because
+both appear after it has already returned. Poll `GET /api/session/active` for
+busy instead.
+
+No regression test is added, because nothing was found broken. The behaviours
+above already have unit coverage (`test/account-failover.test.ts`,
+`test/exit-plan-mode-question.test.ts`, `test/compress-tool.test.ts`,
+`test/result-fallback.test.ts`, `test/respawn.test.ts`,
+`test/process-lifecycle.test.ts`, `test/session-manager.test.ts`); what they
+lacked was a live run, and that is what this entry is.
