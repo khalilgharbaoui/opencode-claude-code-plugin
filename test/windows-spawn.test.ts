@@ -471,13 +471,16 @@ describe("a real .cmd shim on Windows", { skip: isWindows ? false : "Windows onl
       const attempts = [
         "x & echo pwned > pwned.txt",
         "x && echo pwned > pwned.txt",
+        // This one is the whole reason the quoting is not caret-based: it got
+        // through the caret version, on this runner, and created the file.
         'x" & echo pwned > pwned.txt & "',
+        'x"" & echo pwned > pwned.txt & ""',
         "x | findstr /v . > pwned.txt",
-        "x\r\necho pwned > pwned.txt",
+        "x\" ^& echo pwned > pwned.txt ^& \"",
+        "(x) & echo pwned > pwned.txt",
+        "%COMSPEC% /c echo pwned > pwned.txt",
       ]
       for (const attempt of attempts) {
-        // A CR/LF argument is not something cmd.exe can carry; it is here to
-        // prove it does not become a second command either.
         const plan = planClaudeSpawn(shim, [attempt])
         spawnSync(plan.file, plan.args, {
           cwd: dir,
@@ -486,6 +489,10 @@ describe("a real .cmd shim on Windows", { skip: isWindows ? false : "Windows onl
         })
         assert.equal(fs.existsSync(path.join(dir, "pwned.txt")), false, attempt)
       }
+      // A CR/LF cannot be carried at all, so it is refused rather than
+      // truncated into whatever cmd would make of the remainder.
+      assert.throws(() => planClaudeSpawn(shim, ["x\r\necho pwned > pwned.txt"]), /newline/)
+      assert.equal(fs.existsSync(path.join(dir, "pwned.txt")), false)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
