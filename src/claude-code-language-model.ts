@@ -110,6 +110,7 @@ import {
   sessionKey,
   effortSessionKey,
   invalidateOtherEffortSessions,
+  transferClaudeSession,
   describeSessionKey,
 } from "./session-manager.js"
 import { interactiveSpawnEnv, spawnInteractiveProcess } from "./claude-session-wrapper.js"
@@ -130,7 +131,11 @@ import {
 import { interactivePermissionPosture, isReadOnlyPermissionMode } from "./permission-presets.js"
 import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
-import { findResumePoint, recordResumePoint } from "./session-resume-store.js"
+import {
+  findResumePoint,
+  findSiblingResumePoint,
+  recordResumePoint,
+} from "./session-resume-store.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
 import {
   formatStaleBuildNote,
@@ -1326,6 +1331,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // measurements and every refusal). Setting the id is all it takes: the
     // spawn below resumes any key that has one and no live process, exactly
     // as it does after an idle eviction.
+    // Why this turn ended up replaying, for the one NOTICE below. The
+    // branches that try to avoid a replay each overwrite it with what they
+    // refused on, so the reason an operator reads in `plugin.log` is the most
+    // specific one anything actually decided (h #g215).
+    let replayReason = "no-session-for-key"
     if (
       this.config.resumeAfterRestart !== false &&
       includeHistoryContext &&
@@ -1334,11 +1344,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       failoverAnswer?.kind !== "switch"
     ) {
       const configDir = resolveConfigDir(this.config.configDir)
+      const transcriptPath = (id: string) =>
+        join(configDir, "projects", encodeCwd(cwd), `${id}.jsonl`)
       const resumePoint = findResumePoint({
         sessionKey: sk,
         prompt: options.prompt,
         cliPath,
-        transcriptPath: (id) => join(configDir, "projects", encodeCwd(cwd), `${id}.jsonl`),
+        transcriptPath,
+        onRefused: (reason) => {
+          replayReason = reason
+        },
       })
       if (resumePoint) {
         setClaudeSessionId(sk, resumePoint.claudeSessionId)
@@ -1347,7 +1362,65 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           sessionKey: sk,
           matchedMessages: resumePoint.matched,
         })
+      } else if (this.config.resumeAcrossModelChanges !== false) {
+        // Nothing has answered THIS key, but the same opencode conversation
+        // may have been answered under another model or another reasoning
+        // effort: both are in the session key, so changing either sends a
+        // live conversation down the fresh-session path (issue #91). Neither
+        // needs a new Claude conversation, because `--model` and
+        // `CLAUDE_CODE_EFFORT_LEVEL` are spawn-time and the CLI applies
+        // either to a transcript it resumes (measured on 2.1.288).
+        const sibling = findSiblingResumePoint({
+          sessionKey: sk,
+          prompt: options.prompt,
+          cliPath,
+          transcriptPath,
+          // `claudeSessionIsWriting`, not `getActiveProcess`: this walks every
+          // sibling key, and that one refreshes LRU order and cancels idle
+          // timers on everything it touches (the same reason the fork lookup
+          // above uses it).
+          isBusy: claudeSessionIsWriting,
+          onRefused: (reason) => {
+            replayReason = reason
+          },
+        })
+        if (sibling) {
+          // The sibling's own child, if it still has one, is holding the
+          // transcript this turn is about to resume. It goes first, so one
+          // `claude` owns one conversation; the transfer then moves the id,
+          // the resume record and the fork fingerprint across, leaving the
+          // sibling key with no claim on it at all.
+          deleteActiveProcess(sibling.siblingKey)
+          const carried = transferClaudeSession(sibling.siblingKey, sk)
+          if (carried) {
+            includeHistoryContext = false
+            log.notice(
+              "continuing this conversation's claude session under the new model or effort instead of replaying it",
+              {
+                sessionKey: sk,
+                siblingKey: sibling.siblingKey,
+                matchedMessages: sibling.matched,
+              },
+            )
+          } else {
+            replayReason = "sibling-carry-over-failed"
+          }
+        }
       }
+    }
+
+    // A turn that is about to resend the whole thread as text. It is lossy
+    // (per-message text and tool results are clipped, images and reasoning are
+    // dropped) and it is the expensive path, so it says so once, at NOTICE,
+    // with what it refused on: before this it was invisible unless the
+    // operator read DEBUG, and the only thing on screen was a transcript
+    // prefix that read like session corruption (issue #91).
+    if (includeHistoryContext && !compactionMode) {
+      log.notice("replaying the conversation as text: no claude session was available to continue", {
+        sessionKey: sk,
+        reason: replayReason,
+        messages: options.prompt.length,
+      })
     }
 
     // What this key is being asked to continue, so a later fork of it can be

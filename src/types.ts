@@ -97,6 +97,8 @@ export interface ClaudeCodeConfig {
   forkSessions?: boolean
   /** Resume a conversation's Claude session after opencode restarts. Default true. */
   resumeAfterRestart?: boolean
+  /** Carry a conversation's Claude session over when its model or effort changes. Default true. */
+  resumeAcrossModelChanges?: boolean
   logging?: LoggingConfig
 }
 
@@ -511,6 +513,32 @@ export interface ClaudeCodeProviderSettings {
    * before. `false` never reads or writes the file.
    */
   resumeAfterRestart?: boolean
+
+  /**
+   * Carry a conversation's Claude session over when the operator changes its
+   * model or its reasoning effort mid-conversation, instead of replaying the
+   * whole thread as text into a fresh one. Default `true`.
+   *
+   * Both the model and the effort level are in the session key, so changing
+   * either lands the same opencode conversation on a key nothing has ever
+   * answered. That was the other half of issue #91: at least 18 replays in
+   * one ~15-hour session. Neither is a reason to start a new Claude
+   * conversation, because both are spawn-time choices (`--model`,
+   * `CLAUDE_CODE_EFFORT_LEVEL`) that the CLI applies to a transcript it
+   * resumes, measured on 2.1.288.
+   *
+   * It takes the Claude session off the sibling key rather than sharing it, so
+   * one conversation is owned by exactly one key, and it is refused on every
+   * term `resumeAfterRestart` is refused on (another account, a transcript
+   * that is gone, a conversation that has changed) plus two of its own: a
+   * sibling whose transcript may still be written to, and anything that is not
+   * the same cwd, request scope, opencode session, agent and prompt-cache TTL.
+   * A compaction turn and an account-failover switch never take one.
+   *
+   * It reads the record `resumeAfterRestart` writes, so `resumeAfterRestart:
+   * false` turns this off too.
+   */
+  resumeAcrossModelChanges?: boolean
 
   /**
    * Routing for Claude's built-in `WebSearch` tool.

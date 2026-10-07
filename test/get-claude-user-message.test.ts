@@ -171,7 +171,7 @@ test("compaction wraps transcript in <conversation_transcript> tag", () => {
     "expected closing transcript tag",
   )
   assert.ok(
-    !textBlock.text.includes("from a previous session that couldn't be resumed"),
+    !textBlock.text.includes("replayed as text because no Claude session"),
     "should not use the fresh-session wrapper text",
   )
 })
