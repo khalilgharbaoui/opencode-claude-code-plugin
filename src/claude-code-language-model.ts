@@ -2529,6 +2529,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 candidates: failoverAccounts,
                 resetsAt: state.accountLimitHit?.resetsAt,
                 window: state.accountLimitHit?.window,
+                resetsText: state.accountLimitHit?.resetsText,
               }),
             })
             state.endTextBlock()

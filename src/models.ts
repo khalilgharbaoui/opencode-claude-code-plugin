@@ -443,3 +443,43 @@ export function parseModelId(modelId: string): { model: string; fast: boolean } 
 
   return { model: base.slice(0, -FAST_SUFFIX.length) + account, fast: true }
 }
+
+/** Anthropic's published price of one web search, in dollars. */
+const WEB_SEARCH_USD = 0.01
+
+/**
+ * What one API call cost at list price, in dollars, from its own `usage` and
+ * the model that served it: the figure a headless `result` carries as
+ * `total_cost_usd`, which the interactive transport has to rebuild because the
+ * TUI writes no per-turn cost (its `cost-state` record is a session total,
+ * written only now and then).
+ *
+ * Measured on Claude Code 2.1.288 (h #g208): summed over a turn's distinct
+ * calls this equals, to the last digit, the `costUSD` the CLI's own
+ * `cost-state` gives that model. A 1-hour cache write is twice the input
+ * price, a 5-minute one is the catalog's `cache.write`, and a fast-mode call
+ * (`usage.speed === "fast"`) is priced from its `-fast` entry. `model` is the
+ * transcript's own field (`claude-haiku-4-5-20251001`), so a dated, `[1m]` or
+ * `@account` spelling resolves to its catalog entry; a model the catalog does
+ * not know returns null rather than a guess.
+ */
+export function apiCallCostUsd(model: unknown, usage: any): number | null {
+  if (typeof model !== "string" || !usage || typeof usage !== "object") return null
+  const base = model.replace(/@.*$/, "").replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "")
+  const entry =
+    (usage.speed === "fast" ? defaultModels[`${base}${FAST_SUFFIX}`] : undefined) ??
+    defaultModels[base]
+  if (!entry) return null
+  const cost = entry.cost
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0)
+  const split = usage.cache_creation
+  const write1h = split ? count(split.ephemeral_1h_input_tokens) : 0
+  const write5m = split ? count(split.ephemeral_5m_input_tokens) : count(usage.cache_creation_input_tokens)
+  const perMillion =
+    count(usage.input_tokens) * cost.input +
+    count(usage.output_tokens) * cost.output +
+    count(usage.cache_read_input_tokens) * cost.cache.read +
+    write5m * cost.cache.write +
+    write1h * cost.input * 2
+  return perMillion / 1_000_000 + count(usage.server_tool_use?.web_search_requests) * WEB_SEARCH_USD
+}

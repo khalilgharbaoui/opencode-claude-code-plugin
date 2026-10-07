@@ -112,6 +112,13 @@ Nothing parked.
 
 ## In progress
 
+- 2026-10-07: "you say: opencode's own system prompt isn't sent because it trips stuff.. but i did an
+  experiment before it trips because of the opencode url in it if we strip that url out of it does not
+  trip it any more you can test this and verify maybe this info can fix this? i mean this and the small
+  stuff can be fixed right? and maybe find a creative solution for the others? to still achive parity?"
+  Plan: (1) measure the URL hypothesis on the PTY and forward opencode's prompt with the URL stripped;
+  (2) `turnStats` cost and duration on the PTY; (3) the usage-limit note on the PTY; then the rest:
+  `forkSessions`, the fallback chain, the failover form, `controlRequestToolBehaviors`, PDFs.
 - 2026-09-23: opencode 2, the checks that were not possible before release. (1) **Done
   2026-09-27**: install by npm name works on 2.0.16 (`@0.27.0`, with and without a provider
   block; `@0.28.1` is still hidden from this Mac by Aikido's age filter). (2) Account

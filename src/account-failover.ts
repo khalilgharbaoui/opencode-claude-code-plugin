@@ -226,6 +226,8 @@ export function formatUsageLimitNote(input: {
   resetsAt?: number
   /** The CLI's raw `rateLimitType`; rendered through `describeRateLimitWindow`. */
   window?: string
+  /** The CLI's own reset phrase, used only when `resetsAt` is unknown. */
+  resetsText?: string
 }): string {
   const account = normalizeAccountName(input.sourceAccount || DEFAULT_ACCOUNT)
   const window = describeRateLimitWindow(input.window)
@@ -235,7 +237,11 @@ export function formatUsageLimitNote(input: {
   const what = [
     `the Claude account "${account}" is out of usage`,
     window ? ` in ${window}` : "",
-    resets ? `, which resets at ${resets}` : "",
+    resets
+      ? `, which resets at ${resets}`
+      : input.resetsText
+        ? `, which resets ${input.resetsText}`
+        : "",
     ".",
   ].join("")
   const advice = others
@@ -264,6 +270,27 @@ export interface AccountLimitFacts {
   resetsAt?: number
   /** The CLI's raw `rateLimitType`. */
   window?: string
+  /**
+   * The CLI's own reset phrase ("3pm (Europe/Amsterdam)"), for a limit that
+   * reached us only as text: the interactive transport has no
+   * `rate_limit_event`, so there is no `resetsAt` to format (h #g208). Shown
+   * only when `resetsAt` is unknown, and never remembered, because nothing
+   * says when a phrase stops being true.
+   */
+  resetsText?: string
+}
+
+/**
+ * What the CLI's own limit sentence says, read off its text. Measured on
+ * 2.1.288: `You've hit your session limit · resets 3pm (Europe/Amsterdam)`,
+ * the 5-hour window. Only the shapes seen are read; anything else yields `{}`.
+ */
+export function limitFactsFromText(text: string): AccountLimitFacts {
+  const facts: AccountLimitFacts = {}
+  if (/\bsession limit\b/i.test(text)) facts.window = "five_hour"
+  const reset = /\bresets\s+([^·\n]{1,60}?)\s*$/im.exec(text)
+  if (reset) facts.resetsText = reset[1]!.trim()
+  return facts
 }
 
 const lastAccountLimits = new Map<string, AccountLimitFacts>()

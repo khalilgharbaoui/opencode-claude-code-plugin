@@ -23,6 +23,7 @@ import {
   accountBlockKind,
   formatAccountBlockNote,
   isAccountLimitError,
+  limitFactsFromText,
   recallAccountLimit,
   rememberAccountLimit,
 } from "./account-failover.js"
@@ -722,6 +723,24 @@ export function createLineHandler(
             }))
         if (limitErrorReply) {
           state.accountLimitHit ??= recallAccountLimit(ctx.sourceAccount)
+          // What the sentence itself says fills only what no event told us:
+          // on the interactive transport there is no `rate_limit_event`, and
+          // the TUI's "resets 3pm (Europe/Amsterdam)" is the only reset time
+          // there is (h #g208).
+          const said = limitFactsFromText(
+            (msg.message.content as any[])
+              .filter((b) => b.type === "text" && b.text)
+              .map((b) => String(b.text))
+              .join("\n"),
+          )
+          const known = state.accountLimitHit
+          state.accountLimitHit = {
+            ...known,
+            window: known.window ?? said.window,
+            ...(known.resetsAt === undefined && said.resetsText
+              ? { resetsText: said.resetsText }
+              : {}),
+          }
         }
 
         if (hasText && !hasToolUse) {

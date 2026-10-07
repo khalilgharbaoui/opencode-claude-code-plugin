@@ -38,6 +38,7 @@ import {
   interactiveExtraArgs,
   interactiveResultFrame,
   planApprovalAnswer,
+  streamFrameFromRecord,
   spawnInteractiveProcess,
 } from "../src/claude-session-wrapper.js"
 import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "../src/plan-mode-question.js"
@@ -1474,4 +1475,143 @@ test("a parked plan approval is a still screen, never an idle end", async () => 
     },
     { idleEndMs: 100 },
   )
+})
+
+// ---------------------------------------------------------------------------
+// A turn the CLI answers with its own API error (h #g208): a usage limit, an
+// expired login. The TUI writes it as a `<synthetic>` record with
+// `isApiErrorMessage`; the turn must end the way a headless one does.
+// ---------------------------------------------------------------------------
+
+/** Verbatim from a 2.1.288 transcript, ids and paths dropped. */
+const SESSION_LIMIT_RECORD = {
+  type: "assistant",
+  error: "rate_limit",
+  isApiErrorMessage: true,
+  apiErrorStatus: 429,
+  message: {
+    id: "limit-1",
+    model: "<synthetic>",
+    role: "assistant",
+    stop_reason: "stop_sequence",
+    type: "message",
+    content: [{ type: "text", text: "You've hit your session limit · resets 3pm (Europe/Amsterdam)" }],
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  },
+}
+
+async function runFakeBunTurn(
+  dirs: ReturnType<typeof scratch>,
+  modelId: string,
+  turn: TurnScript,
+  options: Record<string, unknown> = {},
+): Promise<{ parts: any[]; children: FakeTui[] }> {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], spawnOptions: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      tui.turns = [turn]
+      children.push(tui)
+      return tui.spawner(argv, { ...spawnOptions, ...spawnOptions.terminal,
+        onData: (text) => spawnOptions.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  try {
+    const model = createClaudeCode({
+      transport: "interactive", cwd: dirs.cwd, configDir: dirs.configDir,
+      bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false, ...options,
+    }).languageModel(modelId)
+    const result = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "reply" }] }],
+      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+    })
+    const parts: any[] = []
+    for await (const part of result.stream) parts.push(part)
+    return { parts, children }
+  } finally {
+    deleteActiveProcess(sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`))
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+  }
+}
+
+const textOf = (parts: any[]) => parts.filter((part) => part.type === "text-delta").map((part) => part.delta).join("")
+
+test("a usage limit on the PTY ends on the plugin's note, with the TUI's reset time", async () => {
+  const dirs = scratch()
+  try {
+    const { parts } = await runFakeBunTurn(dirs, "claude-test-pty-limit", (t) => {
+      t.append(SESSION_LIMIT_RECORD)
+      t.append({ type: "system", subtype: "turn_duration", durationMs: 812 })
+    })
+    const text = textOf(parts)
+    assert.match(text, /▌ \*\*usage limit:\*\*/)
+    assert.match(text, /in the 5-hour window, which resets 3pm \(Europe\/Amsterdam\)\./)
+    assert.doesNotMatch(text, /You've hit your session limit/, "the note replaces the CLI's sentence")
+    // A failed turn is never billed in a stats line, and nothing was billed.
+    assert(!parts.some((part) => part.type === "error"))
+  } finally {
+    dirs.cleanup()
+  }
+})
+
+test("the transcript's isApiErrorMessage reaches the parser under the stream's name", () => {
+  const raw = JSON.stringify(SESSION_LIMIT_RECORD)
+  const frame = JSON.parse(streamFrameFromRecord(raw))
+  assert.equal(frame.is_api_error_message, true)
+  assert.equal(frame.error, "rate_limit")
+  // Every other record passes through byte-identical.
+  const plain = JSON.stringify(assistantRecord("m1", "end_turn", textBlock("hi")))
+  assert.equal(streamFrameFromRecord(plain), plain)
+  assert.equal(streamFrameFromRecord("not json"), "not json")
+})
+
+test("a turn that ended on the CLI's own API error is a failed result, as headless says", () => {
+  const frame = JSON.parse(
+    interactiveResultFrame({
+      sessionId: "s",
+      end: "stop",
+      stopReason: "stop_sequence",
+      apiError: { text: "You've hit your session limit · resets 3pm (Europe/Amsterdam)", status: 429 },
+    }),
+  )
+  // The measured headless shape: `subtype` success, only `is_error` says it.
+  assert.equal(frame.subtype, "success")
+  assert.equal(frame.is_error, true)
+  assert.equal(frame.result, "You've hit your session limit · resets 3pm (Europe/Amsterdam)")
+  assert.equal(frame.api_error_status, 429)
+  const ordinary = JSON.parse(interactiveResultFrame({ sessionId: "s", end: "stop", stopReason: "end_turn" }))
+  assert.equal(ordinary.is_error, false)
+  assert.equal(ordinary.result, undefined)
+})
+
+test("an expired login on the PTY gets the account note that names the login command", async () => {
+  const dirs = scratch()
+  try {
+    const { parts } = await runFakeBunTurn(dirs, "claude-test-pty-login", (t) => {
+      t.append({
+        ...SESSION_LIMIT_RECORD,
+        error: "authentication_failed",
+        apiErrorStatus: 401,
+        message: {
+          ...SESSION_LIMIT_RECORD.message,
+          id: "login-1",
+          content: [{ type: "text", text: "Login expired · Please run /login" }],
+        },
+      })
+      t.append({ type: "system", subtype: "turn_duration", durationMs: 300 })
+    })
+    const text = textOf(parts)
+    assert.match(text, /▌ \*\*claude account:\*\*/)
+    assert.doesNotMatch(text, /usage limit/, "a login is not a usage limit")
+  } finally {
+    dirs.cleanup()
+  }
 })

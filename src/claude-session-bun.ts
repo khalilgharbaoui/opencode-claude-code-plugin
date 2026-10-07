@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { cliHygieneEnv } from "./cli-version.js"
+import { apiCallCostUsd } from "./models.js"
 
 /**
  * Persistent interactive Claude Code session driven over Bun's NATIVE PTY
@@ -485,6 +486,7 @@ export function isApiCallRecord(rec: any): boolean {
  */
 export class TurnUsageAccumulator {
   private readonly calls = new Map<string, any>()
+  private readonly models = new Map<string, unknown>()
   private lastKey: string | null = null
 
   /** Feed every transcript record of the turn, in file order. */
@@ -499,7 +501,24 @@ export class TurnUsageAccumulator {
         ? id
         : `uuid:${rec.uuid ?? this.calls.size}`
     this.calls.set(key, rec.message.usage)
+    this.models.set(key, rec.message.model)
     this.lastKey = key
+  }
+
+  /**
+   * The turn's list-price cost over its distinct calls, the headless
+   * `result`'s `total_cost_usd` (h #g208). Null when no call was made or any
+   * call's model is one the catalog cannot price, never a partial sum.
+   */
+  get costUsd(): number | null {
+    if (this.calls.size === 0) return null
+    let total = 0
+    for (const [key, usage] of this.calls) {
+      const cost = apiCallCostUsd(this.models.get(key), usage)
+      if (cost === null) return null
+      total += cost
+    }
+    return total
   }
 
   /** Distinct API calls seen, for diagnostics. */
@@ -638,6 +657,17 @@ export interface TailTurnResult {
   usage: any | null
   lastCallUsage: any | null
   callCount: number
+  /** List price of the turn's calls, or null (`TurnUsageAccumulator.costUsd`). */
+  costUsd: number | null
+  /** The TUI's own `turn_duration` when it wrote one, else the wall time. */
+  durationMs: number
+  /**
+   * The CLI's own API-error reply the turn ended on (a usage limit, an
+   * expired login, a refused model), or null. Written into the transcript as
+   * a `<synthetic>` assistant record with `isApiErrorMessage`, where a
+   * headless `result` would say `is_error: true` (h #g208).
+   */
+  apiError: { text: string; status?: number; kind?: string } | null
   /** Permission dialogs denied during this turn. */
   denied: ScreenState[]
 }
@@ -1464,11 +1494,33 @@ export class ClaudeSession {
   ): Promise<TailTurnResult> {
     const timeout = perTurnTimeoutMs ?? this.o.turnTimeoutMs
     const usage = new TurnUsageAccumulator()
+    const startedAt = Date.now()
+    let reportedDurationMs: number | null = null
+    let apiError: TailTurnResult["apiError"] = null
     const { stopReason, end, denied } = await this.runTurnLoop(
       prompt,
       (raw, rec) => {
         onLine(raw)
         if (rec) usage.add(rec)
+        if (rec?.type === "assistant") {
+          if (rec.isApiErrorMessage === true) {
+            const text = (Array.isArray(rec.message?.content) ? rec.message.content : [])
+              .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+              .map((block: any) => block.text)
+              .join("\n")
+            apiError = {
+              text,
+              ...(typeof rec.apiErrorStatus === "number" ? { status: rec.apiErrorStatus } : {}),
+              ...(typeof rec.error === "string" ? { kind: rec.error } : {}),
+            }
+          } else if (rec.message?.model !== "<synthetic>") {
+            // A real reply after a retried error: the turn did not end on it.
+            apiError = null
+          }
+        }
+        if (isTurnDurationRecord(rec) && typeof rec.durationMs === "number") {
+          reportedDurationMs = rec.durationMs
+        }
       },
       timeout,
       onHeartbeat,
@@ -1488,6 +1540,9 @@ export class ClaudeSession {
       usage: usage.turnTotal,
       lastCallUsage: usage.lastCall,
       callCount: usage.callCount,
+      costUsd: usage.costUsd,
+      durationMs: reportedDurationMs ?? Date.now() - startedAt,
+      apiError,
       denied,
     }
   }

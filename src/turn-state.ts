@@ -242,7 +242,7 @@ export interface TurnState {
   /** Subtype of a failing `result`, so the finish reports an error not a stop. */
   resultFailure: string | undefined
   /** Set only by a REJECTED rate-limit event or a known account-limit text. */
-  accountLimitHit: { resetsAt?: number; window?: string } | null
+  accountLimitHit: { resetsAt?: number; window?: string; resetsText?: string } | null
   /**
    * Whether this turn ends with the `▌ **usage limit:**` note (h #g194).
    * Decided in ONE place, the `result` frame in src/stream-parser.ts, because

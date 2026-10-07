@@ -26,6 +26,7 @@ import {
   isApiCallRecord,
 } from "../src/claude-session-bun.js"
 import { extractTurnStats } from "../src/turn-stats.js"
+import { apiCallCostUsd } from "../src/models.js"
 import { lastCallContextUsage, toUsage } from "../src/usage.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -294,4 +295,88 @@ test("turnStats stays on the turn totals so the line matches the bill", async ()
   assert.equal(stats!.inputTokens, TRUTH.inputTokens)
   assert.equal(stats!.cacheReadTokens, TRUTH.cacheReadTokens)
   assert.equal(stats!.cacheWriteTokens, TRUTH.cacheWriteTokens)
+})
+
+// ---------------------------------------------------------------------------
+// The turn's cost and duration, which the TUI writes nowhere per turn
+// (h #g208). The truth is the CLI's own `cost-state` for the same calls.
+// ---------------------------------------------------------------------------
+
+/** One real call (2.1.288, Haiku 4.5, a 1-hour cache write) and the CLI's
+ *  own `costUSD` for it from that session's `cost-state`. */
+const MEASURED_CALL = {
+  model: "claude-haiku-4-5-20251001",
+  usage: {
+    input_tokens: 10,
+    cache_creation_input_tokens: 12362,
+    cache_read_input_tokens: 14745,
+    output_tokens: 46,
+    server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+    cache_creation: { ephemeral_1h_input_tokens: 12362, ephemeral_5m_input_tokens: 0 },
+    speed: "standard",
+  },
+  costUsd: 0.0264385,
+}
+
+const close = (actual: number | null, expected: number) =>
+  assert.ok(actual !== null && Math.abs(actual - expected) < 1e-9, `${actual} !== ${expected}`)
+
+test("one call's list price matches the CLI's own cost-state", () => {
+  close(apiCallCostUsd(MEASURED_CALL.model, MEASURED_CALL.usage), MEASURED_CALL.costUsd)
+  // Every spelling the transcript or a model id can carry resolves the same.
+  for (const model of ["claude-haiku-4-5", "claude-haiku-4-5[1m]", "claude-haiku-4-5@work"]) {
+    close(apiCallCostUsd(model, MEASURED_CALL.usage), MEASURED_CALL.costUsd)
+  }
+})
+
+test("a 5-minute write, a fast call and a web search are priced as published", () => {
+  const usage = { input_tokens: 1_000_000, cache_creation_input_tokens: 1_000_000 }
+  // No split: every write is a 5-minute one, at the catalog's cache.write.
+  close(apiCallCostUsd("claude-haiku-4-5", usage), 1 + 1.25)
+  // The same write as a 1-hour one is twice the input price.
+  close(
+    apiCallCostUsd("claude-haiku-4-5", {
+      ...usage,
+      cache_creation: { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 },
+    }),
+    1 + 2,
+  )
+  close(apiCallCostUsd("claude-opus-5-5", { output_tokens: 1_000_000, speed: "fast" }), 40)
+  close(apiCallCostUsd("claude-opus-5-5", { output_tokens: 1_000_000, speed: "standard" }), 20)
+  close(apiCallCostUsd("claude-haiku-4-5", { server_tool_use: { web_search_requests: 3 } }), 0.03)
+})
+
+test("a model the catalog cannot price gives no cost, never a guess", () => {
+  assert.equal(apiCallCostUsd("claude-someday-9", MEASURED_CALL.usage), null)
+  assert.equal(apiCallCostUsd(undefined, MEASURED_CALL.usage), null)
+  const acc = new TurnUsageAccumulator()
+  acc.add({ type: "assistant", message: { id: "a", model: MEASURED_CALL.model, usage: MEASURED_CALL.usage } })
+  acc.add({ type: "assistant", message: { id: "b", model: "claude-someday-9", usage: MEASURED_CALL.usage } })
+  assert.equal(acc.costUsd, null, "a partial sum would understate the bill")
+})
+
+test("tailTurn reports the turn's cost, equal to the session's cost-state", async () => {
+  const { result } = await tailFixture(TURN_FIXTURE)
+  // The captured 2.1.280 session's `cost-state` total for these five calls.
+  close(result.costUsd, 0.0504726)
+  assert.ok(result.durationMs >= 0)
+  const synthetic = await tailFixture(SYNTHETIC_FIXTURE)
+  assert.equal(synthetic.result.costUsd, null, "an error the CLI wrote itself cost nothing")
+})
+
+test("tailTurn takes the TUI's own turn_duration when it wrote one", async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-usage-dur-"))
+  const fixture = path.join(scratch, "turn.jsonl")
+  fs.writeFileSync(
+    fixture,
+    fs.readFileSync(TURN_FIXTURE, "utf8") +
+      JSON.stringify({ type: "system", subtype: "turn_duration", durationMs: 15413 }) +
+      "\n",
+  )
+  try {
+    const { result } = await tailFixture(fixture)
+    assert.equal(result.durationMs, 15413)
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+  }
 })

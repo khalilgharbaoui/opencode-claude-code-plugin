@@ -59,6 +59,8 @@ async function runInteractiveTurn(stub: {
       usage: TURN_USAGE,
       lastCallUsage: TURN_USAGE,
       callCount: 1,
+      costUsd: 0.0504726,
+      durationMs: 15413,
       denied: [],
     }
   }
@@ -114,6 +116,11 @@ test("a completed interactive turn still carries the turn totals for turnStats",
   const stats = extractTurnStats(result)
   assert.equal(stats?.outputTokens, TURN_USAGE.output_tokens)
   assert.equal(stats?.cacheReadTokens, TURN_USAGE.cache_read_input_tokens)
+  // The cost and duration a headless result carries, rebuilt (h #g208).
+  assert.equal(result.total_cost_usd, 0.0504726)
+  assert.equal(result.duration_ms, 15413)
+  assert.equal(stats?.costUsd, 0.0504726)
+  assert.equal(stats?.durationMs, 15413)
 })
 
 test("max_tokens is a completed turn, not an error", async () => {

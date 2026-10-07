@@ -401,8 +401,18 @@ export function interactiveResultFrame(opts: {
   usage?: unknown
   denials?: PermissionDenial[]
   error?: string
+  /** The turn's list-price cost, as `total_cost_usd` (h #g208). */
+  costUsd?: number | null
+  durationMs?: number
+  /** The CLI's own API-error reply the turn ended on (`TailTurnResult`). */
+  apiError?: { text: string; status?: number } | null
 }): string {
   const completed = opts.end === "stop" && !!opts.stopReason
+  // A turn that ended on the CLI's own API-error reply finished, but failed:
+  // a headless `result` for it says `subtype: "success"` with `is_error: true`
+  // and the sentence as `result` (measured on 2.1.288 for a usage limit), and
+  // that is what the usage-limit and account notes read (h #g208).
+  const apiError = completed && opts.apiError ? opts.apiError : null
   let result: string | undefined
   let terminalReason = "completed"
   if (!completed) {
@@ -421,19 +431,38 @@ export function interactiveResultFrame(opts: {
   return JSON.stringify({
     type: "result",
     subtype: completed ? "success" : "error_during_execution",
-    is_error: !completed,
+    is_error: !completed || apiError !== null,
     stop_reason: completed ? opts.stopReason : null,
     terminal_reason: terminalReason,
-    result,
+    result: apiError ? apiError.text : result,
+    ...(apiError?.status !== undefined ? { api_error_status: apiError.status } : {}),
     session_id: opts.sessionId,
     usage: opts.usage ?? {},
     // The TUI has no `can_use_tool` channel, so a permission dialog is the
     // only way it asks; each one the session denied is reported in the
     // headless field's place, names and ids only (h #g109).
     permission_denials: opts.denials ?? [],
-    total_cost_usd: null,
-    duration_ms: 0,
+    total_cost_usd: opts.costUsd ?? null,
+    duration_ms: opts.durationMs ?? 0,
   })
+}
+
+/**
+ * A transcript record as the stream parser reads a frame. The two differ in one
+ * place the parser keys on: the transcript spells the CLI's own API-error reply
+ * `isApiErrorMessage`, the headless stream `is_api_error_message` (both
+ * measured on 2.1.288, the `error` kind beside it in both). Every other record
+ * passes through byte-identical (h #g208).
+ */
+export function streamFrameFromRecord(raw: string): string {
+  if (!raw.includes('"isApiErrorMessage":true')) return raw
+  try {
+    const rec = JSON.parse(raw)
+    if (rec?.isApiErrorMessage !== true || rec.is_api_error_message !== undefined) return raw
+    return JSON.stringify({ ...rec, is_api_error_message: true })
+  } catch {
+    return raw
+  }
 }
 
 /**
@@ -583,14 +612,14 @@ export function spawnInteractiveProcess(
       }
       openCalls.clear()
       denials = []
-      const { stopReason, end, usage, lastCallUsage, callCount, denied } =
+      const { stopReason, end, usage, lastCallUsage, callCount, costUsd, durationMs, apiError, denied } =
         await session.tailTurn(
           userMsg,
           (raw) => {
             try {
               openCalls.add(JSON.parse(raw))
             } catch {}
-            emit(raw)
+            emit(streamFrameFromRecord(raw))
           },
           undefined,
           // Only to a listening turn: it feeds that turn's watchdog, and the
@@ -625,6 +654,9 @@ export function spawnInteractiveProcess(
           stopReason,
           usage,
           denials,
+          costUsd,
+          durationMs,
+          apiError,
         }),
       )
     } catch (err) {
