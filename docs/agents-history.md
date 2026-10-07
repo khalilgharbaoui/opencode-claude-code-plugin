@@ -2363,3 +2363,139 @@ Live, a one-page PDF reading "OSPREY LEDGER 77" sent as a file part: opencode
 1.18.34 headless and interactive (HTTP API), opencode 2.0.22 headless and
 interactive (`opencode run -f`); all four answered with the text, nothing was
 dropped, and no staged file was left behind.
+
+<a id="g215"></a>
+
+#### A conversation keeps its Claude session across a model or effort change, and a crash (2026-10-07)
+
+Issue #91 (hmjBill, plugin 0.38.0, opencode 1.18.34, Windows): the map from an
+opencode conversation to its Claude session id is keyed by cwd, model, scope,
+opencode session, provider/agent context and `effort=<level>`, so changing the
+reasoning effort or the model, restarting opencode, or a non-zero child exit all
+made the key miss and the turn replayed a rendered transcript instead of
+`--resume`. The replay is lossy (per-message text and tool results clipped,
+images and reasoning dropped), it is the expensive path, and the prefix said the
+previous session "couldn't be resumed", which reads like corruption. At least 18
+times in one roughly 15-hour session.
+
+**The restart half was already fixed**, in 0.39.0, by `resumeAfterRestart` and
+`src/session-resume-store.ts` (#g197). Nothing was rebuilt for it, and the issue's
+"persist the session-id mapping" request needs nothing further: the store already
+persists the mapping with a digest chain of the conversation it answered, and
+putting it in opencode session metadata would add a second copy of what is
+already on disk.
+
+The other three are this entry.
+
+**Effort.** `invalidateOtherEffortSessions` has to kill the stale child, because
+`CLAUDE_CODE_EFFORT_LEVEL` is spawn-time and fixed per process (#g41). It did not
+have to drop the conversation, and `deleteClaudeSessionId` did. It now calls
+`transferClaudeSession(staleKey, currentKey)`, which moves the id, the resume
+record and the fork fingerprint together and deliberately does NOT clear the todo
+ledger: the ledger is keyed by Claude session id, and that conversation is still
+running, under a new key. This is the whole reason the transfer cannot be written
+as a delete plus a set. The existing refusal when the old effort key has pending
+work is untouched, and a destination that already has a conversation of its own is
+never overwritten.
+
+**Model.** `findForkParent` deliberately requires the same model, because a fork
+is a different opencode session continuing the same content. This is the opposite
+case: the same opencode session continuing its own conversation under a new model.
+So `modelSiblingSignature` blanks the model segment and drops the `effort=` tail,
+by name rather than by position so nothing is truncated, and keeps cwd, request
+scope, session affinity and the context blob (provider, opencode agent, prompt
+cache TTL). `findSiblingResumePoint` then reads the record `resumeAfterRestart`
+already writes, which is why the new option `resumeAcrossModelChanges` (default
+on) needs no new file and why `resumeAfterRestart: false` turns it off too.
+
+Every `findResumePoint` refusal holds: the same `cliPath` (#g98, `--resume` can
+never cross accounts), the transcript still under
+`configDir/projects/<encodeCwd(cwd)>/`, and `continuesRecordedConversation`.
+
+**What the first live run found is that the strict chain can never match across a
+model change, and the reason is opencode, not this plugin.** The first attempt
+refused with `sibling-conversation-changed`, which is the new NOTICE doing its
+job. A probe over the digest inputs, opencode 1.18.35, one thread, three turns:
+opencode hands a provider an assistant message's stored reasoning as a
+`reasoning` part when that message was produced by the model the current request
+is for, and FLATTENS it into an ordinary leading `text` part otherwise. The same
+stored "OK" arrived as `reasoning:157 + text:2` on a haiku turn and as
+`text:"The user is telling me that the project codename is MARLIN..." +
+text:"OK"` on a sonnet turn, and every assistant message in the thread swapped
+shape as the request moved between the two models. A flattened reasoning part is
+indistinguishable from reply text by type, so no content rule can see through it.
+
+So a record now carries a SECOND chain, `shape`, built with
+`conversationDigests(prompt, { assistantContent: false })`: every user and tool
+message by content, every assistant message by position alone. Only
+`findSiblingResumePoint` reads it. The strict chain is untouched and is still
+what `findResumePoint` and `forkSessions` compare, deliberately: what the shape
+gives up is a conversation whose replies were regenerated under an unchanged
+prompt, and that is a real identity worth keeping for the two features that can
+afford it. What the shape keeps is every edit, revert and compaction, because
+all three change the user side. A record an older version wrote has no `shape`
+and is simply not a sibling candidate, so an upgrade costs at most one replay
+per conversation. Tool results are hashed by content in both chains and were not
+part of this measurement, so a tool-heavy thread is unverified here.
+
+Two more refusals are specific to a sibling. One, a candidate whose transcript may still be
+written to is refused, through `claudeSessionIsWriting` and never
+`getActiveProcess`, which refreshes LRU order and cancels idle timers on
+everything a scan touches. Two, the caller TRANSFERS rather than shares: it kills
+the sibling's child first, then moves the id, so one Claude conversation has
+exactly one owner and two children can never append to one transcript. Compaction
+is out on both sides (`modelSiblingSignature` returns null for a compaction key)
+and an account-failover switch never takes one.
+
+Measured on Claude Code 2.1.288, headless `claude -p --input-format stream-json
+--output-format stream-json --verbose`: a session seeded with "the project
+codename is MARLIN", resumed with `--resume <id> --model claude-sonnet-4-5` after
+being created under `claude-haiku-4-5`, answered MARLIN and reported
+`claude-sonnet-4-5-20250929` on its assistant frames. So nothing in `buildCliArgs`
+needed changing: it already pushes `--resume <id>` for any key that has an id and
+no live process, and `--model` from the current model.
+
+**Crash.** `spawnClaudeProcess`'s `close` handler forgot the session id and the
+resume record on any non-zero exit. Measured, same CLI: a child SIGKILLed nine
+seconds into a long answer was resumed afterwards and still knew the codename, and
+so was one killed the moment its `system`/`init` frame arrived. The transcript
+file exists from `init` onward, which is also the first moment this plugin has an
+id to keep, so there is no window where an id exists and its transcript does not.
+The handler keeps the id now. The backstop is unchanged: the stderr matcher
+forgets the session on `No conversation found`, which is what a purged transcript
+answers `--resume` with (exit 1, one `result` frame with
+`subtype: "error_during_execution"`).
+
+That stderr path ends the turn with an error rather than replaying in the same
+turn, and **no in-turn replay fallback was built**. It would mean re-entering the
+spawn path with a rebuilt `userMsg` and re-registered handlers, which is a new
+control path through the turn machinery for a case the measurements say does not
+arise: the id is only ever kept for a transcript that exists.
+
+**Wording and visibility.** The replay prefix in `src/message-builder.ts` no longer
+says "(from a previous session that couldn't be resumed)"; it says the
+conversation is replayed as text because no Claude session was available to
+continue it. And a turn that replays now logs one NOTICE naming the reason. The
+reason is a kebab TOKEN (`no-session-recorded`, `sibling-still-writing`,
+`transcript-gone`, `conversation-changed`, ...), not a sentence, because
+`/claude-code-doctor bundle` allowlists `reason` as an `enum` and `SAFE_ENUM`
+forbids spaces: a sentence would arrive redacted and the line would say nothing.
+`fromKey`, `toKey`, `siblingKey` and `parentKey` were added to the bundle
+allowlist as `id` (hashed, like `sessionKey`), `matchedMessages` and `messages` as
+`count`, `resumable` as `flag`.
+
+Live, Claude Code 2.1.288 and opencode 1.18.35 under a scratch `XDG_CONFIG_HOME`,
+`XDG_STATE_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` on the default account,
+`claude-haiku-4-5` with a `high` effort variant declared in the scratch config
+(haiku ships none, because `reasoning` is false on it) and one `claude-sonnet-4-5`
+turn. Turn 1 set the codename on haiku and spawned with no `--resume`; turn 2 at
+`effort=high` spawned `--resume 98122031-... --model claude-haiku-4-5` with
+`CLAUDE_CODE_EFFORT_LEVEL=high`; turn 3 on sonnet spawned `--resume 98122031-...
+--model claude-sonnet-4-5`, the same Claude conversation. All three turns logged
+`includeHistoryContext: false` with envelope lengths of 130, 135 and 146
+characters (a replay of the same thread measured 978), no
+`replaying the conversation as text` NOTICE was written, and every turn answered
+MARLIN.
+
+`test/session-model-switch.test.ts`, `test/effort-sessions.test.ts`,
+`test/session-resume.test.ts`, `test/get-claude-user-message.test.ts`.

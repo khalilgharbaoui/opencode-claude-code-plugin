@@ -156,8 +156,45 @@ function messageDigest(msg: { role: string; content: unknown }): string {
   return hash.digest("hex").slice(0, 32)
 }
 
+/**
+ * What an assistant message contributes to a chain built with
+ * `assistantContent: false`: that a turn happened there, and nothing about
+ * what was in it.
+ */
+const ASSISTANT_TURN_DIGEST = "assistant-turn"
+
+export interface ConversationDigestOptions {
+  /**
+   * Whether an assistant message's content goes into its digest. Default true.
+   *
+   * `false` builds the SHAPE of a conversation instead: every user and tool
+   * message by content, every assistant message by position alone. It exists
+   * for one measured reason (h #g215). opencode hands a provider the stored
+   * reasoning of an assistant message as a `reasoning` part when that message
+   * was produced by the model this request is for, and FLATTENS it into an
+   * ordinary leading `text` part otherwise, so the same stored reply reaches
+   * the plugin in two different shapes depending on which model is being
+   * asked. Measured on opencode 1.18.35: one thread, three turns, every
+   * assistant message swapping between `reasoning + text` and `text + text`
+   * as the request moved between `claude-haiku-4-5` and `claude-sonnet-4-5`.
+   * A flattened reasoning part is indistinguishable from reply text by type,
+   * so no content rule can see through it, and a strict chain can therefore
+   * never match across a model change.
+   *
+   * It is deliberately NOT the default. The strict chain is what
+   * `forkSessions` and `resumeAfterRestart` compare, and it is what catches a
+   * conversation whose replies were regenerated under an unchanged prompt.
+   * Only the model-or-effort sibling lookup takes the weaker one, because
+   * without it that feature cannot exist at all.
+   */
+  assistantContent?: boolean
+}
+
 /** The conversation messages of a prompt, reduced to a digest chain. */
-export function conversationDigests(prompt: Prompt): ForkMessageDigest[] {
+export function conversationDigests(
+  prompt: Prompt,
+  opts?: ConversationDigestOptions,
+): ForkMessageDigest[] {
   const out: ForkMessageDigest[] = []
   for (const msg of prompt as Array<{ role: string; content: unknown }>) {
     if (msg.role !== "user" && msg.role !== "assistant" && msg.role !== "tool") {
@@ -165,7 +202,10 @@ export function conversationDigests(prompt: Prompt): ForkMessageDigest[] {
     }
     out.push({
       role: msg.role as ForkMessageDigest["role"],
-      digest: messageDigest(msg),
+      digest:
+        opts?.assistantContent === false && msg.role === "assistant"
+          ? ASSISTANT_TURN_DIGEST
+          : messageDigest(msg),
     })
   }
   return out
@@ -232,6 +272,49 @@ export function forkSiblingSignature(sessionKey: string): string | null {
 }
 
 /**
+ * The part of a session key shared by every variant of ONE opencode
+ * conversation that differs only in which model or reasoning effort answers
+ * it: the key with its model segment blanked and its `effort=` tail dropped.
+ *
+ * The opposite selection to `forkSiblingSignature`, and for the opposite
+ * reason. A fork is a DIFFERENT opencode session continuing the same content,
+ * so the affinity is what varies and the model must not. This is the SAME
+ * opencode session continuing its own conversation after the operator moved
+ * it to another model or another effort level, so cwd, request scope, session
+ * affinity and the context blob (provider, opencode agent, prompt cache TTL)
+ * all have to match and the model and effort are exactly what may differ.
+ * Both are spawn-time choices (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`) and the
+ * CLI applies either to a transcript it resumes, measured on 2.1.288.
+ *
+ * The effort tail is dropped by name rather than by position, and nothing is
+ * truncated, so a context blob that somehow contained `::` still compares
+ * whole. `null` for a compaction key and for anything too short to be a real
+ * session key, which keeps compaction out of this on both sides.
+ */
+export function modelSiblingSignature(sessionKey: string): string | null {
+  const parts = sessionKey.split("::")
+  if (parts.length < 5) return null
+  if (parts[2] === "compaction") return null
+  const withoutEffort = parts[parts.length - 1].startsWith("effort=")
+    ? parts.slice(0, -1)
+    : parts
+  if (withoutEffort.length < 5) return null
+  const blanked = [...withoutEffort]
+  blanked[1] = "*"
+  return blanked.join("::")
+}
+
+/** Move what was remembered for one key onto another, for a key that is
+ *  taking over its Claude conversation (`transferClaudeSession`). */
+export function moveForkFingerprint(fromKey: string, toKey: string): void {
+  const record = fingerprints.get(fromKey)
+  if (!record) return
+  fingerprints.delete(fromKey)
+  fingerprints.delete(toKey)
+  fingerprints.set(toKey, { ...record, seq: ++fingerprintSeq })
+}
+
+/**
  * Split a prompt into the history a fork would inherit and the trailing
  * segment this turn is about to send.
  *
@@ -242,7 +325,10 @@ export function forkSiblingSignature(sessionKey: string): string | null {
  * a proxy call and its transcript ends on an unanswered `tool_use`. Resuming
  * into that is not something this has measured, so it falls back to the replay.
  */
-export function splitForkHistory(prompt: Prompt): {
+export function splitForkHistory(
+  prompt: Prompt,
+  opts?: ConversationDigestOptions,
+): {
   history: ForkMessageDigest[]
   forkable: boolean
 } {
@@ -266,7 +352,7 @@ export function splitForkHistory(prompt: Prompt): {
   }
 
   return {
-    history: conversationDigests(messages.slice(0, lastAssistant + 1) as Prompt),
+    history: conversationDigests(messages.slice(0, lastAssistant + 1) as Prompt, opts),
     forkable: true,
   }
 }
@@ -363,8 +449,9 @@ export function findForkParent(opts: {
 export function continuesRecordedConversation(
   recorded: ForkMessageDigest[],
   prompt: Prompt,
+  opts?: ConversationDigestOptions,
 ): boolean {
-  const { history, forkable } = splitForkHistory(prompt)
+  const { history, forkable } = splitForkHistory(prompt, opts)
   if (!forkable || recorded.length === 0 || recorded.length > history.length) return false
   return isPrefix(recorded, history) && tailIsReplyOnly(history, recorded.length)
 }

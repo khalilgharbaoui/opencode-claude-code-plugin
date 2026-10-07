@@ -6,6 +6,7 @@ import { log } from "./logger.js"
 import {
   continuesRecordedConversation,
   conversationDigests,
+  modelSiblingSignature,
   type ForkMessageDigest,
 } from "./session-fork.js"
 
@@ -45,6 +46,14 @@ interface ResumeRecord {
   claudeSessionId: string
   cliPath: string
   chain: ForkMessageDigest[]
+  /**
+   * The same conversation with every assistant message reduced to "a turn
+   * happened here" (`assistantContent: false`). Only `findSiblingResumePoint`
+   * reads it, because only a cross-model lookup needs an identity that opencode
+   * does not rewrite per target model (h #g215). Absent on a record an older
+   * version wrote, which simply makes that record no sibling candidate.
+   */
+  shape?: ForkMessageDigest[]
   updatedAt: number
 }
 
@@ -80,7 +89,9 @@ function isRecord(value: unknown): value is ResumeRecord {
     typeof record.cliPath === "string" &&
     typeof record.updatedAt === "number" &&
     Array.isArray(record.chain) &&
-    record.chain.every(isDigest)
+    record.chain.every(isDigest) &&
+    (record.shape === undefined ||
+      (Array.isArray(record.shape) && record.shape.every(isDigest)))
   )
 }
 
@@ -159,11 +170,13 @@ export function recordResumePoint(
 ): void {
   const chain = conversationDigests(prompt)
   if (chain.length === 0) return
+  const shape = conversationDigests(prompt, { assistantContent: false })
   const current = load().get(sessionKey)
   if (
     current &&
     current.claudeSessionId === claudeSessionId &&
     current.cliPath === cliPath &&
+    current.shape !== undefined &&
     current.chain.length === chain.length &&
     current.chain.every((entry, i) => entry.digest === chain[i].digest)
   ) {
@@ -171,7 +184,7 @@ export function recordResumePoint(
   }
   save((merged) => {
     merged.delete(sessionKey)
-    merged.set(sessionKey, { claudeSessionId, cliPath, chain, updatedAt: Date.now() })
+    merged.set(sessionKey, { claudeSessionId, cliPath, chain, shape, updatedAt: Date.now() })
   })
 }
 
@@ -180,6 +193,24 @@ export function forgetResumePoint(sessionKey: string): void {
   if (!load().has(sessionKey)) return
   save((merged) => {
     merged.delete(sessionKey)
+  })
+}
+
+/**
+ * Move a record onto the key that is taking over its Claude conversation
+ * (`transferClaudeSession`). A move, never a copy: two session keys recorded
+ * against one Claude session id would both resume the same transcript, and
+ * the second to spawn would append to a conversation the first is already
+ * writing. The destination keeps whatever it had, because a key with a
+ * conversation of its own is not one that needs to inherit another.
+ */
+export function moveResumePoint(fromKey: string, toKey: string): void {
+  const record = load().get(fromKey)
+  if (!record) return
+  save((merged) => {
+    merged.delete(fromKey)
+    if (merged.has(toKey)) return
+    merged.set(toKey, { ...record, updatedAt: Date.now() })
   })
 }
 
@@ -193,24 +224,138 @@ export function findResumePoint(opts: {
   prompt: Prompt
   cliPath: string
   transcriptPath: (claudeSessionId: string) => string
+  /** Told why this lookup came back empty, so the turn that then replays the
+   *  conversation as text can name the reason in one NOTICE (h #g215). */
+  onRefused?: (reason: string) => void
 }): { claudeSessionId: string; matched: number } | undefined {
   const record = load().get(opts.sessionKey)
-  if (!record) return undefined
+  if (!record) {
+    opts.onRefused?.("no-session-recorded")
+    return undefined
+  }
   const refuse = (reason: string) => {
     log.info("not resuming the claude session from before the restart", {
       sessionKey: opts.sessionKey,
       reason,
     })
+    opts.onRefused?.(reason)
     return undefined
   }
-  if (record.cliPath !== opts.cliPath) return refuse("another claude binary")
+  if (record.cliPath !== opts.cliPath) return refuse("another-claude-binary")
   if (!continuesRecordedConversation(record.chain, opts.prompt)) {
-    return refuse("the conversation changed")
+    return refuse("conversation-changed")
   }
   if (!existsSync(opts.transcriptPath(record.claudeSessionId))) {
-    return refuse("the transcript is gone")
+    return refuse("transcript-gone")
   }
   return { claudeSessionId: record.claudeSessionId, matched: record.chain.length }
+}
+
+/**
+ * The Claude session this opencode conversation was on before the operator
+ * moved it to another model or another reasoning effort, or `undefined`.
+ *
+ * Both of those are in the session key, so changing either lands the same
+ * conversation on a key nothing has ever answered, and the turn replays the
+ * whole thread as text (issue #91: at least 18 times in one ~15-hour session).
+ * Neither is a reason to start a new Claude conversation: `--model` and
+ * `CLAUDE_CODE_EFFORT_LEVEL` are both spawn-time, and the CLI applies either
+ * to a transcript it resumes, so the sibling's transcript can simply be
+ * continued under the new one.
+ *
+ * `findResumePoint`'s refusals all hold here and are the whole safety of it:
+ * the same binary (`--resume` cannot cross accounts, h #g98), a transcript
+ * still on disk, and this prompt's history being exactly the recorded
+ * conversation plus Claude's own reply.
+ *
+ * The one thing it does differently is WHICH recorded conversation it compares.
+ * A strict chain cannot match across a model change, because opencode hands a
+ * provider an assistant message's stored reasoning as a `reasoning` part for
+ * the model that produced it and as a flattened leading `text` part for every
+ * other model (measured on 1.18.35, h #g215), and a flattened reasoning part is
+ * indistinguishable from reply text. So this compares `shape`: every user and
+ * tool message by content, every assistant message by position alone. What that
+ * gives up is a conversation whose replies were regenerated under an unchanged
+ * prompt; what it keeps is every edit, revert and compaction, because all three
+ * change the user side. The strict chain is untouched and is still what
+ * `findResumePoint` and `forkSessions` compare.
+ *
+ * Two more refusals are specific to a sibling:
+ *
+ *  - a candidate whose transcript may still be written to is refused, because
+ *    this hands the id to a key that is about to spawn a child on it, and two
+ *    children appending to one transcript is not a thing to find out later,
+ *  - the match must be a sibling and not this key, so an unrelated
+ *    conversation in another directory, scope, agent or opencode session is
+ *    never a candidate however well its content lines up.
+ *
+ * The caller TRANSFERS the id rather than copying it, so one Claude
+ * conversation is owned by exactly one session key at a time.
+ */
+export function findSiblingResumePoint(opts: {
+  sessionKey: string
+  prompt: Prompt
+  cliPath: string
+  transcriptPath: (claudeSessionId: string) => string
+  /** `claudeSessionIsWriting`, injected so this module stays free of the
+   *  session manager. True while a key's transcript may still be written. */
+  isBusy: (sessionKey: string) => boolean
+  onRefused?: (reason: string) => void
+}): { claudeSessionId: string; siblingKey: string; matched: number } | undefined {
+  const signature = modelSiblingSignature(opts.sessionKey)
+  if (!signature) {
+    opts.onRefused?.("no-sibling-possible")
+    return undefined
+  }
+
+  let best: { claudeSessionId: string; siblingKey: string; matched: number } | undefined
+  let bestUpdatedAt = -1
+  let refusal: string | undefined
+
+  for (const [key, record] of load()) {
+    if (key === opts.sessionKey) continue
+    if (modelSiblingSignature(key) !== signature) continue
+    if (record.cliPath !== opts.cliPath) {
+      refusal = "sibling-another-claude-binary"
+      continue
+    }
+    if (
+      !record.shape ||
+      !continuesRecordedConversation(record.shape, opts.prompt, {
+        assistantContent: false,
+      })
+    ) {
+      refusal = "sibling-conversation-changed"
+      continue
+    }
+    if (opts.isBusy(key)) {
+      refusal = "sibling-still-writing"
+      continue
+    }
+    if (!existsSync(opts.transcriptPath(record.claudeSessionId))) {
+      refusal = "sibling-transcript-gone"
+      continue
+    }
+    // Freshest wins: with several siblings recorded, the one the operator was
+    // on last is the one this turn is continuing. `>=` rather than `>` because
+    // two records written in the same millisecond are a real tie, and the
+    // store iterates oldest-first, so the later writer is still the later one.
+    if (record.updatedAt >= bestUpdatedAt) {
+      bestUpdatedAt = record.updatedAt
+      best = {
+        claudeSessionId: record.claudeSessionId,
+        siblingKey: key,
+        matched: record.chain.length,
+      }
+    }
+  }
+
+  if (!best) {
+    opts.onRefused?.(
+      refusal ?? "no-sibling-recorded",
+    )
+  }
+  return best
 }
 
 /** Test seam: point the store at a scratch file and drop the cache. */

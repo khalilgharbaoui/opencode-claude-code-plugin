@@ -34,7 +34,7 @@ function fakeActive() {
   return { active, killed: () => killed }
 }
 
-test("effort invalidation removes process, transcript id and compression, but keeps same effort", () => {
+test("effort invalidation kills the process and carries the claude session to the new effort", () => {
   const base = "effort-invalidation"
   const high = effortSessionKey(base, "high")
   const low = effortSessionKey(base, "low")
@@ -47,19 +47,28 @@ test("effort invalidation removes process, transcript id and compression, but ke
     assert.equal(getActiveProcess(high), first.active)
     assert.equal(getClaudeSessionId(high), "old-high")
     assert.equal(first.killed(), false)
+
+    // Effort is fixed per child, so the PROCESS has to go. The conversation
+    // does not: the id moves to the key this turn will use, so the spawn
+    // resumes it at the new effort instead of replaying the thread (issue #91).
     invalidateOtherEffortSessions(base, "low")
     assert.equal(first.killed(), true)
     assert.equal(getActiveProcess(high), undefined)
-    assert.equal(getClaudeSessionId(high), undefined)
+    assert.equal(getClaudeSessionId(high), undefined, "the old effort key keeps no claim on it")
+    assert.equal(getClaudeSessionId(low), "old-high", "carried to the new effort key")
     assert.equal(getCompressionSummary(high), undefined)
-    // An evicted/exited low process still has a transcript id to invalidate.
-    setClaudeSessionId(low, "old-low")
+
+    // Back to high: the id follows again, and the key it came from is empty.
     invalidateOtherEffortSessions(base, "high")
     assert.equal(getClaudeSessionId(low), undefined)
-    assert.equal(getClaudeSessionId(high), undefined)
+    assert.equal(getClaudeSessionId(high), "old-high")
+
+    // A destination that already has a conversation of its own is never
+    // overwritten, and the stale sibling is released rather than carried.
     setClaudeSessionId(base, "no-explicit-effort")
     invalidateOtherEffortSessions(base, "high")
     assert.equal(getClaudeSessionId(base), undefined)
+    assert.equal(getClaudeSessionId(high), "old-high")
   } finally {
     for (const key of [base, high, low]) {
       deleteActiveProcess(key)
@@ -231,10 +240,16 @@ for (const method of ["doStream", "doGenerate"] as const) {
     }
   })
 
-  test(`${method}: high -> low -> high replays intervening context without stale resume`, { timeout: 15_000 }, async () => {
+  test(`${method}: high -> low -> high carries one claude conversation across both switches`, { timeout: 15_000 }, async () => {
     const { cwd, modelId, provider, base, options } = fixture()
     const high = effortSessionKey(base, "high")
     const low = effortSessionKey(base, "low")
+    // The Claude conversation the previous turn left behind. Every switch
+    // below has to resume exactly that, never start a new one. The id itself
+    // changes across the fixture because the fake CLI reports its own pid as
+    // the session id on every spawn (a real `--resume` keeps the id), so what
+    // is asserted is the argv the switch spawned with.
+    let previousClaudeSessionId: string | undefined
     try {
       for (const [index, effort] of ["high", "low", "high", "high"].entries()) {
         options.providerOptions!["claude-code"].reasoningEffort = effort
@@ -252,20 +267,42 @@ for (const method of ["doStream", "doGenerate"] as const) {
         assert.ok(getClaudeSessionId(currentKey), "the fixture must establish a remembered transcript")
         if (method === "doStream") assert.ok(getActiveProcess(currentKey), "streaming must leave a reusable process")
         if (index === 1) {
+          // The high child is gone (effort is spawn-time) and so is high's
+          // claim on the conversation: it moved to the low key, and the low
+          // spawn continues it instead of replaying the thread (issue #91).
           assert.equal(getActiveProcess(high), undefined)
           assert.equal(getClaudeSessionId(high), undefined)
+          assert.doesNotMatch(body, /conversation_history/)
+          const args = getActiveProcess(low)?.cliArgs ?? []
+          assert.ok(args.includes("--resume"), "the low-effort spawn resumes")
+          assert.ok(
+            args.includes(previousClaudeSessionId!),
+            "and resumes exactly the conversation the high turn left behind",
+          )
+          assert.ok(
+            args.includes("--model"),
+            "the model still rides on the resumed spawn",
+          )
         }
         if (index === 2) {
+          // And back, with the low turn's answer still in the Claude
+          // transcript rather than re-sent as text.
           assert.equal(getActiveProcess(low), undefined)
           assert.equal(getClaudeSessionId(low), undefined)
-          assert.match(body, /conversation_history/)
-          assert.match(body, /low-effort detail to remember/)
-          assert.equal(getActiveProcess(high)?.cliArgs?.includes("--resume") ?? false, false)
+          assert.doesNotMatch(body, /conversation_history/)
+          assert.doesNotMatch(body, /low-effort detail to remember/)
+          const args = getActiveProcess(high)?.cliArgs ?? []
+          assert.ok(args.includes("--resume"), "the high-effort spawn resumes it")
+          assert.ok(
+            args.includes(previousClaudeSessionId!),
+            "and resumes exactly the conversation the low turn left behind",
+          )
         }
         if (index === 3 && method === "doStream") {
           assert.equal(getActiveProcess(high), previous)
           assert.doesNotMatch(body, /conversation_history/)
         }
+        previousClaudeSessionId = getClaudeSessionId(currentKey)
         options.prompt.push(
           { role: "assistant", content: [{ type: "text", text: effort === "low" ? "low-effort detail to remember" : "high answer" }] },
           { role: "user", content: [{ type: "text", text: `next request ${index}` }] },

@@ -16,8 +16,8 @@ import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mod
 import { clearAccountFailoverQuestions } from "./account-failover.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
-import { forgetForkFingerprint } from "./session-fork.js"
-import { forgetResumePoint } from "./session-resume-store.js"
+import { forgetForkFingerprint, moveForkFingerprint } from "./session-fork.js"
+import { forgetResumePoint, moveResumePoint } from "./session-resume-store.js"
 import {
   cliHygieneEnv,
   cliSupportsFastMode,
@@ -816,6 +816,53 @@ export function deleteClaudeSessionId(key: string): void {
   forgetResumePoint(key)
 }
 
+/**
+ * Hand one session key's Claude conversation to another, and leave the source
+ * holding nothing.
+ *
+ * Used where the same opencode conversation moves to a key it has never been
+ * answered under: another reasoning effort (`invalidateOtherEffortSessions`)
+ * or another model (the sibling carry-over in the turn prologue). Neither is a
+ * reason to start a new Claude conversation, because both are spawn-time
+ * choices the CLI applies to a transcript it resumes.
+ *
+ * A MOVE, never a copy, and that is the whole of its safety: two session keys
+ * naming one Claude session id would each spawn a child that resumes the same
+ * transcript, and the second would append to a conversation the first is
+ * already writing. The id, the resume record and the fork fingerprint all go
+ * together, because each of the three exists only to point at the other two.
+ *
+ * The todo ledger is keyed by Claude session id rather than by session key, so
+ * it is deliberately NOT cleared here: the conversation it belongs to is still
+ * running, under a new key. This is exactly why the transfer cannot be written
+ * as `deleteClaudeSessionId` plus `setClaudeSessionId`.
+ *
+ * Refuses when the destination already has a conversation of its own, and
+ * returns the id it moved, or `undefined` when nothing moved.
+ */
+export function transferClaudeSession(
+  fromKey: string,
+  toKey: string,
+): string | undefined {
+  if (fromKey === toKey) return undefined
+  const claudeSessionId = claudeSessions.get(fromKey)
+  if (!claudeSessionId) return undefined
+  if (claudeSessions.has(toKey)) return undefined
+  claudeSessions.delete(fromKey)
+  setClaudeSessionId(toKey, claudeSessionId)
+  moveResumePoint(fromKey, toKey)
+  moveForkFingerprint(fromKey, toKey)
+  // The source key keeps no claim on the conversation, so the questions and
+  // overrides recorded against it are stale the moment the id leaves.
+  clearExitPlanModeQuestions(fromKey)
+  clearAccountFailoverQuestions(fromKey)
+  log.notice("carrying the claude conversation over to the new session key", {
+    fromKey,
+    toKey,
+  })
+  return claudeSessionId
+}
+
 export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): string {
   return effort ? `${baseKey}::effort=${effort}` : baseKey
 }
@@ -847,8 +894,23 @@ export function invalidateOtherEffortSessions(
       )
     }
   }
+  // The process has to go: effort is fixed per child (`CLAUDE_CODE_EFFORT_LEVEL`
+  // is spawn-time, h #g41). The CONVERSATION does not, and dropping it was what
+  // made every effort change replay the whole thread as text (issue #91). The
+  // id moves to the key this turn is about to use, so the spawn below resumes
+  // it at the new effort; the old key is left holding nothing, so flipping back
+  // later finds the conversation where it actually is.
+  const currentKey = effortSessionKey(baseKey, effort)
   for (const key of staleKeys) {
     deleteActiveProcess(key)
+    if (transferClaudeSession(key, currentKey)) {
+      // Transferred, not released: `deleteClaudeSessionId` would clear the
+      // todo ledger this conversation is still using and forget the resume
+      // record the new key now owns.
+      clearCompression(key)
+      clearBackgroundTasks(key)
+      continue
+    }
     deleteClaudeSessionId(key)
     clearCompression(key)
     clearBackgroundTasks(key)
@@ -963,12 +1025,24 @@ export function spawnClaudeProcess(
       }
     }
     if (ownsSessionKey && code !== 0 && code !== null) {
-      log.info("process exited with error, clearing session", {
+      // Deliberately NOT forgotten. A child that dies mid-turn leaves a
+      // transcript the CLI still resumes: measured on 2.1.288, a headless
+      // `claude -p` SIGKILLed nine seconds into its answer, and one killed the
+      // moment its `system`/`init` frame arrived, were both resumed afterwards
+      // and still knew the codename set before the crash (h #g215). The
+      // transcript file exists from `init` onward, which is also the only
+      // point this plugin has an id to keep. Clearing it here turned every
+      // crash into a full replay of the thread as text (issue #91).
+      //
+      // The backstop for an id that really is unusable stays where it was: the
+      // stderr handler below forgets the session on "No conversation found",
+      // which is what a purged or never-written transcript answers `--resume`
+      // with.
+      log.info("process exited with error; keeping the claude session to resume", {
         code,
         sessionKey,
+        resumable: claudeSessions.has(sessionKey),
       })
-      claudeSessions.delete(sessionKey)
-      forgetResumePoint(sessionKey)
     }
   })
 

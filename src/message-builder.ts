@@ -585,7 +585,7 @@ The complete prior conversation appears above. The synthesis instructions follow
       content.push({
         type: "text",
         text: `<conversation_history>
-The following is a summary of our conversation so far (from a previous session that couldn't be resumed):
+The following is a summary of our conversation so far, replayed as text because no Claude session was available to continue it:
 
 ${historyContext}
 
