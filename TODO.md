@@ -84,9 +84,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: "what is next?" Proposed, awaiting the maintainer's pick: (1) Claude Code 2.1.293 is
-  out (measured: 2.1.288): update, read the CHANGELOG, live on both transports and majors, record
-  new golden transcripts, bump `INTERACTIVE_MEASURED_CLI`; (2) fork sweep, last full one 2026-09-19,
+- 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
+  measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
+  (PR #101, h #g222). Still open: (2) fork sweep, last full one 2026-09-19,
   eight forks pushed since (rusagent's closed PR #92 among them); (3) optional: a Linux CI job for
   the whole suite, an MCP elicitation round trip into an opencode form. Needs the maintainer: a
   second non-work login, for a live two-account switch and an expired-login switch.
