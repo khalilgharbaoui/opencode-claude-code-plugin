@@ -52,6 +52,12 @@
 
 ## Dropped
 
+- Dropped 2026-10-07 at the maintainer's request: the GitHub fork-network detach (Support ticket
+  #4818005). Maintainer: "forget the network detach also they are not going to do it i got mail".
+  The repository stays a fork of unixfox/opencode-claude-code-plugin.
+- Dropped 2026-10-07 at the maintainer's request: restarting the opencode windows still on an older
+  plugin build (Herdr `wA:p4`, `wA:pK`, pid 14428). Maintainer: "forget the old windows ill deal with
+  them later".
 - Dropped 2026-09-26 at the maintainer's request ("ok do it"): branch `disable-thinking`
   (tip `b80cf54`, a `disableThinking` provider option from 2026-05-29). It worked around a
   CLI bug that corrupted thinking blocks across turns (API 400 "thinking or
@@ -61,8 +67,13 @@
 
 ## Backlog
 
-Nothing queued here; the working backlog is the vault note
-`opencode-claude-code-plugin/Future Features.md`.
+The working backlog is the vault note `opencode-claude-code-plugin/Future Features.md`; this
+item is mirrored there.
+
+- 2026-10-07, maintainer: "Add PDF input as TODO". PDF input on both transports. Neither forwards
+  PDFs today (catalog `pdf: false`, the message builder converts images only). Measured: a `document`
+  block in a stream-json envelope reached Haiku 4.5 headless and it read the text; the TUI attaches a
+  PDF on an `@<path>` mention (not on a bare pasted path), and reading it there needs the Read tool.
 
 ## Deferred decisions
 
@@ -78,32 +89,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-07: PDF input on both transports? Neither forwards PDFs today (catalog `pdf: false`, the
-  message builder converts images only). Measured: a `document` block reaches Haiku 4.5 headless and it
-  read the text; the TUI attaches a PDF on an `@<path>` mention. Offered as a feature, not parity.
-- 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after
-  0.37.1: 17 idle Herdr panes restarted onto their own sessions by `/tmp/oc-restart/
-  restart-opencode-panes.py` (quit with `ctrl+x q`, relaunch `opencode -s <id>` in the same pane;
-  each verified by process start time and argv). Still on an older build, left for the maintainer:
-  Herdr `wA:p4` (alwasiyyah, mid-turn, started 10:48), `wA:pK` (Stashcut, since Oct 1, input box
-  unreadable), and pid 14428, a terminal outside
-  Herdr (`ttys017`, `~/code/Appical/webapp`, since Sep 24). Per pane: `ctrl+x q`, then the
-  `opencode -s` line opencode prints on exit. (`wA:p5` was closed 2026-10-05 at the maintainer's
-  request, its work consolidated into the parity session.) With `resumeAfterRestart` (h #g197) a
-  restarted pane now resumes its Claude session instead of replaying it.
-- 2026-10-02: the repository is still a GitHub fork of unixfox/opencode-claude-code-plugin.
-  **Filed 2026-10-03 as GitHub Support ticket #4818005** (maintainer: "1", then "go"), from the
-  maintainer's login in a throwaway debug-Chrome profile, deleted afterwards. Findings first:
-  Settings does have a self-serve **Leave fork network**, disabled here because the repo has 25
-  child forks; and GitHub's docs say leaving the network keeps **no** issues, pull requests, stars,
-  watchers or child forks, which the earlier draft assumed would stay. So the ticket asks Support
-  to keep stars, watchers, issues and PRs (open and closed), releases and child forks, to say what
-  its detach keeps, and to reply instead of detaching if anything would be lost. Its own AI step
-  confirmed manual review is needed and could not say what a Support detach preserves. Waiting on
-  GitHub: when they answer, the maintainer decides whether the loss (if any) is worth it.
-  Same day, at the maintainer's prompt ("you did not mention that he names my for as successor"): a
-  ticket comment quotes the parent's archive notice verbatim (commit 6522f7a, 2026-04-26: "You can
-  find forks like:" with this repository listed first, then Aptul9's), with the same conditions.
+- 2026-10-07: opencode's own system prompt on the interactive transport. Maintainer: "ill get back
+  to you on this i have a diffrent perspective for you: opencode's own system prompt is not sent to
+  the interactive transport". Waiting on that perspective; current state and measurements in h #g211.
 - 2026-09-26: Windows spawns go through `cmd.exe` with no argument quoting (injection with
   `& | > ^`, broken with spaces or quotes); needs a Windows CI job first, then a resolver and
   escaper. 2026-09-27: left documented until a Windows user appears (none has ever filed an
