@@ -169,6 +169,9 @@ export interface ClaudeSessionOptions {
   stopSettleMs?: number
   /** How long `answerPlanApproval` waits for the dialog to be drawn. */
   planDialogWaitMs?: number
+  /** How long the TUI and the transcript must both be silent before a turn
+   *  that read its reply, but was never told how it ended, is over. */
+  idleEndMs?: number
   /** Told about every screen the session acted on. */
   onScreen?: (event: ScreenEvent) => void
   /** Told once when the child is gone, with its exit code when it has one. */
@@ -607,6 +610,8 @@ interface TurnScan {
   /** A fork's first turn: the normalized prompt whose record ends the copied
    *  history. Nothing before it is read; null once it was seen. */
   awaitingOwnPrompt: string | null
+  /** An assistant record of this turn was read. */
+  sawReply: boolean
 }
 
 const normalizedPrompt = (text: string) => text.replace(/\s+/g, " ").trim()
@@ -702,6 +707,9 @@ export class ClaudeSession {
    *  (the TUI repaints it while it takes the key, measured on 2.1.288) can
    *  never stand in for the next call's dialog. */
   private planDialog: { id: string; text: string } | null = null
+  /** `queue-operation` enqueue records read, which is how `queueInput` knows
+   *  the TUI took a message into the running turn. */
+  private enqueued = 0
   /** This turn's `ExitPlanMode` calls already answered. */
   private readonly answeredPlans = new Set<string>()
   private abandonTurn = false
@@ -791,6 +799,8 @@ export class ClaudeSession {
       // which time the dialog has long been drawn; this only bounds a TUI
       // that never draws it.
       planDialogWaitMs: opts.planDialogWaitMs ?? 30_000,
+      // 100 times the longest silence measured while Claude works (h #g207).
+      idleEndMs: opts.idleEndMs ?? 20_000,
     }
   }
 
@@ -1123,6 +1133,7 @@ export class ClaudeSession {
         sawUserRecord: false,
         lastBeat: Date.now(),
         awaitingOwnPrompt: this.forkPending ? normalizedPrompt(prompt) : null,
+        sawReply: false,
       }
       this.forkPending = false
       this.scan = scan
@@ -1146,6 +1157,23 @@ export class ClaudeSession {
         }
         if (scan.stopReason && Date.now() - scan.stopSeenAt >= this.o.stopSettleMs) {
           return { stopReason: scan.stopReason, end: "stop", denied: this.turnDenied }
+        }
+        // The third end signal (h #g207), for a CLI that stops writing both
+        // the terminal `stop_reason` and `turn_duration`: a turn that has read
+        // its reply is over once the TUI and the transcript have both been
+        // silent for `idleEndMs`. Measured on 2.1.288: the PTY is never quiet
+        // for longer than about 200 ms while Claude works (a 20 s Bash call,
+        // thinking) and is silent from the moment a turn is done. It ends as
+        // `ended`, which reports the missing stop rather than a clean reply.
+        // Never while a plan approval is parked: that is a still screen by
+        // design, waiting on the operator.
+        if (
+          scan.sawReply &&
+          !this.planApprovalToolUseId &&
+          Date.now() - this.lastDataAt >= this.o.idleEndMs &&
+          Date.now() - scan.stopSeenAt >= this.o.idleEndMs
+        ) {
+          return { stopReason: null, end: "ended", denied: this.turnDenied }
         }
         // Drain the transcript before reacting to exit: a final assistant record
         // can be flushed in the same tick the process exits.
@@ -1202,9 +1230,11 @@ export class ClaudeSession {
       // Before the record is handed on: whoever reads it may ask at once
       // whether a plan approval is pending.
       if (rec) this.notePlanApproval(rec)
+      if (rec?.type === "queue-operation" && rec.operation === "enqueue") this.enqueued++
       scan.onRecord(s, rec)
       if (rec) {
         if (rec.type === "assistant" && rec.message) {
+          scan.sawReply = true
           const reason = rec.message.stop_reason
           // A non-terminal stop after a terminal one is the model going on
           // (a Stop hook can make it), so the turn is not over.
@@ -1306,6 +1336,30 @@ export class ClaudeSession {
     this.write(text)
     await delay(this.o.submitMinMs)
     this.write("\r")
+    return true
+  }
+
+  /**
+   * Type a message into the running turn's own input queue, not as a turn of
+   * its own (h #g206). Measured on 2.1.288: text pasted and submitted while a
+   * tool call runs is recorded as `queue-operation` enqueue and remove plus a
+   * `queued_command` attachment, answered in the same turn, which still ends
+   * once. Resolves true once the enqueue is in the transcript; false with no
+   * turn running, or with a plan approval dialog up, which would take the
+   * keys as its answer.
+   */
+  async queueInput(text: string, timeoutMs = 3_000): Promise<boolean> {
+    if (!this.turn || !this.proc || this.exited || this.pendingPlanApproval) return false
+    const before = this.enqueued
+    this.write(this.o.bracketedPaste ? "\x1b[200~" + text + "\x1b[201~" : text)
+    await delay(this.o.submitMinMs)
+    this.write("\r")
+    const deadline = Date.now() + timeoutMs
+    while (this.enqueued === before) {
+      if (!this.turn || this.exited || Date.now() >= deadline) return false
+      await delay(this.o.pollMs)
+      this.scanTranscript()
+    }
     return true
   }
 

@@ -1048,6 +1048,9 @@ test("a plan approval parks the turn until the operator decides, then the turn g
       const turn = session.tailTurn("plan it", () => {})
       await waitFor(() => session.pendingPlanApproval === "plan-1")
       await waitFor(() => events.some((event) => event.action === "parked"))
+      // A forwarded message must never be typed into the dialog as its answer.
+      assert.equal(await session.queueInput("not an answer"), false)
+      assert(!tui.writes.some((w) => w.includes("not an answer")))
       // Parked, not answered: no key and no Esc reaches the dialog on its own.
       await new Promise((resolve) => setTimeout(resolve, 60))
       assert.equal(tui.writes.includes("2"), false)
@@ -1347,4 +1350,128 @@ test("/btw on a TUI asks a fork of the conversation and never writes the main tr
   } finally {
     dirs.cleanup()
   }
+})
+
+// ---------------------------------------------------------------------------
+// A message forwarded mid-call joins the running turn's input queue (h #g206).
+// ---------------------------------------------------------------------------
+
+test("queueInput types into the running turn's queue and starts no turn of its own", async () => {
+  const tui = new FakeTui()
+  let promptSubmitted = false
+  tui.turns.push(() => {
+    promptSubmitted = true
+  })
+  // After the prompt, a paste and Enter is what the TUI queues mid-turn:
+  // measured on 2.1.288 as a `queue-operation` enqueue, not a `user` record.
+  let pending = ""
+  let queuedText: string | null = null
+  const onWrite = tui.onWrite.bind(tui)
+  tui.onWrite = (data: string) => {
+    if (promptSubmitted && data.startsWith("\x1b[200~")) {
+      tui.writes.push(data)
+      pending = data.slice("\x1b[200~".length, -"\x1b[201~".length)
+      return
+    }
+    if (promptSubmitted && data === "\r" && pending) {
+      tui.writes.push(data)
+      queuedText = pending
+      pending = ""
+      tui.append({ type: "queue-operation", operation: "enqueue", content: queuedText })
+      return
+    }
+    onWrite(data)
+  }
+  await withSession(tui, async (session) => {
+    await session.start()
+    assert.equal(await session.queueInput("too early"), false, "no turn is running")
+    const lines: string[] = []
+    const turn = session.tailTurn("go", (raw) => lines.push(raw))
+    await waitFor(() => promptSubmitted)
+    assert.equal(await session.queueInput("Also say PELICAN."), true)
+    assert.equal(queuedText, "Also say PELICAN.")
+    assert.equal(session.turnRunning, true, "the same turn goes on")
+    tui.append(assistantRecord("m1", "end_turn", textBlock("first-done. PELICAN")))
+    const result = await turn
+    assert.equal(result.end, "stop")
+    assert(lines.some((line) => line.includes("PELICAN")))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The third end signal: an idle TUI after a reply (h #g207).
+// ---------------------------------------------------------------------------
+
+test("a reply with no stop signal ends once the TUI and the transcript go silent", async () => {
+  const tui = new FakeTui()
+  // A CLI that writes neither a terminal stop_reason nor turn_duration.
+  tui.turns.push((t) => t.append(assistantRecord("m1", null as any, textBlock("answered"))))
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      const started = Date.now()
+      const result = await session.tailTurn("go", () => {})
+      assert.equal(result.end, "ended", "reported as a turn with no stop, never as a clean reply")
+      assert.equal(result.stopReason, null)
+      assert(Date.now() - started >= 150)
+    },
+    { idleEndMs: 150 },
+  )
+})
+
+test("a TUI that is still drawing, or has not replied, is never ended as idle", async () => {
+  const tui = new FakeTui()
+  let drawing = true
+  let lastDrawAt = 0
+  tui.turns.push((t) => {
+    t.append(assistantRecord("m1", null as any, textBlock("working")))
+    // The spinner: a redraw every 20 ms for 500 ms.
+    const spin = () => {
+      if (!drawing) return
+      lastDrawAt = Date.now()
+      t.screen("✻ Working… ")
+      t.later(20, spin)
+    }
+    spin()
+    t.later(500, () => (drawing = false))
+  })
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      const result = await session.tailTurn("go", () => {})
+      assert.equal(result.end, "ended")
+      // Timers land a few ms either side; the rule is silence since the last draw.
+      assert(Date.now() - lastDrawAt >= 150 - 10, `ended ${Date.now() - lastDrawAt} ms after the last draw`)
+    },
+    { idleEndMs: 150 },
+  )
+  // No reply yet (a slow first call): silence alone ends nothing.
+  const quiet = new FakeTui()
+  quiet.turns.push(() => {})
+  await withSession(
+    quiet,
+    async (session) => {
+      await session.start()
+      await assert.rejects(session.tailTurn("go", () => {}, 600), /timed out/, "only the turn timeout ends it")
+    },
+    { idleEndMs: 100 },
+  )
+})
+
+test("a parked plan approval is a still screen, never an idle end", async () => {
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append(exitPlanRecord("plan-1"))
+    t.later(20, () => t.screen(PLAN_DIALOG))
+  })
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      await assert.rejects(session.tailTurn("plan it", () => {}, 900), /timed out/, "still parked at the turn timeout")
+    },
+    { idleEndMs: 100 },
+  )
 })

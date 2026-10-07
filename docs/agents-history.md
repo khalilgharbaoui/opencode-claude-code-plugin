@@ -2130,3 +2130,69 @@ live process row has a transport column read off `interactiveControl`.
 Still open: a third turn-end signal from the TUI's own idle screen, which needs
 live turns to measure (blocked today by the default account's usage limit), and
 recorded per-version golden files.
+
+<a id="g206"></a>
+
+#### #88 and #89 live, and #88 on the interactive transport (2026-10-07)
+
+Both PRs (#g204) shipped without a live run, the default account being limited.
+Measured now with Claude Code 2.1.288 on opencode 1.18.34 under `opencode
+serve`, each A/B against a v0.42.0 build from a worktree.
+
+- **#88, a message beside a proxied result.** A proxied `sleep 15`, and while it
+  ran a second message, "Also, in the same reply, say the word PELICAN.". v0.42.0:
+  no record of it in Claude's transcript, a reply without PELICAN. Now: a
+  `queued_command` attachment carrying it and "Also, as you requested: PELICAN".
+  opencode 2.0.22 headless, with the message sent through `session.prompt`
+  `delivery: "steer"`: forwarded, attached and answered.
+- **#89, run state from the session's own directory.** The precondition holds:
+  with session A busy in `work1`, the unscoped `GET /session/status` map was `{}`
+  and so was `work2`'s; only `?directory=work1` showed A busy. The new build read
+  `busy` at the routine tool-boundary abort and kept the parked call, which
+  resolved. But v0.42.0 kept it too, with the server in `work1` and again with it
+  in a third directory, so under `opencode serve` the old client was evidently
+  not mis-scoped; the author's topology (sessions in opencode workspaces, 1.18.32)
+  was not rebuilt here. Verified as "reads the right map", not as "reproduced".
+
+**#88 on the interactive transport.** A stdin write is a new TUI turn (#g204),
+but the TUI has its own mid-turn queue. Measured directly on 2.1.288: text pasted
+and submitted while a native `sleep 12` ran was recorded as `queue-operation`
+enqueue and remove plus a `queued_command` attachment, answered in the same reply,
+and the turn ended once. So `interactiveControl.queueInput` types the message into
+the running turn (refusing with no turn, or with a plan dialog parked, which would
+take the keys as its answer) and confirms it by the enqueue record before the
+parked call is resolved. Live on 1.18.34 (one typed prompt in the transcript, the
+turn ending once, PELICAN answered) and 2.0.22 (queued and attached; Haiku chose to
+disregard that one as "a potential injection" although the CLI recorded it as
+`origin: human`, which is the model, not the delivery).
+
+<a id="g207"></a>
+
+#### An idle-screen end signal and recorded transcripts per release (2026-10-07)
+
+The two items #g205 left open, both needing live turns.
+
+- **Idle screen.** Measured on 2.1.288 with the PTY's write times sampled every
+  100 ms: the longest silence while Claude worked was 195 ms through a native
+  `sleep 20` and 206 ms through a thinking answer; after a turn the TUI wrote
+  nothing for the whole 12 s observed (the screen ends on "Cogitated for 2s ·
+  done 3:44 AM ❯"). So a turn that read its reply but got neither a terminal
+  `stop_reason` nor `turn_duration` ends as `ended` once the PTY and the
+  transcript have both been silent for `idleEndMs` (20 s), never before a reply
+  and never with a plan dialog parked. No current CLI reaches it; a 32 s proxied
+  call through opencode ended on `end_turn` as before, so the TUI keeps drawing
+  while it waits on opencode too. Keyed on silence, not on the "done" wording, so a
+  release that changes the words does not change the signal.
+- **Golden transcripts.** `scripts/record-interactive-fixtures.ts` runs six
+  scenarios on a real CLI (a plain answer, a native tool, Esc mid-reply, a plan
+  approval, a queued mid-turn message, a `/btw` fork) and writes the redacted
+  transcripts plus what each live turn returned to
+  `test/fixtures/interactive/2.1.288/`. The first recording leaked the encoded
+  working directory through a memory file the model wrote
+  (`-private-var-folders-<id>-...`), so the encoded form is redacted too.
+  `test/interactive-golden.test.ts` replays each through the real session, doing
+  the operator's action where there was one, and must return the same end, stop
+  reason, text and token counts. Proven to bite: a fork that reads its copied
+  history fails the fork case, and usage summed per record fails all six. The
+  interrupted recording also shows the TUI writing the partial reply when Esc
+  lands.

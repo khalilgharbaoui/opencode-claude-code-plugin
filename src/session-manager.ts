@@ -109,6 +109,10 @@ export interface ActiveProcess {
     /** True while the TUI is parked on an `ExitPlanMode` approval: the next
      *  message answers it instead of being a new turn. */
     planApprovalPending?(): boolean
+    /** Type a user message into the running TUI turn's own input queue, which
+     *  the TUI attaches to the turn's next model call; resolves true once the
+     *  TUI recorded the enqueue (h #g206). */
+    queueInput?(content: unknown): Promise<boolean>
     /** Answer a `/btw` from a short-lived fork of this conversation, which
      *  shares its prompt cache and never writes to it (h #g203). */
     askAside?(

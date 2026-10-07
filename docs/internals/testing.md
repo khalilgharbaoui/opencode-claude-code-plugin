@@ -34,6 +34,11 @@ current in the same change as the code.
   `test/*.test.ts`.** A new file runs without being registered anywhere. Fixtures are in
   `test/fixtures/`. `test/integration.ts` and `test/e2e-claude-session-bun.ts` are manual runs
   against a real `claude` and are deliberately outside the glob.
+- **The interactive transport has recorded transcripts per Claude Code release** under
+  `test/fixtures/interactive/<version>/`, which `test/interactive-golden.test.ts` replays through
+  the real session against what the live turn returned. Record a new release with
+  `bun scripts/record-interactive-fixtures.ts` (a few cheap Haiku turns on a logged-in `claude`);
+  it redacts paths, thinking text and hook details on the way.
 - **Never pipe `npm test` into `grep` inside an `&&` chain.** The pipeline exits with grep's
   status, not the runner's, so a red suite reads as green and the chain continues. Redirect and
   check instead: `npm test > /tmp/run.log 2>&1; echo "EXIT=$?"`, then grep the file.

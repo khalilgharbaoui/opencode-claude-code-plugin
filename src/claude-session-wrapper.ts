@@ -798,6 +798,13 @@ export function spawnInteractiveProcess(
       },
       flushTranscript: () => session.flushTranscript(),
       planApprovalPending: () => session.pendingPlanApproval !== null,
+      // Text only: an image in a mid-call message is dropped with the
+      // decoder's own warning rather than staged for a turn that is not ours.
+      queueInput: async (content: unknown) => {
+        const text = decodeUserEnvelope(JSON.stringify({ type: "user", message: { role: "user", content } })).trim()
+        if (!text) return false
+        return session.queueInput(text)
+      },
       askAside,
     },
   }

@@ -277,17 +277,13 @@ test("an abort inside the head start leaves no completion for a call the CLI was
   }
 })
 
-test("the interactive transport is never forwarded to: the write would supersede the parked turn", async () => {
-  const cwd = process.cwd()
-  const modelId = "claude-test-forward-user-content-pty"
-  const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
-  const writes: string[] = []
+/** A PTY shim's marker. Its stdin turns every write into a new TUI turn. */
+function ptyActive(control: Partial<NonNullable<ActiveProcess["interactiveControl"]>>, writes: string[]): ActiveProcess {
   const proc = Object.assign(new EventEmitter(), {
     stdin: { write: (line: string) => { writes.push(line); return true } },
     kill: () => true,
   }) as unknown as ChildProcess
-  // The PTY shim's marker. Its stdin turns every write into a new TUI turn.
-  const active: ActiveProcess = {
+  return {
     proc,
     lineEmitter: new EventEmitter(),
     unattendedLines: [],
@@ -295,9 +291,14 @@ test("the interactive transport is never forwarded to: the write would supersede
       turnRunning: () => true,
       interrupt: async () => true,
       flushTranscript: () => {},
+      ...control,
     },
   }
-  const channel = { closed: false }
+}
+
+async function runPtyToolResultTurn(modelId: string, active: ActiveProcess, onResolve: () => void): Promise<void> {
+  const cwd = process.cwd()
+  const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
   const model = createClaudeCode({
     cwd, cliPath: process.execPath, bridgeOpencodeMcp: false,
     proxyOpencodeMcpTools: false, proxyTools: [], autoContinueIncompleteTurns: false,
@@ -305,7 +306,9 @@ test("the interactive transport is never forwarded to: the write would supersede
   try {
     setActiveProcess(sk, active)
     setClaudeSessionId(sk, "forward-session")
-    queuePendingProxyCall(sk, { id: "call-P", toolName: "bash", input: {}, channel, resolve: () => {}, reject: () => {} })
+    queuePendingProxyCall(sk, {
+      id: "call-P", toolName: "bash", input: {}, channel: { closed: false }, resolve: onResolve, reject: () => {},
+    })
     markPendingProxyCallEmitted("call-P")
     const result = await model.doStream({
       tools: [{ type: "function", name: "bash", inputSchema: { type: "object" } }],
@@ -314,10 +317,44 @@ test("the interactive transport is never forwarded to: the write would supersede
     await eventually("the matched call resolved", () => getPendingProxyCalls(sk).length === 0)
     // Finished before asserting, so a failure cannot leave its watchdogs running.
     await finishTurn(active, result.stream)
-    assert.deepEqual(writes, [], "nothing is written to the shim's stdin")
   } finally {
     rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
     deleteActiveProcess(sk)
     deleteClaudeSessionId(sk)
+  }
+}
+
+test("the interactive transport gets the message in its running turn's input queue, never on stdin", async () => {
+  // A stdin write to the shim is a new TUI turn that would supersede the one
+  // parked in the proxy call (h #g204); the TUI's own queue keeps it in that
+  // turn (h #g206).
+  const writes: string[] = []
+  const events: string[] = []
+  const queued: unknown[] = []
+  const active = ptyActive({
+    queueInput: async (content: unknown) => {
+      queued.push(content)
+      events.push("queue")
+      return true
+    },
+  }, writes)
+  await runPtyToolResultTurn("claude-test-forward-user-content-pty", active, () => events.push("resolve"))
+  assert.deepEqual(writes, [], "nothing is written to the shim's stdin")
+  assert.deepEqual(queued, [[{ type: "text", text: NOTICE }]])
+  assert.deepEqual(events, ["queue", "resolve"], "queued before the parked call is resolved")
+})
+
+test("an interactive turn that is not running, or a shim with no input queue, is not forwarded to", async () => {
+  for (const control of [
+    { turnRunning: () => false, queueInput: async () => assert.fail("typed into an idle TUI") },
+    {},
+  ]) {
+    const writes: string[] = []
+    let resolved = false
+    await runPtyToolResultTurn("claude-test-forward-user-content-pty-idle", ptyActive(control as any, writes), () => {
+      resolved = true
+    })
+    assert.equal(resolved, true)
+    assert.deepEqual(writes, [])
   }
 })

@@ -121,6 +121,15 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-07: **done**: "5 hours have passed i switched us to default profile try the live stuff you
+  did not try and im ok with your suggestion about the warning now carry on with the recommended".
+  The #g205 warning stays as built. Live on the default account, A/B against a v0.42.0 worktree:
+  #88 reproduced (v0.42.0 dropped the mid-call message) and fixed on 1.18.34 and 2.0.22; #89's
+  precondition measured (unscoped status map empty while the session is busy in its own directory),
+  the fix reads `busy`, but v0.42.0 did not misbehave under `opencode serve`, so the author's
+  topology was not reproduced (h #g206). #88 now works on the PTY through the TUI's own input queue
+  (h #g206). The idle-screen end signal and recorded 2.1.288 golden transcripts with a replay test
+  (h #g207). 1,251 tests.
 - 2026-10-06: **done** (v0.42.2): "carry on with the most recommended". The P2 "version gate the
   transport" built as a contract instead of a gate (h #g205): refusing unknown CLI versions would
   switch the PTY off on exactly the release that drops `--print`, and the cited `stop_reason: null`

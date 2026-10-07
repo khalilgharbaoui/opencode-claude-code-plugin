@@ -312,7 +312,11 @@ without it they fail clearly. This changes transport, not account access or bill
 
 Interactive transport takes text plus images (PNG/JPEG/GIF/WebP staged as 0600 files
 whose paths the TUI attaches, deleted after the turn; PDFs and other blocks are
-dropped with a warning) and reads completed transcript blocks, not token
+dropped with a warning). A message sent while a proxied tool runs reaches the same turn
+through the TUI's own input queue, as on headless. A turn ends on its stop reason or
+`turn_duration`, or, as a safeguard for a CLI that writes neither, after 20 s of total
+silence once it has its reply (reported as ended without a stop reason). It reads
+completed transcript blocks, not token
 deltas. It currently re-reads the transcript while polling. Normal interactive turns
 do not forward opencode's system prompt, and have no account-failover form or
 model-fallback chain. `/btw` is answered by a short-lived fork of the conversation

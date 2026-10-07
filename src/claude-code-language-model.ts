@@ -2922,12 +2922,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // opens a new turn first and the messages follow it instead. Only
           // what a previous tool-result turn for the same assistant boundary
           // has not already sent.
-          const forwardTrailingUserMessages = (): number => {
+          const forwardTrailingUserMessages = async (): Promise<number> => {
             if (compactionMode || !state.activeProcess) return 0
-            // Headless only. A write to the interactive shim is a new TUI turn
-            // that supersedes the one parked in this proxy call, whose `result`
-            // would then be dropped and this turn never finish (h #g204).
-            if (state.activeProcess.interactiveControl) return 0
+            // On the interactive transport a stdin write is a new TUI turn that
+            // would supersede the one parked in this proxy call (h #g204), so the
+            // message is typed into that turn's own input queue instead, which
+            // the TUI attaches to the model call after the result exactly as the
+            // headless CLI does (h #g206). Only while that turn runs: typed into
+            // an idle TUI it would start a turn nobody is listening to.
+            const control = state.activeProcess.interactiveControl
+            if (control && (!control.queueInput || !control.turnRunning())) return 0
             const trailing = getTrailingUserMessages(effectivePrompt, {
               stripContextReminders: self.stripContextRemindersEnabled(),
             })
@@ -2941,6 +2945,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               assistantIndex: trailing.assistantIndex,
               count: trailing.messages.length,
             }
+            if (control) {
+              let queued = 0
+              for (const content of fresh) if (await control.queueInput!(content)) queued++
+              if (queued < fresh.length) {
+                log.warn("the interactive turn did not take a forwarded user message", {
+                  sessionKey: sk,
+                  messages: fresh.length - queued,
+                })
+              }
+              log.info("forwarded user messages into the interactive turn's input queue", {
+                sessionKey: sk,
+                messages: queued,
+              })
+              return queued
+            }
             for (const content of fresh) {
               state.proc.stdin?.write(
                 JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n",
@@ -2952,7 +2971,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             })
             return fresh.length
           }
-          if (!state.unattendedTurnEnded && forwardTrailingUserMessages() > 0) {
+          if (!state.unattendedTurnEnded && (await forwardTrailingUserMessages()) > 0) {
             // The CLI reads stdin and the proxy HTTP response on separate paths,
             // and a message it enqueues AFTER it consumed the result runs as a
             // second turn (measured: 2 of 7 forwardings, enqueue 6 and 19 ms
@@ -3005,7 +3024,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           if (state.unattendedTurnEnded) {
             deliverPendingCompletions(state)
-            forwardTrailingUserMessages()
+            await forwardTrailingUserMessages()
           }
 
           // Calls queued while no turn was attached were never handed to
