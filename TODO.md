@@ -84,6 +84,12 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: "what is next?" Proposed, awaiting the maintainer's pick: (1) Claude Code 2.1.293 is
+  out (measured: 2.1.288): update, read the CHANGELOG, live on both transports and majors, record
+  new golden transcripts, bump `INTERACTIVE_MEASURED_CLI`; (2) fork sweep, last full one 2026-09-19,
+  eight forks pushed since (rusagent's closed PR #92 among them); (3) optional: a Linux CI job for
+  the whole suite, an MCP elicitation round trip into an opencode form. Needs the maintainer: a
+  second non-work login, for a live two-account switch and an expired-login switch.
 - 2026-09-26: Windows spawns go through `cmd.exe` with no argument quoting (injection with
   `& | > ^`, broken with spaces or quotes); needs a Windows CI job first, then a resolver and
   escaper. 2026-09-27: left documented until a Windows user appears (none has ever filed an
