@@ -11,6 +11,7 @@ import {
 } from "../src/permission-presets.js"
 import {
   cliSupportsDontAsk,
+  cliSupportsInteractiveBypass,
   cliSupportsPermissionPrompts,
   cliSupportsRestricted,
   type CliVersion,
@@ -389,20 +390,56 @@ test("the interactive transport holds read-only with --restricted, dontAsk and a
   const allow = ["mcp__github__*", "mcp__opencode_proxy__*", "Bash", "Edit", "Write", "Read", "WebFetch", "Bash(git status)"]
   assert.deepEqual(
     interactivePermissionPosture({ permissionMode: READ_ONLY_PERMISSION_MODE, allow, supportsReadOnly: true }),
-    { permissionMode: "dontAsk", restricted: true, allow: ["Read"] },
+    { permissionMode: "dontAsk", restricted: true, allow: ["Read"], bypass: false, disallowed: [] },
   )
   // Fails closed on a CLI that cannot hold it, never an approximation.
   assert.equal(
     interactivePermissionPosture({ permissionMode: READ_ONLY_PERMISSION_MODE, allow, supportsReadOnly: false }),
     null,
   )
-  // Every other mode is the CLI's own, plan included, and the list is untouched.
+  // A CLI without the bypass setting keeps every other mode as the CLI's own,
+  // plan included, and the list untouched.
   for (const mode of ["plan", "acceptEdits", undefined]) {
     assert.deepEqual(
       interactivePermissionPosture({ permissionMode: mode, allow, supportsReadOnly: false }),
-      { permissionMode: mode, restricted: false, allow },
+      { permissionMode: mode, restricted: false, allow, bypass: false, disallowed: [] },
     )
   }
+})
+
+test("the interactive transport follows the headless permission policy (h #g210)", () => {
+  const allow = ["mcp__opencode_proxy__*", "Read"]
+  const posture = (over: Record<string, unknown>) =>
+    interactivePermissionPosture({ permissionMode: undefined, allow, supportsReadOnly: true, supportsBypass: true, ...over })
+  // skipPermissions unset is true, as on headless: the skip flag.
+  assert.equal(posture({})!.bypass, true)
+  assert.equal(posture({ skipPermissions: true, permissionMode: "acceptEdits" })!.bypass, true)
+  // Plan mode drops the skip flag, as `buildCliArgs` does, and read-only never takes it.
+  assert.deepEqual(posture({ permissionMode: "plan" }), {
+    permissionMode: "plan", restricted: false, allow, bypass: false, disallowed: [],
+  })
+  assert.equal(posture({ permissionMode: READ_ONLY_PERMISSION_MODE })!.bypass, false)
+  // skipPermissions false answers can_use_tool with the configured policy.
+  assert.deepEqual(
+    posture({ skipPermissions: false, controlRequestToolBehaviors: { Bash: "deny", Read: "allow" } }),
+    { permissionMode: undefined, restricted: false, allow, bypass: true, disallowed: ["Bash"] },
+  )
+  assert.deepEqual(
+    posture({
+      skipPermissions: false,
+      controlRequestBehavior: "deny",
+      controlRequestToolBehaviors: { Bash: "deny", Read: "allow", "mcp__opencode_proxy__bash": "allow" },
+    }),
+    { permissionMode: "dontAsk", restricted: false, allow: ["Read", "mcp__opencode_proxy__bash"], bypass: false, disallowed: [] },
+  )
+  // An explicit bypassPermissions is the skip flag, never the mode.
+  assert.deepEqual(posture({ skipPermissions: false, permissionMode: "bypassPermissions" }), {
+    permissionMode: undefined, restricted: false, allow, bypass: true, disallowed: [],
+  })
+  // A CLI that cannot skip the confirmation keeps the allow list.
+  assert.equal(posture({ supportsBypass: false })!.bypass, false)
+  assert.equal(cliSupportsInteractiveBypass({ major: 2, minor: 1, patch: 262, raw: "2.1.262" } as any), false)
+  assert.equal(cliSupportsInteractiveBypass({ major: 2, minor: 1, patch: 263, raw: "2.1.263" } as any), true)
 })
 
 test("dontAsk is gated at the oldest CLI measured with it", () => {

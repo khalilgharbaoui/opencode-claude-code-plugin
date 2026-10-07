@@ -45,6 +45,12 @@ export interface InteractiveSpawnOptions {
   permissionsAllow?: string[]
   /** `--restricted`, for the read-only preset (`interactivePermissionPosture`). */
   restricted?: boolean
+  /**
+   * `--dangerously-skip-permissions`, as headless spawns it, with the CLI's own
+   * `skipDangerousModePermissionPrompt` so the TUI does not stop on its
+   * confirmation (`interactivePermissionPosture`, h #g210).
+   */
+  bypass?: boolean
   /** Optional permission mode. `bypassPermissions` is ignored for interactive
    *  sessions because Claude Code shows a safety confirmation screen first. */
   permissionMode?: string
@@ -285,13 +291,21 @@ export function interactiveExtraArgs(opts: InteractiveSpawnOptions): string[] {
   if (opts.fastMode) {
     flagSettings.fastMode = true
   }
+  if (opts.bypass) {
+    flagSettings.skipDangerousModePermissionPrompt = true
+    extraArgs.push("--dangerously-skip-permissions")
+  }
   if (Object.keys(flagSettings).length > 0) {
     extraArgs.push("--settings", JSON.stringify(flagSettings))
   }
   if (opts.permissionMode === "bypassPermissions") {
-    log.warn(
-      "interactive permissionMode bypassPermissions ignored: Claude Code prompts for confirmation in the TUI",
-    )
+    // `bypass` above is how the TUI runs it; the mode itself would open the
+    // confirmation the setting exists to skip.
+    if (!opts.bypass) {
+      log.warn(
+        "interactive permissionMode bypassPermissions ignored: Claude Code prompts for confirmation in the TUI",
+      )
+    }
   } else if (opts.permissionMode) {
     extraArgs.push("--permission-mode", opts.permissionMode)
   }
@@ -728,7 +742,9 @@ export function spawnInteractiveProcess(
       configDir: opts.configDir,
       model: opts.model,
       settingSources: opts.settingSources === undefined ? null : opts.settingSources,
-      extraArgs: interactiveExtraArgs({ ...opts, permissionsAllow: [], permissionMode: "dontAsk" }),
+      // Tool-free whatever the main spawn's posture: `dontAsk` with nothing
+      // allowed, and never the skip flag, which would win over it (h #g210).
+      extraArgs: interactiveExtraArgs({ ...opts, permissionsAllow: [], permissionMode: "dontAsk", bypass: false }),
       ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
       effort: opts.effort ? cliEffortLevel(opts.effort) : undefined,
       env: opts.env,

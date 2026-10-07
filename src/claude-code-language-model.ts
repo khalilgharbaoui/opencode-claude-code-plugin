@@ -116,6 +116,7 @@ import {
 import { log } from "./logger.js"
 import {
   cliSupportsDontAsk,
+  cliSupportsInteractiveBypass,
   cliSupportsRestricted,
   detectCliSupportsFlag,
   detectCliVersion,
@@ -1473,6 +1474,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const ptyReadOnly =
       useInteractive && !compactionMode && !doctor && isReadOnlyPermissionMode(this.config.permissionMode)
     const ptyReadOnlySupported = cliSupportsRestricted(cliVersion) && cliSupportsDontAsk(cliVersion)
+    const ptyBypassSupported = cliSupportsInteractiveBypass(cliVersion)
     if (ptyReadOnly && !ptyReadOnlySupported) {
       throw new Error(
         "The read-only preset on the interactive transport needs Claude Code 2.1.263 or newer (--restricted and --permission-mode dontAsk). Update claude, or use the headless transport.",
@@ -2147,7 +2149,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }
               if (interactiveBypassRequested) {
                 log.warn(
-                  "interactiveBypass ignored: Claude Code prompts for bypassPermissions confirmation in the interactive TUI",
+                  "interactiveBypass is ignored: skipPermissions governs the interactive transport too",
                 )
               }
               // Same skill bridge as the headless spawn: the TUI's native
@@ -2169,6 +2171,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 permissionMode: self.config.permissionMode,
                 allow,
                 supportsReadOnly: ptyReadOnlySupported,
+                skipPermissions: self.config.skipPermissions,
+                controlRequestBehavior: self.config.controlRequestBehavior,
+                controlRequestToolBehaviors: self.config.controlRequestToolBehaviors,
+                supportsBypass: ptyBypassSupported,
               })
               // Unreachable past the prologue's refusal; kept so a posture
               // the TUI cannot hold can never spawn one.
@@ -2186,7 +2192,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 permissionsAllow: posture.allow,
                 permissionMode: posture.permissionMode,
                 restricted: posture.restricted,
-                disallowedTools: wiring.allDisallowed,
+                bypass: posture.bypass,
+                disallowedTools: [...wiring.allDisallowed, ...posture.disallowed],
                 proxyServer: state.proxyServer,
                 systemPromptFile,
                 ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,

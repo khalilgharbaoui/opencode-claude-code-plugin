@@ -225,3 +225,36 @@ test("interactiveExtraArgs disallows the native tools the proxy serves, as one v
   assert.equal(args.filter((arg) => arg === "--disallowedTools").length, 1)
   assert.equal(interactiveExtraArgs({ cwd: process.cwd(), disallowedTools: [] }).includes("--disallowedTools"), false)
 })
+
+test("bypass is the skip flag plus the CLI's own setting that skips its dialog (h #g210)", () => {
+  const args = interactiveExtraArgs({ cwd: "/tmp", bypass: true, permissionsAllow: ["Read"] })
+  assert.ok(args.includes("--dangerously-skip-permissions"))
+  const settings = JSON.parse(args[args.indexOf("--settings") + 1]!)
+  assert.equal(settings.skipDangerousModePermissionPrompt, true)
+  assert.deepEqual(settings.permissions.allow, ["Read"], "one --settings for the whole layer")
+  assert.equal(args.filter((arg) => arg === "--settings").length, 1)
+  // Never the mode itself: that is the confirmation the setting skips.
+  const explicit = interactiveExtraArgs({ cwd: "/tmp", bypass: true, permissionMode: "bypassPermissions" })
+  assert.ok(!explicit.includes("--permission-mode"))
+  // Without it, neither appears.
+  const plain = interactiveExtraArgs({ cwd: "/tmp" })
+  assert.ok(!plain.includes("--dangerously-skip-permissions"))
+  assert.ok(!plain.includes("--settings"))
+})
+
+test("the /btw fork never carries the skip flag, whatever the main spawn does", async () => {
+  const seen: string[][] = []
+  const active = spawnInteractiveProcess({
+    cwd: process.cwd(),
+    bypass: true,
+    spawnPty: ((argv: string[]) => {
+      seen.push(argv)
+      throw new Error("stop here")
+    }) as any,
+  })
+  await assert.rejects(active.interactiveControl!.askAside!("what?", { timeoutMs: 1000 }))
+  assert.equal(seen.length, 1)
+  assert.ok(!seen[0]!.includes("--dangerously-skip-permissions"), seen[0]!.join(" "))
+  assert.equal(seen[0]![seen[0]!.indexOf("--permission-mode") + 1], "dontAsk")
+  ;(active.proc as any).kill()
+})

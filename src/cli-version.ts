@@ -261,6 +261,17 @@ export function cliSupportsDontAsk(v: CliVersion | null): boolean {
 }
 
 /**
+ * The CLI reads `skipDangerousModePermissionPrompt` from the `--settings`
+ * layer, so the TUI can run `--dangerously-skip-permissions` without its
+ * confirmation dialog. Read out of every binary on hand: 2.1.263, 2.1.280 and
+ * 2.1.288 (h #g210), so the gate sits at the oldest.
+ */
+export function cliSupportsInteractiveBypass(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 263 })
+}
+
+/**
  * The newest Claude Code the interactive transport was measured on end to end
  * (h #g205). The PTY reads the TUI's screen and its transcript, and neither is
  * a published contract, so a newer CLI is reported, never refused: the

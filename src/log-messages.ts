@@ -89,7 +89,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "interactive transport denied a permission prompt",
   "interactive transport dropped non-text content blocks",
   "interactive turn failed",
-  "interactiveBypass ignored: Claude Code prompts for bypassPermissions confirmation in the interactive TUI",
+  "interactiveBypass is ignored: skipPermissions governs the interactive transport too",
   "malformed data URI, skipping file part",
   "no active process to respawn (start watchdog); ending turn",
   "no proxyTools entry was recognised; nothing will be proxied this turn",

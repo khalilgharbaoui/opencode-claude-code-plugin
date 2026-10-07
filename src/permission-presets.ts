@@ -305,24 +305,69 @@ export function summarizePermissionPreset(
  * CLI's own (`plan` included: the TUI offers `ExitPlanMode`, and its approval
  * goes to the operator). Null, never an approximation, when the CLI cannot
  * hold `read-only`: the caller refuses the turn.
+ *
+ * Everything else follows the headless policy exactly (h #g210), because a
+ * static policy is all headless ever had: `skipPermissions` (default true)
+ * spawns `--dangerously-skip-permissions`, and with it off `can_use_tool` is
+ * answered by `controlRequestBehavior` plus per-tool overrides. The TUI holds
+ * the first with the same flag, `bypass`, made usable by the CLI's own
+ * `skipDangerousModePermissionPrompt` in the `--settings` layer (read from
+ * there by every CLI on hand, 2.1.263 to 2.1.288; without it the TUI opens a
+ * confirmation that defaults to "No, exit"). A per-tool `deny` under an
+ * allow-everything policy becomes `--disallowedTools`; a `deny` policy becomes
+ * `dontAsk` with only the per-tool `allow` entries. Plan mode drops the skip
+ * flag as `buildCliArgs` does. A CLI without the setting keeps the allow list.
  */
 export function interactivePermissionPosture(input: {
   permissionMode: string | undefined
   allow: string[]
   supportsReadOnly: boolean
-}): { permissionMode: string | undefined; restricted: boolean; allow: string[] } | null {
-  if (!isReadOnlyPermissionMode(input.permissionMode)) {
-    return { permissionMode: input.permissionMode, restricted: false, allow: input.allow }
+  /** As headless reads it: unset is true. */
+  skipPermissions?: boolean
+  controlRequestBehavior?: ControlRequestBehavior
+  controlRequestToolBehaviors?: Record<string, ControlRequestBehavior>
+  /** The CLI honours `skipDangerousModePermissionPrompt` from `--settings`. */
+  supportsBypass?: boolean
+}): {
+  permissionMode: string | undefined
+  restricted: boolean
+  allow: string[]
+  /** `--dangerously-skip-permissions` plus the setting that skips its dialog. */
+  bypass: boolean
+  /** Per-tool denials, for `--disallowedTools`. */
+  disallowed: string[]
+} | null {
+  if (isReadOnlyPermissionMode(input.permissionMode)) {
+    if (!input.supportsReadOnly) return null
+    const refused = new Set<string>(READ_ONLY_DISALLOWED_CLI_TOOLS)
+    return {
+      permissionMode: "dontAsk",
+      restricted: true,
+      allow: input.allow.filter(
+        (rule) => !rule.startsWith("mcp__") && !refused.has(rule.split("(")[0]!.trim()),
+      ),
+      bypass: false,
+      disallowed: [],
+    }
   }
-  if (!input.supportsReadOnly) return null
-  const refused = new Set<string>(READ_ONLY_DISALLOWED_CLI_TOOLS)
-  return {
-    permissionMode: "dontAsk",
-    restricted: true,
-    allow: input.allow.filter(
-      (rule) => !rule.startsWith("mcp__") && !refused.has(rule.split("(")[0]!.trim()),
-    ),
+  const unchanged = {
+    permissionMode: input.permissionMode === "bypassPermissions" ? undefined : input.permissionMode,
+    restricted: false,
+    allow: input.allow,
+    bypass: false,
+    disallowed: [] as string[],
   }
+  if (input.permissionMode === "plan" || !input.supportsBypass) return unchanged
+  const perTool = Object.entries(input.controlRequestToolBehaviors ?? {})
+  const named = (behavior: ControlRequestBehavior) =>
+    perTool.filter(([, value]) => value === behavior).map(([tool]) => tool)
+  if (input.skipPermissions !== false || input.permissionMode === "bypassPermissions") {
+    return { ...unchanged, bypass: true }
+  }
+  if ((input.controlRequestBehavior ?? "allow") === "allow") {
+    return { ...unchanged, bypass: true, disallowed: named("deny") }
+  }
+  return { ...unchanged, permissionMode: "dontAsk", allow: named("allow") }
 }
 
 /**
