@@ -781,6 +781,27 @@ export function formatResultFailureNote(message: string): string {
   return `\n${RESULT_ERROR_MARKER} ${message}\n`
 }
 
+/**
+ * What a failed compaction turn says, as the message of the `error` stream
+ * part that ends it. Never written into the conversation: a compaction turn's
+ * text is what opencode stores as the summary, which is the whole of issue #90
+ * (a usage limit was stored as the summary and every later session started
+ * from it). The cause is `TurnState.resultFailure`, so it is the account-block
+ * kind, `usage_limit`, a failing result subtype, or a bare `error`; `detail` is
+ * the CLI's own sentence when there was one. (h #g214)
+ */
+export function formatCompactionFailure(
+  cause: string,
+  detail: string | null | undefined,
+): string {
+  const said = detail?.trim()
+  return (
+    `Claude Code could not compact this conversation (${cause}), ` +
+    "so no summary was produced." +
+    (said ? ` The CLI said: ${said}` : "")
+  )
+}
+
 // ---------------------------------------------------------------------------
 // stdout silence after content
 // ---------------------------------------------------------------------------

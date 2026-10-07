@@ -1516,6 +1516,7 @@ async function runFakeBunTurn(
   turn: TurnScript,
   options: Record<string, unknown> = {},
   prompt: any[] = [{ role: "user", content: [{ type: "text", text: "reply" }] }],
+  providerOptions?: Record<string, unknown>,
 ): Promise<{ parts: any[]; children: FakeTui[] }> {
   const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
   const children: FakeTui[] = []
@@ -1542,7 +1543,8 @@ async function runFakeBunTurn(
     const result = await model.doStream({
       prompt,
       tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
-    })
+      ...(providerOptions ? { providerOptions } : {}),
+    } as any)
     const parts: any[] = []
     for await (const part of result.stream) parts.push(part)
     return { parts, children }
@@ -1566,8 +1568,50 @@ test("a usage limit on the PTY ends on the plugin's note, with the TUI's reset t
     assert.match(text, /▌ \*\*usage limit:\*\*/)
     assert.match(text, /in the 5-hour window, which resets 3pm \(Europe\/Amsterdam\)\./)
     assert.doesNotMatch(text, /You've hit your session limit/, "the note replaces the CLI's sentence")
-    // A failed turn is never billed in a stats line, and nothing was billed.
+    // The note is the operator's whole account of this, so there is no error
+    // part to double it. The finish is what says the turn failed (h #g214):
+    // nothing was served, and as a `stop` opencode filed it as a reply.
     assert(!parts.some((part) => part.type === "error"))
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "error")
+    assert.equal(finish.finishReason.raw, "usage_limit")
+  } finally {
+    dirs.cleanup()
+  }
+})
+
+test("a limited compaction turn on the PTY stores nothing and fails as an error", async () => {
+  // Issue #90 on the other transport. The TUI writes the limit as a
+  // `<synthetic>` record with `isApiErrorMessage`, which
+  // `streamFrameFromRecord` renames into the stream's shape, so the same
+  // suppression has to hold here or opencode stores the CLI's sentence as
+  // the summary (h #g214).
+  const dirs = scratch()
+  try {
+    const { parts } = await runFakeBunTurn(
+      dirs,
+      "claude-test-pty-limit-compact",
+      (t) => {
+        t.append(SESSION_LIMIT_RECORD)
+        t.append({ type: "system", subtype: "turn_duration", durationMs: 812 })
+      },
+      {},
+      [
+        { role: "system", content: "Summarize the conversation." },
+        { role: "user", content: [{ type: "text", text: "go" }] },
+      ],
+      { "claude-code": { opencodeAgent: "compaction" } },
+    )
+    const text = textOf(parts)
+    assert.equal(text.trim(), "", "nothing for opencode to store as the summary")
+    assert.doesNotMatch(text, /You've hit your session limit/)
+    assert.doesNotMatch(text, /▌ \*\*usage limit:\*\*/)
+    const error = parts.find((part) => part.type === "error")
+    assert.ok(error, "a failed compaction ends on an error part")
+    assert.match(String(error.error?.message), /could not compact this conversation \(usage_limit\)/)
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "error")
+    assert.equal(finish.finishReason.raw, "usage_limit")
   } finally {
     dirs.cleanup()
   }

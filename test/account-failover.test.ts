@@ -1173,6 +1173,10 @@ const repeat = process.env.FAKE_CLI_REPEAT === "1"
 // The CLI emits \`rate_limit_event\` when its view of the limits CHANGES, not
 // per request, so a reused child's later turns carry none. Measured live.
 const noRepeatEvent = process.env.FAKE_CLI_NO_REPEAT_EVENT === "1"
+// The limited account answering normally, which is what a compaction turn
+// that works looks like. Without it the control case for issue #90 cannot be
+// run: the same account must be able to produce a summary.
+const alwaysOk = process.env.FAKE_CLI_ALWAYS_OK === "1"
 let turns = 0
 
 const rl = readline.createInterface({ input: process.stdin })
@@ -1188,7 +1192,7 @@ rl.on("line", (line) => {
       stdin: line,
     }) + "\\n",
   )
-  const lines = limited
+  const lines = limited && !alwaysOk
     ? (authExpired
         ? AUTH_EXPIRED_LINES
         : servedAfterReject
@@ -1709,8 +1713,19 @@ test("a limited turn with the form off says it once, and the CLI's own text is g
     // And no form: nothing is asked, so nothing can be dismissed.
     assert.equal(parts.some((part) => part.type === "tool-call"), false)
 
-    // How the turn finishes is unchanged: the note replaced text, not flow.
-    assert.equal(parts.find((part) => part.type === "finish").finishReason.unified, "stop")
+    // The note replaced text, not flow: no form, no second note, no `return`
+    // anywhere. What DID change is the finish. A limited turn served nothing,
+    // and as a `stop` opencode filed it as an ordinary (very short) reply;
+    // that is what let a limited compaction turn be stored as a summary at
+    // all (issue #90), and the account-block path has finished as an error
+    // since it was written. The two agree now (h #g214). No `error` part
+    // here, though: the note is what the operator reads, and an error part
+    // outside compaction would put a second account of the same failure on
+    // screen.
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "error")
+    assert.equal(finish.finishReason.raw, "usage_limit")
+    assert.equal(parts.some((part) => part.type === "error"), false)
   } finally {
     deleteActiveProcess(sk)
     _resetAccountOverrides()
@@ -1826,10 +1841,17 @@ test("a turn that was served despite a rejected limit event keeps its answer and
   }
 })
 
-test("a compaction turn never carries the note into the summary", async () => {
-  // A `/compact` turn's text is what opencode stores as the summary, so the
-  // note would be compacted into the conversation's own memory of itself.
-  // The CLI's own error text is kept there, exactly as before.
+test("a limited compaction turn stores nothing and fails as an error", async () => {
+  // Issue #90. A `/compact` turn's text is what opencode stores as the
+  // summary, so neither the note nor the CLI's own limit sentence may be
+  // written: the reporter's stored summary was that sentence, twice over, and
+  // every later session started from a transcript that began with it.
+  //
+  // This case used to assert the opposite of its last two lines (the CLI's
+  // sentence present, the turn finishing `stop`), which is exactly the bug.
+  // Both were deliberate at the time: the note was the only thing being
+  // suppressed, and nothing had yet asked what opencode does with the text
+  // that was left. The answer is that it stores it (h #g214).
   _resetAccountOverrides()
   _resetRateLimitReports()
   _resetSystemInitReports()
@@ -1843,9 +1865,83 @@ test("a compaction turn never carries the note into the summary", async () => {
       } as any),
     )
     const body = textOf(parts)
+    // Nothing at all for opencode to keep: no note, no CLI prose, no text.
     assert.equal(body.includes(USAGE_LIMIT_MARKER), false)
-    assert.match(body, /You've hit your individual spend limit/)
+    assert.equal(body.includes("You've hit your individual spend limit"), false)
+    assert.equal(body.trim(), "")
+
+    // And the turn fails, so opencode runs its own failure path instead of
+    // filing a summary. Both halves: the error part and the finish.
+    const error = parts.find((part) => part.type === "error")
+    assert.ok(error, "a failed compaction ends on an error part")
+    assert.match(String(error.error?.message), /could not compact this conversation \(usage_limit\)/)
+    // The CLI's sentence is in the error, which is read rather than stored.
+    assert.match(String(error.error?.message), /You've hit your individual spend limit/)
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "error")
+    assert.equal(finish.finishReason.raw, "usage_limit")
   } finally {
+    killAllActiveProcesses()
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a compaction turn that works is unchanged", async () => {
+  // The control for the case above: the suppression must be keyed on the
+  // failure, not on compaction, or every summary would be thrown away.
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  process.env.FAKE_CLI_ALWAYS_OK = "1"
+  try {
+    const model = await buildFailoverModel(fake)
+    const parts = await drain(
+      await model.doStream({
+        prompt: turnOnePrompt,
+        providerOptions: { "claude-code": { opencodeAgent: "compaction" } },
+      } as any),
+    )
+    assert.equal(textOf(parts), "carried on")
+    assert.equal(parts.some((part) => part.type === "error"), false)
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "stop")
+  } finally {
+    delete process.env.FAKE_CLI_ALWAYS_OK
+    killAllActiveProcesses()
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a compaction turn blocked by an expired login fails without the login note", async () => {
+  // The other cause, and the one that proves this is not limit-specific: an
+  // account block names its own kind, and its note is suppressed for the same
+  // reason the limit's is (h #g214).
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  process.env.FAKE_CLI_AUTH_EXPIRED = "1"
+  try {
+    const model = await buildFailoverModel(fake)
+    const parts = await drain(
+      await model.doStream({
+        prompt: turnOnePrompt,
+        providerOptions: { "claude-code": { opencodeAgent: "compaction" } },
+      } as any),
+    )
+    assert.equal(textOf(parts).trim(), "")
+    const finish = parts.find((part) => part.type === "finish")
+    assert.equal(finish.finishReason.unified, "error")
+    assert.equal(finish.finishReason.raw, "authentication_failed")
+    assert.match(
+      String(parts.find((part) => part.type === "error")?.error?.message),
+      /could not compact this conversation \(authentication_failed\)/,
+    )
+  } finally {
+    delete process.env.FAKE_CLI_AUTH_EXPIRED
     killAllActiveProcesses()
     _resetAccountOverrides()
     rmSync(fake.cwd, { recursive: true, force: true })

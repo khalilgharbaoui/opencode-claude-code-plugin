@@ -42,7 +42,11 @@ import {
   registerAsideSink,
   takeSideQuestionAnswer,
 } from "./btw-command.js"
-import { formatSilentTurnNote, formatUnattendedReplayNote } from "./cli-events.js"
+import {
+  formatCompactionFailure,
+  formatSilentTurnNote,
+  formatUnattendedReplayNote,
+} from "./cli-events.js"
 import {
   DEFAULT_ACCOUNT,
   normalizeAccountName,
@@ -2546,11 +2550,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
 
           // Nothing above took the turn, so a usage limit is simply what
-          // happened: say it once, plainly, and let the turn finish exactly
-          // the way a limited turn finishes today. No `return`, because this
-          // note replaces text and changes no control flow (h #g194). The
-          // parser decided this at the `result` frame and suppressed the CLI's
-          // own error text there, so this is the only thing on screen.
+          // happened: say it once, plainly, and finish as an error. No
+          // `return`, because this note replaces text and changes no control
+          // flow (h #g194). The parser decided this at the `result` frame and
+          // suppressed the CLI's own error text there, so this is the only
+          // thing on screen.
           if (state.usageLimitNote) {
             log.warn("claude account is out of usage; the turn ends with a note", {
               sessionKey: sk,
@@ -2571,6 +2575,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               }),
             })
             state.endTextBlock()
+            // Nothing was served, so the turn is a failure and must finish as
+            // one: as a `stop` opencode filed a limited turn as an ordinary
+            // (very short) reply, which is what let a limited COMPACTION turn
+            // be stored as a summary at all. The account-block path has
+            // finished this way since it was written; this makes the two
+            // agree. The note is still the whole of what is on screen, and
+            // every branch above returned before reaching here, so the switch
+            // form and the fallback chain are untouched (h #g214).
+            state.resultFailure ??= "usage_limit"
           }
 
           // The nudge and the one line that says the nudging stopped, both
@@ -2616,6 +2629,27 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               delta: formatSilentTurnNote(state.sawReasoning),
             })
             state.endTextBlock()
+          }
+
+          // A failed compaction turn ends on an error, never on text. What
+          // this stream says is what opencode stores as the summary, so a
+          // usage limit used to become the conversation's own memory of
+          // itself and every later session started from it (issue #90). The
+          // parser has already suppressed the CLI's prose and named the cause
+          // in `resultFailure`; the `error` part plus the error finish below
+          // are what make opencode mark the compaction failed and keep the
+          // history it already has. (h #g214)
+          if (compactionMode && state.resultFailure) {
+            log.warn("claude could not compact the conversation; no summary was stored", {
+              sessionKey: sk,
+              cause: state.resultFailure,
+            })
+            controller.enqueue({
+              type: "error",
+              error: new Error(
+                formatCompactionFailure(state.resultFailure, state.compactionFailureText),
+              ),
+            })
           }
 
           // opencode reads this usage as the context the conversation

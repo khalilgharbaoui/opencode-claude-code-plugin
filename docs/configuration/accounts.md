@@ -64,6 +64,8 @@ account and resend your message, or wait for the window to reset.
 
 The reset time is in **your** time zone, to the minute, and is left out when Claude Code did not report one. With no other account configured the second half instead reads *"Wait for the window to reset, or enable extra usage on the account."* You get this line on every limited turn, not just the first one in an opencode session.
 
+The turn also **finishes as an error**, not as a reply. Nothing was served, so filing it as a (very short) answer was wrong: opencode's own retry and failure handling never ran, and the account-block case below has always finished this way.
+
 Nothing moves on its own: switching account means picking a model from another account's provider in opencode's model list and sending your message again. That costs a fresh Claude session on the new account (see *The conversation is replayed, not resumed* below), which is why the plugin does not do it for you.
 
 ### Account failover
@@ -98,7 +100,7 @@ What a pick does, in full:
 
 Only two things count as "out of usage", for the note and for the form alike: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
 
-The form works on both transports: on the [interactive transport](../guides/interactive-transport.md) a switch closes the limited account's TUI and starts the other account's, with the thread replayed into it exactly as on headless. It is not available on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, whose text becomes the stored summary.
+The form works on both transports: on the [interactive transport](../guides/interactive-transport.md) a switch closes the limited account's TUI and starts the other account's, with the thread replayed into it exactly as on headless. It is not available on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, which [fails outright instead](../guides/compaction-and-thinking.md#when-compaction-hits-a-usage-limit).
 
 ### An account that cannot serve at all
 

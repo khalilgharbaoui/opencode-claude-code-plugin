@@ -725,6 +725,21 @@ export function createLineHandler(
             }))
         // Only the note replaces the sentence; the form asks below it.
         const limitErrorReply = limitFromReply && ctx.usageLimitNoteActive
+        // On a compaction turn every failure reply the CLI writes is
+        // suppressed, whatever it is about: this stream's text is what
+        // opencode stores as the summary, so the CLI's prose would become the
+        // conversation's own memory of itself. Measured in issue #90, where a
+        // usage-limited compaction stored "You've hit your session limit …" as
+        // the summary and every later session started from it. The sentence is
+        // kept for the `error` part the turn ends on instead (h #g214).
+        //
+        // Both signals are needed and neither implies the other: a usage limit
+        // is flagged `is_api_error_message`, while an expired login carries
+        // only the `error` kind (measured 2026-09-23, the fixture the
+        // account-block tests run on).
+        const compactionApiError =
+          ctx.compactionMode &&
+          (apiErrorReply || typeof (msg as { error?: unknown }).error === "string")
         if (limitFromReply) {
           state.accountLimitHit ??= recallAccountLimit(ctx.sourceAccount)
           // What the sentence itself says fills only what no event told us:
@@ -760,6 +775,10 @@ export function createLineHandler(
             // which the CLI's sentence does not. Dropped rather than
             // rendered, so a limited turn carries exactly one block.
             if (limitErrorReply) continue
+            if (compactionApiError) {
+              state.compactionFailureText ??= block.text
+              continue
+            }
             if (apiErrorReply) state.apiErrorTextShown = block.text
             // New text block — keep only this block's text in the
             // last-block buffer for final-answer detection.
@@ -1059,6 +1078,36 @@ export function createLineHandler(
           !state.accountBlock &&
           msg.is_error === true
 
+        // A failed compaction turn must put NOTHING in the conversation,
+        // because what this stream says is what opencode stores as the
+        // summary. Before this, a usage-limited compaction stored the CLI's
+        // limit sentence as the summary and every later session started from
+        // a transcript that began with it (issue #90). Every cause counts,
+        // because the summary is wrong for all of them; the turn fails as an
+        // error in `completeResult` instead (h #g214).
+        // A failing subtype is read here as well as `is_error`, because it is
+        // the other thing that makes the turn an error below and the CLI does
+        // not always set both (h #g161: a refused model is `success` plus
+        // `is_error`, so the pair is genuinely independent).
+        const compactionFailure =
+          ctx.compactionMode &&
+          (msg.is_error === true ||
+            (typeof msg.subtype === "string" && msg.subtype !== "success"))
+        if (compactionFailure) {
+          if (typeof msg.result === "string" && msg.result.trim()) {
+            state.compactionFailureText ??= msg.result.trim()
+          }
+          // The most specific name the turn has for what went wrong, in the
+          // order the notes below would have used. `usage_limit` matches what
+          // an unlimited turn's finish now reports for the same failure.
+          state.resultFailure ??=
+            state.accountBlock ??
+            (state.accountLimitHit ? "usage_limit" : undefined) ??
+            (typeof msg.subtype === "string" && msg.subtype !== "success"
+              ? msg.subtype
+              : "error")
+        }
+
         // Some CLI failures only include user-readable text in
         // `result.result` (no prior assistant text blocks). Emit it so
         // opencode users don't see a blank turn. The one exception is a limit
@@ -1068,6 +1117,7 @@ export function createLineHandler(
         if (
           !state.currentTextId &&
           msg.is_error &&
+          !compactionFailure &&
           // Already on screen from the reply frame, word for word.
           !(
             typeof msg.result === "string" &&
@@ -1102,21 +1152,26 @@ export function createLineHandler(
           // finished as an ordinary `stop` with the error as its answer.
           state.resultFailure ??= state.accountBlock
           const offeringSwitch = ctx.failoverAskActive
-          state.controller.enqueue({
-            type: "text-delta",
-            id: state.startTextBlock(),
-            delta: formatAccountBlockNote({
-              kind: state.accountBlock,
-              account: ctx.sourceAccount,
-              configDir: ctx.config.configDir,
-              offeringSwitch,
-              // Read only when the form is not taking the turn, which is the
-              // default: moving the work by hand is then the operator's only
-              // route and nothing else on screen says it exists (h #g194).
-              candidates: ctx.failoverAccounts,
-            }),
-          })
-          state.endTextBlock()
+          // The note is for the operator to read, and on a compaction turn
+          // nobody reads it: it would be stored as the summary instead. The
+          // WARN below says the same thing where it can be seen (h #g214).
+          if (!compactionFailure) {
+            state.controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: formatAccountBlockNote({
+                kind: state.accountBlock,
+                account: ctx.sourceAccount,
+                configDir: ctx.config.configDir,
+                offeringSwitch,
+                // Read only when the form is not taking the turn, which is the
+                // default: moving the work by hand is then the operator's only
+                // route and nothing else on screen says it exists (h #g194).
+                candidates: ctx.failoverAccounts,
+              }),
+            })
+            state.endTextBlock()
+          }
           log.warn(`Claude account "${ctx.sourceAccount}" cannot serve requests`, {
             sessionKey: state.sessionKey,
             kind: state.accountBlock,
@@ -1131,11 +1186,16 @@ export function createLineHandler(
         const failure = describeResultFailure(msg)
         if (failure) {
           state.resultFailure = msg.subtype
-          state.controller.enqueue({
-            type: "text-delta",
-            id: state.startTextBlock(),
-            delta: formatResultFailureNote(failure),
-          })
+          // Same reason as the account note above: on a compaction turn this
+          // would be stored as the summary rather than read (h #g214).
+          if (!compactionFailure) {
+            state.controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: formatResultFailureNote(failure),
+            })
+          }
+          if (compactionFailure) state.compactionFailureText ??= failure
           log.warn(failure, { sessionKey: state.sessionKey, subtype: msg.subtype })
         }
 

@@ -17,6 +17,16 @@ When you run `/compact` in opencode, the plugin handles it on a short-lived dedi
 
 The transcript itself is serialized rich: tool inputs and tool results are both included (each clipped at 10k chars), with oldest entries dropped first when the aggregate exceeds 180k chars. The summarizer sees actual tool activity rather than placeholders.
 
+### When compaction hits a usage limit
+
+A compaction turn's text is what opencode stores as the summary, so a compaction that **failed** must produce no text at all. It does not: the turn ends on an error, opencode marks the compaction failed and keeps the conversation it already had, and nothing is stored.
+
+That matters because the alternative was measured and it is bad. Before this, a usage-limited compaction returned the CLI's own sentence as an ordinary answer, opencode filed it as the summary, and from then on every session that could not resume its Claude transcript started from a conversation whose first line was *"You've hit your session limit · resets 3pm"* ([issue #90](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/issues/90)). Messages before the summary were gone.
+
+Every cause counts, not just a usage limit: an expired login, an account on hold, a billing problem, a failing result subtype. For all of them the summary would be wrong, so none of them is written. The cause is named in the error opencode shows, together with the CLI's own sentence, and in a `WARN` in the [plugin log](../configuration/logging.md).
+
+There is nothing to configure and no way to turn this off. Retry the compaction once the account can serve again.
+
 ### Picking a different compaction model
 
 | Source | How | Wins over |

@@ -31,6 +31,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "claude cli does not support --plugin-dir; opencode skills will not be bridged. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",
   "claude code compacted its own context",
   "claude code reset its conversation",
+  "claude could not compact the conversation; no summary was stored",
   "claude finished the turn without a reply",
   "claude kept missing the probe deadline; keeping the conservative answer for this process",
   "claude process belongs to another account; starting fresh",

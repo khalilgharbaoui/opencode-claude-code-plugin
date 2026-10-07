@@ -381,10 +381,30 @@ resend your message, or wait for the window to reset.
   and the `▌ **rate limit:**` paragraph the plugin used to write is log-only now, so a
   limited turn carries exactly one block.
 - Written on a child session too (a subagent that died on a limit is what the parent's
-  `task` result should say), but never on a compaction turn, whose text becomes the
-  stored summary. How the turn finishes is unchanged.
-- `permission_denials`, `turnStats` and the finish reason are untouched: the note
-  replaces text, not control flow.
+  `task` result should say), but never on a compaction turn, which fails outright
+  instead (see "A failed compaction turn" below).
+- The turn **finishes as an error** (`finishReason` `{unified:"error", raw:"usage_limit"}`),
+  the way the account-block note's turn always has: nothing was served, so filing it as
+  a reply hid the failure from opencode. There is no `error` stream part outside
+  compaction, so the note stays the single account of what happened.
+- `permission_denials` and `turnStats` are untouched; `turnStats` was already suppressed
+  on a failed turn, so a limited turn never carried a stats line anyway.
+
+### A failed compaction turn
+
+A compaction turn's text is what opencode stores as the summary, so a compaction whose
+`result` is `is_error: true` (or carries a failing subtype) writes **no text at all**:
+no note, no CLI prose, nothing. It ends on an `error` stream part naming the cause and
+the CLI's own sentence, plus a finish of `{unified:"error", raw:<cause>}` where the
+cause is `usage_limit`, an account-block kind such as `authentication_failed`, or the
+failing subtype. opencode then marks the compaction failed and keeps the conversation
+it already had.
+
+Before this, a usage-limited compaction returned the CLI's sentence as a normal answer
+and opencode stored it as the summary, so every later session that could not resume its
+Claude transcript began from that sentence with the earlier messages gone (issue #90).
+There is no option for this and nothing to turn off; the operator retries the
+compaction once the account can serve.
 
 When a user says the limit message is unhelpful, check the plugin version before
 anything else: this note is recent and a long-lived opencode window may predate it.

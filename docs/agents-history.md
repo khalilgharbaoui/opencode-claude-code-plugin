@@ -2363,3 +2363,78 @@ Live, a one-page PDF reading "OSPREY LEDGER 77" sent as a file part: opencode
 1.18.34 headless and interactive (HTTP API), opencode 2.0.22 headless and
 interactive (`opencode run -f`); all four answered with the text, nothing was
 dropped, and no staged file was left behind.
+
+<a id="g214"></a>
+
+#### A failed compaction turn stores nothing (issue #90, 2026-10-07)
+
+Reported by hmjBill on plugin 0.38.0, opencode 1.18.34, Windows: a `/compact`
+that hit the CLI's usage limit was stored as the summary, so the stored summary
+was the CLI's limit sentence and every later Claude session started from a
+fallback transcript that began with it.
+
+The cause was that a compaction turn's text IS what opencode stores. A limited
+turn's `result` is `subtype: "success"` with `is_error: true`, preceded by the
+CLI's `<synthetic>` reply (`is_api_error_message: true`, `error: "rate_limit"`),
+and the parser only set `resultFailure` for a non-success subtype or an account
+block. The `▌ **usage limit:**` note is deliberately never written on compaction
+(h #g194), so on compaction the CLI's sentence fell through as plain text and
+the turn finished `stop`: a successful, very short summary as far as opencode
+could tell.
+
+What changed:
+
+- **On compaction, the CLI's own failure reply is suppressed** in the assistant
+  branch of `src/stream-parser.ts`, keyed on `is_api_error_message` **or** an
+  `error` kind. Both are needed: a usage limit carries the flag, an expired
+  login carries only the kind (the 2026-09-23 fixture). The sentence is kept in
+  `TurnState.compactionFailureText`.
+- **On compaction, all three result-side texts are suppressed** as well: the
+  result's own error text, the account-block note, and the
+  `▌ **claude code error:**` subtype note. Each keeps its `resultFailure` and
+  its WARN, which is where an operator can actually read it.
+- **`resultFailure` is set from the most specific cause the turn has**:
+  `accountBlock`, then `usage_limit`, then a failing subtype, then a bare
+  `error`. `completeResult` then enqueues an `error` part built by
+  `formatCompactionFailure` (the cause plus the CLI's sentence) ahead of the
+  existing error finish.
+- **Outside compaction a limited turn keeps its single note and now finishes
+  `{unified:"error", raw:"usage_limit"}`**, set inside the note's own branch so
+  the switch form, the fallback chain and `doGenerate` have all already
+  returned. No `error` part there: the note is the whole account of it.
+
+The suppression is keyed on the failure, never on compaction alone, or every
+summary would be discarded; `test/account-failover.test.ts` runs the working
+compaction turn as the control.
+
+Measured live on both majors with a scratch fake `claude` emitting a
+usage-limited turn verbatim (system/init, the `rate_limit_event`, the
+`<synthetic>` reply, then `subtype: "success"` with `is_error: true`), an
+isolated `XDG_*` set and a scratch cwd. **opencode 1.18.35** (what was on PATH;
+the report is 1.18.34), `POST /session/{id}/summarize`:
+
+- Before: the stored summary message was `summary: true`, no error, text
+  `You've hit your session limit · resets 3pm (Europe/Amsterdam)`. Restarting
+  opencode and sending one more message then replayed
+  `<conversation_history> … Assistant: You've hit your session limit …`, with
+  the two messages before the summary gone. That is the report, verbatim.
+- After: the summary message is stored empty with
+  `error: UnknownError` carrying `Claude Code could not compact this
+  conversation (usage_limit), so no summary was produced. The CLI said: …`, and
+  a fresh opencode process replayed messages 1 through 4 in full with the limit
+  sentence nowhere in the transcript.
+
+**opencode 2.0.22** (sandbox, `POST /api/session/{id}/compact`, HTTP Basic as
+`opencode:<password>`), where the compaction entry is its own record:
+
+- Before: `status: "failed"`, `error.type: "compaction.failed"`, message
+  *"Compaction summary did not match the required template"*. V2 happened to be
+  protected here by its own template check, so it never stored the sentence, but
+  it also never said what went wrong.
+- After: `status: "failed"`, `error.type: "provider.unknown"` with the plugin's
+  sentence naming `usage_limit` and quoting the CLI. History intact either way;
+  V2 retries the compaction a few times (13 spawns) and then settles.
+
+Not done: nothing was changed about the switch form, the fallback chain or
+`turnStats`, and no option was added. A compaction that fails is a failure the
+operator retries once the account can serve.

@@ -261,6 +261,15 @@ export interface TurnState {
    * their chance to take the turn instead.
    */
   usageLimitNote: boolean
+  /**
+   * The CLI's own sentence for the failure that ended a COMPACTION turn, or
+   * null. A compaction turn's text is what opencode stores as the summary, so
+   * a failed one renders none of the CLI's error prose (a usage limit became
+   * the whole of a stored summary, issue #90); the sentence is carried here
+   * instead, for the `error` stream part `completeResult` ends the turn on.
+   * Never read outside compaction. (h #g214)
+   */
+  compactionFailureText: string | null
   /** Read from the `error` kind on the CLI's failure reply, never from its text. */
   accountBlock: AccountBlockKind | null
   /** Set only when a fallback is armed, so a turn with no chain is unchanged. */
@@ -419,6 +428,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     accountLimitHit: null,
     apiErrorTextShown: null,
     usageLimitNote: false,
+    compactionFailureText: null,
     accountBlock: null,
     modelRefusal: null,
 
