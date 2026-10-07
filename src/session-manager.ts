@@ -28,6 +28,7 @@ import {
   type CliVersion,
 } from "./cli-version.js"
 import { isReadOnlyPermissionMode } from "./permission-presets.js"
+import { planClaudeSpawn } from "./windows-spawn.js"
 import type { ReasoningEffort } from "./types.js"
 import { dispatchSideQuestionResponse, isSideQuestionPending } from "./side-question.js"
 
@@ -939,11 +940,16 @@ export function spawnClaudeProcess(
     promptCacheTtl,
   })
 
-  const proc = spawn(cliPath, cliArgs, {
+  // Never `shell: true`. On Windows the plan resolves `claude` to a real file
+  // and, for a `.cmd` shim, builds an escaped `cmd.exe /d /s /c` command line
+  // itself; everywhere else it is the command unchanged. See
+  // `src/windows-spawn.ts`.
+  const plan = planClaudeSpawn(cliPath, cliArgs)
+  const proc = spawn(plan.file, plan.args, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
     env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort, promptCacheTtl }),
-    shell: process.platform === "win32",
+    windowsVerbatimArguments: plan.windowsVerbatimArguments,
   })
 
   const lineEmitter = new EventEmitter()

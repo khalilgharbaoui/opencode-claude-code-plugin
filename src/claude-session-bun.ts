@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { cliHygieneEnv } from "./cli-version.js"
+import { isBatchFile } from "./windows-spawn.js"
 import { apiCallCostUsd } from "./models.js"
 
 /**
@@ -201,7 +202,19 @@ export type PtySpawner = (
 
 const bunPtySpawner: PtySpawner = (argv, opts) => {
   const [command, ...args] = argv
-  return Bun.spawn([resolveClaude(command ?? "claude"), ...args], {
+  const resolved = resolveClaude(command ?? "claude")
+  // The headless transport speaks cmd.exe deliberately (`src/windows-spawn.ts`),
+  // but a PTY cannot: ConPTY starts one process and `cmd.exe /c` would own the
+  // terminal the TUI needs to draw on. Nobody has measured an interactive
+  // Claude Code under ConPTY, so a `.cmd` shim fails here by saying so rather
+  // than by `CreateProcess` refusing it three layers down.
+  if (os.platform() === "win32" && isBatchFile(resolved)) {
+    throw new Error(
+      `The interactive transport cannot run a Windows batch shim (${resolved}). ` +
+        "Point `cliPath` at claude.exe, or use the default headless transport.",
+    )
+  }
+  return Bun.spawn([resolved, ...args], {
     cwd: opts.cwd,
     env: opts.env,
     terminal: {

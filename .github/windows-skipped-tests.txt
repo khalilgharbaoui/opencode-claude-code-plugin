@@ -1,0 +1,56 @@
+# Test files the Windows CI job does NOT run, and why.
+#
+# Every name here is skipped because the TEST is POSIX-only, never because the
+# code it covers is. The suite's fake CLIs are `#!/bin/sh` scripts made
+# executable with `chmod`, and `chmod` plus a shebang mean nothing on Windows;
+# a few others create POSIX symlinks or assert POSIX file modes. Rewriting them
+# as portable shims is a separate piece of work: it would touch 33 files and
+# change what they prove on the platform the plugin is actually developed on.
+#
+# Everything not listed here runs on windows-latest. `npm test` on macOS and
+# Linux still runs the whole glob, unchanged.
+#
+# The workflow reads this file; a blank line or a `#` comment is ignored.
+
+# --- Fake-CLI harness: writes a `#!/bin/sh` script and chmods it 0755 ---
+account-failover.test.ts
+btw-command.test.ts
+cli-events-stream.test.ts
+cli-probe-cache.test.ts
+context-usage.test.ts
+deferred-cli-tool-result.test.ts
+do-generate.test.ts
+effort-sessions.test.ts
+mcp-late-connect.test.ts
+mcp-tool-result-name.test.ts
+model-fallback.test.ts
+process-lifecycle.test.ts
+prologue-abort.test.ts
+proxy-mcp.test.ts
+proxy-task.test.ts
+respawn.test.ts
+result-fallback.test.ts
+session-fork.test.ts
+session-model-switch.test.ts
+session-resume.test.ts
+side-question.test.ts
+silent-turn.test.ts
+skill-bridge.test.ts
+stale-build.test.ts
+startup-diagnostics.test.ts
+tool-block-index.test.ts
+unattended-replay.test.ts
+
+# --- Asserts the generated per-account wrapper, which is a bash script ---
+# The wrapper itself is POSIX-only on every platform today; see AGENTS.md.
+account-wrapper.test.ts
+
+# --- POSIX file modes and symlinks ---
+# 0700 / 0600 scratch-dir modes and symlinked shared capabilities.
+cleanup-stale.test.ts
+tmp-dir.test.ts
+
+# --- Interactive transport: a Bun PTY plus `#!/bin/sh` shims ---
+interactive-pty.test.ts
+interactive-result.test.ts
+transport.test.ts
