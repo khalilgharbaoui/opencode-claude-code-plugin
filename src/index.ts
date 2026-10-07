@@ -289,6 +289,7 @@ export function createClaudeCode(
       interactiveBypass: settings.interactiveBypass,
       interactiveAllowTools: settings.interactiveAllowTools,
       interactiveSystemPrompt: settings.interactiveSystemPrompt,
+      interactiveUserInstructions: settings.interactiveUserInstructions,
     })
   }
 
@@ -637,6 +638,7 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
       fallbackModels: declaredChain.length
         ? declaredChain
         : records[name]?.fallbackModels,
+      prompt: pick("prompt") ?? records[name]?.prompt,
     }
   }
 

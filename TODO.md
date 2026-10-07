@@ -89,9 +89,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-07: opencode's own system prompt on the interactive transport. Maintainer: "ill get back
-  to you on this i have a diffrent perspective for you: opencode's own system prompt is not sent to
-  the interactive transport". Waiting on that perspective; current state and measurements in h #g211.
 - 2026-09-26: Windows spawns go through `cmd.exe` with no argument quoting (injection with
   `& | > ^`, broken with spaces or quotes); needs a Windows CI job first, then a resolver and
   escaper. 2026-09-27: left documented until a Windows user appears (none has ever filed an
@@ -112,6 +109,11 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-07: **done** (v0.44.0): opencode's system prompt on the interactive transport. The
+  "clean root fix" (keep opencode's text, drop only the bisected environment block) was declined as
+  evasion of the billing classification; the maintainer chose the offered opt-in instead ("Build the
+  opt-in you proposed"). `interactiveUserInstructions` forwards only the operator's own instruction
+  files and agent prompt, by provenance, verbatim (h #g212). Smoke-tested live on 1.18.34.
 - 2026-10-07: **done**: "you say: opencode's own system prompt isn't sent because it trips stuff..
   ... i mean this and the small stuff can be fixed right? and maybe find a creative solution for the
   others? to still achive parity?". System prompt: measured, the TUI trips the third-party gate on

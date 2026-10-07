@@ -35,6 +35,8 @@ With `transport` unset, the default remains headless. `interactive: true` or `CL
 - The [tool proxy](../guides/tool-proxy.md): the same proxy MCP server, the same `proxyTools` and the same `--disallowedTools`, so `bash`, `edit`, `write`, `webfetch`, subagent dispatch (`task`, `task_batch`) and, when enabled, `question` and `compress` run in opencode with opencode's own permission prompts and tool rows. Verified live on opencode 1.18.34 and 2.0.22: a proxied `bash` and a `general` subagent, each round trip in the middle of one TUI turn.
 - Model selection, session reuse, and the whole streaming/usage pipeline.
 
+To also send what you wrote yourself (instruction files opencode loads, a custom agent's prompt), set `interactiveUserInstructions: true`. Each block is forwarded verbatim and only when the plugin can tie it to your file or agent definition; opencode's own prompt and environment block stay out.
+
 Set `interactiveSystemPrompt: false` only for diagnostics. While disabled, the interactive session will not receive the plugin's CLI context, AGENTS.md guidance, or continuation hints.
 
 ### What it does not support

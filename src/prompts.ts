@@ -10,7 +10,7 @@ import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
 import { readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
-import { dirname, join } from "node:path"
+import { basename, dirname, isAbsolute, join } from "node:path"
 import { log } from "./logger.js"
 import { pluginTmpDir } from "./tmp.js"
 
@@ -208,6 +208,79 @@ export interface AppendedSystemPromptOptions {
   opencodeCompressEnabled?: boolean
   /** Summary from a previous `compress` call, if this key has one. */
   compressionSummary?: string
+  /**
+   * What the operator wrote that opencode forwarded, from
+   * `userAuthoredInstructions`. Appended after AGENTS.md, minus any block
+   * whose file is an AGENTS.md this builder already pushes from disk.
+   */
+  userInstructions?: UserInstruction[]
+}
+
+/** One user-authored block, verbatim, and the file content it came from. */
+export interface UserInstruction {
+  /** Exactly as opencode sent it, header included. */
+  text: string
+  /** The authored content alone, for the AGENTS.md dedup. */
+  content: string
+}
+
+/** Instruction files the Claude Code TUI already loads on its own. */
+const CLAUDE_NATIVE_INSTRUCTION_FILES = new Set(["CLAUDE.md", "CLAUDE.local.md"])
+
+/**
+ * The parts of opencode's forwarded system prompt the OPERATOR wrote, for the
+ * interactive transport's `interactiveUserInstructions` (h #g212). Chosen by
+ * provenance, never by what the text says:
+ *
+ *  - an instruction file opencode loaded, which it writes as
+ *    `Instructions from: <path>` followed by the file. A block counts only
+ *    when `<path>` is an absolute local file whose CURRENT content is what
+ *    follows the header, exactly or apart from trailing whitespace (which is
+ *    then left off), so the text is the operator's file. URLs are skipped (nothing local to verify against), and so are
+ *    `CLAUDE.md` files, which the TUI loads itself;
+ *  - the active agent's own `prompt`, read from the operator's agent
+ *    definition, and only when opencode sent it verbatim.
+ *
+ * Everything else in the forwarded prompt (opencode's own agent prompt, its
+ * environment block, its tool guidance) is opencode-generated and is left out.
+ * Pure apart from `readFile`, which tests replace.
+ */
+export function userAuthoredInstructions(
+  forwarded: string,
+  opts: { agentPrompt?: string; readFile?: (path: string) => string | null } = {},
+): UserInstruction[] {
+  const readFile =
+    opts.readFile ??
+    ((path: string) => {
+      try {
+        return readFileSync(path, "utf8")
+      } catch {
+        return null
+      }
+    })
+  const out: UserInstruction[] = []
+  const agentPrompt = opts.agentPrompt?.trim()
+  if (agentPrompt && forwarded.includes(agentPrompt)) {
+    out.push({ text: agentPrompt, content: agentPrompt })
+  }
+  const seen = new Set<string>()
+  for (const match of forwarded.matchAll(/^Instructions from: (.+)$/gm)) {
+    const path = match[1]!.trim()
+    if (seen.has(path) || !isAbsolute(path)) continue
+    if (CLAUDE_NATIVE_INSTRUCTION_FILES.has(basename(path))) continue
+    seen.add(path)
+    const file = readFile(path)
+    if (!file?.trim()) continue
+    const start = match.index! + match[0].length + 1
+    const content = forwarded.startsWith(file, start)
+      ? file
+      : forwarded.startsWith(file.trimEnd(), start)
+        ? file.trimEnd()
+        : null
+    if (content === null) continue
+    out.push({ text: `Instructions from: ${path}\n${content}`, content })
+  }
+  return out
 }
 
 export function buildAppendedSystemPrompt(
@@ -255,6 +328,11 @@ export function buildAppendedSystemPrompt(
   if (pushGlobal) parts.push(globalAgents)
   if (pushWorkspace) parts.push(workspaceAgents)
   if (pushGlobal || pushWorkspace) parts.push(AGENTS_MAINTENANCE_HINT)
+  for (const instruction of options.userInstructions ?? []) {
+    const authored = instruction.content.trim()
+    if (authored === globalAgents || authored === workspaceAgents) continue
+    parts.push(instruction.text)
+  }
   if (includeMultiStepHint) parts.push(MULTI_STEP_TASK_HINT)
 
   const content = parts.join("\n\n")

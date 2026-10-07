@@ -18,6 +18,7 @@ import type {
 import { translateStreamForHost } from "./host-tools.js"
 import { getClaudeUserMessage, getTrailingUserMessages } from "./message-builder.js"
 import {
+  getAgentRegistry,
   resolveAgentCacheTtl,
   resolveAgentEffort,
   resolveAgentModel,
@@ -161,6 +162,7 @@ import {
 import {
   buildAppendedSystemPrompt,
   extractSystemMessages,
+  userAuthoredInstructions,
   QUESTION_PROXY_HINT,
   SUBAGENT_DISPATCH_HINT,
   BACKGROUND_SUBAGENT_HINT,
@@ -2115,6 +2117,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   "WebFetch",
                 ]),
               ]
+              // Opt-in: what the operator wrote, recovered from the forwarded
+              // prompt by provenance; opencode's own text stays out (h #g212).
+              const userInstructions =
+                self.config.interactiveUserInstructions === true
+                  ? userAuthoredInstructions(extractSystemMessages(options.prompt).join("\n\n"), {
+                      agentPrompt: getAgentRegistry()[self.getOpencodeAgent(options) ?? ""]?.prompt,
+                    })
+                  : []
+              if (userInstructions.length > 0) {
+                log.info("forwarding user-authored instructions to the interactive TUI", {
+                  count: userInstructions.length,
+                })
+              }
               const systemPromptFile =
                 self.config.interactiveSystemPrompt === false
                   ? undefined
@@ -2140,6 +2155,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                           (t) => t.name === "compress",
                         ),
                         compressionSummary: getCompressionSummary(sk),
+                        userInstructions,
                       },
                     )
               if (self.config.interactiveSystemPrompt === false) {

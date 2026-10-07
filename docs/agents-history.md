@@ -2310,3 +2310,32 @@ URL is presumably one. It is how Anthropic decides a request comes from a
 third-party app and bills it from extra usage. A filter that strips whatever it
 recognises would exist only to get around that, and could put the account at
 risk, so it was not built. The copied prompts were deleted after the bisect.
+
+<a id="g212"></a>
+
+#### `interactiveUserInstructions`: the operator's own instructions on the TUI, by provenance (2026-10-07)
+
+Asked for after #g211: the interactive transport dropped opencode's whole
+forwarded prompt, which also dropped what the operator wrote (instruction files
+from opencode's `instructions` config, a custom agent's prompt). The proposal to
+keep opencode's text and remove only the bisected environment block was declined:
+the reason to remove that block would be the billing classification, which makes
+it evasion. Built instead, opt-in: `userAuthoredInstructions` returns only blocks
+the plugin can tie to the operator. An `Instructions from: <path>` block counts
+when `<path>` is an absolute local file whose current content is exactly the text
+that follows (trailing whitespace tolerated); URLs, relative paths and `CLAUDE.md`
+(which the TUI loads itself) are skipped. The active agent's `prompt` comes from
+the registry (markdown body via `agentMarkdownBody`, or `prompt` in opencode.json)
+and counts only when the forwarded prompt contains it verbatim. The builder
+appends them after AGENTS.md and its maintenance hint, before the continuation
+hint, skipping one whose content equals an AGENTS.md it already pushed. Headless
+is untouched (its call site does not pass the option). Never tuned against the
+gate.
+
+Live on opencode 1.18.34 with Claude Code 2.1.288 under `opencode serve`,
+`transport: "interactive"`, one file in opencode's `instructions` and a custom
+`notes` agent with its own `prompt`: the plugin logged 2 forwarded blocks, the
+reply gave the motto from the file and the sign-off line the agent prompt asks
+for, and the CLI's own `prompt_snapshot` held each block once, with neither
+opencode's header nor its `<env>` block. A second turn on the same TUI ran a
+proxied `bash` (`pty-ok`) and kept the sign-off.

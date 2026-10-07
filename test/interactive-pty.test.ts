@@ -1515,6 +1515,7 @@ async function runFakeBunTurn(
   modelId: string,
   turn: TurnScript,
   options: Record<string, unknown> = {},
+  prompt: any[] = [{ role: "user", content: [{ type: "text", text: "reply" }] }],
 ): Promise<{ parts: any[]; children: FakeTui[] }> {
   const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
   const children: FakeTui[] = []
@@ -1539,7 +1540,7 @@ async function runFakeBunTurn(
       bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false, ...options,
     }).languageModel(modelId)
     const result = await model.doStream({
-      prompt: [{ role: "user", content: [{ type: "text", text: "reply" }] }],
+      prompt,
       tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
     })
     const parts: any[] = []
@@ -1907,6 +1908,49 @@ test("a proxied call stays in the foreground on the PTY, as on headless (h #g210
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS
     else process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS = previous
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// `interactiveUserInstructions` (h #g212): what the operator wrote reaches the
+// TUI verbatim; opencode's own text does not.
+// ---------------------------------------------------------------------------
+
+test("interactiveUserInstructions appends the operator's instruction file to the TUI's prompt, and nothing of opencode's", async () => {
+  const dirs = scratch()
+  const rules = path.join(dirs.root, "team-rules.md")
+  const authored = "# Team rules\n\nAlways write tests first.\n"
+  fs.writeFileSync(rules, authored)
+  const system =
+    "You are OpenCode, the best coding agent on the planet.\n" +
+    "Here is some useful information about the environment you are running in:\n<env>\n  Platform: darwin\n</env>\n" +
+    `Instructions from: ${rules}\n${authored}`
+  const prompt = [
+    { role: "system", content: system },
+    { role: "user", content: [{ type: "text", text: "reply" }] },
+  ]
+  const appended = async (modelId: string, options: Record<string, unknown>) => {
+    let file = ""
+    await runFakeBunTurn(dirs, modelId, (t) => {
+      const at = t.argv.indexOf("--append-system-prompt-file")
+      file = at === -1 ? "" : fs.readFileSync(t.argv[at + 1]!, "utf8")
+      t.append(assistantRecord("m1", "end_turn", textBlock("ok")))
+    }, options, prompt)
+    return file
+  }
+  try {
+    const on = await appended("claude-test-pty-user-on", { interactiveUserInstructions: true })
+    assert.ok(on.includes(`Instructions from: ${rules}\n${authored}`), "verbatim, header included")
+    assert.ok(!on.includes("You are OpenCode"), "opencode's own prompt stays out")
+    assert.ok(!on.includes("<env>"), "so does its environment block")
+    assert.equal(on.split("Always write tests first.").length - 1, 1, "once")
+    // The plugin's own parts are unchanged, and still last: the continuation hint.
+    assert.ok(on.indexOf(authored) < on.indexOf("## Continuing through multi-step tasks"))
+
+    const off = await appended("claude-test-pty-user-off", {})
+    assert.ok(!off.includes("Always write tests first."), "off by default")
+  } finally {
     dirs.cleanup()
   }
 })

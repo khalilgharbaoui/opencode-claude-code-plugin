@@ -26,6 +26,12 @@ export interface ClaudeCodeConfig {
   interactiveAllowTools?: string[]
   /** With interactive: append this plugin's own prompts via --append-system-prompt-file. Defaults to true. */
   interactiveSystemPrompt?: boolean
+  /**
+   * With the interactive transport: also append what the operator wrote that
+   * opencode forwarded (instruction files and the active agent's own prompt),
+   * verbatim and chosen by provenance. Off by default (h #g212).
+   */
+  interactiveUserInstructions?: boolean
   cwd?: string
   account?: string
   configDir?: string
@@ -149,6 +155,12 @@ export interface ClaudeCodeProviderSettings {
   interactiveAllowTools?: string[]
   /** With interactive: append this plugin's own prompts via --append-system-prompt-file. Defaults to true. */
   interactiveSystemPrompt?: boolean
+  /**
+   * With the interactive transport: also append what the operator wrote that
+   * opencode forwarded (instruction files and the active agent's own prompt),
+   * verbatim and chosen by provenance. Off by default (h #g212).
+   */
+  interactiveUserInstructions?: boolean
   cwd?: string
   name?: string
   providerID?: string

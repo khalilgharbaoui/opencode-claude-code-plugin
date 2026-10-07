@@ -81,6 +81,11 @@ export type AgentRecord = {
    * refused. Same account throughout; see `src/model-fallback.ts`.
    */
   fallbackModels?: string[]
+  /**
+   * The agent's own prompt as the operator wrote it: the markdown body, or
+   * `prompt` in opencode.json. Read only by `interactiveUserInstructions`.
+   */
+  prompt?: string
 }
 
 let registry: Record<string, AgentRecord> = {}
@@ -402,6 +407,18 @@ export function parseAgentFrontmatter(text: string): AgentRecord {
 }
 
 /**
+ * An agent file's body, which opencode uses as that agent's prompt: what
+ * follows the frontmatter, trimmed, or undefined when there is none.
+ */
+export function agentMarkdownBody(text: string): string | undefined {
+  if (!text.startsWith("---")) return text.trim() || undefined
+  const lines = text.split(/\r?\n/)
+  const close = lines.findIndex((line, index) => index > 0 && line.trim() === "---")
+  if (close === -1) return undefined
+  return lines.slice(close + 1).join("\n").trim() || undefined
+}
+
+/**
  * A declared fallback list, from frontmatter, from opencode.json's `agent`
  * block, or from the provider options. Accepts the three shapes a person
  * actually writes: a YAML/JSON array, a comma or whitespace separated string,
@@ -450,6 +467,8 @@ export async function readAgentMarkdownRecords(
       try {
         const text = await readFile(path.join(directory, entry), "utf8")
         records[name] = parseAgentFrontmatter(text)
+        const prompt = agentMarkdownBody(text)
+        if (prompt) records[name].prompt = prompt
       } catch (err) {
         log.debug("failed to read agent markdown", {
           file: path.join(directory, entry),
