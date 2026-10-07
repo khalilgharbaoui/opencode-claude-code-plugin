@@ -146,11 +146,11 @@ const version = (raw: string) => {
 }
 
 test("a CLI newer than the interactive transport was measured on is reported once, never refused", () => {
-  assert.equal(INTERACTIVE_MEASURED_CLI, "2.1.288")
+  assert.equal(INTERACTIVE_MEASURED_CLI, "2.1.293")
   assert.equal(isUnmeasuredInteractiveCli(null), false, "an unknown version is not a claim either way")
-  assert.equal(isUnmeasuredInteractiveCli(version("2.1.280")), false)
   assert.equal(isUnmeasuredInteractiveCli(version("2.1.288")), false)
-  assert.equal(isUnmeasuredInteractiveCli(version("2.1.289")), true)
+  assert.equal(isUnmeasuredInteractiveCli(version("2.1.293")), false)
+  assert.equal(isUnmeasuredInteractiveCli(version("2.1.294")), true)
   assert.equal(isUnmeasuredInteractiveCli(version("2.2.0")), true)
   assert.equal(isUnmeasuredInteractiveCli(version("3.0.0")), true)
 
@@ -161,7 +161,7 @@ test("a CLI newer than the interactive transport was measured on is reported onc
     _resetLoggerForTests()
     configureLogger({ mode: "debug", level: "debug" })
     _resetUnmeasuredInteractiveWarnings()
-    reportUnmeasuredInteractiveCli(version("2.1.288"))
+    reportUnmeasuredInteractiveCli(version("2.1.293"))
     reportUnmeasuredInteractiveCli(null)
     reportUnmeasuredInteractiveCli(version("2.1.300"))
     reportUnmeasuredInteractiveCli(version("2.1.300"))

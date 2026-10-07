@@ -96,15 +96,28 @@ export function passthroughModel(id: string): OpenCodeModel {
 // `anthropic/claude-haiku-4-5 -> {"input": 1, "output": 5, "cache_read": 0.1,
 // "cache_write": 1.25}`.
 //
-// There is no long-context premium to model. Anthropic's pricing page states
-// that Claude 4.6 and later ship the full 1M-token context window at standard
-// pricing ("a 900k-token request is billed at the same per-token rate as a
-// 9k-token request"), and caching/batch discounts apply unchanged across it.
-// opencode 1.18.5 added optional `cost.tiers` / `cost.experimentalOver200K`
-// fields for above-200K pricing; they stay unset here deliberately, because a
-// tier would misreport the real price. Re-check only if Anthropic introduces
-// one. Verified against the pricing docs 2026-07-26.
+// Every model here but Haiku 5.5 is billed at one rate across its whole
+// context window. Anthropic's pricing page states that Claude 4.6 and later
+// ship the full 1M-token window at standard pricing ("a 900k-token request is
+// billed at the same per-token rate as a 9k-token request"), and caching/batch
+// discounts apply unchanged across it.
+//
+// Haiku 5.5 is the exception and the pricing page carves it out by name: a
+// prompt over 100,000 tokens pays five times the rate. opencode's own config
+// schema cannot express that, because the only tier field it offers is
+// `cost.context_over_200k`, whose threshold is fixed at 200K; filling it in
+// would be right above 200K and still wrong between 100K and 200K while
+// implying the plugin models the tier. So the catalog `cost` below stays the
+// base table for every model, and the premium lives in `LONG_PROMPT_COSTS`,
+// which only `apiCallCostUsd` reads. Verified against the pricing docs
+// 2026-10-07 and against Claude Code 2.1.293's own catalog.
 const haikuCost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }
+// Haiku 5.5 is a tenth of Haiku 4.5 on every axis: $0.10/M in, $0.50/M out,
+// cache read $0.01, 5-minute cache write $0.125. Launched 2026-10-07 and known
+// to Claude Code from 2.1.293 (`pricing: "haiku_55"`), where it is also the
+// default Haiku.
+const haiku55Cost = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
+const haiku55LongPromptCost = { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }
 const sonnetCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
 // Sonnet 5 and Sonnet 5.5 are $2/M in, $10/M out, cache read $0.20, 5-minute
 // cache write $2.50. For Sonnet 5 that was announced as introductory pricing
@@ -184,6 +197,28 @@ export function toConfigModel(model: OpenCodeModel): Record<string, unknown> {
   }
 }
 
+/**
+ * The per-model rate that replaces the catalog's whole cost table once a call's
+ * prompt crosses `aboveTokens`, for the models Anthropic prices by prompt
+ * length. Read out of Claude Code 2.1.293's own catalog
+ * (`haiku_55.long_prompt`) and matching the published pricing page.
+ *
+ * `aboveTokens` is compared against the prompt the way the CLI compares it:
+ * `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`,
+ * strictly greater, and the whole call then prices at this table rather than
+ * only the tokens past the line.
+ *
+ * Deliberately separate from `defaultModels`: `OpenCodeModel` is a structural
+ * mirror of what opencode accepts from `provider.models()`, and opencode has
+ * no field for a 100K threshold, so this must not ride on it.
+ */
+const LONG_PROMPT_COSTS: Record<
+  string,
+  { aboveTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number } }
+> = {
+  "claude-haiku-5-5": { aboveTokens: 100_000, cost: haiku55LongPromptCost },
+}
+
 export const defaultModels: Record<string, OpenCodeModel> = {
   "claude-haiku-4-5": defineModel({
     id: "claude-haiku-4-5",
@@ -195,6 +230,32 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     cost: haikuCost,
     multiplier: 1,
     releaseDate: "2025-10-01",
+  }),
+  // Haiku 5.5 needs Claude Code 2.1.293+, the release that added it and made
+  // it the default Haiku; an older CLI runs it on fallback limits and says so
+  // on stderr, which `reportUnrecognizedModel` turns into a warning. Unlike
+  // Haiku 4.5 it reasons: the CLI's catalog gives it `effort`, `max_effort`,
+  // `xhigh_effort` and `adaptive_thinking`, and Anthropic's migration note says
+  // manual `budget_tokens` is a 400 and adaptive thinking is on by default. The
+  // plugin never sends `budget_tokens`, so nothing here special-cases it, the
+  // same as Opus 5.5's `rejects_disabled_thinking`. No `-fast` entry: the
+  // catalog gives it no `fast_mode` capability.
+  //
+  // The multiplier is 0.1 because it is exactly a tenth of Haiku 4.5 on input,
+  // output, cache read and cache write alike, and Haiku 4.5's $1/$5 is the 1x
+  // anchor every other entry here is already measured against. Re-anchoring the
+  // whole table on Haiku 5.5 would change every model's displayed number for no
+  // gain in accuracy.
+  "claude-haiku-5-5": defineModel({
+    id: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    family: "haiku",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: haiku55Cost,
+    multiplier: 0.1,
+    releaseDate: "2026-10-07",
   }),
   "claude-sonnet-4-5": defineModel({
     id: "claude-sonnet-4-5",
@@ -462,6 +523,10 @@ const WEB_SEARCH_USD = 0.01
  * transcript's own field (`claude-haiku-4-5-20251001`), so a dated, `[1m]` or
  * `@account` spelling resolves to its catalog entry; a model the catalog does
  * not know returns null rather than a guess.
+ *
+ * A model Anthropic prices by prompt length (Haiku 5.5, from 2.1.293) swaps
+ * its WHOLE table for the long-prompt one once the call's prompt crosses the
+ * threshold; see `LONG_PROMPT_COSTS` and `longPromptCost`.
  */
 export function apiCallCostUsd(model: unknown, usage: any): number | null {
   if (typeof model !== "string" || !usage || typeof usage !== "object") return null
@@ -470,8 +535,8 @@ export function apiCallCostUsd(model: unknown, usage: any): number | null {
     (usage.speed === "fast" ? defaultModels[`${base}${FAST_SUFFIX}`] : undefined) ??
     defaultModels[base]
   if (!entry) return null
-  const cost = entry.cost
   const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0)
+  const cost = longPromptCost(base, usage, count) ?? entry.cost
   const split = usage.cache_creation
   const write1h = split ? count(split.ephemeral_1h_input_tokens) : 0
   const write5m = split ? count(split.ephemeral_5m_input_tokens) : count(usage.cache_creation_input_tokens)
@@ -482,4 +547,32 @@ export function apiCallCostUsd(model: unknown, usage: any): number | null {
     write5m * cost.cache.write +
     write1h * cost.input * 2
   return perMillion / 1_000_000 + count(usage.server_tool_use?.web_search_requests) * WEB_SEARCH_USD
+}
+
+/**
+ * The long-prompt table for this call, in `OpenCodeModel["cost"]` shape, or
+ * null when the model has no such tier or the prompt stayed under it.
+ *
+ * The comparison is the CLI's own, read out of 2.1.293: the three prompt-side
+ * counters added together, strictly greater than the threshold. Output tokens
+ * are not part of it, and a call that crosses the line prices every one of its
+ * tokens at this table, not only the ones past it.
+ */
+function longPromptCost(
+  base: string,
+  usage: any,
+  count: (value: unknown) => number,
+): OpenCodeModel["cost"] | null {
+  const tier = LONG_PROMPT_COSTS[base]
+  if (!tier) return null
+  const promptTokens =
+    count(usage.input_tokens) +
+    count(usage.cache_read_input_tokens) +
+    count(usage.cache_creation_input_tokens)
+  if (promptTokens <= tier.aboveTokens) return null
+  return {
+    input: tier.cost.input,
+    output: tier.cost.output,
+    cache: { read: tier.cost.cacheRead, write: tier.cost.cacheWrite },
+  }
 }

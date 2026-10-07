@@ -141,6 +141,35 @@ test("configModelsForProvider registers Sonnet 5 and Opus 5 metadata", () => {
   assert.ok("max" in (opus.variants as Record<string, unknown>))
 })
 
+test("configModelsForProvider registers Haiku 5.5 at its published metadata", () => {
+  // Anthropic's API release notes (2026-10-07) and pricing page, and Claude
+  // Code 2.1.293's own catalog: 1M context, 128K output, $0.10/$0.50, cache
+  // read $0.01, 5-minute cache write $0.125, adaptive thinking with the effort
+  // parameter. The catalog `cost` is the base (<= 100K prompt) table on
+  // purpose; opencode has no field for a 100K threshold.
+  const models = configModelsForProvider({}, "claude-code")
+  const haiku = models["claude-haiku-5-5"] as Record<string, unknown>
+  assert.ok(haiku, "claude-haiku-5-5 must be registered")
+  assert.equal(haiku.name, "Claude Haiku 5.5 (0.1×)")
+  assert.equal(haiku.family, "haiku")
+  assert.equal(haiku.release_date, "2026-10-07")
+  assert.equal(haiku.reasoning, true, "Haiku 5.5 reasons; Haiku 4.5 does not")
+  assert.deepEqual(haiku.limit, { context: 1_000_000, output: 128_000 })
+  assert.deepEqual(haiku.cost, {
+    input: 0.1,
+    output: 0.5,
+    cache_read: 0.01,
+    cache_write: 0.125,
+  })
+  assert.ok(
+    "max" in (haiku.variants as Record<string, unknown>),
+    "Haiku 5.5 must carry the reasoning variants",
+  )
+  // No fast-mode twin: 2.1.293's catalog gives Haiku 5.5 no `fast_mode`
+  // capability, so a `-fast` entry would price at 10x and run at standard speed.
+  assert.equal(models["claude-haiku-5-5-fast"], undefined)
+})
+
 test("configModelsForProvider registers Sonnet 5.5 at its published metadata", () => {
   // Anthropic's models overview and pricing pages, read 2026-09-30: released
   // 2026-09-28, 1M context, 128K output, $2/$10, cache read $0.20, 5-minute
@@ -267,6 +296,7 @@ test("configModelsForProvider reports the published context and output limits", 
 
   // 4.6 and later: full 1M context, 128k output.
   for (const id of [
+    "claude-haiku-5-5",
     "claude-sonnet-4-6",
     "claude-sonnet-5",
     "claude-sonnet-5-5",

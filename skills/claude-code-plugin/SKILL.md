@@ -854,7 +854,7 @@ No manual skill copy/update is needed. Do not publish or release as part of conf
 
 ### Registered model ids
 
-Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
+Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 `claude-sonnet-5`, `claude-sonnet-5-5`, `claude-opus-4-5`, `claude-opus-4-6`,
 `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-8-fast`, `claude-opus-5`,
 `claude-opus-5-fast`, `claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`,
@@ -862,10 +862,11 @@ Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 
 ### Variants and costs
 
-- Display names end in a `(N×)` list-price multiplier relative to Haiku: 1× haiku,
+- Display names end in a `(N×)` list-price multiplier anchored on Haiku 4.5: 0.1× haiku 5.5,
+  1× haiku 4.5,
   2× sonnet 5 and 5.5, 3× sonnet 4.5/4.6, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5, 10× fable, mythos
   and fast-mode opus 5 / 4.8. It is display only.
-- Every model except Haiku has reasoning variants `low`, `medium`, `high`, `xhigh`,
+- Every model except Haiku 4.5 has reasoning variants `low`, `medium`, `high`, `xhigh`,
   `max`, picked in opencode's model selector. A variant becomes
   `CLAUDE_CODE_EFFORT_LEVEL` on the spawned CLI unless an agent effort wins. For direct
   AI-SDK calls, `ClaudeCodeCallOptions.reasoningEffort` supports the same levels plus
@@ -882,6 +883,15 @@ Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 - `claude-sonnet-5-5` needs Claude Code 2.1.284+ to run on its real limits. An older CLI
   still serves it on fallback limits (200k context, an estimated cost), and the plugin
   logs a WARN naming the model and the floor: the fix is `claude update`.
+- `claude-haiku-5-5` needs Claude Code 2.1.293+ for the same reason, the release that
+  added it and made it the default Haiku. It is a tenth of Haiku 4.5 ($0.10/$0.50), has
+  a 1M context, 128k output and adaptive thinking, so it carries reasoning variants
+  where Haiku 4.5 does not, and it has no `-fast` id (the CLI's catalog gives it no
+  fast-mode capability). It is the only model Anthropic prices by prompt length: over
+  **100,000 prompt tokens** (input plus cache read plus cache write) the whole call
+  bills at 5× ($0.50/$2.50). The registered cost is the base rate, because opencode's
+  only tier field is fixed at 200,000 tokens; the interactive transport's own per-turn
+  cost does apply the tier. Tell the user to budget for up to 5× on long prompts.
 - `claude-mythos-5` and `claude-mythos-5-1` are limited availability (Project Glasswing).
   Without access `claude --model` errors; use the corresponding `claude-fable-*`.
 - Ordinary calls can pass through unregistered ids; availability and opencode model
@@ -918,7 +928,7 @@ directory. MCP names are disk discovery, not proof of live connectivity. The sta
 when `interactive` was requested by either spelling; neither proves the PTY ran
 (`auto` stays headless until the CLI refuses `--print`). `/claude-code-doctor`'s
 live-process rows carry a per-process transport column, which is the proof; the
-spawn log line is the other. The PTY was measured on Claude Code 2.1.288: a newer
+spawn log line is the other. The PTY was measured on Claude Code 2.1.293: a newer
 CLI logs one WARN per version ("has not been measured") and the doctor flags it,
 but nothing is refused.
 
@@ -940,6 +950,7 @@ that does not answer it disables every gated flag.
 | 2.1.263+ | `--permission-prompts none` (the second read-only layer) |
 | 2.1.280+ | `claude-opus-5-5`; the API rejects it from an older CLI with a 400 naming that floor |
 | 2.1.284+ | `claude-sonnet-5-5` on its real limits; an older CLI still runs it, on fallback limits, and the plugin warns |
+| 2.1.293+ | `claude-haiku-5-5` on its real limits, same fallback and warning |
 
 Below a flag gate the plugin drops the flag rather than failing the spawn, and says so
 at WARN. `--plugin-dir` (the skill bridge) has no published version marker, so it is

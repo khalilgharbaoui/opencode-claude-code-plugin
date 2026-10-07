@@ -207,10 +207,19 @@ test("the watchdog defaults the skill quotes are the ones turn-state falls back 
 })
 
 test("every price multiplier named is one the registry actually uses", () => {
+  // A multiplier is not always a whole number: Haiku 5.5 is a tenth of the
+  // Haiku 4.5 anchor, so its display name ends in a 0.1 multiplier. Matching
+  // whole digits only read that as the "1" inside it on the skill side and as
+  // NaN on the registry side, so both patterns take an optional fraction.
+  const MULTIPLIER = String.raw`\d+(?:\.\d+)?`
   const used = new Set(
-    Object.values(defaultModels).map((m) => Number(/\((\d+)\u00d7\)$/.exec(m.name)?.[1])),
+    Object.values(defaultModels).map((m) =>
+      Number(new RegExp(`\\((${MULTIPLIER})\\u00d7\\)$`).exec(m.name)?.[1]),
+    ),
   )
-  const named = new Set([...SKILL.matchAll(/(\d+)\u00d7/g)].map((m) => Number(m[1])))
+  const named = new Set(
+    [...SKILL.matchAll(new RegExp(`(${MULTIPLIER})\\u00d7`, "g"))].map((m) => Number(m[1])),
+  )
   assert.deepEqual(
     [...named].filter((n) => !used.has(n)).sort((a, b) => a - b),
     [],

@@ -346,6 +346,64 @@ test("a 5-minute write, a fast call and a web search are priced as published", (
   close(apiCallCostUsd("claude-haiku-4-5", { server_tool_use: { web_search_requests: 3 } }), 0.03)
 })
 
+// Haiku 5.5 is the one model Anthropic prices by prompt length. Claude Code
+// 2.1.293 swaps the WHOLE cost table once
+// `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+// is strictly greater than 100,000; output tokens are not part of that sum,
+// and a call that crosses the line prices every token at the higher table.
+test("Haiku 5.5 switches to its long-prompt table exactly where the CLI does", () => {
+  const base = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
+  const long = { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }
+
+  // Exactly at the threshold is still the base table: the CLI compares with `>`.
+  close(
+    apiCallCostUsd("claude-haiku-5-5", { input_tokens: 100_000, output_tokens: 1_000 }),
+    (100_000 * base.input + 1_000 * base.output) / 1e6,
+  )
+  // One token past it, every token on the call reprices.
+  close(
+    apiCallCostUsd("claude-haiku-5-5", { input_tokens: 100_001, output_tokens: 1_000 }),
+    (100_001 * long.input + 1_000 * long.output) / 1e6,
+  )
+  // The prompt side is the sum of all three counters, not `input_tokens` alone.
+  close(
+    apiCallCostUsd("claude-haiku-5-5", {
+      input_tokens: 10,
+      cache_read_input_tokens: 60_000,
+      cache_creation_input_tokens: 41_000,
+      output_tokens: 500,
+    }),
+    (10 * long.input +
+      60_000 * long.cacheRead +
+      41_000 * long.cacheWrite +
+      500 * long.output) / 1e6,
+  )
+  // A huge OUTPUT never crosses it on its own.
+  close(
+    apiCallCostUsd("claude-haiku-5-5", { input_tokens: 10, output_tokens: 128_000 }),
+    (10 * base.input + 128_000 * base.output) / 1e6,
+  )
+  // A 1-hour write past the line is twice the long-prompt input price.
+  close(
+    apiCallCostUsd("claude-haiku-5-5", {
+      input_tokens: 200_000,
+      cache_creation_input_tokens: 1_000_000,
+      cache_creation: { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 },
+    }),
+    (200_000 * long.input) / 1e6 + long.input * 2,
+  )
+  // A dated or account-suffixed spelling resolves to the same tier.
+  close(
+    apiCallCostUsd("claude-haiku-5-5@work", { input_tokens: 100_001 }),
+    (100_001 * long.input) / 1e6,
+  )
+  // Models without a tier are untouched by any prompt size.
+  close(
+    apiCallCostUsd("claude-haiku-4-5", { input_tokens: 1_000_000 }),
+    1,
+  )
+})
+
 test("a model the catalog cannot price gives no cost, never a guess", () => {
   assert.equal(apiCallCostUsd("claude-someday-9", MEASURED_CALL.usage), null)
   assert.equal(apiCallCostUsd(undefined, MEASURED_CALL.usage), null)

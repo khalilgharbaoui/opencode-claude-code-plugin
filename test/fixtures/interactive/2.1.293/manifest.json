@@ -1,0 +1,71 @@
+{
+  "cliVersion": "2.1.293",
+  "model": "claude-haiku-4-5",
+  "recordedAt": "2026-10-07",
+  "scenarios": {
+    "answer": {
+      "prompt": "Reply with exactly the word ALPHA and nothing else.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "ALPHA",
+        "outputTokens": 58,
+        "cacheReadTokens": 14862
+      }
+    },
+    "native-tool": {
+      "prompt": "Use the Bash tool to run exactly: echo golden-ok   Then reply with the output only.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "golden-ok",
+        "outputTokens": 163,
+        "cacheReadTokens": 42157
+      }
+    },
+    "interrupted": {
+      "prompt": "Write a 500-word story about a lighthouse keeper. No tools.",
+      "expect": {
+        "end": "interrupted",
+        "stopReason": null,
+        "text": "# The Last Light\n\nMarcus had kept the lighthouse for forty-three years. He arrived each morning before dawn, climbing the 127 iron steps with the same deliberate pace, though his knees complained more now. His ritual never varied: check the lamp, polish the lens, log the weather, make the coffee.\n\nThe lighthouse stood on the rocky point of Mercy's End, a name locals whispered with the reverence of people who understood the sea's appetite",
+        "outputTokens": 4,
+        "cacheReadTokens": 14862
+      },
+      "afterActionFrom": 1
+    },
+    "plan-approval": {
+      "prompt": "Create a file named plan.txt containing the word hi. You are in plan mode: write a one-line plan and call ExitPlanMode with it.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "I'll create a plan for this task and then exit plan mode.\nDone. Created plan.txt containing \"hi\" in the current working directory.",
+        "outputTokens": 864,
+        "cacheReadTokens": 132731
+      },
+      "dialogScreen": "───────────────────────── Claude has written up a plan and is ready to execute. Would you like to proceed? ❯ 1. Yes, auto-accept edits 2. Yes, manually approve edits 3. Tell Claude what to change shift+tab to approve with this feedback ctrl+g to edit in Sublime · ~/.claude/plans/create-a-file-named-",
+      "afterActionFrom": 10
+    },
+    "queued-input": {
+      "prompt": "Use the Bash tool to run exactly: sleep 8 && echo first-done   Then report the output.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "The command completed successfully. Output: **first-done**\n\nAlso, PELICAN.",
+        "outputTokens": 223,
+        "cacheReadTokens": 42156
+      }
+    },
+    "fork": {
+      "prompt": "Side question: what was the codeword? Answer with one word, no tools.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "ORCHID",
+        "outputTokens": 73,
+        "cacheReadTokens": 27285
+      },
+      "forkOf": "fixture-session"
+    }
+  }
+}

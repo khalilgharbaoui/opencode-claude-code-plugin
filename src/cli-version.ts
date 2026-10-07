@@ -271,10 +271,12 @@ export function cliSupportsPermissionPrompts(v: CliVersion | null): boolean {
 
 /**
  * `--permission-mode dontAsk`: deny anything not pre-approved, without a
- * prompt. Present in the `--help` of every binary on hand (2.1.263, 2.1.280,
- * 2.1.288), so the gate sits at the oldest. The interactive transport's
- * read-only preset needs it (h #g201): a TUI permission dialog can only be
- * answered with Esc, which ends the whole turn.
+ * prompt. Measured present in 2.1.263, 2.1.280, 2.1.288 and 2.1.293, so the
+ * gate sits at the oldest that was checked. (2.1.263 is no longer on this
+ * machine, the installer having pruned it; the gate stays where it was
+ * measured rather than drifting up with whatever happens to be on disk.) The
+ * interactive transport's read-only preset needs it (h #g201): a TUI
+ * permission dialog can only be answered with Esc, which ends the whole turn.
  */
 export function cliSupportsDontAsk(v: CliVersion | null): boolean {
   if (!v) return false
@@ -284,8 +286,8 @@ export function cliSupportsDontAsk(v: CliVersion | null): boolean {
 /**
  * The CLI reads `skipDangerousModePermissionPrompt` from the `--settings`
  * layer, so the TUI can run `--dangerously-skip-permissions` without its
- * confirmation dialog. Read out of every binary on hand: 2.1.263, 2.1.280 and
- * 2.1.288 (h #g210), so the gate sits at the oldest.
+ * confirmation dialog. Read out of 2.1.263, 2.1.280, 2.1.288 (h #g210) and
+ * 2.1.293, so the gate sits at the oldest that was checked.
  */
 export function cliSupportsInteractiveBypass(v: CliVersion | null): boolean {
   if (!v) return false
@@ -299,9 +301,9 @@ export function cliSupportsInteractiveBypass(v: CliVersion | null): boolean {
  * transport exists for the day a new CLI drops `--print`, and refusing
  * unmeasured versions would switch it off exactly then.
  */
-export const INTERACTIVE_MEASURED_CLI = "2.1.288"
+export const INTERACTIVE_MEASURED_CLI = "2.1.293"
 
-const INTERACTIVE_MEASURED = { major: 2, minor: 1, patch: 288 }
+const INTERACTIVE_MEASURED = { major: 2, minor: 1, patch: 293 }
 
 /** True when `v` is known and newer than `INTERACTIVE_MEASURED_CLI`. */
 export function isUnmeasuredInteractiveCli(v: CliVersion | null): boolean {

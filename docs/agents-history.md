@@ -3473,3 +3473,266 @@ frames. The only thing wrong was which frame was read.
 `npm run typecheck`, `npm test` (1380 tests before this entry's additions, one
 failure that was the new `accountInProcess` option missing from the skill's
 reference table, fixed), `npm run build`, and the Windows CI job.
+
+<a id="g222"></a>
+
+#### Claude Code 2.1.293: measured end to end, Haiku 5.5 registered, golden transcripts recorded (2026-10-08)
+
+The maintainer installed Claude Code **2.1.293** over the 2.1.288 the plugin had
+last been measured on. This entry is the upgrade: what the five intervening
+releases changed, what was run live, what drifted (almost nothing) and the one
+new thing that had to be built.
+
+##### The CHANGELOG, 2.1.289 through 2.1.293
+
+Read from `anthropics/claude-code`'s `CHANGELOG.md`. The items that could touch
+this plugin, and what was done about each:
+
+- **2.1.293: "Added Claude Haiku 5.5 (`claude-haiku-5-5`), now the default Haiku
+  model on the Anthropic API, 1M context, $0.10/$0.50 per Mtok ($0.50/$2.50 for
+  prompts over 100K)."** The one item that needed code. See below.
+- **2.1.293: "Fixed a memory leak where an HTTP MCP connection kept every
+  request it had sent until it closed."** The plugin's proxy is an HTTP MCP
+  server, so this is a straight improvement for long sessions. Nothing to do.
+- **2.1.292: "Fixed an MCP tool with a name longer than 128 characters making
+  every request fail; that tool is now left out and an MCP error names it."**
+  Relevant to the bridge, which builds `<server>_<tool>` names. A tool the CLI
+  now drops appears in `mcp_server_errors`, which `describeMcpServerError`
+  already reports (h #g167). No code.
+- **2.1.292: "Added an `effort` parameter to the Agent tool."** The CLI's own
+  subagent tool, which a default install proxies to opencode (h #g168), so it
+  reaches nothing here.
+- **2.1.290: "Changed `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` to also skip
+  the startup connection warm-up."** The plugin sets that variable on every
+  child (`cliHygieneEnv`), so every spawn got slightly cheaper. No code.
+- **2.1.290: "Fixed plan mode not being restored when resuming a session with
+  `--continue` or `--resume <session-id>`."** Both transports resume, and the
+  interactive one runs plan mode, so this is the fix landing under us.
+- **2.1.291: "Fixed a regression in 2.1.288 where the last messages of a session
+  could be lost when quitting."** The interactive transport reads the
+  transcript the CLI writes, so this protects it.
+- **2.1.290: `--restricted` no longer opens the cross-session messaging socket**
+  (the read-only preset's first layer), and **`--include-partial-messages`
+  streams closing properly**, which the plugin does not pass.
+- Checked and dismissed as unreachable or mods-only: `isDeferred` on
+  `$.tool.register`, `agentType` on `subagentStatusLine`, `serverToolUses` on
+  `turn.step`, `prompt.autocomplete`, `$.model.complete` caching, every `[VSCode]`,
+  `[Cloud sessions]`, `[Claude Tag]`, `[Code Review]` and self-hosted-runner item,
+  and the whole `claude agents` / background-session family (this plugin spawns
+  main conversations only).
+
+##### The binary, 2.1.288 against 2.1.293
+
+`rg`/`grep -a` over both Mach-O binaries, the technique the stream-event rules
+record. Every string the plugin depends on is present in both and unchanged:
+`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` (5 hits each),
+`skipDangerousModePermissionPrompt` (6 then 9), `side_question`,
+`can_use_tool`, `rate_limit_event`, `turn_duration`, `isApiErrorMessage`,
+`queue-operation`, `elicitation`, `bareElicitationCapability`,
+`conversation_reset`, `mcp_server_errors`, `unrecognized_model`,
+`fast_mode_disabled_reason`, `per_turn_effort_active`. `--help` differs in three
+lines, all of them `claude attach`/`claude logs` taking a name as well as an id.
+
+The schema literal diffs are small and complete. Two new `system` subtypes,
+**`file_attachments_missing`** (about `file_attachments` on an inbound user
+message, which `src/message-builder.ts` does not send, so unreachable) and
+**`permission_check_status`** (`checking`/`done`, emitted when a tool call has
+waited about four seconds on its permission check: informational, and the
+plugin's own `PROXY_STALL_WARNING_MS` already covers the only question it
+answers). Three new control subtypes, `ui_client_fault`,
+`ui_prompt_autocomplete` and `ui_read_selection`, all mods-only. The `result`
+frame's error subtype set is unchanged (`error_during_execution`,
+`error_max_turns`, `error_max_budget_usd`,
+`error_max_structured_output_retries`, all four already in 2.1.288). Every TUI
+screen string `classifyScreen` and `planApprovalKeys` match has the same hit
+count in both binaries, and the recorded plan-approval dialog is byte-identical
+between the two fixture sets.
+
+One thing worth recording that is NOT drift: the cost function the CLI applies
+carries an `inference_geo === "us" ? 1.1 : 1` multiplier, and it was already in
+2.1.288. `apiCallCostUsd` does not model it and still matched `cost-state` to
+the last digit on 2.1.280 and 2.1.288 (h #g208), so this account's traffic does
+not carry that geo. Left alone.
+
+**2.1.263 is gone from `~/.local/share/claude/versions`**, pruned by the
+installer, so two comments in `src/cli-version.ts` that claimed it was "on hand"
+now say what was measured instead. The gates themselves did not move: a gate
+sits where it was measured, not where the surviving binaries happen to start.
+
+##### Live runs
+
+Every run on a scratch `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_DATA_HOME`/
+`XDG_CACHE_HOME`/`TMPDIR`, a scratch `OPENCODE_CLAUDE_CODE_LOG_DIR`, a fresh
+cwd, the plugin loaded from this lane's worktree, the DEFAULT Claude account,
+`claude-haiku-4-5`, and `plugin ready` asserted to appear exactly once per
+process. Every server and `claude` started was killed afterwards.
+
+**opencode 1.18.35, headless transport** (`opencode serve` on 127.0.0.1:47801),
+all PASS:
+
+- A text turn: `BANANA293`, with the `turnStats` footer
+  `$0.0504 · 2.5 s · 1 CLI turn · in 10 · out 46 · cache read 9.0k · cache write 24.6k`.
+- A proxied `bash` and a CLI-native `Read` in one turn: the `bash` part
+  completed with `PROXYBASH293`, and the `read` part carried
+  `CLI_RESULT_DEFERRED_OUTPUT` because the step ended waiting on the proxied
+  call, which is exactly (h #g190).
+- Session reuse: one `spawning new claude process`, then
+  `reusing active process` on turns 2 and 3.
+- `/compact`: a real summary (`## Objective ...`) stored, no failure note, and
+  the auto-continue NOTICE on the compaction key read `reason: "disabled"`,
+  which is `autoContinueEnabledFor` refusing to nudge a compaction turn.
+- `/claude-code-doctor`: `claude CLI | \`claude\` (2.1.293 (Claude Code))`,
+  `plugin build | 0.48.0, loaded 2026-10-08 00:36, current`, the proxy's
+  unauthenticated `initialize` answering `401, good`.
+- `/btw` mid-turn, fired 14 s into a 45-second proxied `sleep`: `btw: aside sent
+  ahead of its message`, `btw: early answer arrived`, `btw: answer written into
+  the running turn` after 33 s, and the answer (`42`) in the running turn's own
+  reply above `DONE293`. The HTTP 500 the command route returns is
+  `BtwHandledError`, which is how the hook stops opencode creating the `/btw`
+  message (h #g120).
+- Frame kinds seen over the whole arm: `content_block_delta`, `system`,
+  `content_block_start`/`stop`, `assistant`, `message_start`/`delta`/`stop`,
+  `result`, `user`, `rate_limit_event`; `system` subtypes `thinking_tokens`,
+  `success`, `status`, `hook_started`, `hook_response`, `init`. Every one known
+  and handled. No `[claude-code:unrecognized_model]`. The only WARN in the whole
+  log was the pre-existing `MCP server "plugin:stripe:stripe" is needs-auth`.
+
+**opencode 1.18.35, interactive transport** (`transport: "interactive"`, port
+47802), all PASS:
+
+- Text: `TUIBANANA293`.
+- A proxied `bash` (`TUIPROXY293`) and a CLI-native `read`, the `read` carrying
+  its real output this time because the TUI finishes its own tool inside the
+  turn.
+- Reuse: `spawned interactive claude session` once, then `reusing active
+  interactive session`.
+- Compaction: a PTY compaction turn produced a stored summary.
+- An image: a 64x64 pure-red PNG sent as an opencode `file` part, staged and
+  pasted by `stageImage`, answered `Red`.
+- `/btw`: `btw: asking a fork of the interactive session`, answered `81`,
+  written into the running turn (h #g203).
+- **A 130-second proxied `bash` returned into the same turn**, 2m 13s wall, the
+  tool part completed with `FOREGROUND293` and nothing in the log about a task
+  moving to the background. So `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`
+  (h #g210) still holds the call in the foreground on 2.1.293.
+- The only WARN in the arm was `reportUnmeasuredInteractiveCli`, which is what
+  this entry's constant bump removes.
+
+**Plan mode and the approval dialog.** Two halves, and the second needed a probe
+of its own. Through opencode (`permissionMode: "plan"`, `planModeQuestion: true`)
+the plugin logged `interactive transport is waiting on a plan approval
+{"screen":"plan-approval","detail":"Would you like to proceed? ..."}` and ended
+the step on the synthetic `question` call, which opencode raised as
+`question.asked` carrying `tool.callID: exit_plan_question_toolu_...`. **Answering
+it back over HTTP could not be done in this harness**: opencode 1.18.35's
+`GET /api/session/{id}/question` answers `{"data":[]}` while the question is
+pending and `POST .../question/{id}/reply` answers
+`QuestionNotFoundError` for an id taken live off the event stream, with or
+without a `directory` query parameter. That is a host-side limit of driving a
+headless `serve`, not a plugin or CLI finding, and `tmux` is not installed on
+this machine to drive the TUI instead.
+
+So the second half was measured directly against the CLI, with
+`ClaudeSession` in `--permission-mode plan` on 2.1.293 and **the identical probe
+re-run on 2.1.288 as a control**. Both produced the same four lines in the same
+order: `plan-approval parked | Would you like to proceed? ❯ 1. Yes, auto-accept
+edits 2. Yes, manually approve edits 3. Tell Claude what to change`,
+`answerPlanApproval -> true`, then `permission denied | Do you want to create
+plan293.txt? ❯ 1. Yes` and an interrupted turn. That last pair is the documented
+plan-mode behaviour with no allow list (interactive invariant 13: "measured: the
+dialog, Esc, an interrupted turn"), and the fixture recorder, which does pass
+`--settings {permissions:{allow:["Write","Edit","Read"]}}`, completed the write
+in the same turn on 2.1.293. Nothing about the dialog, its wording, its choice
+numbering or the keypress differs between the two releases.
+
+**opencode 2.0.22** (sandbox binary, scratch XDG dirs of this lane's own so the
+maintainer's sandbox config was never written, `run --standalone`, plugin at
+`<worktree>/dist`, config under `providers.claude-code.settings`), all PASS:
+headless text (`V2BANANA293`) and headless proxied `shell` (`V2PROXY293`);
+interactive text (`V2TUIBANANA293`) and interactive proxied `shell`
+(`V2TUIPROXY293`). The only WARN was the unmeasured-CLI one, on the interactive
+arm only.
+
+##### Haiku 5.5
+
+The one thing that had to be built. Read from three sources that agree:
+Anthropic's API release notes (**October 7, 2026**), the pricing page, and
+2.1.293's own baked catalog. 1M context, 128,000 max output, `pricing: "haiku_55"`
+= $0.10/$0.50 with cache write 5m $0.125, cache write 1h $0.20 and cache read
+$0.01; capabilities `effort`, `max_effort`, `xhigh_effort`, `adaptive_thinking`
+and `rejects_disabled_thinking`, and **no `fast_mode`**. Absent from 2.1.288's
+catalog entirely, so `MODEL_CLI_FLOORS` gets `2.1.293`.
+
+Registered as `claude-haiku-5-5`, reasoning **true** (Haiku 4.5 is the odd one
+out now, not Haiku 5.5), 1M/128k, multiplier **0.1**, no `-fast` twin. The
+multiplier is exact: input, output, cache read and cache write are each one
+tenth of Haiku 4.5's. Haiku 4.5's $1/$5 stays the 1x anchor rather than
+re-anchoring the whole table on the new model, which would move every displayed
+number without making any of them more accurate.
+
+**The long-prompt tier is the interesting part.** Anthropic's pricing page now
+carves Haiku 5.5 out of the "full 1M window at standard pricing" sentence by
+name: a prompt over 100,000 tokens pays 5x. The CLI's own rule, read out of
+2.1.293 rather than guessed, is
+
+```js
+n.input_tokens + (n.cache_read_input_tokens ?? 0) + (n.cache_creation_input_tokens ?? 0) > r.abovePromptTokens ? r : e
+```
+
+so the threshold is the three prompt-side counters added, strictly greater, with
+output excluded, and a call that crosses it prices **every** one of its tokens at
+the higher table rather than only the tokens past the line.
+
+That is modelled in exactly one place. `LONG_PROMPT_COSTS` in `src/models.ts`
+holds it, `apiCallCostUsd` is the only reader, and the opencode catalog entry
+stays the base table. The reason the catalog entry stays base is a threshold
+mismatch, not an oversight: opencode's config schema offers only
+`cost.context_over_200k`, fixed at 200,000 tokens, so setting it would be right
+above 200K and still wrong between 100K and 200K while implying the plugin had
+modelled the tier. Documented that way in `docs/models.md` and the skill, with
+"budget for up to 5x on long prompts" said plainly.
+
+Verified live on 2.1.293 on the default account: one turn on
+`claude-haiku-5-5` answered `H55OK293`, the spawn carried
+`"--model","claude-haiku-5-5"`, there was no `unrecognized_model` line, and the
+CLI's own `total_cost_usd` of **$0.0091** for `in 2 · out 77 · cache write 45.3k`
+is 45,300 x $0.20/M (the 1-hour write rate, twice input) plus 77 x $0.50/M =
+$0.0090985. The registered base table is therefore confirmed against the CLI's
+own arithmetic, not just against the published page.
+
+##### Golden transcripts and the measured-version bump
+
+`bun scripts/record-interactive-fixtures.ts` recorded
+`test/fixtures/interactive/2.1.293/` with the same six scenarios as 2.1.288
+(answer, native-tool, interrupted, plan-approval, queued-input, fork).
+`test/interactive-golden.test.ts` discovers version directories itself, so it
+now replays 12 scenarios across both releases and all 12 pass.
+
+Redaction was checked before committing, by grepping the written files for
+`/Users/khalil`, the user name in both cases, the surname, `appical`, `@`,
+`/var/folders`, `/private/var`, the `ccp-golden-` temp prefix, `/tmp/`, the
+encoded-cwd form `-private-`, and `home/`: **zero hits for every one of them**.
+Thinking text and signatures are `[redacted]` (13 occurrences, one per thinking
+block). The only identifier-shaped strings left are the 80 per-record
+`uuid`/`parentUuid` values, which is exactly the count 2.1.288's set carries, so
+nothing new leaks. The recorded `dialogScreen` is byte-identical to 2.1.288's.
+
+`INTERACTIVE_MEASURED_CLI` is `2.1.293`. Updated with it: the
+`docs/guides/interactive-transport.md` "Measured on Claude Code 2.1.288" line and
+its requirements bullet (now 1.18.35 and 2.0.22 with 2.1.293), the skill's "The
+PTY was measured on" sentence, AGENTS.md interactive invariant 14, the
+opencode-compatibility rule and the opencode 2 "Last measured" rule. Statements
+of the form "measured on 2.1.288: ..." that record what a past probe found were
+left alone, because they are history, not claims about the current measurement.
+
+##### What drifted
+
+Nothing in the wire protocol, the control channel, the flags, the TUI screens,
+the transcript shapes or the permission posture. The whole upgrade's code change
+is one new model, its CLI floor, its long-prompt tier and the measured-version
+constant.
+
+##### Gates
+
+`npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
+pull request.

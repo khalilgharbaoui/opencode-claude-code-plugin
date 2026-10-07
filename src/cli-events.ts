@@ -907,6 +907,9 @@ export const UNRECOGNIZED_MODEL_STDERR_MARKER = "[claude-code:unrecognized_model
 const MODEL_CLI_FLOORS: Record<string, string> = {
   // "Added Claude Sonnet 5.5 (`claude-sonnet-5-5`)" (CHANGELOG, 2.1.284).
   "claude-sonnet-5-5": "2.1.284",
+  // "Added Claude Haiku 5.5 (`claude-haiku-5-5`), now the default Haiku model
+  // on the Anthropic API" (CHANGELOG, 2.1.293). Absent from 2.1.288's catalog.
+  "claude-haiku-5-5": "2.1.293",
 }
 
 /**
