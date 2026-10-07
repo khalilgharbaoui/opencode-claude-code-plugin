@@ -26,7 +26,7 @@ import {
   shouldAutoContinueIncompleteTurn,
 } from "./auto-continue.js"
 import type { QuestionToolCall } from "./plan-mode-question.js"
-import { lastCallContextUsage } from "./usage.js"
+import { contextUsageMetadata, lastCallContextUsage } from "./usage.js"
 
 /**
  * The turn's timers, its batched drain and its auto-continue window, moved out
@@ -383,10 +383,14 @@ export function finishWithToolCalls(
   state.controller.enqueue({
     type: "finish",
     finishReason: state.toFinishReason("tool-calls"),
-    // No result yet (the usual mid-turn boundary) still reports nothing.
+    // Keep compaction/accounting usage empty until a result arrives; the
+    // display-only snapshot below must never become host-facing usage.
     usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
     providerMetadata: {
-      "claude-code": state.resultMeta,
+      "claude-code": {
+        ...state.resultMeta,
+        ...contextUsageMetadata(state.lastCallUsage),
+      },
     },
   })
   state.controllerClosed = true
@@ -427,7 +431,10 @@ export function finishWithQuestionCall(
     finishReason: state.toFinishReason("tool-calls"),
     usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
     providerMetadata: {
-      "claude-code": state.resultMeta,
+      "claude-code": {
+        ...state.resultMeta,
+        ...contextUsageMetadata(state.lastCallUsage),
+      },
     },
   })
   state.controllerClosed = true
@@ -452,7 +459,10 @@ export function finishAwaitingPlanApproval(state: TurnState): void {
     finishReason: state.toFinishReason("stop"),
     usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
     providerMetadata: {
-      "claude-code": state.resultMeta,
+      "claude-code": {
+        ...state.resultMeta,
+        ...contextUsageMetadata(state.lastCallUsage),
+      },
     },
   })
   state.controllerClosed = true

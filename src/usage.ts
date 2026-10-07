@@ -69,6 +69,46 @@ export function lastCallContextUsage(
   }
 }
 
+/**
+ * Display-only input-context telemetry, separate from a finish's `usage`.
+ * A proxied tool can park the CLI before its terminal `result` arrives. At
+ * that boundary the host-facing usage must stay empty (h #g169), otherwise
+ * opencode can compact while the CLI is still waiting for the tool result.
+ * Consumers may display this snapshot, but must not use it for accounting or
+ * compaction. Per-frame output is a placeholder and is deliberately omitted.
+ */
+export function contextUsageMetadata(
+  lastCallUsage: ClaudeStreamMessage["usage"],
+): {
+  contextUsage?: {
+    source: "last-api-call"
+    inputTokens: number
+    nonCachedInputTokens: number
+    cacheReadInputTokens: number
+    cacheWriteInputTokens: number
+  }
+} {
+  const iterations = lastCallUsage?.iterations
+  const context = iterations?.length ? iterations[iterations.length - 1] : lastCallUsage
+  if (!context) return {}
+  const nonCachedInputTokens = context.input_tokens ?? 0
+  const cacheReadInputTokens = context.cache_read_input_tokens ?? 0
+  const cacheWriteInputTokens = context.cache_creation_input_tokens ?? 0
+  const counters = [nonCachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens]
+  if (counters.some((value) => !Number.isFinite(value) || value < 0)) return {}
+  const inputTokens = nonCachedInputTokens + cacheReadInputTokens + cacheWriteInputTokens
+  if (!Number.isFinite(inputTokens) || inputTokens <= 0) return {}
+  return {
+    contextUsage: {
+      source: "last-api-call",
+      inputTokens,
+      nonCachedInputTokens,
+      cacheReadInputTokens,
+      cacheWriteInputTokens,
+    },
+  }
+}
+
 export function toFinishReason(
   reason: "stop" | "tool-calls" | "error" = "stop",
 ): LanguageModelV3FinishReason {

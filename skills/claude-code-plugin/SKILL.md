@@ -850,6 +850,17 @@ Registered ids: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 
 ## Verify and diagnose
 
+A missing context gauge while a proxied tool or subagent is running is not proof
+of an empty Claude context. Normal finish usage deliberately stays empty until a
+CLI `result` exists, because opencode also uses those counters for compaction.
+Clients can display `providerMetadata["claude-code"].contextUsage` when present:
+`inputTokens` is the last measured API call's input including cache reads/writes,
+not the turn total or exact input-plus-output occupancy. Output is omitted because
+per-frame output is a placeholder. This field is display-only: never copy it into
+normal usage, billing totals or compaction decisions. An existing UI must explicitly
+support the field; upgrading the plugin alone does not add that client support.
+There is no new setting or inference call. See `docs/guides/turn-stats.md`.
+
 Offline first: validate edited JSON/JSONC without starting opencode; inspect installed
 package metadata. `claude --version` / `claude --help` on the trusted configured binary
 and `opencode --version` do not request model inference. Do not invoke a model merely

@@ -20,6 +20,48 @@ One line at the end of a finished turn, from the numbers the CLI already reports
 
 The same numbers are logged at INFO whatever this option is set to, and `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `usage`, `modelUsage` and `permission_denials` always reach `providerMetadata` (denials by tool name and id only, never their inputs).
 
+## Display-only context snapshots
+
+A proxied tool can leave Claude waiting for its result before the CLI emits a
+terminal `result`. At that boundary the finish's normal `usage` deliberately
+stays empty: opencode also uses those counters to decide when to compact, and
+compacting while a proxied call is parked has not been verified safe.
+
+For clients that need a context gauge while tools or subagents are running, the
+finish now carries a separate snapshot when an assistant frame supplied real
+per-call input counters:
+
+```json
+{
+  "providerMetadata": {
+    "claude-code": {
+      "contextUsage": {
+        "source": "last-api-call",
+        "inputTokens": 91900,
+        "nonCachedInputTokens": 2,
+        "cacheReadInputTokens": 90566,
+        "cacheWriteInputTokens": 1332
+      }
+    }
+  }
+}
+```
+
+`inputTokens` includes cache reads and writes. It is the **last measured API
+call's input**, not a sum of the turn, not a token-by-token live count, and not
+exact current input-plus-output occupancy. Output is deliberately absent because
+per-frame `output_tokens` is a placeholder. Zero-usage synthetic frames do not
+erase the last real snapshot; no measured call means no `contextUsage` field.
+The last server-side `iterations` entry is used when the call provides one.
+
+The snapshot also accompanies terminal finishes. The CLI's aggregate `usage`,
+`costUsd` and the optional stats footer remain unchanged. **Clients must consume
+`contextUsage` only for display**, never add it to billed totals or substitute it
+for the finish's normal `usage` when making compaction decisions. Clients that
+only read normal usage will still have no live value at a parked tool boundary;
+they need to explicitly read this metadata. There is no new option, CLI call or
+inference request.
+
 ## Things the CLI says that are no longer silent
 
 Four Claude Code stream events used to reach nothing but a debug log:

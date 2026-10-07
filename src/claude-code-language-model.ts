@@ -209,6 +209,7 @@ import {
   synthesizeTitle,
 } from "./title.js"
 import {
+  contextUsageMetadata,
   lastCallContextUsage,
   toFinishReason,
   toUsage,
@@ -2526,7 +2527,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 finishReason: { unified: "error" as const, raw: refusal.kind },
                 usage: toUsage(lastCallContextUsage(state.lastCallUsage, msg.usage)),
                 providerMetadata: {
-                  "claude-code": { ...state.resultMeta, path: "model-fallback" },
+                  "claude-code": {
+                    ...state.resultMeta,
+                    ...contextUsageMetadata(state.lastCallUsage),
+                    path: "model-fallback",
+                  },
                 },
               })
               state.controllerClosed = true
@@ -2630,6 +2635,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             providerMetadata: {
               "claude-code": {
                 ...state.resultMeta,
+                ...contextUsageMetadata(state.lastCallUsage),
                 ...(state.resultFailure ? { resultSubtype: state.resultFailure } : {}),
                 ...(compactionMode
                   ? { compactionModel: effectiveModelId }
@@ -2735,6 +2741,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               providerMetadata: {
                 "claude-code": {
                   ...state.resultMeta,
+                  ...contextUsageMetadata(state.lastCallUsage),
                   ...(compactionMode
                     ? { compactionModel: effectiveModelId }
                     : {}),

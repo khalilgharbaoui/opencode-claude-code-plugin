@@ -16,7 +16,8 @@ import { join } from "node:path"
 import { createClaudeCode } from "../src/index.js"
 import { getPendingProxyCalls, resolvePendingProxyCallById } from "../src/proxy-broker.js"
 import { deleteActiveProcess, sessionKey } from "../src/session-manager.js"
-import { lastCallContextUsage, toUsage } from "../src/usage.js"
+import { contextUsageMetadata, lastCallContextUsage, toUsage } from "../src/usage.js"
+import type { ClaudeStreamMessage } from "../src/types.js"
 
 const SESSION = "fake-session"
 
@@ -58,7 +59,16 @@ const TASK_INPUT = {
  * inside the MCP call. `result-first` sends the `result` and then the call,
  * so the tool-call finish is written after the result arrived.
  */
-function createFakeProxyCli(mode: "mid-turn" | "result-first") {
+function createFakeProxyCli(
+  mode: "mid-turn" | "result-first",
+  options: {
+    usage?: ClaudeStreamMessage["usage"] | null
+    afterAssistant?: unknown[]
+  } = {},
+) {
+  const callUsage = options.usage === undefined
+    ? { input_tokens: 9, cache_read_input_tokens: 150000, cache_creation_input_tokens: 600, output_tokens: 40 }
+    : options.usage
   const cwd = mkdtempSync(join(tmpdir(), "opencode-context-usage-proxy-"))
   const cliPath = join(cwd, "fake-claude.cjs")
   const source = `#!/usr/bin/env node
@@ -113,14 +123,10 @@ readline.createInterface({ input: process.stdin }).on("line", () => {
         name: "mcp__opencode_proxy__task",
         input: ${JSON.stringify(TASK_INPUT)},
       }],
-      usage: {
-        input_tokens: 9,
-        cache_read_input_tokens: 150000,
-        cache_creation_input_tokens: 600,
-        output_tokens: 40,
-      },
+      usage: ${JSON.stringify(callUsage)},
     },
   })
+  for (const frame of ${JSON.stringify(options.afterAssistant ?? [])}) emit(frame)
   if (${JSON.stringify(mode)} === "result-first") {
     emit({
       type: "result",
@@ -324,6 +330,13 @@ test("a multi-call turn reports the last call's context, not the sum over the tu
   // The turn's true totals and cost are still there for anyone who wants them.
   assert.deepEqual(finish.providerMetadata["claude-code"].usage, turnTotal)
   assert.equal(finish.providerMetadata["claude-code"].costUsd, 0.4321)
+  assert.deepEqual(finish.providerMetadata["claude-code"].contextUsage, {
+    source: "last-api-call",
+    inputTokens: 120_807,
+    nonCachedInputTokens: 7,
+    cacheReadInputTokens: 120_000,
+    cacheWriteInputTokens: 800,
+  })
 })
 
 test("a zero-usage synthetic assistant frame does not replace the last real call", async () => {
@@ -387,6 +400,7 @@ test("a zero-usage synthetic assistant frame does not replace the last real call
   assert.equal(finish.usage.outputTokens.total, 60)
   // Zero, not the turn's 3,000: opencode reads this when the usage has none.
   assert.equal(finish.providerMetadata.anthropic.cacheCreationInputTokens, 0)
+  assert.equal(finish.providerMetadata["claude-code"].contextUsage.inputTokens, 120_004)
 })
 
 test("with no assistant usage in the stream the result's usage is reported as before", async () => {
@@ -418,9 +432,11 @@ test("with no assistant usage in the stream the result's usage is reported as be
   assert.equal(finish.usage.outputTokens.total, 812)
   assert.deepEqual(finish.usage.raw, resultUsage)
   assert.equal(finish.providerMetadata.anthropic.cacheCreationInputTokens, 2048)
+  // Turn totals are not a substitute for a last-call context snapshot.
+  assert.equal(finish.providerMetadata["claude-code"].contextUsage, undefined)
 })
 
-test("a mid-turn proxied tool boundary still reports no usage", async () => {
+test("a mid-turn proxied tool boundary exposes display metadata but keeps compaction usage empty", async () => {
   // No `result` has arrived: the CLI is parked inside the MCP call. Reporting
   // the real context here would let opencode compact with that call parked,
   // which has never been verified, so it stays what it always was.
@@ -432,6 +448,51 @@ test("a mid-turn proxied tool boundary still reports no usage", async () => {
   assert.equal(finish.usage.inputTokens.cacheRead, undefined)
   assert.equal(finish.usage.outputTokens.total, undefined)
   assert.equal(finish.providerMetadata.anthropic, undefined)
+  assert.deepEqual(finish.providerMetadata["claude-code"], {
+    contextUsage: {
+      source: "last-api-call",
+      inputTokens: 150_609,
+      nonCachedInputTokens: 9,
+      cacheReadInputTokens: 150_000,
+      cacheWriteInputTokens: 600,
+    },
+  })
+})
+
+test("V2 tool translation preserves telemetry without promoting it to compaction usage", async () => {
+  const parts = await streamParts(createFakeProxyCli("mid-turn", { usage: {
+    input_tokens: 2, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0, output_tokens: 40,
+  } }), { proxyTools: ["Task"], hostApi: "v2" })
+  const finish = onlyFinish(parts)
+  assert.equal(parts.find((part) => part.type === "tool-call")?.toolName, "subagent")
+  assert.equal(finish.providerMetadata["claude-code"].contextUsage.inputTokens, 1_000_002)
+  assert.equal(finish.usage.inputTokens.total, 0)
+  assert.equal(finish.usage.inputTokens.cacheRead, undefined)
+  assert.equal(finish.usage.outputTokens.total, undefined)
+  assert.equal(finish.providerMetadata.anthropic, undefined)
+})
+
+test("a mid-turn boundary with no measured call does not invent display metadata", async () => {
+  const parts = await streamParts(createFakeProxyCli("mid-turn", { usage: null }), { proxyTools: ["Task"] })
+  const finish = onlyFinish(parts)
+  assert.equal(finish.usage.inputTokens.total, 0)
+  assert.deepEqual(finish.providerMetadata["claude-code"], {})
+})
+
+test("duplicate and synthetic assistant frames do not accumulate or erase boundary telemetry", async () => {
+  const realUsage = { input_tokens: 2, cache_read_input_tokens: 90_566, cache_creation_input_tokens: 1_332, output_tokens: 444 }
+  const afterAssistant = [
+    { type: "assistant", message: { role: "assistant", content: [], usage: realUsage } },
+    { type: "assistant", message: { role: "assistant", model: "<synthetic>", content: [], usage: {
+      input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0,
+    } } },
+  ]
+  const parts = await streamParts(createFakeProxyCli("mid-turn", { usage: realUsage, afterAssistant }), { proxyTools: ["Task"] })
+  const finish = onlyFinish(parts)
+  assert.equal(finish.providerMetadata["claude-code"].contextUsage.inputTokens, 91_900)
+  assert.equal(finish.usage.inputTokens.total, 0)
+  assert.equal(finish.usage.outputTokens.total, undefined)
+  assert.equal(finish.providerMetadata["claude-code"].usage, undefined)
 })
 
 test("a tool-call finish written after the result reports the last call's context", async () => {
@@ -443,6 +504,8 @@ test("a tool-call finish written after the result reports the last call's contex
   assert.equal(finish.usage.inputTokens.cacheWrite, 600)
   assert.equal(finish.usage.outputTokens.total, 90)
   assert.equal(finish.providerMetadata["claude-code"].usage.cache_read_input_tokens, 300_000)
+  assert.equal(finish.providerMetadata["claude-code"].contextUsage.inputTokens, 150_609)
+  assert.equal(finish.providerMetadata["claude-code"].costUsd, 0.5)
 })
 
 test("a call carrying server-side iterations reports its last iteration's context", () => {
@@ -473,4 +536,30 @@ test("a call carrying server-side iterations reports its last iteration's contex
   // Nothing seen, or no result yet: the turn total goes through untouched.
   assert.equal(lastCallContextUsage(undefined, turnTotal), turnTotal)
   assert.equal(lastCallContextUsage(lastCall, undefined), undefined)
+  assert.equal(contextUsageMetadata(lastCall).contextUsage?.inputTokens, 90_523)
+})
+
+test("display telemetry omits placeholder output and does not mutate CLI usage", () => {
+  const call = Object.freeze({ input_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 7, output_tokens: 999 })
+  assert.deepEqual(contextUsageMetadata(call), {
+    contextUsage: {
+      source: "last-api-call", inputTokens: 110, nonCachedInputTokens: 3,
+      cacheReadInputTokens: 100, cacheWriteInputTokens: 7,
+    },
+  })
+  assert.equal(call.output_tokens, 999)
+  assert.equal(lastCallContextUsage(call, undefined), undefined)
+})
+
+test("display telemetry rejects absent, synthetic and malformed counters", () => {
+  for (const usage of [
+    undefined,
+    { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    { input_tokens: -1, cache_read_input_tokens: 100 },
+    { input_tokens: NaN },
+    { cache_read_input_tokens: Infinity },
+    { input_tokens: Number.MAX_VALUE, cache_read_input_tokens: Number.MAX_VALUE },
+  ]) {
+    assert.deepEqual(contextUsageMetadata(usage), {})
+  }
 })
