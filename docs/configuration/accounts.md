@@ -102,7 +102,7 @@ What a pick does, in full:
 - **Per-profile MCP servers do not come along.** A server configured only in the limited account's Claude profile is simply absent on the target.
 - **`stop`, dismissing the form, or any answer that is not one of the offered accounts** ends the turn the way a limited turn ends without the form.
 
-Only two things count as "out of usage", for the note and for the form alike: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
+Only three things count as "out of usage", for the note and for the form alike: a `rate_limit_event` the CLI marked `rejected`, the CLI's own limit reply (an API-error reply of kind `rate_limit`, which is the only signal the interactive transport gets), and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
 
 The form and the switch are both measured live on opencode 1.x and opencode 2.x (2026-10-07): the form renders, the pick is understood, and the next `claude` runs on the account you chose with the account marker stripped off the model name. On opencode 2 the form is one of its own `Form` surfaces rather than a question, which changes nothing you do: pick an option as usual.
 
