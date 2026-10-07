@@ -38,30 +38,41 @@ test("transport precedence preserves legacy switches and validates explicit mode
 })
 
 test("auto selects interactive only for proven missing headless capabilities", async () => {
-  for (const [source, expected] of [
-    [`printf '%s' '${HELP}'`, "supported"],
-    ["printf 'Usage: claude [options]\\nOptions:\\n  --model <model>\\n'", "unsupported"],
-    ["printf \"error: unknown option '--print'\\n\" >&2; exit 1", "unsupported"],
-    ["printf 'Authentication failed\\n' >&2; exit 1", "unknown"],
-    ["printf 'unrecognizable output'", "unknown"],
-    ["exit 3", "unknown"],
-  ] as const) {
-    const cli = fixture(source)
-    try {
-      const probe = detectHeadlessSupport(cli.cliPath)
-      assert.equal(await probe, expected)
-      assert.equal(detectHeadlessSupport(cli.cliPath), probe, "definitive answers and ordinary failures are cached")
-      assert.equal(await selectTransport("auto", cli.cliPath, true), expected === "unsupported" ? "interactive" : "headless")
-      if (expected === "unsupported") {
-        await assert.rejects(selectTransport("auto", cli.cliPath, false), /Bun.Terminal is unavailable/)
+  // Classification, not the deadline: the deadline has its own test below.
+  // At the default 5 s a loaded machine killed the `--help` probe of a
+  // one-line shell script and it answered `unknown` (h #g181, measured
+  // 2026-10-07 at load 22), so this test must never race it.
+  _clearCache()
+  _setProbeTimeoutMs(60_000)
+  try {
+    for (const [source, expected] of [
+      [`printf '%s' '${HELP}'`, "supported"],
+      ["printf 'Usage: claude [options]\\nOptions:\\n  --model <model>\\n'", "unsupported"],
+      ["printf \"error: unknown option '--print'\\n\" >&2; exit 1", "unsupported"],
+      ["printf 'Authentication failed\\n' >&2; exit 1", "unknown"],
+      ["printf 'unrecognizable output'", "unknown"],
+      ["exit 3", "unknown"],
+    ] as const) {
+      const cli = fixture(source)
+      try {
+        const probe = detectHeadlessSupport(cli.cliPath)
+        assert.equal(await probe, expected)
+        assert.equal(detectHeadlessSupport(cli.cliPath), probe, "definitive answers and ordinary failures are cached")
+        assert.equal(await selectTransport("auto", cli.cliPath, true), expected === "unsupported" ? "interactive" : "headless")
+        if (expected === "unsupported") {
+          await assert.rejects(selectTransport("auto", cli.cliPath, false), /Bun.Terminal is unavailable/)
+        }
+      } finally {
+        cli.cleanup()
       }
-    } finally {
-      cli.cleanup()
     }
+    assert.equal(await selectTransport("auto", "/missing/claude", true), "headless")
+    assert.equal(await selectTransport("headless", "/missing/claude", false), "headless")
+    await assert.rejects(selectTransport("interactive", "/missing/claude", false), /requires Bun.Terminal/)
+  } finally {
+    // Also restores the default deadline.
+    _clearCache()
   }
-  assert.equal(await selectTransport("auto", "/missing/claude", true), "headless")
-  assert.equal(await selectTransport("headless", "/missing/claude", false), "headless")
-  await assert.rejects(selectTransport("interactive", "/missing/claude", false), /requires Bun.Terminal/)
 })
 
 test("a deadline is unknown, retried twice, then conservatively cached", async () => {
