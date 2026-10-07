@@ -95,6 +95,15 @@ Nothing parked.
 
 ## In progress
 
+- 2026-10-07: "then carry on with the rest of the rest untill nothing is left use 2 lanes". Plan, two
+  lanes per batch, each item built or closed with a measured reason:
+  (1a) interactive transport reads only the appended transcript bytes; (1b) Windows spawn quoting,
+  with a Windows CI job to verify it (the item was blocked only on a runner; GitHub Actions has one).
+  (2a) cross-account router: measure resuming a transcript under another account's config dir, then
+  switch without a replay; (2b) the open opencode 2 checks (switch form, plan-mode form) with a fake
+  CLI where a real limit is needed, plus the live-only test gaps (compress reset, watchdogs,
+  abort-then-interrupt). (3) evaluate and build or close: hook mirroring, structured output,
+  `can_use_tool` rewriting, tool-result repair, session tools, tier labels.
 - 2026-09-23: opencode 2, the checks that were not possible before release. (1) **Done
   2026-09-27**: install by npm name works on 2.0.16 (`@0.27.0`, with and without a provider
   block; `@0.28.1` is still hidden from this Mac by Aikido's age filter). (2) Account
