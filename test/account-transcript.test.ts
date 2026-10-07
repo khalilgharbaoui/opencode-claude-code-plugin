@@ -79,8 +79,12 @@ test("a conversation is copied into the target account's own projects dir", asyn
     assert.equal(readFileSync(carry.to, "utf8"), readFileSync(source, "utf8"))
     // The operator's conversations are not world-readable, and the directory
     // the plugin had to create for them is not either.
-    assert.equal(statSync(carry.to).mode & 0o777, 0o600)
-    assert.equal(statSync(dirname(carry.to)).mode & 0o777, 0o700)
+    // Windows has no POSIX modes (every file reads 0o666), the same reason
+    // the other mode assertions in this suite are guarded (h #g217).
+    if (process.platform !== "win32") {
+      assert.equal(statSync(carry.to).mode & 0o777, 0o600)
+      assert.equal(statSync(dirname(carry.to)).mode & 0o777, 0o700)
+    }
     // A copy, never a link: two accounts appending to one inode would
     // interleave two conversations into one transcript.
     assert.notEqual(statSync(carry.to).ino, statSync(source).ino)

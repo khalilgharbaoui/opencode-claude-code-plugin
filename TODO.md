@@ -108,7 +108,7 @@ Nothing parked.
   quoting with a Windows CI job, PR #95, h #g217 (accounts on Windows still need a `.cmd` wrapper).
   Batch 2 **done** (v0.47.0): (2a) cross-account carry by transcript copy, `crossAccountResume`,
   PR #97, h #g218 (a switch between two real logins still unmeasured); (2b) every live gap passed,
-  PR #98, h #g219, which also answers the 2026-09-23 opencode 2 items (2) and (3) below.
+  PR #98, h #g219, which also closes the 2026-09-23 opencode 2 checks (moved to Done).
 ## Done
 
 - 2026-10-07: **done**: opencode 2, the checks that were not possible before release (2026-09-23).
