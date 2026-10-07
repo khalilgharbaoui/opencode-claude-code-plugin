@@ -101,6 +101,12 @@ export interface FetchPlanUsageOptions {
   timeoutMs?: number
   /** The provider option: strip a stray API key, as every turn's spawn does. */
   ignoreAnthropicApiKey?: boolean
+  /**
+   * `CLAUDE_CONFIG_DIR` for the `/cost` spawn, where the plugin applies the
+   * account itself rather than through a wrapper (Windows, h #g221). Without
+   * it that spawn reads the default account's plan usage.
+   */
+  configDir?: string
   /** Capability seam; no inference is used to learn whether print is present. */
   headlessSupportImpl?: typeof detectHeadlessSupport
   /** Seam for tests; defaults to spawning the real CLI. */
@@ -165,7 +171,10 @@ export async function fetchPlanUsage(
     // `-p` is a full CLI start, so without the hygiene vars it may auto-update
     // the binary behind the version cache, and without the key strip a stray
     // `ANTHROPIC_API_KEY` reports pay-as-you-go usage instead of the plan's.
-    const env = claudeSpawnEnv({ ignoreAnthropicApiKey: options.ignoreAnthropicApiKey })
+    const env = claudeSpawnEnv({
+      ignoreAnthropicApiKey: options.ignoreAnthropicApiKey,
+      configDir: options.configDir,
+    })
     const stdout = await run(
       cliPath,
       ["-p", "/cost", "--output-format", "json"],

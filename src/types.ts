@@ -46,6 +46,13 @@ export interface ClaudeCodeConfig {
    * `providerConfig`, not by the user.
    */
   baseCliPath?: string
+  /**
+   * This spawn applies the account itself rather than through a wrapper
+   * script: it exports `CLAUDE_CONFIG_DIR` and takes the `@<account>` marker
+   * off `--model`. Set by `ensureAccountRuntime` on Windows only, where the
+   * wrapper is a shape worth avoiding (h #g221). Not a user option.
+   */
+  accountInProcess?: boolean
   accountFailover?: AccountFailoverMode
   providerID?: string
   skipPermissions?: boolean
@@ -178,6 +185,11 @@ export interface ClaudeCodeProviderSettings {
   failoverAccounts?: string[]
   /** The CLI path before the per-account wrapper substitution. */
   baseCliPath?: string
+  /**
+   * Written by the config hook on Windows, where there is no wrapper script
+   * and the spawn applies the account itself. Not a user option.
+   */
+  accountInProcess?: boolean
   /**
    * When this account is out of usage, show the operator a form listing the
    * other configured accounts and continue the task on the pick, inside the

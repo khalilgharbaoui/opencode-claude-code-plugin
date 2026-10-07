@@ -204,6 +204,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   finishReason: "enum",
   hash: "enum",
   hostApi: "enum",
+  // One of `SHARED_CAPABILITY_ITEMS`: a fixed list this package defines.
+  item: "enum",
   kind: "enum",
   level: "enum",
   mode: "enum",

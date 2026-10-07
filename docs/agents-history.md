@@ -3271,3 +3271,205 @@ empty) and on a compaction turn. `test/get-claude-user-message.test.ts`.
 **Probe hygiene.** Every live run used the DEFAULT Claude account and
 `claude-haiku-4-5`, in `/tmp/eval-elicit` with its own stdio MCP server, and
 each child was killed at the end of its run.
+
+<a id="g221"></a>
+
+#### Accounts on Windows, plan tiers in the picker, session tools declined, and fast mode measured live (2026-10-07)
+
+Four small pieces, two built, one built as a one-line correction to a measured
+defect, one closed with its reasons.
+
+##### 1. `accounts` works on Windows, and it works by generating nothing
+
+(h #g217) left this open: `writeAccountWrapper` emits a bash script with no
+extension, so `accounts` could not work on Windows at all. The obvious fix is a
+`.cmd` twin. It is the wrong fix, for a reason that entry already measured.
+
+The wrapper does exactly two things: export the account's `CLAUDE_CONFIG_DIR`,
+and take the `@<account>` marker off the `--model` value. A `.cmd` doing that
+would have to forward everything else with `%*`, which is a **third** cmd.exe
+parse on top of the two `quoteBatchArgument` is proven against (our own
+`cmd /d /s /c` line, then the npm `claude.cmd` shim's `%*`). The doubled-quote
+quoting is in fact stable across N parses, which is why it survives the second
+one at all, so that part might have held; what would not is the other half. A
+wrapper that REWRITES one argument has to re-emit it, and re-emitting an
+argument in batch means reading it back through `%1`/`shift`, which loses the
+original quoting, and then re-quoting it in a language with no reliable quoter.
+Caret escaping was measured injectable on `windows-latest` in (h #g217). There
+was no reason to go back there for two lines of work.
+
+So on `win32` `ensureAccountRuntime` writes nothing and returns
+`{cliPath: baseCliPath, configDir, accountInProcess: true}`, and the two jobs
+are done in process, at the two places that already own them:
+
+  - `claudeSpawnEnv` gained a `configDir` option that sets `CLAUDE_CONFIG_DIR`,
+    threaded through `spawnClaudeProcess` (and carried by
+    `respawnActiveProcess` off the new `ActiveProcess.configDir`),
+  - `doStream` strips the marker where it already computed the spawn model:
+    `parseModelId(stripAccountSuffix(failover.modelId))`. Stripping first does
+    not change which ids `parseModelId` recognises as `-fast`, because it reads
+    `-fast` off the base name either way, and a test pins that.
+
+**Both are gated on `accountInProcess` and nothing else, so POSIX is byte
+identical.** `test/account-wrapper.test.ts` passes unmodified. `ensureAccountRuntime`
+takes an injected `platform`, so the Windows plan is unit-testable on a Mac.
+
+**The account identity moved, and that is the subtle part.** The failover
+prologue decides "this live child belongs to another account" by comparing
+`ActiveProcess.cliPath` against this turn's. On Windows every account now runs
+the SAME binary, so that comparison can never fire there and a switch would
+have kept talking to the wrong config dir. `processBelongsToAnotherAccount`
+replaces both call sites: `cliPath` differing still decides it, and
+`ActiveProcess.configDir` differing decides it too. `configDir` is recorded only
+where the plugin sets it itself, so on POSIX the second term is always absent
+and the function is the old condition exactly. `/claude-code-doctor usage` got
+the same treatment: its `/cost` spawn takes the config dir or it reports the
+default account's plan.
+
+**`ensureSharedCapabilities` needed real work too, and the loop needed a
+boundary.** A directory becomes a `junction` on Windows, which an unprivileged
+process may always create (that branch already existed). A FILE is the
+privileged one: `CLAUDE.md` and `settings.json` need Developer Mode or an
+elevated process to symlink. So a file is tried as a symlink, then as a hard
+link (no privilege on NTFS, same bytes, so an in-place edit to either is seen by
+both), then copied with a WARN saying a copy does not follow later edits. And
+the loop is per item now: before this, the first failure aborted the whole
+sweep, so `CLAUDE.md` failing cost the account its `skills/`, `agents/`,
+`commands/` and `plugins/` as well. Measured in the test with POSIX mode bits,
+which is the only portable way to make a link fail: every item is attempted,
+each failure is its own WARN, and the account still runs, because the
+capabilities are a convenience and the config dir is the account.
+
+`test/account-windows.test.ts` is the proof, built on the shape
+`test/windows-spawn.test.ts` established. The planning half runs everywhere with
+an injected platform (no wrapper file written, the config dir in the env, the
+marker off the model, the POSIX path unchanged, the capability fallbacks). The
+Windows-only half writes an npm-shaped `claude.cmd` shim that prints back both
+its argv and its `CLAUDE_CONFIG_DIR`, spawns it through the real
+`planClaudeSpawn`, and asserts the config dir, the stripped `--model`, nine
+adversarial arguments byte-identical, and three injection attempts creating no
+file. It is deliberately NOT in `.github/windows-skipped-tests.txt`.
+
+##### 2. Session tools (`session_list`, `session_search`): closed, not built
+
+The P4 idea was cheap MCP interceptor defs over opencode's own session store,
+the way `task_status` / `task_cancel` and `compress` are interceptors. Three
+measurements closed it.
+
+**It cannot be one tool surface on both majors, which is the thing this package
+exists to avoid.** Both HTTP servers do have a list route (1.18.35's
+`GET /session`, 2.x's `GET /api/session`), but a plugin is not the HTTP client.
+What opencode 2 hands a plugin is a `Pick` of `SessionDomain`, and
+`src/v2-client.ts` already records what is in it: `get`, `context`, `interrupt`.
+No `list`. That is the same absence that keeps `session.active` out of reach
+(h #g176). So `session_list` would be a V1-only tool, and a model's tool set
+would change under it on an opencode upgrade, which is exactly what
+`applyBackgroundSubagentSupport` exists to prevent for `task` (h #g173).
+
+**`session_search` has no route on either major.** There is no search endpoint
+in either SDK's generated client. Implementing it means listing every session,
+fetching every transcript through `session.messages`, and grepping in process,
+inside a proxy MCP call with a deadline, every time the model asks. That is
+O(sessions x transcript bytes) per call for a question the model can mostly
+answer from its own context.
+
+**The value is thin and the exposure is not.** The model's own session is
+already its context; what these tools add is reading OTHER sessions. That is a
+real data-exposure surface (another project's prompts, another operator's
+conversation, whatever a teammate pasted), and the plugin would be the thing
+that opened it. A gated version (opt-in, off by default, current project
+directory only, read-only) is possible, but it is the same V1-only tool with a
+privacy boundary bolted on, and nothing was found that a model could do with it
+that it cannot do today: an operator who wants this can give the model `bash`
+and point it at opencode's own store.
+
+Nothing was built. If this is ever revisited, the thing that would change the
+verdict is opencode 2 exposing a session list to plugins; re-read the `Pick`
+first.
+
+##### 3. Plan tier beside each account in the picker
+
+With several accounts configured the picker says `Claude Code (Work)` and
+`Claude Code (Personal)` and nothing about what either can spend. The tier is
+the fact that changes which one an operator picks.
+
+**Where it is, measured on 2.1.288.** Claude Code writes
+`<CLAUDE_CONFIG_DIR>/.claude.json`, whose `oauthAccount` block carries
+`organizationType`, `organizationRateLimitTier`, `userRateLimitTier`,
+`seatTier`, `billingType` and `hasExtraUsageEnabled` alongside `accountUuid`,
+`emailAddress`, `organizationUuid`, `organizationName` and `displayName`. There
+is **no `subscriptionType` field on disk**: that name exists in the binary, but
+it is derived, by a map over `organization_type`
+(`y$ = new Map([["claude_max","max"],["claude_pro","pro"],["claude_enterprise","enterprise"],["claude_team","team"]])`),
+and the 5x/20x split the CLI uses for its own limits and upsells comes from
+`organization_rate_limit_tier` (`default_claude_max_5x` /
+`default_claude_max_20x`, which it labels `max_5x` / `max_20x` / `max_other` in
+its own analytics). `src/account-tier.ts` derives the label the same way rather
+than inventing a vocabulary: `Max 20x`, `Max 5x`, `Max`, `Pro`, `Team`,
+`Enterprise`.
+
+`billingType` is deliberately not read: `stripe_subscription` is how the
+subscription is paid for, not what it is, and a test pins that it produces no
+label on its own.
+
+**Every refusal is the point.** Only those two fields are read, ever. An
+unrecognised `organizationType` produces NO label rather than passing the raw
+enum through, because `Claude Code (Work, claude_something_new)` is worse than
+saying nothing. A missing, unreadable, half-written or wrongly-shaped file is no
+label, so a display name is never a reason provider registration fails. One
+parse per config dir per process, since provider expansion runs repeatedly. The
+default account reads `CLAUDE_CONFIG_DIR` or `~/.claude`, falling back to the
+legacy `~/.claude.json` for an install that predates the config dir; a
+configured account never takes that fallback, because the home file describes
+the default login and not this plugin's `~/.claude-<name>`. No token is read
+anywhere (credentials are in the keychain or `.credentials.json`, which this
+module never opens), nothing is spawned and no request is made.
+
+`accountDisplayName(account, tier?)` keeps its old output exactly when the tier
+is absent, and `test/account-tier.test.ts` asserts that a fixture holding an
+email, three uuids, an organization name, a display name and an `sk-ant-`-shaped
+string reaches the display name as `Claude Code (Work, Max 5x)` and nothing
+else. No provider option: it adds a word, not a behaviour.
+
+##### 4. Fast mode's on-state, live, and the defect it exposed
+
+One turn on the default account, Claude Code 2.1.288, with the exact flags the
+plugin builds: `claude --print --output-format stream-json --verbose --model
+claude-opus-5 --settings '{"fastMode":true}'`, a one-sentence prompt, in a
+scratch directory. $0.195, 1 turn.
+
+**The `system`/`init` frame and the terminal `result` disagree, and the plugin
+was reading the wrong one.**
+
+```
+INIT   fast_mode_state = "on"   (no fast_mode_disabled_reason)
+RESULT fast_mode_state = "off"  fast_mode_disabled_reason = "extra_usage_disabled"
+       subtype = success, is_error = false, total_cost_usd = 0.1950195
+```
+
+So this account is ineligible, which is itself the answer to "is the on-state
+reachable here" and matches `hasExtraUsageEnabled: false` in its own
+`oauthAccount`. But the init frame says otherwise, and `reportFastModeState` was
+called **only** from the init branch of the parser. For this account the plugin
+therefore logged `fast mode active` at INFO and never warned, while the turn ran
+at standard speed and billed at standard Opus rates behind a picker advertising
+10x. That is precisely the silent downgrade the function was written to break
+(h #g53), and the unit tests could not catch it because they fed one frame.
+
+The fix is the frame, not the logic. `reportFastModeState(msg, requested,
+phase)` is called from both branches; **only `"result"` may say the request was
+honoured**, and an `on` at `"init"` drops to DEBUG as the prediction it is. An
+`off` at init is still reported, because a reason the CLI already knows there (a
+disabling env var) is true for the turn either way, and the existing
+per-reason dedup stops the result frame repeating it. The parameter defaults to
+`"result"`, so the five existing specs are unchanged.
+
+Not a `cliSupportsFastMode` problem and not an argv problem: the CLI accepted
+the settings layer, answered on `claude-opus-5`, and reported the state on both
+frames. The only thing wrong was which frame was read.
+
+##### Gates
+
+`npm run typecheck`, `npm test` (1380 tests before this entry's additions, one
+failure that was the new `accountInProcess` option missing from the skill's
+reference table, fixed), `npm run build`, and the Windows CI job.

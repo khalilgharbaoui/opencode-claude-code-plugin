@@ -58,6 +58,8 @@ Fast mode is not available everywhere, and it **fails soft**: an ineligible acco
 
 Because a downgrade is otherwise invisible, and because the picker shows these IDs at 10× regardless, the plugin logs a **warning** (once per reason) when a fast turn actually ran at standard speed, naming the reason. If you see it, switch to the non-fast ID so the picker's price matches your bill.
 
+The warning is read off the **end** of the turn, not the start. Claude Code answers the question twice and the two can disagree: measured on 2.1.288, an account with usage credits off is told `fast_mode_state: "on"` when the session opens and `"off"` with `extra_usage_disabled` on the terminal result, after the turn has already run and billed at standard Opus rates. Until v0.48 the plugin read only the first one, so for that account it logged "fast mode active" and never warned at all.
+
 ## Picking a variant
 
 Variants set the underlying reasoning effort. They're regular opencode model variants, so pick them in the model selector. If you'd previously declared variants in your project's `opencode.json`, they're merged on top of the defaults so nothing gets lost.

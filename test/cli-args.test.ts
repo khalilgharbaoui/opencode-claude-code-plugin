@@ -372,6 +372,84 @@ test("reportFastModeState does not warn when fast mode is actually on", () => {
   assert.equal(lines.filter((l) => l.includes("INFO")).length, 1)
 })
 
+test("an `on` at session start is a prediction, and the result frame overrules it", () => {
+  // Measured live on Claude Code 2.1.288 with an account whose usage credits
+  // are off: `init` said "on" with no reason, the terminal `result` said "off"
+  // with `extra_usage_disabled`, and the turn had already run and billed at
+  // standard Opus rates. Reading init alone logged "fast mode active" and
+  // never warned (h #g221).
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      { type: "system", subtype: "init", fast_mode_state: "on" },
+      true,
+      "init",
+    )
+    reportFastModeState(
+      {
+        type: "result",
+        subtype: "success",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: "extra_usage_disabled",
+      },
+      true,
+      "result",
+    )
+  })
+
+  // The optimistic frame claims nothing, and the verdict is the one WARN.
+  assert.equal(lines.filter((l) => l.includes("INFO")).length, 0)
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 1)
+  assert.match(lines.find((l) => l.includes("WARN"))!, /\/usage-credits/)
+})
+
+test("a block the CLI already knows at session start is reported once", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      {
+        type: "system",
+        subtype: "init",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: "disabled_by_env",
+      },
+      true,
+      "init",
+    )
+    reportFastModeState(
+      {
+        type: "result",
+        subtype: "success",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: "disabled_by_env",
+      },
+      true,
+      "result",
+    )
+  })
+
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 1)
+})
+
+test("a turn that really is fast says so once, from the result frame", () => {
+  _resetFastModeWarnings()
+  const lines = captureLogs(() => {
+    reportFastModeState(
+      { type: "system", subtype: "init", fast_mode_state: "on" },
+      true,
+      "init",
+    )
+    reportFastModeState(
+      { type: "result", subtype: "success", fast_mode_state: "on" },
+      true,
+      "result",
+    )
+  })
+
+  assert.equal(lines.filter((l) => l.includes("WARN")).length, 0)
+  assert.equal(lines.filter((l) => l.includes("INFO")).length, 1)
+})
+
 test("reportFastModeState treats cooldown as transient, not a misconfiguration", () => {
   _resetFastModeWarnings()
   const lines = captureLogs(() => {

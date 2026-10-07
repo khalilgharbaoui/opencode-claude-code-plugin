@@ -222,7 +222,7 @@ export function createLineHandler(
             claudeSessionId: msg.session_id,
           })
         }
-        reportFastModeState(msg, ctx.fastMode)
+        reportFastModeState(msg, ctx.fastMode, "init")
         reportSystemInit(msg, {
           ignoreAnthropicApiKey: ctx.config.ignoreAnthropicApiKey,
         })
@@ -1041,6 +1041,14 @@ export function createLineHandler(
       // result - end of conversation turn
       if (msg.type === "result") {
         clearFallbackTimer(state)
+
+        // The authoritative fast-mode verdict. The `init` frame's is a
+        // prediction and it is measurably wrong: on 2.1.288 an account with
+        // usage credits turned off is told `"on"` at init and
+        // `"off" / extra_usage_disabled` here, after the turn has run at
+        // standard speed (h #g221). See `reportFastModeState` for why only
+        // this one may say the request was honoured.
+        reportFastModeState(msg, ctx.fastMode, "result")
 
         if (msg.session_id) {
           setClaudeSessionId(state.sessionKey, msg.session_id)

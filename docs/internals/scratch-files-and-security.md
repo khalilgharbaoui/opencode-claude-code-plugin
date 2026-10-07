@@ -54,4 +54,10 @@ One hole stays: **`%` cannot be neutralised.** cmd expands `%NAME%` in a parsing
 
 This is verified by a Windows CI job on every pull request (`.github/workflows/ci-windows.yml`), which spawns a real `.cmd` shim that echoes its argv back and asserts that spaces, quotes, `&`, `|`, `>`, `<`, `^`, `!`, parentheses, trailing backslashes, an empty argument and a `--settings` JSON blob all arrive byte-identical, and that a set of injection attempts runs nothing.
 
-Two Windows gaps are known and not closed: the generated [per-account wrapper](../configuration/accounts.md) is a bash script, so multi-account setups are POSIX-only, and the experimental interactive (PTY) transport refuses a `.cmd` shim rather than running one, because `cmd.exe /c` would own the terminal the TUI needs.
+### Accounts without a wrapper script
+
+[Multiple accounts](../configuration/accounts.md) work on Windows, and they work by not generating a script at all. The bash wrapper the plugin writes on macOS and Linux does exactly two things: export the account's `CLAUDE_CONFIG_DIR`, and strip the `@<account>` marker off the `--model` value. A `.cmd` twin of it would have to forward its own arguments with `%*`, which is a **third** cmd.exe parse on top of the two the quoting above is measured against, and it would have to re-quote the one argument it rewrites, in batch, where there is no reliable quoter. So on Windows the plugin does both jobs itself, in process, before the spawn: the environment variable is set on the child and the model id is rewritten before the command line is built. Nothing is written to disk, and the argument quoting is unchanged.
+
+Shared capabilities are linked rather than copied wherever Windows allows it. A directory becomes a junction, which an unprivileged process may always create; a file is tried as a symlink (which needs Developer Mode), then as a hard link, and only then copied, with a warning, because a copy does not follow later edits to the original.
+
+One Windows gap is known and not closed: the experimental interactive (PTY) transport refuses a `.cmd` shim rather than running one, because `cmd.exe /c` would own the terminal the TUI needs.

@@ -575,6 +575,8 @@ export interface GatherDoctorOptions {
   planUsageImpl?: typeof fetchPlanUsage
   /** The provider option, so the `usage` spawn strips a key like a turn does. */
   ignoreAnthropicApiKey?: boolean
+  /** `CLAUDE_CONFIG_DIR` for the `usage` spawn; see `FetchPlanUsageOptions`. */
+  configDir?: string
   /** Seam for tests: where the log is and whether it is on. */
   logFileImpl?: typeof describeLogFile
   /** Seam for tests: reads the tail of the log file. */
@@ -613,6 +615,7 @@ export async function gatherDoctorReport(
   const planUsage: PlanUsage = wantsPlanUsage(options.argument ?? "")
     ? await (options.planUsageImpl ?? fetchPlanUsage)(cliPath, {
         ignoreAnthropicApiKey: options.ignoreAnthropicApiKey,
+        configDir: options.configDir,
       })
     : { status: "not-requested" }
 

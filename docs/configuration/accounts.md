@@ -26,11 +26,17 @@ Declare account names once and the plugin expands them into separate opencode pr
 
 | Provider ID | Display name | Claude config dir |
 |---|---|---|
-| `claude-code-default` | `Claude Code (Default)` | normal `~/.claude` |
-| `claude-code-personal` | `Claude Code (Personal)` | `~/.claude-personal` |
+| `claude-code-default` | `Claude Code (Default, Max 20x)` | normal `~/.claude` |
+| `claude-code-personal` | `Claude Code (Personal, Pro)` | `~/.claude-personal` |
 | `claude-code-work` | `Claude Code (Work)` | `~/.claude-work` |
 
-Non-default accounts use `CLAUDE_CONFIG_DIR` through a generated wrapper script, so auth/session state stays isolated per account. Shared capability files and folders are symlinked from `~/.claude` into each account dir when present:
+### The plan tier in the picker
+
+The display name carries each account's plan when the plugin can read it: `Max 20x`, `Max 5x`, `Max`, `Pro`, `Team` or `Enterprise`. It is read from `<config dir>/.claude.json`, which Claude Code writes beside its login, and derived the way the CLI derives it: `organizationType` for the plan and `organizationRateLimitTier` for the 5x/20x split. No token is read, nothing is spawned and no request is made, and nothing else from that file is ever displayed or logged.
+
+An account whose file is missing, unreadable, half-written, or whose plan the plugin does not recognise gets no suffix at all, like `Work` above. There is no option for this: it adds no behaviour, only a word.
+
+Non-default accounts use `CLAUDE_CONFIG_DIR` so auth/session state stays isolated per account. On macOS and Linux that happens through a small generated wrapper script; on Windows the plugin sets the variable on the spawn itself and runs `claude` directly, which is the same contract without a script (see [how the CLI is started on Windows](../internals/scratch-files-and-security.md#how-the-cli-is-started-on-windows)). Shared capability files and folders are linked from `~/.claude` into each account dir when present:
 
 ```text
 CLAUDE.md
@@ -41,6 +47,8 @@ commands/
 plugins/
 ```
 
+Directories are linked, so an edit in `~/.claude` is seen by every account. Files are linked too wherever the filesystem allows it; on Windows a file link needs Developer Mode or an elevated process, so the plugin falls back to a hard link and, failing that, to a copy, which it warns about because a copy does not follow later edits. Anything that cannot be linked at all is skipped with a warning and costs the other capabilities nothing.
+
 Identity/session state is not shared.
 
 Login each account once:
@@ -50,7 +58,7 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-personal" claude auth login
 CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude auth login
 ```
 
-The account model IDs are internally suffixed, for example `claude-sonnet-4-6@work`, so long-lived Claude subprocess sessions do not collide across accounts. The generated wrapper strips the suffix before calling `claude --model`.
+The account model IDs are internally suffixed, for example `claude-sonnet-4-6@work`, so long-lived Claude subprocess sessions do not collide across accounts. The suffix is stripped before `claude --model` is called: by the wrapper script on macOS and Linux, by the plugin itself on Windows.
 
 ### When an account runs out of usage
 

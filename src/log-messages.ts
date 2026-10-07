@@ -51,6 +51,8 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "cleanup-stale: error processing cache root",
   "cleanup-stale: rmSync failed",
   "continuing this conversation's claude session under the new model or effort instead of replaying it",
+  "copied a shared Claude capability into the account config dir instead of linking it; later edits to the original will not be picked up",
+  "could not share a Claude capability with the account",
   "delivering proxy results after interrupted continuation",
   "draining proxy calls queued between turns",
   "empty user content; sending sentinel to satisfy CLI",

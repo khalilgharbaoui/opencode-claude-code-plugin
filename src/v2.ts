@@ -7,6 +7,7 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
+import { readAccountTier } from "./account-tier.js"
 import { log } from "./logger.js"
 import { defaultModels } from "./models.js"
 import type { OpenCodeModel } from "./opencode-types.js"
@@ -189,7 +190,7 @@ export function planV2Providers(
     return {
       info: {
         id: providerID,
-        name: accountDisplayName(account),
+        name: accountDisplayName(account, readAccountTier(account)),
         activation: "enabled",
         package: V2_PLUGIN_PACKAGE,
         settings: {

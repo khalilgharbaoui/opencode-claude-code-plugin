@@ -18,6 +18,7 @@ import {
   ensureAccountRuntime,
   resolveAccounts,
 } from "./accounts.js"
+import { readAccountTier } from "./account-tier.js"
 import {
   type AgentRecord,
   agentDirectories,
@@ -557,7 +558,7 @@ async function expandAccountProviders(config: {
             // stripped by cleanProviderOptions.
             failoverAccounts: accounts,
           },
-          accountDisplayName(account),
+          accountDisplayName(account, readAccountTier(account)),
         )),
         models: configModelsForProvider(
           (existing?.models ?? seed?.models ?? {}) as OpenCodeProvider["models"],
