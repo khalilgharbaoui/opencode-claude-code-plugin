@@ -105,7 +105,7 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
   "image/webp": "webp",
 }
 
-/** Stages an image's bytes as a file and returns its absolute path, or null. */
+/** Stages an attachment's bytes as a file and returns its absolute path, or null. */
 export type ImageSaver = (data: Buffer, extension: string) => string | null
 
 /**
@@ -115,8 +115,9 @@ export type ImageSaver = (data: Buffer, extension: string) => string | null
  * tool results as labeled text so the model still sees the outcome, and never
  * paste base64 into a terminal. With `saveImage`, each PNG, JPEG, GIF or WebP
  * block is staged as a file whose path is pasted instead, which the TUI turns
- * back into an image attachment; without it, and for any other block, the
- * block is dropped with a logged warning. Non-envelope input (already plain
+ * back into an image attachment, and a PDF `document` block is staged the same
+ * way and pasted as an `@<path>` mention; without it, and for any other block,
+ * the block is dropped with a logged warning. Non-envelope input (already plain
  * text) passes through verbatim.
  */
 export function decodeUserEnvelope(chunk: string, saveImage?: ImageSaver): string {
@@ -135,15 +136,21 @@ export function decodeUserEnvelope(chunk: string, saveImage?: ImageSaver): strin
   const images: string[] = []
   let dropped = 0
   for (const block of content) {
+    const base64 = block?.source?.type === "base64" && typeof block.source.data === "string"
+    const mediaType = String(block?.source?.media_type).toLowerCase()
     const extension =
-      block?.type === "image" && block.source?.type === "base64" && typeof block.source.data === "string"
-        ? IMAGE_EXTENSIONS[String(block.source.media_type).toLowerCase()]
-        : undefined
+      base64 && block.type === "image"
+        ? IMAGE_EXTENSIONS[mediaType]
+        : base64 && block.type === "document" && mediaType === "application/pdf"
+          ? "pdf"
+          : undefined
     if (block?.type === "text" && typeof block.text === "string") {
       parts.push(block.text)
     } else if (extension && saveImage) {
       const file = saveImage(Buffer.from(block.source.data, "base64"), extension)
-      if (file) images.push(file)
+      // A PDF goes in as an `@` mention, the TUI's own attach syntax, which
+      // Claude then reads with its Read tool (measured on 2.1.288, h #g213).
+      if (file) images.push(extension === "pdf" ? `@${file}` : file)
       else dropped++
     } else if (block?.type === "tool_result") {
       const v = block.content
@@ -183,7 +190,7 @@ export function decodeUserEnvelope(chunk: string, saveImage?: ImageSaver): strin
  */
 export function stageImage(data: Buffer, extension: string): string | null {
   try {
-    const file = join(pluginTmpDir(), `image-${randomUUID()}.${extension}`)
+    const file = join(pluginTmpDir(), `attachment-${randomUUID()}.${extension}`)
     writeFileSync(file, data, { mode: 0o600, flag: "wx" })
     return file
   } catch (err) {

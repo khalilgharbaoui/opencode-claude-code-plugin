@@ -359,6 +359,21 @@ test("part.data still wins when part.image is absent", () => {
   assert.equal(image.source.data, "aGVsbG8=")
 })
 
+test("a PDF file part becomes a document block (h #g213)", () => {
+  const pdf = Buffer.from("%PDF-1.4 tiny")
+  for (const data of [pdf, pdf.toString("base64"), `data:application/pdf;base64,${pdf.toString("base64")}`]) {
+    const out = parsed(
+      p([{ role: "user", content: [{ type: "text", text: "summarize" }, { type: "file", data, mediaType: "application/pdf" }] }]),
+    )
+    const document = out.message.content.find((b: any) => b.type === "document")
+    assert.ok(document, "a PDF must not be dropped")
+    assert.deepEqual(document.source, { type: "base64", media_type: "application/pdf", data: pdf.toString("base64") })
+  }
+  // Any other non-image type is still skipped.
+  const csv = parsed(p([{ role: "user", content: [{ type: "text", text: "x" }, { type: "file", data: "YQ==", mediaType: "text/csv" }] }]))
+  assert.equal(csv.message.content.some((b: any) => b.type !== "text"), false)
+})
+
 test("fresh-session and compaction histories exclude aside exchanges, not subsequent work", () => {
   const prompt = p([
     { role: "user", content: "main task" },

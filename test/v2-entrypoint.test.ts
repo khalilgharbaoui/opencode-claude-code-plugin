@@ -99,7 +99,7 @@ test("a model converts to V2's Model.Info with every required field", () => {
   assert.equal(model.modelID, "claude-opus-5")
   assert.equal(model.providerID, "claude-code")
   assert.equal(model.package, V2_PLUGIN_PACKAGE)
-  assert.deepEqual(model.capabilities, { tools: true, input: ["text", "image"], output: ["text"] })
+  assert.deepEqual(model.capabilities, { tools: true, input: ["text", "image", "pdf"], output: ["text"] })
   assert.deepEqual(model.cost, [
     { input: opus.cost.input, output: opus.cost.output, cache: opus.cost.cache },
   ])

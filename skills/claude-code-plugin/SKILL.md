@@ -312,8 +312,9 @@ binary or inconclusive output stays headless. Nothing retries a submitted reques
 another transport. Explicit PTY and an automatic PTY selection require `Bun.Terminal`;
 without it they fail clearly. This changes transport, not account access or billing.
 
-Interactive transport takes text plus images (PNG/JPEG/GIF/WebP staged as 0600 files
-whose paths the TUI attaches, deleted after the turn; PDFs and other blocks are
+Interactive transport takes text, images and PDFs (staged as 0600 files, deleted after
+the turn: an image path the TUI attaches, a PDF as an `@<path>` mention Claude reads
+with its Read tool; headless sends a PDF as a `document` block; other blocks are
 dropped with a warning). A message sent while a proxied tool runs reaches the same turn
 through the TUI's own input queue, as on headless. A turn ends on its stop reason or
 `turn_duration`, or, as a safeguard for a CLI that writes neither, after 20 s of total

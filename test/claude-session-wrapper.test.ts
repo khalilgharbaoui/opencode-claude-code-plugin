@@ -56,7 +56,7 @@ test("decodeUserEnvelope drops image blocks but keeps text", () => {
   assert.ok(!decoded.includes("AAAA"), "base64 must never reach the TUI")
 })
 
-test("decodeUserEnvelope pastes a staged path for each image, ahead of the text", () => {
+test("decodeUserEnvelope pastes a staged path for each image and an @ mention for a PDF, ahead of the text", () => {
   const envelope = JSON.stringify({
     type: "user",
     message: {
@@ -68,6 +68,8 @@ test("decodeUserEnvelope pastes a staged path for each image, ahead of the text"
         // Not an image the TUI attaches: dropped, never pasted.
         { type: "image", source: { type: "base64", media_type: "image/tiff", data: "CCCC" } },
         { type: "document", source: { type: "base64", media_type: "application/pdf", data: "DDDD" } },
+        // A document that is not a PDF: dropped.
+        { type: "document", source: { type: "base64", media_type: "text/csv", data: "EEEE" } },
       ],
     },
   })
@@ -76,8 +78,8 @@ test("decodeUserEnvelope pastes a staged path for each image, ahead of the text"
     staged.push([data.toString("base64"), extension])
     return `/scratch/image-${staged.length}.${extension}`
   })
-  assert.deepEqual(staged, [["AAAA", "png"], ["BBBB", "jpg"]])
-  assert.equal(decoded, "/scratch/image-1.png\n/scratch/image-2.jpg\ncompare these")
+  assert.deepEqual(staged, [["AAAA", "png"], ["BBBB", "jpg"], ["DDDD", "pdf"]])
+  assert.equal(decoded, "/scratch/image-1.png\n/scratch/image-2.jpg\n@/scratch/image-3.pdf\ncompare these")
   // A saver that fails drops the image like any other block.
   assert.equal(decodeUserEnvelope(envelope, () => null), "compare these")
 })
@@ -85,7 +87,7 @@ test("decodeUserEnvelope pastes a staged path for each image, ahead of the text"
 test("stageImage writes a private file in the plugin's scratch dir", () => {
   const file = stageImage(Buffer.from([0x89, 0x50, 0x4e, 0x47]), "png")!
   try {
-    assert.match(path.basename(file), /^image-[0-9a-f-]+\.png$/)
+    assert.match(path.basename(file), /^attachment-[0-9a-f-]+\.png$/)
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
     assert.deepEqual([...fs.readFileSync(file)], [0x89, 0x50, 0x4e, 0x47])
   } finally {

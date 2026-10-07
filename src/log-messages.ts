@@ -133,5 +133,5 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "two different skills share a name; bridging the one the nearest root claimed",
   "unknown permissionPreset; no preset applied and every permission setting is left exactly as configured",
   "unsupported file part data type",
-  "unsupported media type for Claude image block, skipping",
+  "unsupported media type for Claude attachment block, skipping",
 ])

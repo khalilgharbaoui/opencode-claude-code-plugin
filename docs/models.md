@@ -30,7 +30,7 @@ The plugin auto-registers the following, and they appear in the model picker wit
 
 `claude-mythos-5` and `claude-mythos-5-1` are Mythos-class counterparts to the corresponding Fable models, but without safety classifiers, and are **limited availability via [Project Glasswing](https://anthropic.com/glasswing)**. They're registered unconditionally; if your Claude account lacks access, `claude --model` just errors. Use the corresponding generally available `claude-fable-5` or `claude-fable-5-1` otherwise.
 
-Capabilities for every model: text + image input, text output, tool use, attachments. No temperature control, no PDF/audio/video, no interleaved streaming.
+Capabilities for every model: text, image and PDF input, text output, tool use, attachments. No temperature control, no audio/video, no interleaved streaming.
 
 **Price ×** is each model's per-token list price relative to Haiku, the cheapest model. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku $1/$5 = 1×, Sonnet 5 and 5.5 $2/$10 = 2×, Sonnet 4.5/4.6 $3/$15 = 3×, Opus 5.5 $4/$20 = 4×, Opus $5/$25 = 5×, Opus 5.5 fast mode $8/$40 = 8×, Fable/Mythos 5 and 5.1 / Opus 5 and 4.8 fast mode $10/$50 = 10×). So **Fable/Mythos 5 and 5.1, and fast-mode Opus 5 and 4.8, all cost 2× standard Opus 5**, and fast mode is 2× the standard price on every Opus that offers it. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
 

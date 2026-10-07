@@ -324,7 +324,7 @@ test("configModelsForProvider completes a partial user model instead of throwing
   assert.equal(entry.name, "Opus 3 (retired)")
   assert.deepEqual(entry.limit, { context: 100_000, output: 64_000 }, "partial limit merges with the template")
   assert.deepEqual(entry.cost, { input: 0, output: 0, cache_read: 0, cache_write: 0 })
-  assert.deepEqual(entry.modalities, { input: ["text", "image"], output: ["text"] })
+  assert.deepEqual(entry.modalities, { input: ["text", "image", "pdf"], output: ["text"] })
   assert.equal(entry.tool_call, true)
   assert.ok("max" in (entry.variants as Record<string, unknown>), "template variants apply")
   // The default models are untouched by the completion path.

@@ -1298,7 +1298,7 @@ test("the shim pastes an image as a staged path and deletes the file after the t
     await waitFor(() => tui.writes.some((w) => w.startsWith("\x1b[200~")))
     const paste = tui.writes.find((w) => w.startsWith("\x1b[200~"))!
     const [first, ...rest] = paste.slice("\x1b[200~".length, -"\x1b[201~".length).split("\n")
-    assert.match(first!, /image-[0-9a-f-]+\.png$/)
+    assert.match(first!, /attachment-[0-9a-f-]+\.png$/)
     assert.equal(fs.readFileSync(first!, "utf8"), "png-bytes")
     assert.deepEqual(rest, ["What color?"])
     await waitFor(() => results().length === 1)

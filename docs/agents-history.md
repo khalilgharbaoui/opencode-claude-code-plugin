@@ -2339,3 +2339,27 @@ reply gave the motto from the file and the sign-off line the agent prompt asks
 for, and the CLI's own `prompt_snapshot` held each block once, with neither
 opencode's header nor its `<env>` block. A second turn on the same TUI ran a
 proxied `bash` (`pty-ok`) and kept the sign-off.
+
+<a id="g213"></a>
+
+#### PDF input on both transports (2026-10-07)
+
+Neither transport forwarded a PDF: the catalog said `pdf: false`, so opencode did
+not offer one, and the message builder converted image parts only. Now the catalog
+says `pdf: true`, the builder's `toAttachmentBlock` turns an `application/pdf` file
+part into a `document` block (bytes, base64 string or data URL), and on the
+interactive transport `decodeUserEnvelope` stages a PDF like an image and pastes
+`@<path>`.
+
+Measured on Claude Code 2.1.288 before building: a `document` block in a headless
+stream-json envelope was read by Haiku 4.5. On the TUI an `@<path>` mention records
+a `file` attachment of type `pdf`, but the model still read the file with its
+Read tool, and with tools disabled (headless `-p @file --tools ""` or a prompt
+telling it not to use tools) it saw only metadata. A plain pasted path also worked,
+through Read alone. `@` was kept because it is the TUI's own attach syntax.
+Staged files are now named `attachment-<uuid>.<ext>` rather than `image-...`.
+
+Live, a one-page PDF reading "OSPREY LEDGER 77" sent as a file part: opencode
+1.18.34 headless and interactive (HTTP API), opencode 2.0.22 headless and
+interactive (`opencode run -f`); all four answered with the text, nothing was
+dropped, and no staged file was left behind.

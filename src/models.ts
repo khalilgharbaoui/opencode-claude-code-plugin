@@ -15,7 +15,7 @@ const baseCapabilities = {
   temperature: false,
   attachment: true,
   toolcall: true,
-  input: { text: true, audio: false, image: true, video: false, pdf: false },
+  input: { text: true, audio: false, image: true, video: false, pdf: true },
   output: { text: true, audio: false, image: false, video: false, pdf: false },
   interleaved: false as const,
 }

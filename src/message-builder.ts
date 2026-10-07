@@ -176,6 +176,8 @@ export function stripContextReminders(prompt: Prompt): {
   return removed > 0 ? { prompt: out, removed } : { prompt, removed: 0 }
 }
 
+const PDF_MEDIA_TYPE = "application/pdf"
+
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -183,7 +185,8 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "image/webp",
 ])
 
-function toImageBlock(part: any): any | null {
+/** An image or PDF file part as a Claude content block, or null to skip it. */
+function toAttachmentBlock(part: any): any | null {
   const raw: unknown = part.image ?? part.data ?? part.url ?? part.source?.data
   if (!raw) {
     log.warn("file part without data, skipping")
@@ -218,8 +221,17 @@ function toImageBlock(part: any): any | null {
     return null
   }
 
+  // A PDF is a `document` block, which the CLI passes to the API as it is
+  // (measured on 2.1.288: Haiku 4.5 read a PDF sent this way, h #g213).
+  if (resolvedMediaType.toLowerCase() === PDF_MEDIA_TYPE) {
+    return {
+      type: "document",
+      source: { type: "base64", media_type: PDF_MEDIA_TYPE, data: base64 },
+    }
+  }
+
   if (!resolvedMediaType || !SUPPORTED_IMAGE_TYPES.has(resolvedMediaType)) {
-    log.warn("unsupported media type for Claude image block, skipping", {
+    log.warn("unsupported media type for Claude attachment block, skipping", {
       mediaType: resolvedMediaType,
     })
     return null
@@ -608,11 +620,11 @@ Now continuing with the current message:
               content.push({ type: "text", text: part.text })
             }
           } else if (part.type === "file" || part.type === "image") {
-            const block = toImageBlock(part)
+            const block = toAttachmentBlock(part)
             if (block) {
               content.push(block)
             } else {
-              log.debug("skipped non-image file part", {
+              log.debug("skipped unsupported file part", {
                 mediaType: part.mediaType,
               })
             }
@@ -705,7 +717,7 @@ export function getTrailingUserMessages(
         if (part.type === "text") {
           if (part.text && part.text.trim()) blocks.push({ type: "text", text: part.text })
         } else if (part.type === "file" || part.type === "image") {
-          const block = toImageBlock(part)
+          const block = toAttachmentBlock(part)
           if (block) blocks.push(block)
         }
       }

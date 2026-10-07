@@ -67,13 +67,8 @@
 
 ## Backlog
 
-The working backlog is the vault note `opencode-claude-code-plugin/Future Features.md`; this
-item is mirrored there.
-
-- 2026-10-07, maintainer: "Add PDF input as TODO". PDF input on both transports. Neither forwards
-  PDFs today (catalog `pdf: false`, the message builder converts images only). Measured: a `document`
-  block in a stream-json envelope reached Haiku 4.5 headless and it read the text; the TUI attaches a
-  PDF on an `@<path>` mention (not on a bare pasted path), and reading it there needs the Read tool.
+Nothing queued here; the working backlog is the vault note
+`opencode-claude-code-plugin/Future Features.md`.
 
 ## Deferred decisions
 
@@ -109,6 +104,9 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-07: **done**: PDF input on both transports ("Add PDF input as TODO", then "go ahead").
+  Catalog `pdf: true`, a `document` block headless, an `@<path>` mention on the TUI (h #g213). Live on
+  1.18.34 and 2.0.22, both transports.
 - 2026-10-07: **done** (v0.44.0): opencode's system prompt on the interactive transport. The
   "clean root fix" (keep opencode's text, drop only the bisected environment block) was declined as
   evasion of the billing classification; the maintainer chose the offered opt-in instead ("Build the
