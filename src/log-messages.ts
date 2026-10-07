@@ -14,6 +14,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN detected; stripping it from claude spawns (ignoreAnthropicApiKey) so requests use your subscription auth, not pay-as-you-go API billing.",
   "Code Mode execute not forwarded: no model-visible input schema",
   "Code Mode execute not forwarded: read-only permission preset",
+  "MCP server asked for operator input and was declined: a headless Claude Code session cannot prompt, so its elicitation can only be refused. Run that server's flow in Claude Code directly, or configure it not to elicit.",
   "MCP tool not routed through the proxy: another proxy tool already holds that name, and it keeps it",
   "account failover declined; ending the turn",
   "agent effort override refused: unknown level",

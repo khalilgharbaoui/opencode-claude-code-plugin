@@ -799,6 +799,10 @@ export interface ClaudeStreamMessage {
     display_name?: string
     agent_id?: string
     description?: string
+    /** `elicitation` only: the MCP server that asked for operator input. */
+    mcp_server_name?: string
+    /** `elicitation` only: `form` or `url`. */
+    mode?: string
   }
 
   /**

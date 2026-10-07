@@ -29,6 +29,20 @@ A server that flaps between connected and failed is capped at one respawn per mi
 
 This matters most where a turn can arrive before the host has started its servers: `opencode run`, scripted use and slow servers. The TUI normally connects everything before the first prompt.
 
+## Servers that ask the operator a question (MCP elicitation)
+
+A bridged server can send an MCP **elicitation**: a request for the operator to type or choose something mid-call. There is nobody to ask on this side, because the Claude Code session the plugin drives is headless, so the plugin answers every elicitation with `decline` and warns once per server:
+
+```
+WARN: MCP server asked for operator input and was declined: a headless Claude
+Code session cannot prompt, so its elicitation can only be refused.
+{"server":"<name>","mode":"form"}
+```
+
+The tool call still returns, with whatever the server does on a declined elicitation, and the turn continues normally. If you need to answer one, run that server's flow in Claude Code directly, where its own dialog can take your input, or configure the server so that path does not elicit.
+
+This is not configurable. Accepting automatically would mean inventing the answer you were asked for.
+
 ## V2 Code Mode
 
 V2 normally exposes MCP tools through Code Mode's `execute` and its catalog, rather than as individual server-prefixed model tools. `proxyOpencodeMcpTools` matches individual tools only; on a Code Mode-only snapshot it warns and falls back to the direct Claude MCP bridge. This fallback does **not** execute tools under opencode's permission policy.

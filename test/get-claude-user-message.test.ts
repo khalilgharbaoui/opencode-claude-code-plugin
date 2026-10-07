@@ -508,6 +508,68 @@ test("a tool result this CLI process is waiting on is still a real tool_result b
   assert.match(result.content, /We decided X because of Y\./)
 })
 
+/**
+ * opencode's own compaction can leave a `tool_result` in the prompt whose
+ * matching assistant `tool_use` is no longer there, which on a raw API client
+ * is an adjacency error. It cannot be one here, and these pin why: the gate is
+ * the set of proxy calls THIS CLI process is still waiting on, so a tool
+ * result from a summarised-away call fails it the same way an opencode-side
+ * call does and leaves as text. No "repair strategy" knob is needed, and one
+ * would govern a case the gate makes unreachable.
+ */
+const compactedAwayPrompt = () =>
+  p([
+    {
+      role: "user",
+      content: [{ type: "text", text: "<summary>Earlier we looked at the parser.</summary>" }],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_compacted",
+          toolName: "bash",
+          output: { type: "text", value: "parser.ts: 412 lines" },
+        },
+      ],
+    },
+    { role: "user", content: [{ type: "text", text: "Carry on." }] },
+  ])
+
+test("a tool result whose tool_use was compacted away is text, never an orphaned block", () => {
+  const out = JSON.parse(
+    getClaudeUserMessage(compactedAwayPrompt(), false, {
+      // The live set: one unrelated call is parked, the compacted one is not.
+      cliToolCallIds: new Set(["call_still_pending"]),
+    }),
+  )
+  const blocks = out.message.content
+  assert.equal(
+    blocks.some((b: any) => b.type === "tool_result"),
+    false,
+    "a tool_use the CLI can no longer resolve must not come back as a tool_result",
+  )
+  const rendered = blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n")
+  assert.match(rendered, /<opencode_tool_result tool="bash">/)
+  assert.match(rendered, /parser\.ts: 412 lines/, "the content survives the repair")
+})
+
+test("a compaction turn sends no tool_result blocks at all", () => {
+  // `previousPendingProxyCalls` is forced to `[]` on a compaction turn, so the
+  // gate is an empty set there by construction.
+  const out = JSON.parse(
+    getClaudeUserMessage(compactedAwayPrompt(), false, {
+      compactionMode: true,
+      cliToolCallIds: new Set<string>(),
+    }),
+  )
+  const blocks = out.message.content
+  assert.equal(blocks.some((b: any) => b.type === "tool_result"), false)
+  const rendered = blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n")
+  assert.match(rendered, /parser\.ts: 412 lines/)
+})
+
 test("the fresh-session history keeps tool inputs and result bodies", () => {
   const history = compactConversationHistory(subtaskPrompt())
   assert.ok(history, "there is prior conversation to render")

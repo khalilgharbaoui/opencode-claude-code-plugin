@@ -14,6 +14,21 @@ import type {
 import { denyMessageForTool, isAskUserQuestionTool } from "./ask-user-question.js"
 import { log } from "./logger.js"
 
+/**
+ * The only honest answer a headless session can give an MCP elicitation, and
+ * the Agent SDK's own default when a host registers no `onElicitation`
+ * handler. `accept` would mean fabricating the operator's input.
+ */
+export const ELICITATION_DECLINE: Readonly<Record<string, unknown>> = { action: "decline" }
+
+/** One warning per MCP server per process; a chatty server must not spam. */
+const warnedElicitationServers = new Set<string>()
+
+/** Test seam, mirroring `_resetRateLimitReports` in cli-events.ts. */
+export function _resetElicitationReports(): void {
+  warnedElicitationServers.clear()
+}
+
 export function controlRequestBehaviorForTool(
   config: ClaudeCodeConfig,
   toolName: string,
@@ -111,6 +126,33 @@ export function handleControlRequest(
       })
     }
 
+    return true
+  }
+
+  // An MCP server asking the operator for input arrives here, and a default
+  // install can get one: measured on Claude Code 2.1.288 with a bridged stdio
+  // server, a `--print` stream-json session is handed the server's
+  // `elicitation/create` as this control request. There is nobody to ask on
+  // this side, so the answer is the documented `{action}` shape rather than
+  // the blind `{}` below, which the CLI coerced into `{action:"cancel"}`
+  // (anything that fails its schema is). That coercion is what kept the turn
+  // alive, so this changes the word the server receives, not whether the turn
+  // survives. What it adds is the one line saying the server asked and was
+  // declined: at DEBUG, in a log that is off by default, the operator saw a
+  // tool quietly do nothing and had nothing to read about why.
+  if (request.subtype === "elicitation") {
+    const server = request.mcp_server_name || "unknown"
+    writeControlResponse(proc, requestId, { ...ELICITATION_DECLINE })
+    if (!warnedElicitationServers.has(server)) {
+      warnedElicitationServers.add(server)
+      log.warn(
+        "MCP server asked for operator input and was declined: a headless" +
+          " Claude Code session cannot prompt, so its elicitation can only be" +
+          " refused. Run that server's flow in Claude Code directly, or" +
+          " configure it not to elicit.",
+        { server, mode: request.mode ?? "form" },
+      )
+    }
     return true
   }
 

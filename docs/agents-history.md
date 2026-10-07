@@ -3093,3 +3093,181 @@ above already have unit coverage (`test/account-failover.test.ts`,
 `test/result-fallback.test.ts`, `test/respawn.test.ts`,
 `test/process-lifecycle.test.ts`, `test/session-manager.test.ts`); what they
 lacked was a live run, and that is what this entry is.
+
+<a id="g220"></a>
+
+#### Four research-pass backlog items measured and decided: CLI hook mirroring, structured output for internal agents, the unused `can_use_tool` capabilities, tool-result repair (2026-10-07)
+
+Four P3/P4 items from a research pass, none of them a commitment. Each was
+measured against the installed versions (Claude Code 2.1.288, opencode 1.18.35,
+opencode 2.0.22 in the sandbox) and decided. **Three close outright, the fourth
+closes with one real defect fixed inside it.** The point of this entry is that
+nobody should re-investigate any of them without new evidence, so each verdict
+below carries the measurement that produced it.
+
+**1. Mirror opencode hooks into CLI hooks: CLOSED, impossible as described, and
+one real defect found beside it.**
+
+The item wanted opencode plugins' `tool.execute.before/after` hooks to see the
+Claude CLI's own tool calls. The question that settles it is whether THIS plugin
+can cause opencode to run ANOTHER plugin's hooks for a tool opencode did not
+execute. It cannot, on either major, and the reason is structural rather than a
+missing feature.
+
+On opencode 1.18.35 (`npm pack @opencode-ai/plugin @opencode-ai/sdk`, both
+resolving to 1.18.35, matching the binary on PATH): `PluginInput` is
+`{client, project, directory, worktree, experimental_workspace, serverUrl, $}`,
+with no trigger of any kind, and the generated SDK's whole `Tool` domain is
+`ids()` and `list()` (`GET /experimental/tool/ids`, `GET /experimental/tool`).
+There is no route that executes a tool, let alone one that replays a tool
+execution. Every `tool.execute.before` call site in the binary is
+`plugin.trigger(...)` inside opencode's own execution closure: the AI-SDK tool
+wrapper it builds per registered tool, `CodeMode.invokeChildTool`, and the
+background-subagent dispatcher. All three are in-process and unreachable from a
+plugin.
+
+On opencode 2.0.22 (`~/opencode-v2-sandbox/pkg/plugin`, `@opencode/plugin`
+2.0.11): the plugin context does hand over the whole `ToolDomain`, but it is
+`{transform, reload, list, hook}`, and `Hooks<Spec, Failures>` is a
+REGISTRATION type: `(name, callback) => Effect<Registration>`. There is no emit,
+no trigger, and `RpcDomain`'s `events.emit` belongs to an RPC definition the
+plugin itself registered, not to the hook bus. So the mirror cannot be built on
+either major, and the item is closed on the architecture, not on effort.
+
+**The defect beside it.** `handleControlRequest` answers every control request
+that is not `can_use_tool` with a blind `{}`. Three subtypes were named:
+
+- `hook_callback` is unreachable. Its `callback_id` is minted by the CLI's
+  `createHookCallback`, which exists only for hooks a host registered through
+  the SDK `initialize` control request (it is keyed on the CLI's own
+  `sdkHostHookGeneration`), and the second producer is `sendDeviceHookCallback`
+  for a device client. This plugin never sends `initialize` at all: the only
+  control request it ever writes is `side_question` (`src/side-question.ts`) and
+  `interrupt` (`src/session-manager.ts`). The CLI's own cloud-lane router says
+  the same thing from the other side: `hook_callback` is "agent-originated and
+  cannot be sent by a host".
+- `mcp_message` is unreachable for the same shape of reason. Its schema says it
+  carries one JSON-RPC message "for an SDK-hosted MCP server (one named in
+  `initialize.sdkMcpServers` or added later with `mcp_set_servers`)". This
+  plugin bridges MCP servers through `--mcp-config`, and sends neither request.
+- `elicitation` IS reachable, and a default install can get one. Measured live
+  on 2.1.288 with a dependency-free stdio MCP server whose one tool sends
+  `elicitation/create`, driven through `claude --print --verbose --input-format
+  stream-json --output-format stream-json --model claude-haiku-4-5
+  --mcp-config ... --strict-mcp-config` exactly as the plugin spawns: the CLI
+  forwarded it as
+  `{"type":"control_request","request":{"subtype":"elicitation","mcp_server_name":"elicit","message":"Which colour?","mode":"form","requested_schema":{…}}}`.
+  Since the MCP bridge is on by default, any opencode-configured server that
+  elicits lands here.
+
+What the blind `{}` does to it was measured three ways in the same harness.
+Answering `{}` made the CLI send the server `{"action":"cancel"}`; answering
+`{"action":"decline"}` sent `decline`; answering `{"action":"bogus-value"}` sent
+`cancel` again. So the CLI's rule is that anything failing its
+`{action: accept|decline|cancel}` schema becomes `cancel`, and in all three runs
+the tool returned, the model answered, and the turn reached a normal terminal
+`result` with `stop_reason: end_turn`. **The blind ack never stalled a turn**,
+which is worth recording because the obvious guess is that it would.
+
+So the fix is deliberately small. `handleControlRequest` now answers
+`elicitation` with `{action: "decline"}`, which is both the CLI's documented
+shape and the Agent SDK's own default when a host registers no `onElicitation`
+handler (read out of the binary: `return {action:"decline"}`), and WARNs once
+per MCP server naming the server and the mode. The ack is not what was broken;
+the silence was. An elicitation was previously answered at DEBUG, in a log that
+is off by default, so an operator saw an MCP tool quietly do nothing and had
+nothing anywhere to read about why. `accept` is not offered and must not be
+added: it would mean fabricating the operator's input.
+`test/control-request.test.ts`.
+
+**2. Structured output for internal agents: CLOSED, because opencode never asks
+for it.**
+
+The item supposed that opencode's title and compaction agents want
+`outputFormat` plus a JSON schema, and that
+`experimental.provider.small_model` could replace the local `synthesizeTitle`
+stub with a real cheap model. Both halves fail on measurement.
+
+opencode 1.18.35's title path, read out of the binary at `SessionPrompt.ensureTitle`:
+`stream({agent: title, user, system: [], small: true, tools: {}, model, sessionID, retries: 2, messages: [{role:"user", content:"Generate a title for this conversation:\n"}, ...]})`,
+whose output is consumed as `textDelta` parts joined into a string, stripped of
+`<think>` blocks, first non-empty line taken, truncated at 100 characters. The
+project-copy-name path (`ProjectCopyHttpApi.generateName`) is the same shape.
+The compaction prompt is prose ("Summarize what was done in this conversation.
+Write like a pull request description."). Neither carries a schema. `responseFormat`
+appears 38 times in the 1.18.35 binary and 16 times across the 2.0.22 core
+bundle, and **every one of them is inside a vendored AI SDK provider's
+`getArgs({...responseFormat...})`**, never in opencode's own request
+construction. opencode 2 says the same thing in its types: `SessionTitle.result`
+is `string | undefined` and `SessionCompactionResult.summary` is `string`.
+
+The CLI side of the idea does exist (`--json-schema` on 2.1.288, with
+`tengu_structured_output_enabled` / `tengu_structured_output_failure` telemetry
+and a `structured_output` field), so this is not "the CLI cannot". It is
+"nothing asks", and building a path for a request that is never made would be
+speculative by definition.
+
+`experimental.provider.small_model` fails separately and more interestingly.
+`Provider.getSmallModel(providerID)` resolves WITHIN one provider: config
+`small_model`, else the hook, else a family search over that provider's own
+models. So the only thing this plugin could return from the hook is one of its
+own `claude-code` models, and a title request for a `claude-code` model arrives
+at `doStream` with `tools: {}`, which is exactly what `isTitleRequest` keys on,
+so it lands back on the stub. The hook is circular here. Making it non-circular
+would mean spawning a `claude` process per new session title, which is the cost
+the stub was written to avoid (h #g36).
+
+**3. The unused `can_use_tool` capabilities: CLOSED, no problem to solve, and
+the writeback would encode a decision nobody made.**
+
+Both capabilities are real on 2.1.288. `updatedInput` is already sent
+(pass-through on allow), and `updatedPermissions` exists on the response with
+its own validation telemetry (`updated_permissions_malformed`,
+`updatedPermissionsDropped`). What is missing is a problem.
+
+`can_use_tool` is only ever asked when `skipPermissions` is false, and that
+defaults to true, so on a default install this channel is silent. In the posture
+where it is asked, the plugin answers from static configuration
+(`controlRequestBehaviorForTool`: `controlRequestToolBehaviors`, then the
+`AskUserQuestion` deny, then `controlRequestBehavior`). There is no human in
+that loop. That is the decisive argument against the "always allow" writeback:
+the CLI's own classification for the field is
+`user_temporary | user_permanent | user_reject`, so what it persists is a
+PERSON's standing decision. Writing one from a config-derived answer would put a
+rule the operator never chose into `.claude/settings.local.json`, a file the
+plugin does not own, where it would outlive the opencode config that produced it
+and silently contradict it on the next change. The plugin recomputes its answer
+per request precisely so that the opencode config stays the single source.
+
+`updatedInput` rewriting has no caller either. Rewriting is for a host that
+wants to edit what the model asked for, and nothing in this repo does; for tools
+opencode executes, opencode's own `tool.execute.before` already offers it to
+whoever wants it.
+
+**4. Tool-result repair strategy: CLOSED, because the issue-#29 gate already
+covers the compaction case, and a knob would govern an unreachable state.**
+
+The worry was that opencode's compaction can break `tool_use` / `tool_result`
+adjacency, so a placeholder-vs-drop knob might be needed. It cannot break here,
+for a reason that predates the question. `getClaudeUserMessage` emits a
+`tool_result` block only for ids in `cliToolCallIds`, and the one call site
+(`src/claude-code-language-model.ts`) always passes it, as
+`new Set(getPendingProxyCalls(sk).map(c => c.toolCallId))`: the proxy calls THIS
+CLI process is still waiting on. Anything else, including a result whose
+`tool_use` was summarised away, renders as `<opencode_tool_result>` text, which
+keeps the payload and drops only a pairing the CLI could not have honoured.
+Three paths, no gap: a resumed session sends only the trailing user message
+under that gate; a replay renders the whole history as text inside
+`<conversation_history>` with zero tool_result blocks; and a compaction turn
+forces the pending list to `[]`, so every tool result in it is text by
+construction.
+
+So there is nothing to repair and no strategy to choose. What was missing was a
+test saying so, which is now there: a prompt whose `tool_result` has no matching
+`tool_use` left, asserted to leave as text both on an ordinary turn (with an
+unrelated call genuinely parked, so the gate is doing work rather than being
+empty) and on a compaction turn. `test/get-claude-user-message.test.ts`.
+
+**Probe hygiene.** Every live run used the DEFAULT Claude account and
+`claude-haiku-4-5`, in `/tmp/eval-elicit` with its own stdio MCP server, and
+each child was killed at the end of its run.
