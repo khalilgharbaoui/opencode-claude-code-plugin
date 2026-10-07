@@ -95,7 +95,11 @@ Nothing parked.
 
 ## In progress
 
-- 2026-10-07: "then carry on with the rest of the rest untill nothing is left use 2 lanes". Plan, two
+Nothing in progress.
+
+## Done
+
+- 2026-10-07: **done** (v0.46.1, v0.47.0, v0.48.0): "then carry on with the rest of the rest untill nothing is left use 2 lanes". Plan, two
   lanes per batch, each item built or closed with a measured reason:
   (1a) interactive transport reads only the appended transcript bytes; (1b) Windows spawn quoting,
   with a Windows CI job to verify it (the item was blocked only on a runner; GitHub Actions has one).
@@ -109,8 +113,10 @@ Nothing parked.
   Batch 2 **done** (v0.47.0): (2a) cross-account carry by transcript copy, `crossAccountResume`,
   PR #97, h #g218 (a switch between two real logins still unmeasured); (2b) every live gap passed,
   PR #98, h #g219, which also closes the 2026-09-23 opencode 2 checks (moved to Done).
-## Done
-
+  Batch 3 **done** (v0.48.0): (3a) PR #99, h #g220: hook mirroring, structured output, `can_use_tool`
+  rewriting and tool-result repair closed with evidence; MCP elicitation now declined with a WARN.
+  (3b) PR #100, h #g221: `accounts` on Windows (no wrapper, in-process), plan tier labels, session
+  tools closed, fast-mode off-state now warned from the result frame. Windows CI green on master.
 - 2026-10-07: **done**: opencode 2, the checks that were not possible before release (2026-09-23).
   (1) npm-name install on 2.0.16, done 2026-09-27; (2) account failover form and switch, and the
   plan-mode form, live on 2.0.22; (3) a permission prompt in front of a proxied call, live on 2.0.22
