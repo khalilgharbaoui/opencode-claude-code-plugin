@@ -2574,3 +2574,105 @@ MARLIN.
 
 `test/session-model-switch.test.ts`, `test/effort-sessions.test.ts`,
 `test/session-resume.test.ts`, `test/get-claude-user-message.test.ts`.
+
+<a id="g216"></a>
+
+#### The interactive transport's transcript poll reads only what was appended (2026-10-07)
+
+The PTY transport follows a turn by polling the TUI's session JSONL every
+`pollMs` (250 ms by default), and every poll re-read and re-split the whole
+file. `readRawLines` was `fs.readFileSync(jsonlPath, "utf8").split("\n")`, and
+three callers used it: `scanTranscript` once per poll, `lineCount` for
+`submitTurn`'s "was the prompt accepted" check (every 80 ms while submitting),
+and `start`/`runTurnLoop` for the baseline cursor. A conversation's transcript
+grows without bound, so the cost of following a turn grew with the
+conversation's age rather than with what the turn wrote.
+
+**Measured**, `scripts/bench-transcript-poll.ts`: a synthetic transcript built
+from the redacted fixtures in `test/fixtures/interactive/`, a real
+`ClaudeSession` against a scripted PTY (no `claude`, no network), one turn of
+about 4 s at `pollMs: 20` during which the fake TUI appends eleven records.
+
+| transcript | | polls | bytes/poll | total read | CPU/poll | turn CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| 11.4 MB (20,000 records) | before | 79 | 11,908,330 | 897.2 MB | 30.3 ms | 2,395 ms |
+| | after | 184 | 16 | 2.9 KB | 0.119 ms | 21.8 ms |
+| 29.5 MB (52,000 records) | before | 42 | 30,959,738 | 1,240.1 MB | 79.3 ms | 3,330 ms |
+| | after | 184 | 16 | 2.9 KB | 0.121 ms | 22.2 ms |
+
+The poll counts move because the reads were what stretched the loop: the before
+runs could not keep the 20 ms cadence at all (42 polls in 4.3 s is one every
+102 ms), so the per-poll columns are the comparable ones and the totals
+understate the gain. On a 4.3 s turn the old loop spent 3.3 s of CPU, about 78%
+of a core, on bytes it already had. `start()`'s one full pass is cheaper too
+(87.4 ms to 54.3 ms of CPU on 29.5 MB): counting newlines in 1 MB chunks beats
+building a 52,000-element array of strings and throwing it away.
+
+**`TranscriptCursor` (`src/claude-session-bun.ts`) keeps a byte offset and a
+partial-line buffer, and the unit it reasons in is still the line.** Its
+`taken` IS the old `cursor`, `lineCount()` is the old
+`split("\n").length - 1`, and `pending()` / `take(n)` are how `scanTranscript`
+consumes lines, so every semantic above it is untouched: `submitTurn`'s growth
+check (now `hasUnread()`), `skipToEnd()` where a turn start discarded whatever
+was already written, `flushTranscript` sharing one `scanTranscript` with the
+poll loop, the fork's `awaitingOwnPrompt` gate, `carriesReplyText` filtering in
+the shim, the heartbeat, the idle-end signal, plan-approval parking and
+`queueInput`'s enqueue counter. The `scanTranscript` rewrite is line for line
+the old loop with `this.cursor = i + 1` replaced by one `take(used)` at the end,
+including which line a `scan.end` consumes.
+
+**Four things make an offset unsafe, and all four are the transcript's ordinary
+life rather than edge cases.**
+
+- **The file does not exist yet.** The TUI writes it when it accepts the first
+  prompt, so every fresh session polls a path with nothing behind it. A failed
+  `stat` keeps the state and reads nothing, rather than treating the file as
+  empty: un-counting lines already handed on would be worse than a stale count,
+  and this also covers a transient read error.
+- **A read lands mid-record.** Nothing promises a reader sees a record and its
+  newline in one piece, so the tail with no newline is held in `partial` and
+  completed by the next read. It is the same rule the old code applied by
+  dropping `split("\n")`'s last element, except that the old code re-read the
+  fragment from byte 0 every time.
+- **A read lands mid-UTF-8-sequence.** New, because the old code decoded the
+  whole file at once and could not split a character. A `StringDecoder` holds an
+  incomplete sequence back; a transcript is JSON that keeps non-ASCII literal,
+  so this is reachable by any reply containing one.
+- **The file is truncated or replaced** (`size < offset`, or a different
+  `dev:ino`). The read starts over at byte 0 and re-skips `taken` lines, which
+  reproduces the whole-file behaviour exactly: there a line index was an index
+  into whatever content the file held at that moment, so a truncation left the
+  cursor pointing at the same ordinal in the new content. `dev:ino` catches a
+  replacement of the same size, which no size check can; on a filesystem that
+  reports no inode the size check is what is left.
+
+**The path is resolved on every poll rather than kept**, because
+`test/interactive-usage.test.ts` repoints `jsonlPath` after construction to
+drive the real `tailTurn` over a fixture. A path that changes is a different
+file, which the `dev:ino` reset already handles.
+
+**Live**, Claude Code 2.1.288 on the default account, `claude-haiku-4-5`: two
+turns in one TUI session, the second running the CLI's own Bash tool. Both ended
+on `end_turn` with the expected text (`ALPHA`, then `live-incremental-ok`), and
+over 69 polls the session read 233,404 bytes in 8 `read` syscalls against a
+final transcript of exactly 233,404 bytes, so nothing was read twice. Before the
+change those 69 polls would have read roughly 69 times the file.
+
+`test/transcript-cursor.test.ts` covers the cases above directly on
+`TranscriptCursor` (a record split across two reads, a multi-byte character
+split across two reads, a poll of an unchanged file reading zero bytes, a file
+that appears late, truncation, replacement by inode, `skipToEnd`) and through a
+real `ClaudeSession` and its poll loop (a record written across two polls, a
+transcript that appears only when the prompt is accepted, a fork's copied
+history skipped when it arrives in an earlier read than the prompt, and a quiet
+stretch of a turn costing no bytes). The existing interactive suites are the
+oracle and pass unchanged: `test/interactive-pty.test.ts`,
+`test/interactive-golden.test.ts` (which replays the real 2.1.288 transcripts),
+`test/interactive-usage.test.ts`, `test/interactive-result.test.ts`,
+`test/claude-session-wrapper.test.ts`.
+
+**Not done, deliberately:** `start()` on a resumed session still makes one full
+pass to establish the line baseline. Seeking to the last newline instead would
+make that pass O(tail), but `taken` would stop being an absolute line index and
+the truncation reset above could no longer re-skip it. It is one pass per spawn,
+not per poll, and it is what the old code did too.

@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { StringDecoder } from "node:string_decoder"
 import { cliHygieneEnv } from "./cli-version.js"
 import { apiCallCostUsd } from "./models.js"
 
@@ -615,6 +616,184 @@ export function isTurnDurationRecord(rec: any): boolean {
   return rec?.type === "system" && rec.subtype === "turn_duration"
 }
 
+/**
+ * How much of the transcript one `read` syscall takes. Growth between two
+ * polls is a record or two, so this only bounds the single full pass an
+ * already-written transcript costs when the session first looks at it.
+ */
+const TRANSCRIPT_CHUNK_BYTES = 1 << 20
+
+/** How many bytes a `TranscriptCursor` has read, for the benchmark and tests. */
+export interface TranscriptReadStats {
+  /** Times the file was looked at, whether or not it had grown. */
+  polls: number
+  /** `read` syscalls made. A poll of an unchanged file makes none. */
+  reads: number
+  /** Bytes read off disk. */
+  bytes: number
+}
+
+/**
+ * The TUI's JSONL transcript, read forwards only.
+ *
+ * The transport follows a turn by polling this file every `pollMs`, and it
+ * used to re-read and re-split the whole thing on every poll. A long
+ * conversation's transcript reaches tens of megabytes, so a quiet turn spent
+ * most of its CPU on bytes it had already read: measured over a 29.5 MB
+ * synthetic transcript, 31 MB and 79 ms of CPU per poll. Keeping a byte offset
+ * instead makes a poll that finds nothing new one `stat` and no read at all.
+ *
+ * Four things make a byte offset unsafe, and all four are the transcript's
+ * ordinary life rather than edge cases:
+ *
+ *   - the file does not exist yet. The TUI writes it when it accepts the first
+ *     prompt, so a fresh session polls a path with nothing behind it;
+ *   - a read lands mid-record. Nothing promises a reader sees a record and its
+ *     newline together, so the tail with no newline is held back and completed
+ *     by the next read;
+ *   - a read lands mid-UTF-8-sequence. A transcript is JSON that keeps
+ *     non-ASCII literal, so a reply with one character outside ASCII is enough;
+ *     the decoder holds an incomplete sequence back the same way;
+ *   - the file is replaced or truncated, which the offset cannot describe. The
+ *     read then starts over at zero and re-skips the lines already handed on,
+ *     so a line index keeps meaning exactly what it meant when every poll
+ *     re-read the whole file.
+ *
+ * Line numbers, not byte offsets, are what the session reasons in: `taken` is
+ * the old `cursor`, and `lineCount()` is the old `split("\n").length - 1`.
+ */
+export class TranscriptCursor {
+  /** Bytes of the current file already read. */
+  private offset = 0
+  /** `dev:ino` of the file those bytes came from, null before the first
+   *  successful stat. A different one is a new file, not growth. */
+  private fileId: string | null = null
+  /** Holds back an incomplete trailing UTF-8 sequence between two reads. */
+  private decoder = new StringDecoder("utf8")
+  /** What was read after the last newline: a record the CLI is part way
+   *  through writing, completed by a later read. */
+  private partial = ""
+  /** Complete lines seen since byte 0 of the current file. */
+  private seen = 0
+  /** Complete lines handed on: the line-index cursor. */
+  private taken = 0
+  /** Complete lines read and not handed on yet, oldest first. */
+  private queue: string[] = []
+  readonly stats: TranscriptReadStats = { polls: 0, reads: 0, bytes: 0 }
+
+  /** The path is asked for on every poll rather than kept, because it is a
+   *  field of the session and a test may repoint it; a path that changes is
+   *  a different file, which the `dev:ino` check already starts over on. */
+  constructor(private readonly resolvePath: () => string) {}
+
+  /** Complete lines in the file now. */
+  lineCount(): number {
+    this.poll(true)
+    return this.seen
+  }
+
+  /** The complete lines not handed on yet, oldest first. They stay queued
+   *  until `take` says how many of them were used. */
+  pending(): string[] {
+    this.poll(true)
+    return this.queue
+  }
+
+  /** Whether the file holds a complete line this cursor has not handed on. */
+  hasUnread(): boolean {
+    return this.pending().length > 0
+  }
+
+  /** Mark the first `count` pending lines as handed on. */
+  take(count: number): void {
+    const used = Math.min(count, this.queue.length)
+    if (used <= 0) return
+    this.queue.splice(0, used)
+    this.taken += used
+  }
+
+  /** Hand on nothing of what is in the file now: the records written before a
+   *  turn started belong to the turn before it. */
+  skipToEnd(): void {
+    // Counted, not collected: an already-written transcript is read once here
+    // and there is no reason to hold its millions of characters in memory.
+    this.poll(false)
+    this.taken = Math.max(this.taken, this.seen)
+    this.queue.length = 0
+  }
+
+  /** Read whatever was appended since the last look. */
+  private poll(collect: boolean): void {
+    this.stats.polls++
+    const filePath = this.resolvePath()
+    let stat: fs.Stats
+    try {
+      stat = fs.statSync(filePath)
+    } catch {
+      // Not written yet (the TUI writes it with the first prompt it accepts),
+      // or gone. Keeping what was already read is the safe answer either way:
+      // treating the file as empty would un-count lines already handed on.
+      return
+    }
+    const fileId = `${stat.dev}:${stat.ino}`
+    if (this.fileId !== null && (fileId !== this.fileId || stat.size < this.offset)) {
+      this.offset = 0
+      this.seen = 0
+      this.partial = ""
+      this.decoder = new StringDecoder("utf8")
+      this.queue.length = 0
+    }
+    this.fileId = fileId
+    if (stat.size <= this.offset) return
+    let fd: number | null = null
+    try {
+      fd = fs.openSync(filePath, "r")
+      const buffer = Buffer.allocUnsafe(
+        Math.min(TRANSCRIPT_CHUNK_BYTES, stat.size - this.offset),
+      )
+      // Bounded by the size that was stat'd: anything written past it is the
+      // next poll's, which is what the trailing-partial rule already assumes.
+      while (this.offset < stat.size) {
+        const want = Math.min(buffer.length, stat.size - this.offset)
+        const read = fs.readSync(fd, buffer, 0, want, this.offset)
+        this.stats.reads++
+        if (read <= 0) break
+        this.offset += read
+        this.stats.bytes += read
+        this.ingest(this.decoder.write(buffer.subarray(0, read)), collect)
+      }
+    } catch {
+      // A failed read leaves the offset where the last good one put it, so the
+      // next poll asks for the same bytes again.
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd)
+        } catch {}
+      }
+    }
+  }
+
+  /** Split decoded text into complete lines, keeping the unterminated tail. */
+  private ingest(text: string, collect: boolean): void {
+    if (!text) return
+    this.partial += text
+    let start = 0
+    for (;;) {
+      const newline = this.partial.indexOf("\n", start)
+      if (newline === -1) break
+      // A line below the cursor is one a reset re-read; it was handed on once
+      // already and must not be handed on again.
+      if (collect && this.seen >= this.taken) {
+        this.queue.push(this.partial.slice(start, newline))
+      }
+      this.seen++
+      start = newline + 1
+    }
+    if (start > 0) this.partial = this.partial.slice(start)
+  }
+}
+
 /** What the running turn has read so far; see `scanTranscript`. */
 interface TurnScan {
   onRecord: (raw: string, rec: any | null) => void
@@ -701,7 +880,8 @@ export class ClaudeSession {
   raw = ""
 
   private proc: PtyHandle | null = null
-  private cursor = 0 // index into transcript split('\n')
+  /** The transcript, read forwards only; its `taken` is the old line cursor. */
+  private readonly transcript: TranscriptCursor
   private lastDataAt = 0
   private exited = false
   private exitCode: number | null = null
@@ -793,6 +973,7 @@ export class ClaudeSession {
       encodeCwd(this.cwd),
       `${this.sessionId}.jsonl`,
     )
+    this.transcript = new TranscriptCursor(() => this.jsonlPath)
     this.o = {
       cwd: this.cwd,
       cliPath: opts.cliPath,
@@ -910,7 +1091,13 @@ export class ClaudeSession {
       .catch(() => markExited(null))
 
     await this.waitForBoot()
-    this.cursor = this.lineCount()
+    this.transcript.skipToEnd()
+  }
+
+  /** How much this session has read off the transcript. Read-only, and the
+   *  one thing `scripts/bench-transcript-poll.ts` measures. */
+  get transcriptStats(): TranscriptReadStats {
+    return this.transcript.stats
   }
 
   private onData(chunk: string): void {
@@ -1078,23 +1265,9 @@ export class ClaudeSession {
       while (Date.now() < until) {
         await delay(80)
         if (this.aborted || this.exited) return
-        if (this.lineCount() > this.cursor) return // turn accepted
+        if (this.transcript.hasUnread()) return // turn accepted
       }
     }
-  }
-
-  private readRawLines(): string[] {
-    try {
-      return fs.readFileSync(this.jsonlPath, "utf8").split("\n")
-    } catch {
-      return []
-    }
-  }
-
-  /** Count of complete lines (split('\n') minus the trailing/partial element). */
-  private lineCount(): number {
-    const lines = this.readRawLines()
-    return lines.length > 0 ? lines.length - 1 : 0
   }
 
   private rawTail(max = 600): string {
@@ -1139,7 +1312,7 @@ export class ClaudeSession {
     this.abandonTurn = false
     // Records written between turns (a late `turn_duration`, an interrupt
     // marker) belong to the turn before, never to this one.
-    this.cursor = Math.max(this.cursor, this.lineCount())
+    this.transcript.skipToEnd()
     // A reply from an earlier turn may still be in the window; nothing this
     // turn raises has been drawn yet.
     this.screen = ""
@@ -1232,29 +1405,26 @@ export class ClaudeSession {
   /**
    * Read every complete transcript record past the cursor into the running
    * turn. Returns whether anything new was read. The one place a record is
-   * interpreted, shared by the poll loop and `flushTranscript`.
+   * interpreted, shared by the poll loop and `flushTranscript`, and the only
+   * one that consumes what `TranscriptCursor` has queued.
    */
   private scanTranscript(): boolean {
     const scan = this.scan
     if (!scan || scan.end) return false
-    const lines = this.readRawLines()
-    const lastComplete = lines.length - 1 // exclusive bound; trailing/partial line skipped
-    if (lastComplete <= this.cursor) return false
-    for (let i = this.cursor; i < lastComplete && !scan.end; i++) {
+    // A copy, because `take` below edits the cursor's own queue.
+    const lines = this.transcript.pending().slice()
+    if (lines.length === 0) return false
+    let used = 0
+    for (let i = 0; i < lines.length && !scan.end; i++) {
       const s = lines[i]
-      if (!s || !s.trim()) {
-        this.cursor = i + 1
-        continue
-      }
+      used = i + 1
+      if (!s || !s.trim()) continue
       let rec: any = null
       try {
         rec = JSON.parse(s)
       } catch {}
       if (scan.awaitingOwnPrompt !== null) {
-        if (!isOwnPromptRecord(rec, scan.awaitingOwnPrompt)) {
-          this.cursor = i + 1
-          continue
-        }
+        if (!isOwnPromptRecord(rec, scan.awaitingOwnPrompt)) continue
         scan.awaitingOwnPrompt = null
       }
       // Before the record is handed on: whoever reads it may ask at once
@@ -1278,9 +1448,8 @@ export class ClaudeSession {
           scan.end = scan.stopReason ? "stop" : "ended"
         }
       }
-      this.cursor = i + 1
     }
-    if (!scan.end) this.cursor = lastComplete
+    this.transcript.take(used)
     scan.lastBeat = Date.now()
     scan.stopSeenAt = Date.now()
     return true

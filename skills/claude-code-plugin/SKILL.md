@@ -321,7 +321,9 @@ through the TUI's own input queue, as on headless. A turn ends on its stop reaso
 `turn_duration`, or, as a safeguard for a CLI that writes neither, after 20 s of total
 silence once it has its reply (reported as ended without a stop reason). It reads
 completed transcript blocks, not token
-deltas. It currently re-reads the transcript while polling. Normal interactive turns
+deltas. A poll reads only the bytes appended since the last one, so a poll that finds
+nothing new costs one `stat` and no read at all, however long the conversation is.
+Normal interactive turns
 do not forward opencode's system prompt (on the TUI, Claude Code bills a request
 carrying it as a third-party app's from extra usage; headless does not). The
 account-switch form, the fallback chain, `forkSessions`, the usage-limit and
