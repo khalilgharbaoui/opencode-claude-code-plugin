@@ -469,6 +469,26 @@ export function interactiveResultFrame(opts: {
 }
 
 /**
+ * The interactive spawn's environment: the headless one plus the one switch a
+ * TUI needs to keep a proxied call in the foreground (h #g210).
+ *
+ * Claude Code 2.1.288's TUI moves an MCP call to the background after 120 s,
+ * or as soon as a queued message arrives, answers the model "still running
+ * ... moved to the background as task", and the model ends its turn on that
+ * (measured: a proxied `write` parked on an opencode permission prompt, then
+ * "DONE"). The CLI's own gate (`oe` in the binary) returns 0 for a `-p`
+ * session, which is why headless never does it, and reads
+ * `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` otherwise; 0 there turns off both
+ * triggers. Fills a gap only: a value the operator set is theirs.
+ */
+export function interactiveSpawnEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  if (env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS !== undefined) return env
+  return { ...env, CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0" }
+}
+
+/**
  * A transcript record as the stream parser reads a frame. The two differ in one
  * place the parser keys on: the transcript spells the CLI's own API-error reply
  * `isApiErrorMessage`, the headless stream `is_api_error_message` (both

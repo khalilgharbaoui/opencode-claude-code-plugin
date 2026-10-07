@@ -98,7 +98,7 @@ What a pick does, in full:
 
 Only two things count as "out of usage", for the note and for the form alike: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
 
-The form is not available on the [interactive transport](../guides/interactive-transport.md) (its turns are typed into a TUI, which a switch would have to replay into a new one), on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, whose text becomes the stored summary.
+The form works on both transports: on the [interactive transport](../guides/interactive-transport.md) a switch closes the limited account's TUI and starts the other account's, with the thread replayed into it exactly as on headless. It is not available on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, whose text becomes the stored summary.
 
 ### An account that cannot serve at all
 

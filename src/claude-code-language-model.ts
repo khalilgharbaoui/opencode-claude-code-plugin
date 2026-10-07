@@ -107,7 +107,7 @@ import {
   invalidateOtherEffortSessions,
   describeSessionKey,
 } from "./session-manager.js"
-import { spawnInteractiveProcess } from "./claude-session-wrapper.js"
+import { interactiveSpawnEnv, spawnInteractiveProcess } from "./claude-session-wrapper.js"
 import {
   clearCompression,
   consumeCompressionRestart,
@@ -2205,12 +2205,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   ? { forkOf: forkFromClaudeSessionId }
                   : {}),
                 // The headless spawn's env, so hygiene, effort and the
-                // agent's prompt cache TTL reach both transports alike.
-                env: claudeSpawnEnv({
-                  ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
-                  effort: reasoningEffort,
-                  promptCacheTtl,
-                }),
+                // agent's prompt cache TTL reach both transports alike, plus
+                // what keeps a proxied call in the foreground (h #g210).
+                env: interactiveSpawnEnv(
+                  claudeSpawnEnv({
+                    ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+                    effort: reasoningEffort,
+                    promptCacheTtl,
+                  }),
+                ),
               })
               ap.proc.once("exit", (code: number | null) =>
                 noteInteractiveProcessExit(sk, ap, code),

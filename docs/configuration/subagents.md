@@ -77,7 +77,7 @@ One piece of Claude Code trivia is worth stating plainly, because it is the oppo
 
 Like model and effort, the TTL is part of the Claude session key, so changing it respawns rather than sharing a process. Compaction is exempt.
 
-Forking an opencode session normally throws that cache away: the fork arrives as a new session with the thread copied in and no Claude session behind it, so the whole conversation is re-rendered as text into the first message and paid for again as cache writes. Setting `forkSessions: true` in the provider options branches the parent's Claude conversation with `claude --resume <parent> --fork-session` instead. Measured on CLI 2.1.280 with haiku 4.5 over a ~13k-token thread, the forked turn wrote 814 cache tokens and read 39,710, against 22,355 written and 17,385 read for the replay: $0.0058 against $0.0467 for that one turn, with the parent's own transcript byte-identical afterwards. It is off by default because a resumed Claude conversation reuses the system prompt recorded on its first request, so a forked session answers under the parent's appended system prompt rather than the current turn's. Anything it cannot match exactly keeps today's replay: another account, an unknown or busy parent, a fork cut mid-conversation or taken mid tool call, a different cwd, model, agent, effort or cache TTL, compaction, and the interactive transport.
+Forking an opencode session normally throws that cache away: the fork arrives as a new session with the thread copied in and no Claude session behind it, so the whole conversation is re-rendered as text into the first message and paid for again as cache writes. Setting `forkSessions: true` in the provider options branches the parent's Claude conversation with `claude --resume <parent> --fork-session` instead. Measured on CLI 2.1.280 with haiku 4.5 over a ~13k-token thread, the forked turn wrote 814 cache tokens and read 39,710, against 22,355 written and 17,385 read for the replay: $0.0058 against $0.0467 for that one turn, with the parent's own transcript byte-identical afterwards. It is off by default because a resumed Claude conversation reuses the system prompt recorded on its first request, so a forked session answers under the parent's appended system prompt rather than the current turn's. Anything it cannot match exactly keeps today's replay: another account, an unknown or busy parent, a fork cut mid-conversation or taken mid tool call, a different cwd, model, agent, effort or cache TTL, and compaction. It works on both transports: on the interactive one the new TUI starts with `--resume <parent> --fork-session` (measured on 2.1.288: the forked session knew the parent's last output with 102 cache tokens written).
 
 To force an **account** rather than a model, pin the full string. This only applies if you declared [`accounts`](../configuration/accounts.md#multiple-claude-code-accounts) in the first place; with the default single-account setup there is nothing to pin. Both halves are needed, because the provider selects the account's config dir and the `@account` marker is what the model was registered under for that provider:
 
@@ -156,9 +156,10 @@ the original error unchanged**. Unset (the default) means no chain, so upgrading
 never moves a turn onto a model nobody picked.
 
 Not applied to compaction turns (a second model would rewrite the summary
-opencode stores), to title stubs, or to the
-[interactive transport](../guides/interactive-transport.md). A title stub never
-reaches the CLI, so there is nothing there to fall back from.
+opencode stores) or to title stubs. It works on both transports: the
+[interactive transport](../guides/interactive-transport.md)'s TUI writes a
+refused model as the same `model_not_found` reply headless streams. A title
+stub never reaches the CLI, so there is nothing there to fall back from.
 
 ## Subagent todos
 

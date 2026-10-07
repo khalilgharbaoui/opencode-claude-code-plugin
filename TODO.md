@@ -78,6 +78,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-07: PDF input on both transports? Neither forwards PDFs today (catalog `pdf: false`, the
+  message builder converts images only). Measured: a `document` block reaches Haiku 4.5 headless and it
+  read the text; the TUI attaches a PDF on an `@<path>` mention. Offered as a feature, not parity.
 - 2026-10-03: opencode processes run the plugin build they started with. 23:26-23:28, after
   0.37.1: 17 idle Herdr panes restarted onto their own sessions by `/tmp/oc-restart/
   restart-opencode-panes.py` (quit with `ctrl+x q`, relaunch `opencode -s <id>` in the same pane;
@@ -112,13 +115,6 @@ Nothing parked.
 
 ## In progress
 
-- 2026-10-07: "you say: opencode's own system prompt isn't sent because it trips stuff.. but i did an
-  experiment before it trips because of the opencode url in it if we strip that url out of it does not
-  trip it any more you can test this and verify maybe this info can fix this? i mean this and the small
-  stuff can be fixed right? and maybe find a creative solution for the others? to still achive parity?"
-  Plan: (1) measure the URL hypothesis on the PTY and forward opencode's prompt with the URL stripped;
-  (2) `turnStats` cost and duration on the PTY; (3) the usage-limit note on the PTY; then the rest:
-  `forkSessions`, the fallback chain, the failover form, `controlRequestToolBehaviors`, PDFs.
 - 2026-09-23: opencode 2, the checks that were not possible before release. (1) **Done
   2026-09-27**: install by npm name works on 2.0.16 (`@0.27.0`, with and without a provider
   block; `@0.28.1` is still hidden from this Mac by Aikido's age filter). (2) Account
@@ -128,6 +124,17 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-07: **done**: "you say: opencode's own system prompt isn't sent because it trips stuff..
+  ... i mean this and the small stuff can be fixed right? and maybe find a creative solution for the
+  others? to still achive parity?". System prompt: measured, the TUI trips the third-party gate on
+  recognisable pieces of opencode's prompt (a bisect found its environment block, not the URL),
+  headless does not; deliberately not worked around (h #g211). Fixed on the PTY: `turnStats` cost and
+  duration, the usage-limit and account notes (h #g208); `forkSessions`, the fallback chain, the
+  account switch, and an API-error sentence shown once on both transports (h #g209); the headless
+  permission policy via `--dangerously-skip-permissions` plus `skipDangerousModePermissionPrompt`, and
+  proxied calls kept in the foreground past the TUI's 120 s auto-background (h #g210). Live on 1.18.34
+  and 2.0.22 except the switch (no limited account). Correction: PDFs are dropped on BOTH transports
+  (catalog `pdf: false`), so not a PTY gap. 1,267 tests.
 - 2026-10-07: **done**: "5 hours have passed i switched us to default profile try the live stuff you
   did not try and im ok with your suggestion about the warning now carry on with the recommended".
   The #g205 warning stays as built. Live on the default account, A/B against a v0.42.0 worktree:

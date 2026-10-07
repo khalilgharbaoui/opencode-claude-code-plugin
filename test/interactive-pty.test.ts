@@ -112,8 +112,11 @@ class FakeTui {
   private submitted = 0
   private timers: ReturnType<typeof setTimeout>[] = []
 
+  /** The environment the child was spawned with. */
+  env: Record<string, string | undefined> = {}
   readonly spawner: PtySpawner = (argv, opts) => {
     this.argv = argv
+    this.env = opts.env
     const at = (flag: string) => {
       const index = argv.indexOf(flag)
       return index >= 0 ? argv[index + 1] : undefined
@@ -1882,6 +1885,28 @@ test("a usage limit on the PTY asks to switch accounts, and the switch replays o
     else process.env.XDG_CACHE_HOME = previousCache
     if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
     else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+test("a proxied call stays in the foreground on the PTY, as on headless (h #g210)", async () => {
+  const dirs = scratch()
+  const previous = process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS
+  try {
+    delete process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS
+    const { children } = await runFakeBunTurn(dirs, "claude-test-pty-foreground", (t) => {
+      t.append(assistantRecord("m1", "end_turn", textBlock("ok")))
+    })
+    assert.equal(children[0]!.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, "0")
+    // A value the operator set is theirs.
+    process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS = "300000"
+    const mine = await runFakeBunTurn(dirs, "claude-test-pty-foreground-own", (t) => {
+      t.append(assistantRecord("m1", "end_turn", textBlock("ok")))
+    })
+    assert.equal(mine.children[0]!.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, "300000")
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS
+    else process.env.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS = previous
     dirs.cleanup()
   }
 })

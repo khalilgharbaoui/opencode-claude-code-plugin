@@ -2196,3 +2196,117 @@ The two items #g205 left open, both needing live turns.
   history fails the fork case, and usage summed per record fails all six. The
   interrupted recording also shows the TUI writing the partial reply when Esc
   lands.
+
+<a id="g208"></a>
+
+#### The interactive transport's result: cost, duration and the CLI's own error replies (2026-10-07)
+
+`interactiveResultFrame` wrote `total_cost_usd: null` and `duration_ms: 0`, so
+`turnStats` on the TUI had no cost and a zero duration, and a turn that ended on
+the CLI's own API-error reply was a clean `success` with `is_error: false`, so the
+usage-limit note, the account note and the switch form never fired there.
+
+- **Cost.** The TUI writes no per-turn cost. Its `cost-state` record is a session
+  total, written only now and then (in one transcript, before the conversation's
+  calls had run). So the cost is rebuilt per distinct call from the catalog:
+  `apiCallCostUsd(model, usage)`, with a 1-hour cache write at twice the input
+  price and a `speed: "fast"` call priced from its `-fast` entry. Checked against
+  `cost-state` per model on real transcripts: 55 of 60 exact to the last digit,
+  including a 32-call Opus 5.5 session at $7.6298376; the 5 misses were records
+  written before the calls they would have counted. The committed 2.1.280 fixture
+  computes to its recorded $0.0504726. The TUI's one-off title call (Haiku, ~$0.001)
+  never appears in the transcript and is not counted.
+- **Duration** is the TUI's own `turn_duration.durationMs`, else the wall time.
+- **API-error replies.** Both transports write the same `<synthetic>` reply with an
+  `error` kind (`rate_limit`, `authentication_failed`, `model_not_found`), but the
+  transcript spells the flag `isApiErrorMessage` where the stream says
+  `is_api_error_message`. `streamFrameFromRecord` renames it for the parser, and
+  a turn that ended on such a reply synthesizes `is_error: true` with the sentence
+  as `result`, which is the headless shape (`subtype` stays `success`).
+- **The reset time.** With no `rate_limit_event` on the TUI, the note would have
+  dropped the reset the CLI's own sentence carries ("You've hit your session limit
+  · resets 3pm (Europe/Amsterdam)"), so `limitFactsFromText` reads the window and
+  that phrase, used only where no event gave a `resetsAt`.
+
+Mutation-checked: without the rename, or without `is_error`, the end-to-end PTY
+test shows the CLI's raw sentence instead of the note. Live on 1.18.34 and 2.0.22:
+the stats line reads `$0.0134 · 4.7 s`.
+
+<a id="g209"></a>
+
+#### forkSessions, the fallback chain and the account switch on the interactive transport (2026-10-07)
+
+All three were refused on the PTY. None of them needed anything new from the
+TUI, only the plumbing the headless path had:
+
+- **`forkSessions`.** `ClaudeSession` already forked for `/btw`
+  (`forkOf`: `--session-id <new> --resume <parent> --fork-session`), so the spawn
+  takes `forkOf: forkFromClaudeSessionId` and the fingerprint is recorded for TUI
+  parents too. Live on 1.18.34: an opencode fork of a TUI session spawned
+  `forked: true` and answered from the parent's history with 102 cache tokens
+  written, nothing replayed.
+- **The fallback chain.** Measured free on 2.1.288: the TUI writes a refused model
+  as `error: "model_not_found"`, `isApiErrorMessage: true`, `apiErrorStatus: 404`,
+  "There's an issue with the selected model (claude-mythos-5-1) ...", the same
+  reply headless streams. With #g208's rename `runModelChain` reads it unchanged.
+  Live on both majors: `claude-mythos-5-1` refused, served by `claude-haiku-4-5`
+  with the note.
+- **The account switch.** The form's detection gains the CLI's own
+  `rate_limit` reply as a signal (the TUI gets no `rate_limit_event`); a switch
+  spawns the other account's wrapper and tails that account's config dir, and the
+  shim records its `cliPath` so the prologue's account check replaces it.
+  Verified end to end with a scripted TUI under a scratch `HOME` and
+  `XDG_CACHE_HOME` (the real `claude-appical` wrapper's checksum was compared
+  before and after every run); not live, because no account was limited.
+- **One sentence, not two.** The failing `result` repeats the API-error reply's
+  sentence verbatim, and the result branch rendered it again because it only
+  checked for an open text block. Measured on headless first: a refused model
+  with no chain showed the sentence twice. `apiErrorTextShown` keeps it to once on
+  both transports.
+
+<a id="g210"></a>
+
+#### The interactive transport follows the headless permission policy, and keeps proxied calls in the foreground (2026-10-07)
+
+- **Permissions.** The TUI pre-allowed `interactiveAllowTools` and Esc-denied any
+  other dialog, which ended the turn; on 2.1.288 that is most of the built-in tool
+  list (`WebSearch`, `NotebookEdit`, `Skill`, the Cron and worktree tools).
+  Headless never asked per call either: it runs `--dangerously-skip-permissions`
+  by default. The TUI could not, because that mode opens a confirmation whose
+  default is "No, exit". Read out of the binaries: Claude Code skips it when
+  `skipDangerousModePermissionPrompt` is set, and reads that from the
+  `flagSettings` layer (`--settings`) in 2.1.263, 2.1.280 and 2.1.288; it is the
+  setting the CLI writes itself when someone accepts the dialog. So the TUI takes
+  the same flag plus that setting, under the same `skipPermissions` the operator
+  already set. `skipPermissions: false` maps `controlRequestBehavior` and per-tool
+  overrides onto `--disallowedTools` or `dontAsk`; plan mode and read-only are
+  unchanged; the `/btw` fork stays tool-free. Live: booted with no dialog, ran
+  native `Bash` and `Write` with nothing pre-allowed, could not find a
+  `--disallowedTools` entry; through opencode 1.18.34 and 2.0.22 a native
+  `WebSearch` ran with no denial.
+- **MCP auto-background.** Found live: a proxied `write` parked on an opencode
+  permission prompt was moved to the background by the TUI after 120 s ("MCP tool
+  "opencode_proxy/write" is still running after 120s. It was moved to the
+  background as task ..."), and the model said "DONE" and ended its turn. The
+  gate in the binary (`oe`) returns 0 for a non-interactive (`-p`) session, so
+  headless never does it, and reads `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`
+  otherwise; at 0 neither trigger (the timer, or a queued message arriving) fires.
+  The TUI spawn sets it unless the operator did. Live: a proxied `sleep 130`
+  returned `long-ok` into the same turn with no background move.
+
+<a id="g211"></a>
+
+#### opencode's system prompt on the interactive transport: measured, deliberately not worked around (2026-10-07)
+
+The maintainer's earlier experiment suggested the opencode URL in opencode's
+prompt was what made the TUI answer "API Error: 400 Third-party apps now draw
+from your extra usage, not your plan limits". Measured on 2.1.288 with a real
+forwarded prompt: the TUI tripped on it while `claude -p` with the same
+`--append-system-prompt-file` answered normally; that sample did not contain the
+URL at all; and a delta-debugging bisect over 34 TUI starts reduced the trigger
+to three lines of opencode's environment block, none of which trips alone. So
+the classification keys on recognisable pieces of opencode's prompt, of which the
+URL is presumably one. It is how Anthropic decides a request comes from a
+third-party app and bills it from extra usage. A filter that strips whatever it
+recognises would exist only to get around that, and could put the account at
+risk, so it was not built. The copied prompts were deleted after the bisect.
