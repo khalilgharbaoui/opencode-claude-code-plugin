@@ -104,6 +104,8 @@ Nothing parked.
   CLI where a real limit is needed, plus the live-only test gaps (compress reset, watchdogs,
   abort-then-interrupt). (3) evaluate and build or close: hook mirroring, structured output,
   `can_use_tool` rewriting, tool-result repair, session tools, tier labels.
+  Batch 1 **done** (v0.46.1): (1a) incremental transcript reads, PR #96, h #g216; (1b) Windows spawn
+  quoting with a Windows CI job, PR #95, h #g217 (accounts on Windows still need a `.cmd` wrapper).
 - 2026-09-23: opencode 2, the checks that were not possible before release. (1) **Done
   2026-09-27**: install by npm name works on 2.0.16 (`@0.27.0`, with and without a provider
   block; `@0.28.1` is still hidden from this Mac by Aikido's age filter). (2) Account
