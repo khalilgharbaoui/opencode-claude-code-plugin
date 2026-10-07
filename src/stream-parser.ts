@@ -710,9 +710,11 @@ export function createLineHandler(
         // makes the note certain to fire at the result. (h #g194)
         const apiErrorReply = (msg as { is_api_error_message?: unknown })
           .is_api_error_message === true
-        const limitErrorReply =
+        // The limit itself, whichever of the note or the switch form answers
+        // it: the interactive transport has no `rate_limit_event`, so this
+        // reply is the only signal it gets (h #g209).
+        const limitFromReply =
           apiErrorReply &&
-          ctx.usageLimitNoteActive &&
           !state.accountBlock &&
           ((msg as { error?: unknown }).error === "rate_limit" ||
             isAccountLimitError({
@@ -721,7 +723,9 @@ export function createLineHandler(
                 .map((b) => String(b.text))
                 .join("\n"),
             }))
-        if (limitErrorReply) {
+        // Only the note replaces the sentence; the form asks below it.
+        const limitErrorReply = limitFromReply && ctx.usageLimitNoteActive
+        if (limitFromReply) {
           state.accountLimitHit ??= recallAccountLimit(ctx.sourceAccount)
           // What the sentence itself says fills only what no event told us:
           // on the interactive transport there is no `rate_limit_event`, and
@@ -756,6 +760,7 @@ export function createLineHandler(
             // which the CLI's sentence does not. Dropped rather than
             // rendered, so a limited turn carries exactly one block.
             if (limitErrorReply) continue
+            if (apiErrorReply) state.apiErrorTextShown = block.text
             // New text block — keep only this block's text in the
             // last-block buffer for final-answer detection.
             resetLastVisibleTextBlock(state)
@@ -1063,6 +1068,12 @@ export function createLineHandler(
         if (
           !state.currentTextId &&
           msg.is_error &&
+          // Already on screen from the reply frame, word for word.
+          !(
+            typeof msg.result === "string" &&
+            state.apiErrorTextShown !== null &&
+            msg.result.trim() === state.apiErrorTextShown.trim()
+          ) &&
           !state.usageLimitNote &&
           typeof msg.result === "string" &&
           msg.result.trim().length > 0

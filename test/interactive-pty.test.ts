@@ -56,7 +56,13 @@ import {
   setActiveProcess,
   setClaudeSessionId,
   sessionKey,
+  deleteClaudeSessionId,
 } from "../src/session-manager.js"
+import { _resetForkFingerprints } from "../src/session-fork.js"
+import { _resetAgentRegistryForTests, setProviderFallbackModels } from "../src/agent-models.js"
+import { _resetAccountOverrides } from "../src/account-failover.js"
+import { ensureAccountRuntime } from "../src/accounts.js"
+import { setOpencodeClient } from "../src/runtime-status.js"
 import { armStartWatchdog } from "../src/turn-controller.js"
 import { createClaudeCode } from "../src/index.js"
 
@@ -194,11 +200,12 @@ const FAST = {
   permissionQuietMs: 15,
 } satisfies Partial<ClaudeSessionOptions>
 
-function scratch(): { cwd: string; configDir: string; cleanup: () => void } {
+function scratch(): { root: string; cwd: string; configDir: string; cleanup: () => void } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ccp-pty-")))
   const cwd = path.join(root, "work")
   fs.mkdirSync(cwd)
   return {
+    root,
     cwd,
     configDir: path.join(root, "config"),
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -1612,6 +1619,269 @@ test("an expired login on the PTY gets the account note that names the login com
     assert.match(text, /▌ \*\*claude account:\*\*/)
     assert.doesNotMatch(text, /usage limit/, "a login is not a usage limit")
   } finally {
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// `forkSessions` on the PTY (h #g209): a forked opencode session branches the
+// parent's Claude conversation with `--fork-session` instead of replaying it.
+// ---------------------------------------------------------------------------
+
+test("a forked opencode session branches the parent's conversation on the PTY", async () => {
+  _resetForkFingerprints()
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const dirs = scratch()
+  const cliPath = path.join(dirs.cwd, "fake-claude")
+  fs.writeFileSync(
+    cliPath,
+    "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\n" +
+      "if [ \"$1\" = --help ]; then printf 'Usage: claude\\n  --resume\\n  --fork-session\\n'; exit 0; fi\nexit 1\n",
+    { mode: 0o755 },
+  )
+  const children: FakeTui[] = []
+  const answers = ["Parent answer", "Forked answer"]
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      const answer = answers[children.length]!
+      tui.turns = [(child) => child.append(assistantRecord(`m-${children.length}`, "end_turn", textBlock(answer)))]
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const modelId = "claude-test-pty-fork"
+  const keyOf = (affinity: string) => sessionKey(dirs.cwd, `${modelId}::tools::${affinity}::context=["claude-code",null]`)
+  const model = createClaudeCode({
+    transport: "interactive", cliPath, cwd: dirs.cwd, configDir: dirs.configDir,
+    bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false, forkSessions: true,
+  }).languageModel(modelId)
+  const turn = async (affinity: string, prompt: any[]) => {
+    const result = await model.doStream({
+      prompt,
+      headers: { "x-session-affinity": affinity },
+      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+    } as any)
+    const parts: any[] = []
+    for await (const part of result.stream) parts.push(part)
+    return textOf(parts)
+  }
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] })
+  try {
+    assert.equal(await turn("ses_parent", [user("The codeword is HERON.")]), "Parent answer")
+    const parentId = getClaudeSessionId(keyOf("ses_parent"))!
+    assert.ok(parentId)
+
+    assert.equal(
+      await turn("ses_fork", [
+        user("The codeword is HERON."),
+        { role: "assistant", content: [{ type: "text", text: "Parent answer" }] },
+        user("Try that again but shorter."),
+      ]),
+      "Forked answer",
+    )
+    const fork = children[1]!
+    const at = fork.argv.indexOf("--resume")
+    assert.deepEqual(fork.argv.slice(at, at + 3), ["--resume", parentId, "--fork-session"])
+    const forkId = fork.argv[fork.argv.indexOf("--session-id") + 1]!
+    assert.notEqual(forkId, parentId)
+    assert.equal(getClaudeSessionId(keyOf("ses_fork")), forkId, "the fork keeps its own conversation")
+    assert.equal(getClaudeSessionId(keyOf("ses_parent")), parentId, "the parent keeps its own")
+    // Nothing was replayed: only the new message was typed.
+    const typed = fork.writes.join("")
+    assert.ok(typed.includes("Try that again but shorter."))
+    assert.ok(!typed.includes("conversation_history"), typed.slice(0, 300))
+  } finally {
+    for (const affinity of ["ses_parent", "ses_fork"]) {
+      deleteActiveProcess(keyOf(affinity))
+      deleteClaudeSessionId(keyOf(affinity))
+    }
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The fallback chain on the PTY (h #g209). The TUI writes a refused model as
+// a `<synthetic>` reply with `error: "model_not_found"`, measured on 2.1.288.
+// ---------------------------------------------------------------------------
+
+test("a refused model on the PTY hands the turn to the next one in the chain", async () => {
+  _resetAgentRegistryForTests()
+  setProviderFallbackModels(["claude-opus-5", "claude-sonnet-5"])
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const dirs = scratch()
+  const cliPath = path.join(dirs.cwd, "fake-claude")
+  fs.writeFileSync(cliPath, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\nexit 1\n", { mode: 0o755 })
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      const model = argv[argv.indexOf("--model") + 1]
+      tui.turns = [(child) => {
+        if (model === "claude-opus-5") {
+          child.append({
+            ...SESSION_LIMIT_RECORD,
+            error: "model_not_found",
+            apiErrorStatus: 404,
+            message: {
+              ...SESSION_LIMIT_RECORD.message,
+              id: "refused-1",
+              content: [{ type: "text", text: "There's an issue with the selected model (claude-opus-5). It may not exist or you may not have access to it. Run /model to pick a different model." }],
+            },
+          })
+        } else {
+          child.append(assistantRecord("served-1", "end_turn", textBlock(`served by ${model}`)))
+        }
+      }]
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const keyOf = (model: string) => sessionKey(dirs.cwd, `${model}::tools::default::context=["claude-code",null]`)
+  try {
+    const model = createClaudeCode({
+      transport: "interactive", cliPath, cwd: dirs.cwd, configDir: dirs.configDir,
+      bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false,
+    }).languageModel("claude-opus-5")
+    const result = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "reply" }] }],
+      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+    })
+    const parts: any[] = []
+    for await (const part of result.stream) parts.push(part)
+    assert.deepEqual(children.map((child) => child.argv[child.argv.indexOf("--model") + 1]), ["claude-opus-5", "claude-sonnet-5"])
+    const text = textOf(parts)
+    assert.match(text, /▌ \*\*model fallback:\*\*/)
+    assert.match(text, /served by claude-sonnet-5/)
+    assert.doesNotMatch(text, /There's an issue with the selected model/, "the refused attempt is discarded whole")
+    const finishes = parts.filter((part) => part.type === "finish")
+    assert.equal(finishes.length, 1)
+    assert.equal(finishes[0].finishReason.unified, "stop")
+  } finally {
+    for (const model of ["claude-opus-5", "claude-sonnet-5"]) deleteActiveProcess(keyOf(model))
+    _resetAgentRegistryForTests()
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The account-switch form on the PTY (h #g209). Last in this file: it gives
+// the process an opencode client that advertises `question`.
+// ---------------------------------------------------------------------------
+
+test("a usage limit on the PTY asks to switch accounts, and the switch replays on the other one", async () => {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const previousHome = process.env.HOME
+  const previousCache = process.env.XDG_CACHE_HOME
+  const dirs = scratch()
+  // Account directories and their wrappers resolve under HOME and
+  // XDG_CACHE_HOME: keep every one of them in scratch, never the real ones.
+  process.env.HOME = dirs.root
+  process.env.XDG_CACHE_HOME = path.join(dirs.root, "cache")
+  setOpencodeClient({ tool: { list: async () => ({ data: [{ id: "question", description: "", parameters: {} }] }) } })
+  _resetAccountOverrides()
+  const baseCli = path.join(dirs.root, "fake-claude")
+  fs.writeFileSync(baseCli, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\nexit 1\n", { mode: 0o755 })
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      tui.configDir = path.join(dirs.root, ".claude")
+      const first = children.length === 0
+      tui.turns = [(child) => {
+        if (first) {
+          child.append(SESSION_LIMIT_RECORD)
+          child.append({ type: "system", subtype: "turn_duration", durationMs: 400 })
+        } else {
+          child.append(assistantRecord("served-2", "end_turn", textBlock("carried on, on default")))
+        }
+      }]
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const modelId = "claude-test-pty-failover@appical"
+  const sk = sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  try {
+    const runtime = await ensureAccountRuntime("appical", baseCli)
+    assert.ok(runtime.configDir?.startsWith(dirs.root), "the account lives in scratch")
+    assert.ok(runtime.cliPath.startsWith(dirs.root), "so does its wrapper")
+    const model = createClaudeCode({
+      transport: "interactive", cliPath: runtime.cliPath, baseCliPath: baseCli,
+      configDir: runtime.configDir, account: "appical", failoverAccounts: ["default", "appical"],
+      accountFailover: "ask", cwd: dirs.cwd, bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false,
+    }).languageModel(modelId)
+    const tools = [{ type: "function", name: "read", inputSchema: { type: "object" } }]
+    const prompt = [{ role: "user", content: [{ type: "text", text: "go" }] }]
+
+    const first: any[] = []
+    for await (const part of (await model.doStream({ prompt, tools } as any)).stream) first.push(part)
+    const call = first.find((part) => part.type === "tool-call")
+    assert.ok(call, "the limited turn ends on the switch form")
+    assert.equal(call.toolName, "question")
+    const question = JSON.parse(call.input).questions[0]
+    assert.deepEqual(question.options.map((option: any) => option.label), ["default", "stop"])
+    assert.equal(first.find((part) => part.type === "finish").finishReason.unified, "tool-calls")
+    assert.equal(children[0]!.argv[0], runtime.cliPath, "the limited account's wrapper ran")
+
+    const second: any[] = []
+    const answered = await model.doStream({
+      prompt: [
+        ...prompt,
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: call.toolCallId, toolName: "question", input: JSON.parse(call.input) }] },
+        { role: "tool", content: [{
+          type: "tool-result", toolCallId: call.toolCallId, toolName: "question",
+          output: { type: "text", value: `User has answered your questions: "${question.question}"="default". You can now continue with the user's answers in mind.` },
+        }] },
+      ],
+      tools,
+    } as any)
+    for await (const part of answered.stream) second.push(part)
+
+    assert.equal(children.length, 2, "the switch spawns a fresh TUI")
+    const switched = children[1]!
+    assert.equal(switched.argv[0], baseCli, "the default account is the bare binary")
+    assert.equal(switched.argv[switched.argv.indexOf("--model") + 1], "claude-test-pty-failover")
+    assert.ok(!switched.argv.includes("--resume"), "a transcript cannot follow across accounts")
+    const typed = switched.writes.join("")
+    assert.match(typed, /<conversation_history>/)
+    assert.match(typed, /Continue the task from where it stopped/)
+    assert.match(textOf(second), /carried on, on default/)
+    assert.equal(second.find((part) => part.type === "finish").finishReason.unified, "stop")
+  } finally {
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
     dirs.cleanup()
   }
 })

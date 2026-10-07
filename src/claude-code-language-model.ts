@@ -925,13 +925,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
     // Whether this attempt may be thrown away and retried on the next model.
     // Compaction is out because its answer is a stored summary and a second
-    // model would rewrite it; the interactive transport is out because it
-    // drives a TUI over a PTY and has no `result` frame of this shape to read
-    // a refusal from. A `doGenerate` turn is armed like any other now that it
-    // is this same code: a title stub returns before reaching here, so what a
-    // chain can reach is a real spawn, and a refusal there is worth retrying.
+    // model would rewrite it. The interactive transport is in: the TUI writes
+    // a refusal as the same `error: "model_not_found"` reply headless streams
+    // (measured on 2.1.288), and `streamFrameFromRecord` gives the parser the
+    // stream's spelling of it (h #g209). A `doGenerate` turn is armed like any
+    // other now that it is this same code: a title stub returns before
+    // reaching here, so what a chain can reach is a real spawn, and a refusal
+    // there is worth retrying.
     const modelFallbackArmed =
-      attempt?.armed === true && !compactionMode && !useInteractive
+      attempt?.armed === true && !compactionMode
 
     // Account failover. When a previous turn hit this account's usage limit
     // and the operator picked another account, every turn from then on spawns
@@ -939,14 +941,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // override is keyed on the ACCOUNT, so it covers every session running on
     // it, subagents included. Resolved here, before anything reads `cliPath`.
     //
-    // The account-switch round trip is not verified on the interactive
-    // transport, so that path keeps the plain rate-limit error.
+    // Both transports: the TUI spawns the other account's wrapper and tails
+    // that account's transcripts (h #g209).
     const sourceAccount = normalizeAccountName(
       this.config.account ?? DEFAULT_ACCOUNT,
     )
     const baseCliPath = this.config.baseCliPath ?? this.config.cliPath
     let failover: FailoverSpawn =
-      useInteractive || compactionMode
+      compactionMode
         ? { cliPath: this.config.cliPath, modelId: effectiveModelId, failedOver: false }
         : await resolveFailoverSpawn({
             account: sourceAccount,
@@ -1148,7 +1150,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // A `doGenerate` turn asks nothing (see `TurnMode`), so it has no answer of
     // its own to read either: it follows the account override and no more.
     const failoverAnswer =
-      compactionMode || useInteractive || mode === "generate"
+      compactionMode || mode === "generate"
         ? null
         : consumeAccountFailoverAnswer(sk, options.prompt as any, {
             sourceAccount,
@@ -1225,12 +1227,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // follow the conversation across a switch. Dropping both here (before
     // `includeHistoryContext` is computed) is what turns the switch into a
     // fresh session with the thread replayed, and it is equally what switches
-    // back once the override expires. The `?.cliPath &&` guard keeps the
-    // interactive shim, which carries no path, out of it.
+    // back once the override expires. The interactive shim carries the path
+    // it was spawned with too (h #g209), so a TUI on the limited account is
+    // replaced the same way.
     const processForAccount = getActiveProcess(sk)
     if (
       !compactionMode &&
-      !useInteractive &&
       processForAccount?.cliPath &&
       processForAccount.cliPath !== cliPath
     ) {
@@ -1267,7 +1269,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.config.forkSessions === true &&
       includeHistoryContext &&
       !compactionMode &&
-      !useInteractive &&
       failoverAnswer?.kind !== "switch"
     ) {
       const parent = findForkParent({
@@ -1345,7 +1346,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // What this key is being asked to continue, so a later fork of it can be
     // recognised. Only written when the feature is on, so a default install
     // does no hashing at all.
-    if (this.config.forkSessions === true && !compactionMode && !useInteractive) {
+    // Both transports: a TUI branches with the same `--fork-session` and
+    // writes the same transcript, so either can be the other's parent (h #g209).
+    if (this.config.forkSessions === true && !compactionMode) {
       recordForkFingerprint(sk, options.prompt, cliPath)
     }
 
@@ -1491,7 +1494,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       failoverAccounts.length > 0 &&
       this.config.accountFailover === "ask" &&
       !compactionMode &&
-      !useInteractive &&
       // A `doGenerate` caller takes the override and reports the plain
       // rate-limit error, never the form. See `TurnMode`.
       mode !== "generate" &&
@@ -1500,7 +1502,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         candidates: failoverAccounts,
         opencodeHasQuestion: (await loadLiveToolInfo()).hasQuestion,
         compactionMode,
-        interactive: !!useInteractive,
         // A subagent follows its parent's account for free, because the
         // override is account-scoped. Asking it would put a form in a session
         // the operator is usually not even looking at.
@@ -2175,7 +2176,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               const ap = spawnInteractiveProcess({
                 cwd,
                 cliPath,
-                configDir: self.config.configDir,
+                // On an account switch, the other account's directory: the
+                // TUI writes its transcript there (h #g209).
+                configDir: self.skillBridgeSpawn(failover).configDir,
                 model: spawnModelId,
                 fastMode,
                 mcpConfigPaths: mcp.paths,
@@ -2189,6 +2192,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
                 effort: reasoningEffort,
                 resumeSessionId,
+                // A fork of a conversation already served (`forkSessions`):
+                // the TUI branches it instead of the history being replayed.
+                ...(forkFromClaudeSessionId && !resumeSessionId
+                  ? { forkOf: forkFromClaudeSessionId }
+                  : {}),
                 // The headless spawn's env, so hygiene, effort and the
                 // agent's prompt cache TTL reach both transports alike.
                 env: claudeSpawnEnv({
@@ -2202,6 +2210,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               )
               ap.mcpHash = mcp.bridgedHash
               ap.mcpServers = mcp.allEnabledServerNames
+              // Which account's binary this TUI runs, for the account check
+              // in the prologue, exactly as a headless child records it.
+              ap.cliPath = cliPath
               setActiveProcess(sk, ap)
               state.proc = ap.proc
               state.lineEmitter = ap.lineEmitter
@@ -2209,6 +2220,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               log.info("spawned interactive claude session", {
                 sk,
                 resumed: !!resumeSessionId,
+                forked: !!forkFromClaudeSessionId && !resumeSessionId,
                 cliPath,
                 configDir: self.config.configDir,
                 model: effectiveModelId,

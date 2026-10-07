@@ -63,6 +63,13 @@ export interface InteractiveSpawnOptions {
    *  one, which is what keeps a conversation whose TUI died or was evicted
    *  from starting over empty. */
   resumeSessionId?: string
+  /**
+   * Branch this Claude session instead of starting a fresh one
+   * (`--session-id <new> --resume <id> --fork-session`), for `forkSessions`:
+   * a new opencode session that is a fork of one already served (h #g209).
+   * Wins over `resumeSessionId`; the parent's transcript is never written.
+   */
+  forkOf?: string
   /** The child environment, normally the headless spawn's (`claudeSpawnEnv`)
    *  so both transports carry the same hygiene, effort and cache TTL. */
   env?: Record<string, string | undefined>
@@ -536,6 +543,7 @@ export function spawnInteractiveProcess(
     ignoreAnthropicApiKey: opts.ignoreAnthropicApiKey,
     effort: opts.effort ? cliEffortLevel(opts.effort) : undefined,
     resumeSessionId: opts.resumeSessionId,
+    ...(opts.forkOf ? { forkOf: opts.forkOf } : {}),
     env: opts.env,
     spawnPty: opts.spawnPty,
     onScreen: (event) => {
@@ -573,6 +581,7 @@ export function spawnInteractiveProcess(
     effort: opts.effort,
     sessionId: session.sessionId,
     resumed: !!opts.resumeSessionId,
+    forkedFrom: opts.forkOf ?? null,
     jsonlPath: session.jsonlPath,
   })
 

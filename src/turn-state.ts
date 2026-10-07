@@ -241,8 +241,17 @@ export interface TurnState {
   lastCallUsage: ClaudeStreamMessage["usage"]
   /** Subtype of a failing `result`, so the finish reports an error not a stop. */
   resultFailure: string | undefined
-  /** Set only by a REJECTED rate-limit event or a known account-limit text. */
+  /**
+   * Set only by a REJECTED rate-limit event, the CLI's own `rate_limit` reply,
+   * or a known account-limit text. The note and the switch form both read it.
+   */
   accountLimitHit: { resetsAt?: number; window?: string; resetsText?: string } | null
+  /**
+   * The sentence of a CLI API-error reply this turn already rendered. A
+   * failing `result` repeats it verbatim as `result`, and rendering both put
+   * the same sentence on screen twice (measured on a refused model, h #g209).
+   */
+  apiErrorTextShown: string | null
   /**
    * Whether this turn ends with the `▌ **usage limit:**` note (h #g194).
    * Decided in ONE place, the `result` frame in src/stream-parser.ts, because
@@ -408,6 +417,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     lastCallUsage: undefined,
     resultFailure: undefined,
     accountLimitHit: null,
+    apiErrorTextShown: null,
     usageLimitNote: false,
     accountBlock: null,
     modelRefusal: null,

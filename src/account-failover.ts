@@ -519,11 +519,11 @@ export function isAccountFailoverQuestionActive(input: {
   candidates: readonly string[]
   opencodeHasQuestion: boolean
   compactionMode: boolean
-  interactive: boolean
   childSession: boolean
 }): boolean {
+  // Both transports since h #g209: the form is a question call the turn ends
+  // on, and the switch is a fresh spawn of the other account's wrapper.
   if (input.compactionMode) return false
-  if (input.interactive) return false
   if (input.childSession) return false
   if (input.configured !== "ask") return false
   if (input.candidates.length === 0) return false

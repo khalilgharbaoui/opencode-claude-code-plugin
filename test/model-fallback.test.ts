@@ -596,6 +596,8 @@ test("an exhausted chain surfaces the original error unchanged", async () => {
     assert.equal(fake.spawns().length, 1)
     const text = textOf(parts)
     assert.match(text, /There's an issue with the selected model/)
+    // Once: the reply frame and the failed result carry the same sentence.
+    assert.equal(text.split("There's an issue with the selected model").length - 1, 1, text)
     assert.doesNotMatch(text, /▌ \*\*model fallback:\*\*/)
   } finally {
     for (const key of keysFor(fake.cwd, SECOND_MODEL)) deleteActiveProcess(key)

@@ -260,13 +260,12 @@ test("candidates are every configured account except the limited one", () => {
   assert.deepEqual(failoverCandidates(["My Work", "my-work"], "default"), ["my-work"])
 })
 
-test("the form is gated on more than one account, a question tool, and the transport", () => {
+test("the form is gated on more than one account, a question tool, and the session", () => {
   const base = {
     configured: "ask" as const,
     candidates: ["work"],
     opencodeHasQuestion: true,
     compactionMode: false,
-    interactive: false,
     childSession: false,
   }
   assert.equal(isAccountFailoverQuestionActive(base), true)
@@ -283,7 +282,6 @@ test("the form is gated on more than one account, a question tool, and the trans
     false,
   )
   assert.equal(isAccountFailoverQuestionActive({ ...base, compactionMode: true }), false)
-  assert.equal(isAccountFailoverQuestionActive({ ...base, interactive: true }), false)
   // A subagent follows its parent's account for free.
   assert.equal(isAccountFailoverQuestionActive({ ...base, childSession: true }), false)
 })
