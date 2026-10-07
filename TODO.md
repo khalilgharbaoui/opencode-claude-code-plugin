@@ -129,7 +129,8 @@ Nothing parked.
   the fix reads `busy`, but v0.42.0 did not misbehave under `opencode serve`, so the author's
   topology was not reproduced (h #g206). #88 now works on the PTY through the TUI's own input queue
   (h #g206). The idle-screen end signal and recorded 2.1.288 golden transcripts with a replay test
-  (h #g207). 1,251 tests.
+  (h #g207). 1,251 tests. Released as **v0.42.3** (CI publish green, registry shasum `ac59d146`
+  matches the step's notice).
 - 2026-10-06: **done** (v0.42.2): "carry on with the most recommended". The P2 "version gate the
   transport" built as a contract instead of a gate (h #g205): refusing unknown CLI versions would
   switch the PTY off on exactly the release that drops `--print`, and the cited `stop_reason: null`
