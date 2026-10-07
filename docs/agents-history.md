@@ -2717,4 +2717,10 @@ letting ConPTY fail three layers down: wrapping it in `cmd.exe /c` would give cm
 the terminal the TUI needs to draw on, and nobody has measured an interactive
 Claude Code under ConPTY.
 
+Green on `windows-latest`, run 37677940933 on commit `dbb4102`: 779 tests, 0
+failures, 40 of 73 files, all five Windows-only tests ran. The two earlier runs
+are the evidence above: 37675796821 is the caret version creating `pwned.txt`
+(765 of 777), 37677599203 is the quoting version with one test of its own left
+to fix (778 of 779).
+
 `test/windows-spawn.test.ts`, `.github/workflows/ci-windows.yml`.
