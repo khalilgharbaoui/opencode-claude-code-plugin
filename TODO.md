@@ -107,6 +107,8 @@ Nothing parked.
 - 2026-10-07: **done**: PDF input on both transports ("Add PDF input as TODO", then "go ahead").
   Catalog `pdf: true`, a `document` block headless, an `@<path>` mention on the TUI (h #g213). Live on
   1.18.34 and 2.0.22, both transports.
+  Released as **v0.45.0** (CI publish green, registry shasum `98e9e2a6` matches the step's notice;
+  GitHub release notes written).
 - 2026-10-07: **done** (v0.44.0): opencode's system prompt on the interactive transport. The
   "clean root fix" (keep opencode's text, drop only the bisected environment block) was declined as
   evasion of the billing classification; the maintainer chose the offered opt-in instead ("Build the
