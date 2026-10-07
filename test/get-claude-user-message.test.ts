@@ -578,6 +578,54 @@ test("the fresh-session history keeps tool inputs and result bodies", () => {
   assert.doesNotMatch(history!, /Called 1 tool\(s\)/, "the lossy placeholder is gone")
 })
 
+// The shape that lost a whole plan review on a plan-to-build switch: CLI-run
+// tools do not end a step, so every read and its result sit in the SAME
+// assistant message as the answer, ahead of it. Clipping the message from the
+// end kept the tool output and dropped the answer.
+const toolHeavyReply = (answer: string, reads = 4) => ({
+  role: "assistant",
+  content: [
+    ...Array.from({ length: reads }, (_, i) => [
+      { type: "tool-call", toolCallId: `r${i}`, toolName: "read", input: { filePath: `/src/f${i}.ts` } },
+      {
+        type: "tool-result",
+        toolCallId: `r${i}`,
+        toolName: "read",
+        output: { type: "text", value: `line of source ${i}\n`.repeat(150) },
+      },
+    ]).flat(),
+    { type: "text", text: answer },
+  ],
+})
+
+test("the fresh-session history keeps the newest reply's answer behind its tool output", () => {
+  const answer = `## Review\n${"finding ".repeat(1000)}\n1. fix the door gate\n2. add a test`
+  const history = compactConversationHistory(
+    p([
+      { role: "user", content: [{ type: "text", text: "review the feature" }] },
+      toolHeavyReply(answer),
+      { role: "user", content: [{ type: "text", text: "1, 2 -> ok" }] },
+    ]),
+  )!
+  assert.ok(history.includes(answer), "the whole answer the operator replied to survives")
+  assert.match(history, /chars omitted/, "the tool output in front of it is what gets cut")
+})
+
+test("an older reply is clipped in the middle, so the prose it ends on survives", () => {
+  const history = compactConversationHistory(
+    p([
+      { role: "user", content: [{ type: "text", text: "first" }] },
+      toolHeavyReply("OLDER CONCLUSION"),
+      { role: "user", content: [{ type: "text", text: "second" }] },
+      { role: "assistant", content: [{ type: "text", text: "short reply" }] },
+      { role: "user", content: [{ type: "text", text: "third" }] },
+    ]),
+  )!
+  assert.match(history, /OLDER CONCLUSION/)
+  const older = history.slice(history.indexOf("Assistant: "), history.indexOf("User: second"))
+  assert.ok(older.length < 2_200, `older replies keep the 2000-char budget (${older.length})`)
+})
+
 // --- dcp context reminders -------------------------------------------------
 //
 // opencode-dcp anchors `<dcp-system-reminder>` blocks into message text, so

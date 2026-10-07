@@ -290,6 +290,21 @@ function clipWithMarker(text: string, max: number): string {
   return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`
 }
 
+// Fresh-session replay caps. An assistant message keeps every step's tool
+// calls ahead of the prose the model wrote last, so clipping from the end
+// dropped the answer and kept the tool output in front of it.
+const MAX_REPLAY_MESSAGE_CHARS = 2_000
+const MAX_REPLAY_LAST_REPLY_CHARS = 12_000
+const MAX_REPLAY_HEAD_CHARS = 1_000
+
+/** Keep the start and, above all, the end; drop the middle. */
+function clipMiddle(text: string, max: number): string {
+  if (text.length <= max) return text
+  const head = Math.min(Math.floor(max / 4), MAX_REPLAY_HEAD_CHARS)
+  const tail = max - head
+  return `${text.slice(0, head)}\n…[${text.length - max} chars omitted]…\n${text.slice(-tail)}`
+}
+
 function renderToolInput(input: unknown): string {
   let raw: string
   try {
@@ -359,7 +374,9 @@ function renderMessageContentForCompaction(
  *
  * - mode "fresh-session" (default): includes user, assistant and tool roles,
  *   renders each with the same serializer /compact uses so tool inputs and
- *   result bodies survive, then clips each message at 2000 chars. Used when
+ *   result bodies survive, then clips each message at 2000 chars (12000 for
+ *   the newest assistant reply) by dropping the MIDDLE, so the prose a
+ *   message ends on is kept. Used when
  *   starting a fresh CLI session that lost its prior session id. It used to
  *   filter to user/assistant only and reduce tool content to
  *   `[Called N tool(s)]` placeholders, which silently dropped subagent
@@ -395,6 +412,16 @@ export function compactConversationHistory(
 
   const historyParts: string[] = []
 
+  // The reply the operator is most likely answering. It gets a larger budget
+  // because a short answer like "1, 2 -> ok" points straight into it.
+  let lastAssistant = -1
+  for (let i = conversationMessages.length - 2; i >= 0; i--) {
+    if (conversationMessages[i].role === "assistant") {
+      lastAssistant = i
+      break
+    }
+  }
+
   for (let i = 0; i < conversationMessages.length - 1; i++) {
     const msg = conversationMessages[i]
     const role =
@@ -407,9 +434,9 @@ export function compactConversationHistory(
     const { text } = renderMessageContentForCompaction(msg)
 
     if (text.trim()) {
-      const truncated =
-        text.length > 2000 ? text.slice(0, 2000) + "..." : text
-      historyParts.push(`${role}: ${truncated}`)
+      const max =
+        i === lastAssistant ? MAX_REPLAY_LAST_REPLY_CHARS : MAX_REPLAY_MESSAGE_CHARS
+      historyParts.push(`${role}: ${clipMiddle(text, max)}`)
     }
   }
 
