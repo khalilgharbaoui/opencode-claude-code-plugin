@@ -14,6 +14,13 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
+      # Git on Windows checks out CRLF by default, and several tests read repo
+      # files with regexes anchored on `\n` (the bundled skill's frontmatter,
+      # the option tables, the constants in src/). Checking out what the repo
+      # actually stores is the fix; rewriting those regexes would be rewriting
+      # them for a problem the repo does not have.
+      - name: Check out with the repository's own line endings
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:

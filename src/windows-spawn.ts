@@ -24,24 +24,26 @@ import * as path from "node:path"
  *     are about to run rather than letting a shell guess,
  *   - a `.exe` / `.com` is spawned directly with `shell: false`, where Node's
  *     own `CommandLineToArgvW` quoting is correct and nothing parses `&`,
- *   - a `.cmd` / `.bat` goes through `cmd.exe /d /s /c` with every argument
- *     quoted for `CommandLineToArgvW` and then caret-escaped for cmd, with
+ *   - a `.cmd` / `.bat` goes through `cmd.exe /d /s /c` with the command path
+ *     quoted and every argument quoted by `quoteBatchArgument`, with
  *     `windowsVerbatimArguments` so Node does not re-quote what we built.
  *
- * The escaping is the algorithm cross-spawn uses, reimplemented here rather
- * than taken as a dependency (AGENTS.md keeps the runtime dependency list at
- * two packages, and this is ~60 lines).
+ * `quoteBatchArgument` carries the reasoning that matters: a batch shim
+ * forwards `%*`, so cmd parses the line twice, and caret escaping (cross-spawn's
+ * answer, and this module's first one) does not survive the second parse. The
+ * quoting that does is the one Rust adopted for `.bat` after CVE-2024-27980,
+ * and it is ~25 lines, which is why nothing is taken as a dependency here
+ * (AGENTS.md keeps the runtime dependency list at two packages).
  *
  * ## The one hole that stays: `%`
  *
- * cmd.exe expands `%NAME%` during a parsing phase that runs BEFORE carets are
- * processed, so no escape sequence fully neutralises a percent sign. `^%` gets
- * most of the way (it breaks the variable-name lookup at the command-line
- * level), and a batch shim that forwards `%*` can expand a second time. An
+ * cmd.exe expands `%NAME%` in a parsing phase that runs before anything else
+ * is considered, and no escape sequence neutralises it: `^%` would arrive as a
+ * literal caret inside our quoting, and `%%` is a batch-file-only escape. An
  * argument containing `%` may therefore arrive with an environment variable
- * substituted into it. It cannot, however, inject a command: substitution
- * happens into a position that is already inside our caret-escaped quoting.
- * `test/windows-spawn.test.ts` pins the measured behaviour.
+ * substituted into it. It cannot inject a command, because the substitution
+ * lands inside quotes cmd has already opened. `test/windows-spawn.test.ts`
+ * measures it on a real shim.
  *
  * Nothing in this module is platform-gated at import time: `planClaudeSpawn`
  * returns the command unchanged on every non-Windows platform, and every
@@ -67,13 +69,6 @@ export interface WindowsSpawnDeps {
 
 /** PATHEXT's own default, used when the variable is missing from the env. */
 export const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-
-/**
- * The characters cmd.exe treats specially. `,` and `;` are in the set because
- * cmd also splits arguments on them, and `%` and `!` are in it so the escaper
- * does what it can about expansion even though it cannot win outright.
- */
-const CMD_META = /([()\][%!^"`<>&|;, *?])/g
 
 function envValue(env: Record<string, string | undefined>, name: string): string | undefined {
   const direct = env[name]
@@ -164,6 +159,10 @@ export function resolveWindowsCommand(
  * end the argument, and every embedded quote backslash-escaped. The MSDN
  * algorithm, written out rather than compressed into a regex so the invariant
  * is readable.
+ *
+ * This is what a `.exe` needs, and Node already does it for a direct spawn. It
+ * is here because it is the oracle the batch quoting below is checked against,
+ * and because it is the half of the problem most people stop at.
  */
 export function quoteWindowsArgument(arg: string): string {
   let out = '"'
@@ -185,33 +184,69 @@ export function quoteWindowsArgument(arg: string): string {
 }
 
 /**
- * Caret-escape the command's own path. The path is not quoted (cmd would then
- * need the quotes escaped too and nothing is gained): every metacharacter,
- * the space included, is carried by a caret instead.
- */
-export function escapeCmdCommand(command: string): string {
-  return path.win32.normalize(command).replace(CMD_META, "^$1")
-}
-
-/**
- * Quote an argument for the program, then caret-escape it for cmd.exe.
+ * Quote one argument for a BATCH file, which is a harder problem than quoting
+ * it for a program, and the place the obvious answer is wrong.
  *
- * `doubleEscape` is for the one case where the program being run is itself
- * cmd.exe, which strips a second layer. Nothing in this plugin runs cmd.exe
- * through cmd.exe, but the flag is here because leaving it out is the usual
- * way this function is got wrong.
+ * A batch shim (every npm-installed `claude.cmd` is one) forwards its
+ * arguments with `%*`, and cmd parses the resulting line a SECOND time before
+ * the real program ever sees it. Caret-escaping, which is what cross-spawn
+ * emits and what the first version of this module emitted, does not survive
+ * that: the carets are consumed by the first parse, so the second parse sees
+ * `"x\" & echo pwned"`, and cmd has no backslash escape, so the `\"` closes
+ * the quote and the `&` starts a command. Measured on windows-latest: it
+ * created the file. That is CVE-2024-27980's shape, and the reason Node
+ * refuses to spawn a `.bat` without a shell at all.
+ *
+ * What does survive both parses is quoting with doubled quotes. Wrap the
+ * argument in `"`, write an embedded quote as `""`, and double the
+ * backslashes that run into one. Then:
+ *
+ *   - cmd keeps its quote state balanced through `""`, so every `&`, `|`,
+ *     `>`, `<`, `(` and `^` in the argument stays inside quotes, where cmd
+ *     treats it as ordinary text, on BOTH passes. No caret is needed, and
+ *     emitting one would arrive as a literal caret in the value.
+ *   - `CommandLineToArgvW` reads `""` while inside a quoted string as one
+ *     literal quote, and `2n` backslashes before it as `n` literal
+ *     backslashes, so the program gets the argument back exactly.
+ *
+ * This is the algorithm Rust adopted for `.bat` targets after the same CVE.
+ *
+ * Throws on a carriage return or newline: cmd ends the command line there, so
+ * the argument cannot be carried at all and the failure would otherwise be a
+ * silent truncation. Nothing this plugin passes contains one.
  */
-export function escapeCmdArgument(arg: string, doubleEscape = false): string {
-  const quoted = quoteWindowsArgument(arg).replace(CMD_META, "^$1")
-  return doubleEscape ? quoted.replace(CMD_META, "^$1") : quoted
+export function quoteBatchArgument(arg: string): string {
+  if (/[\r\n]/.test(arg)) {
+    throw new Error("cmd.exe cannot carry a newline in an argument")
+  }
+  let out = '"'
+  let backslashes = 0
+  for (const char of arg) {
+    if (char === "\\") {
+      backslashes += 1
+      continue
+    }
+    if (char === '"') {
+      // 2n backslashes leave the quote "special", and the doubled quote is
+      // then the literal one, which keeps cmd's quote state where it was.
+      out += "\\".repeat(backslashes * 2) + '""'
+      backslashes = 0
+      continue
+    }
+    out += "\\".repeat(backslashes) + char
+    backslashes = 0
+  }
+  return `${out}${"\\".repeat(backslashes * 2)}"`
 }
 
 /**
  * Build the `cmd.exe /d /s /c "..."` invocation for a batch file.
  *
- * `/d` skips AutoRun (a user's registry AutoRun command must not run inside
- * our spawn), `/s` makes cmd strip exactly the outer pair of quotes and treat
- * the rest verbatim, and `/c` runs and exits.
+ * `/d` skips AutoRun, so a user's registry AutoRun command does not run inside
+ * our spawn. `/s` makes cmd strip exactly the outer pair of quotes and take
+ * the rest as written, which is what lets the command path simply be quoted
+ * (a Windows path cannot contain a quote, so nothing inside it needs escaping)
+ * rather than caret-escaped character by character.
  */
 export function planCmdInvocation(
   file: string,
@@ -219,8 +254,7 @@ export function planCmdInvocation(
   env: Record<string, string | undefined> = process.env,
 ): SpawnPlan {
   const comspec = envValue(env, "ComSpec") ?? "cmd.exe"
-  const doubleEscape = /^(?:.*[\\/])?cmd(?:\.exe)?$/i.test(file)
-  const line = [escapeCmdCommand(file), ...args.map((arg) => escapeCmdArgument(arg, doubleEscape))]
+  const line = [`"${path.win32.normalize(file)}"`, ...args.map(quoteBatchArgument)]
   return {
     file: comspec,
     args: ["/d", "/s", "/c", `"${line.join(" ")}"`],

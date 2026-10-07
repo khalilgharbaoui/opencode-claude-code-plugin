@@ -2615,33 +2615,51 @@ entry point and returns `{file, args, windowsVerbatimArguments?}`:
     over the installed one,
   - a `.exe` / `.com` is spawned with `shell: false`, where Node's own
     `CommandLineToArgvW` quoting is correct and nothing parses `&`,
-  - a `.cmd` / `.bat` goes through `cmd.exe /d /s /c` with each argument quoted
-    for `CommandLineToArgvW` and then caret-escaped for cmd, with
+  - a `.cmd` / `.bat` goes through `cmd.exe /d /s /c` with the command path
+    quoted and each argument through `quoteBatchArgument`, with
     `windowsVerbatimArguments: true` so Node does not re-quote what we built.
     `/d` skips a user's registry AutoRun, `/s` makes cmd strip exactly the outer
-    quote pair and take the rest verbatim.
+    quote pair and take the rest verbatim, which is also what lets the command
+    path simply be quoted (a Windows path cannot contain a quote).
 
-That is cross-spawn's algorithm, reimplemented rather than depended on: the
-runtime dependency list is two packages on purpose (#g186), cross-spawn pulls
-three more, and the whole thing is shorter than the comment explaining it. The
-`CommandLineToArgvW` quoter is written out as a loop rather than cross-spawn's
-two regexes, because the invariant (backslashes double only where they meet a
-quote or end the argument) should be readable.
+**The first version of this used caret escaping, which is cross-spawn's answer,
+and the Windows job rejected it.** With `quoteWindowsArgument` plus a caret on
+every cmd metacharacter, the run on `windows-latest` failed two ways: one
+argument per adversarial value came back `'b' is not recognized as an internal
+or external command`, and `x" & echo pwned > pwned.txt & "` **created
+pwned.txt**. The reason is the second parse. A batch shim forwards its arguments
+with `%*`, so cmd parses the composed line again before the real program is
+started, and the carets were all spent on the first parse. What the second parse
+then sees is `"x\" & echo pwned > pwned.txt & "`, and cmd has no backslash
+escape, so `\"` closes the quote and `&` starts a command. That is exactly
+CVE-2024-27980's shape, and the reason Node refuses to spawn a `.bat` without a
+shell at all.
 
-**The command path is caret-escaped, not quoted**, including its spaces
-(`C:\Program^ Files\...`). Quoting it would put cmd into its quoted state and
-change what every caret after it means.
+**What survives both parses is quoting with doubled quotes** (`quoteBatchArgument`):
+wrap in `"`, write an embedded quote as `""`, double the backslashes that run
+into one. cmd's quote state stays balanced through `""`, so every `&`, `|`, `>`,
+`<`, `(` and `^` in the value sits inside quotes on BOTH passes, where cmd
+treats it as ordinary text; and `CommandLineToArgvW` reads `""` inside a quoted
+string as one literal quote with `2n` preceding backslashes as `n`, so the
+program gets the value back exactly. No caret is emitted at all, because inside
+the quoting a caret arrives as a literal caret in the value. This is the
+algorithm Rust adopted for `.bat` targets after the same CVE. A `\r` or `\n`
+throws instead: cmd ends the command line there, and the alternative is a silent
+truncation.
+
+Reimplemented rather than depended on: the runtime dependency list is two
+packages on purpose (#g186), and cross-spawn would have been both a dependency
+and the wrong algorithm. The `CommandLineToArgvW` quoter is kept beside it as
+the oracle the batch quoting is checked against.
 
 **`%` is the hole that stays, and it is documented rather than worked around.**
-cmd expands `%NAME%` in a parsing phase that runs before carets are processed, so
-no escape sequence fully neutralises a percent sign; a batch shim forwarding
-`%*` can expand a second time. `^%` is emitted anyway because it breaks the
-variable-name lookup at the command-line level, and the live test below measured
-both `%PATH%` and an undefined name arriving literal through an npm-shaped shim
-on `windows-latest`. That measurement is pinned as an assertion, but the
-guarantee the module makes is only the weaker one: a `%` argument may arrive with
-a variable substituted into it, and can never become a second command or a second
-argument, because substitution lands inside the escaped quoting.
+cmd expands `%NAME%` in a parsing phase that runs before anything else is
+considered. `^%` is unavailable for the reason above and `%%` is a batch-file
+escape only, so a `%` argument may arrive with a variable substituted into it.
+It can never become a second command or a second argument, because the
+substitution lands inside quotes cmd has already opened. Measured on
+`windows-latest` through an npm-shaped shim: an undefined `%NAME%` and a bare
+trailing `100%` arrive literal (pinned), `%PATH%` is the lossy case.
 
 **The proof is `.github/workflows/ci-windows.yml`**, on `pull_request` and on
 push to master, `windows-latest` + Node 24 (matching `publish.yml`), running
@@ -2658,11 +2676,13 @@ newline, which NTFS cannot hold in a path and cmd ends the command line at.
 
 The rest of the file is cross-platform and runs in `npm test` on macOS and Linux
 too. It carries reference implementations of `CommandLineToArgvW` and of cmd's
-caret phase and models the whole pipeline against them, which is what makes the
-escaper reviewable off Windows. Two phases are deliberately not modelled, each
-named in the test: `%` expansion, and cmd's own parsing of the command token
-(which honours `^ ` where `CommandLineToArgvW` would split). Both are measured
-live instead.
+own parse (quote toggling, no backslash escape, metacharacters special only
+outside quotes) and models the whole pipeline against them, both passes,
+asserting that nothing is ever a metacharacter outside quotes and that the
+quoting is balanced. That is what makes the quoting reviewable off Windows, and
+it is the model that would have caught the caret version before CI did.
+`%` expansion is the one phase deliberately not modelled, and it is measured
+live.
 
 **What the Windows job does not run.** 33 of 73 test files, listed one per line
 with a reason per group in `.github/windows-skipped-tests.txt`; the job reads
@@ -2673,6 +2693,20 @@ build a fake CLI as a `#!/bin/sh` script made executable with `chmod`, two asser
 the interactive transport's Bun PTY and its shims, and `account-wrapper` asserts
 the generated bash wrapper. `npm test` on POSIX still runs the whole glob and is
 unchanged; no Linux test workflow was added, because there was none before.
+
+**Six assertions in five other files were POSIX-written and are now portable**,
+found by the first Windows run (765 of 777 passed). Three assert `0600`/`0700`
+mode bits, which Windows does not have, and are guarded by platform with the
+reason named (`bridge`, `claude-session-wrapper`, `compaction-model`). Two
+hardcoded POSIX separators in an expectation the production code builds with
+`path.join` / `path.resolve`, and now build it the same way (`agent-models`
+`agentDirectories`, `v2-client` `toV1Session`). One read `env.PATH` from a
+spread of `process.env`, which on Windows is spelled `Path`, and now accepts
+either (`spawn-env`). None of them is weaker on POSIX. A seventh problem was not
+in the tests at all: `actions/checkout` on Windows converts to CRLF by default,
+which broke four `configure-skill` assertions that read repo files with regexes
+anchored on `\n`, so the job sets `core.autocrlf false` before checking out
+rather than rewriting regexes for a problem the repo does not have.
 
 **Two Windows gaps are left open on purpose and are now documented rather than
 silent.** The per-account wrapper `writeAccountWrapper` generates is a bash

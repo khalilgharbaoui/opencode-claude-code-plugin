@@ -136,8 +136,11 @@ test("the system prompt file is written 0600 inside the plugin scratch directory
     assert.ok(promptFile)
 
     assert.equal(dirname(promptFile), pluginTmpDir())
-    assert.equal(statSync(promptFile).mode & 0o777, 0o600)
-    assert.equal(statSync(pluginTmpDir()).mode & 0o777, 0o700)
+    // Windows has no POSIX mode bits, so there is nothing to assert there.
+    if (process.platform !== "win32") {
+      assert.equal(statSync(promptFile).mode & 0o777, 0o600)
+      assert.equal(statSync(pluginTmpDir()).mode & 0o777, 0o700)
+    }
     assert.match(readFileSync(promptFile, "utf8"), /SECRET-PROMPT-SENTINEL/)
   } finally {
     if (promptFile) unlinkSync(promptFile)

@@ -55,7 +55,8 @@ test("claudeSpawnEnv with ignore flag leaves other env vars intact", () => {
   withEnv({ ANTHROPIC_API_KEY: "sk-test", PATH: process.env.PATH }, () => {
     const env = claudeSpawnEnv({ ignoreAnthropicApiKey: true })
     assert.equal("ANTHROPIC_API_KEY" in env, false)
-    assert.equal(env.PATH, process.env.PATH)
+    // Windows spells it `Path`, and a spread of process.env keeps that casing.
+    assert.equal(env.PATH ?? env.Path, process.env.PATH)
     assert.equal(env.TERM, "xterm-256color")
   })
 })

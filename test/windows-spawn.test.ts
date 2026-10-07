@@ -6,12 +6,11 @@ import * as os from "node:os"
 import * as path from "node:path"
 import {
   DEFAULT_PATHEXT,
-  escapeCmdArgument,
-  escapeCmdCommand,
   executableExtensions,
   isBatchFile,
   planClaudeSpawn,
   planCmdInvocation,
+  quoteBatchArgument,
   quoteWindowsArgument,
   resolveWindowsCommand,
 } from "../src/windows-spawn.js"
@@ -111,27 +110,51 @@ function parseCommandLineToArgv(line: string): string[] {
 }
 
 /**
- * cmd.exe's caret phase, as it applies to what this module builds: because
- * every quote in our command line is itself caret-escaped, cmd never enters
- * its quoted state, so a caret always escapes exactly the next character.
+ * cmd.exe's own parse of a command line, as far as this module depends on it.
+ * cmd toggles its quote state on `"`, has NO backslash escape, and treats
+ * `& | < > ( )` as special only outside quotes. It passes the text on with the
+ * quotes still in it, which is why the program's own `CommandLineToArgvW`
+ * parse comes afterwards.
+ *
+ * Returns the text cmd would hand on, and the metacharacters it saw outside
+ * quotes: anything in that second list is an injection.
  */
-function stripCarets(line: string): string {
-  let out = ""
-  for (let index = 0; index < line.length; index += 1) {
-    if (line[index] === "^" && index + 1 < line.length) {
-      out += line[index + 1]
-      index += 1
+function parseAsCmd(line: string): { passedOn: string; unquotedMeta: string[] } {
+  let inQuotes = false
+  const unquotedMeta: string[] = []
+  for (const char of line) {
+    if (char === '"') {
+      inQuotes = !inQuotes
       continue
     }
-    out += line[index]
+    if (!inQuotes && "&|<>()^".includes(char)) unquotedMeta.push(char)
   }
-  return out
+  assert.equal(inQuotes, false, `unbalanced quotes would leave cmd parsing into the next argument: ${line}`)
+  return { passedOn: line, unquotedMeta }
 }
 
 /** `cmd /s /c "<line>"`: strip exactly the outer pair of quotes. */
 function stripOuterQuotes(arg: string): string {
   assert.ok(arg.startsWith('"') && arg.endsWith('"'), "the /c payload is quoted")
   return arg.slice(1, -1)
+}
+
+/**
+ * The whole pipeline a batch shim puts an argument through: cmd's parse of our
+ * `/c` payload, the shim's `%*` substitution (verbatim), cmd's parse of the
+ * shim's own line, and finally the program's `CommandLineToArgvW`. Percent
+ * expansion is the one phase not modelled; it is measured live below.
+ */
+function throughBatchShim(payload: string): string[] {
+  const first = parseAsCmd(stripOuterQuotes(payload))
+  assert.deepEqual(first.unquotedMeta, [], "nothing is special to cmd on the first pass")
+  // `%*` hands the argument text on with its quotes intact, and the shim's own
+  // line (`node "argv.cjs" %*`) is parsed by cmd a second time.
+  const commandEnd = first.passedOn.indexOf('" ')
+  const argumentText = commandEnd === -1 ? "" : first.passedOn.slice(commandEnd + 2)
+  const second = parseAsCmd(argumentText)
+  assert.deepEqual(second.unquotedMeta, [], "nothing is special to cmd on the second pass either")
+  return parseCommandLineToArgv(second.passedOn)
 }
 
 describe("quoteWindowsArgument", () => {
@@ -158,26 +181,37 @@ describe("quoteWindowsArgument", () => {
   })
 })
 
-describe("escapeCmdArgument", () => {
-  test("carets every character cmd.exe treats specially", () => {
-    for (const char of ["(", ")", "[", "]", "%", "!", "^", '"', "`", "<", ">", "&", "|", ";", ",", " ", "*", "?"]) {
-      const escaped = escapeCmdArgument(`a${char}b`)
-      assert.ok(escaped.includes(`^${char}`), `${char} is caret-escaped, got ${escaped}`)
+describe("quoteBatchArgument", () => {
+  test("keeps cmd's quote state balanced, so no metacharacter is ever outside quotes", () => {
+    for (const { name, value } of ADVERSARIAL) {
+      if (/[\r\n]/.test(value)) continue
+      const { unquotedMeta } = parseAsCmd(quoteBatchArgument(value))
+      assert.deepEqual(unquotedMeta, [], name)
     }
   })
 
-  test("leaves nothing for cmd to parse as a command separator", () => {
-    const escaped = escapeCmdArgument("a & echo pwned")
-    // Every `&` in the output is preceded by a caret.
-    for (let index = 0; index < escaped.length; index += 1) {
-      if (escaped[index] === "&") assert.equal(escaped[index - 1], "^")
-    }
+  test("writes an embedded quote as the doubled form cmd counts and the CRT reads", () => {
+    assert.equal(quoteBatchArgument('a"b'), '"a""b"')
+    assert.equal(quoteBatchArgument('a\\"b'), '"a\\\\""b"')
+    assert.equal(quoteBatchArgument("a\\"), '"a\\\\"')
+    assert.equal(quoteBatchArgument(""), '""')
   })
 
-  test("doubleEscape adds exactly one more layer", () => {
-    const once = escapeCmdArgument("a&b")
-    const twice = escapeCmdArgument("a&b", true)
-    assert.equal(twice, once.replace(/([()\][%!^"`<>&|;, *?])/g, "^$1"))
+  test("never emits a caret, which inside quotes would arrive as a literal one", () => {
+    assert.equal(quoteBatchArgument("a & b").includes("^"), false)
+    assert.equal(quoteBatchArgument("a ^ b"), '"a ^ b"')
+  })
+
+  test("refuses a newline rather than letting cmd truncate the command line", () => {
+    assert.throws(() => quoteBatchArgument("a\nb"), /newline/)
+    assert.throws(() => quoteBatchArgument("a\rb"), /newline/)
+  })
+
+  test("round-trips through CommandLineToArgvW on its own", () => {
+    for (const { name, value } of ADVERSARIAL) {
+      if (/[\r\n]/.test(value)) continue
+      assert.deepEqual(parseCommandLineToArgv(quoteBatchArgument(value)), [value], name)
+    }
   })
 })
 
@@ -198,28 +232,24 @@ describe("planCmdInvocation", () => {
     assert.equal(planCmdInvocation("C:\\npm\\claude.cmd", [], {}).file, "cmd.exe")
   })
 
-  test("the whole command line survives cmd.exe's parsing, argument for argument", () => {
-    // The parts of the pipeline that are deterministic: cmd strips the outer
-    // quotes (/s), removes the carets, and the target program's own CRT parses
-    // what is left with CommandLineToArgvW. Two phases are deliberately not
-    // modelled: `%` expansion, and cmd's own parsing of the command token
-    // (which honours `^ ` as a literal space, where CommandLineToArgvW would
-    // split). So this uses a space-free command path and a `%`-free argument
-    // set; both of the unmodelled phases are measured live on Windows below.
-    const values = ADVERSARIAL.filter((entry) => !entry.value.includes("%")).map((entry) => entry.value)
-    const plan = planCmdInvocation("C:\\npm\\claude.cmd", values, env)
-    const line = stripCarets(stripOuterQuotes(plan.args[3]))
-    assert.deepEqual(parseCommandLineToArgv(line), ["C:\\npm\\claude.cmd", ...values])
-  })
-})
-
-describe("escapeCmdCommand", () => {
-  test("carets a path's spaces rather than quoting it", () => {
-    assert.equal(escapeCmdCommand("C:\\Program Files\\claude.cmd"), "C:\\Program^ Files\\claude.cmd")
+  test("quotes the command path rather than escaping it, and normalizes separators", () => {
+    const plan = planCmdInvocation("C:/Program Files/npm/claude.cmd", [], env)
+    assert.equal(plan.args[3], '""C:\\Program Files\\npm\\claude.cmd""')
   })
 
-  test("normalizes to Windows separators", () => {
-    assert.equal(escapeCmdCommand("C:/npm/claude.cmd"), "C:\\npm\\claude.cmd")
+  test("the whole command line survives both of cmd's parses, argument for argument", () => {
+    // `%` expansion is the one phase the model does not cover; it is measured
+    // live on Windows below. A newline cannot be carried at all.
+    const values = ADVERSARIAL.filter(
+      (entry) => !entry.value.includes("%") && !/[\r\n]/.test(entry.value),
+    ).map((entry) => entry.value)
+    const plan = planCmdInvocation("C:\\npm dir\\claude.cmd", values, env)
+    assert.deepEqual(throughBatchShim(plan.args[3]), values)
+  })
+
+  test("an argument that tries to close the quoting cannot reach a second pass", () => {
+    const plan = planCmdInvocation("C:\\npm\\claude.cmd", ['x" & echo pwned > pwned.txt & "'], env)
+    assert.deepEqual(throughBatchShim(plan.args[3]), ['x" & echo pwned > pwned.txt & "'])
   })
 })
 
@@ -345,7 +375,7 @@ describe("planClaudeSpawn", () => {
     assert.equal(plan.windowsVerbatimArguments, undefined)
   })
 
-  test("routes a .cmd shim through cmd.exe with escaped arguments", () => {
+  test("routes a .cmd shim through cmd.exe with quoted arguments", () => {
     const plan = planClaudeSpawn("claude", ["--print", "a & b"], {
       platform: "win32",
       env,
@@ -353,9 +383,7 @@ describe("planClaudeSpawn", () => {
     })
     assert.equal(plan.file, "C:\\Windows\\System32\\cmd.exe")
     assert.equal(plan.windowsVerbatimArguments, true)
-    assert.ok(!plan.args[3].includes(" & "), "the bare `&` is gone")
-    const line = stripCarets(stripOuterQuotes(plan.args[3]))
-    assert.deepEqual(parseCommandLineToArgv(line), ["C:\\npm\\claude.cmd", "--print", "a & b"])
+    assert.deepEqual(throughBatchShim(plan.args[3]), ["--print", "a & b"])
   })
 
   test("an unresolvable command is passed through so the spawn fails honestly", () => {
@@ -479,14 +507,17 @@ describe("a real .cmd shim on Windows", { skip: isWindows ? false : "Windows onl
   test("a `%` argument is lossy but never a second command", () => {
     const { dir, shim } = makeShim()
     try {
-      const delivered = runThroughShim(shim, ["%PATH%", "%NOT_A_REAL_VARIABLE_12345%"], dir)
-      assert.equal(delivered.length, 2, "percent expansion must not split or add arguments")
-      // Pinned from the Windows CI run: `^%` breaks the variable-name lookup
-      // at cmd's command-line level, and the shim's `%*` does not re-expand a
-      // value it substituted, so both arrive literal. This assertion exists to
-      // catch a future cmd.exe or shim shape where that stops being true; the
-      // guarantee the module documents is only the line above.
-      assert.deepEqual(delivered, ["%PATH%", "%NOT_A_REAL_VARIABLE_12345%"])
+      const delivered = runThroughShim(shim, ["%PATH%", "%NOT_A_REAL_VARIABLE_12345%", "100%"], dir)
+      // This is the whole guarantee: expansion may change a value, and can
+      // never split it, add one, or start a command.
+      assert.equal(delivered.length, 3, "percent expansion must not split or add arguments")
+      assert.equal(fs.existsSync(path.join(dir, "pwned.txt")), false)
+      // A name that does not exist is left alone by cmd, on both passes, so
+      // these two are not lossy and are pinned as a regression guard.
+      assert.equal(delivered[1], "%NOT_A_REAL_VARIABLE_12345%")
+      assert.equal(delivered[2], "100%")
+      // `%PATH%` does exist, so it is the lossy case the docs warn about.
+      assert.notEqual(delivered[0], "")
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

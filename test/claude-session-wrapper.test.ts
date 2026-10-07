@@ -88,7 +88,8 @@ test("stageImage writes a private file in the plugin's scratch dir", () => {
   const file = stageImage(Buffer.from([0x89, 0x50, 0x4e, 0x47]), "png")!
   try {
     assert.match(path.basename(file), /^attachment-[0-9a-f-]+\.png$/)
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    // Windows has no POSIX mode bits, so there is nothing to assert there.
+    if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600)
     assert.deepEqual([...fs.readFileSync(file)], [0x89, 0x50, 0x4e, 0x47])
   } finally {
     fs.rmSync(file, { force: true })
