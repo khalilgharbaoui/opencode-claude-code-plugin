@@ -3736,3 +3736,142 @@ constant.
 
 `npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
 pull request.
+
+<a id="g223"></a>
+
+#### Fork sweep: three turn-path candidates, one taken in part (2026-10-08)
+
+Three fork contributions aimed at the turn path, evaluated against master at
+v0.49.0 rather than against the master each was written for. A lot had moved
+underneath them: #88/#89 landed the trailing-user-message forwarding, #90/#91
+landed the effort and model session carry (h #g214, h #g215), and (h #g218)
+landed the cross-account transcript carry. Each verdict below rests on a
+measurement, and the measurement is the part worth keeping.
+
+##### @bangnh1 `ae82650`, "Keep the Claude conversation across an agent or effort switch": taken in part
+
+The commit does three things, and they separate cleanly.
+
+**The effort half is master's already, and master's carries more.** The fork
+moved the Claude session id to the key the turn runs on and killed the old key's
+process. `invalidateOtherEffortSessions` has done that since (h #g215), through
+`transferClaudeSession`, which moves the id, the resume record and the fork
+fingerprint together and deliberately leaves the todo ledger alone because the
+conversation that ledger belongs to is still running. The model half is
+`findSiblingResumePoint`. Nothing to take.
+
+**The agent half is declined, and it is declined on a live measurement rather
+than on taste.** The question is real: `modelSiblingSignature` blanks the model
+and drops the effort tail but keeps the context blob, which carries the opencode
+agent, so a plan-to-build switch in one opencode session lands on a key with no
+Claude session and replays. Carrying it would be wrong, because of (h #g187):
+a resumed Claude conversation answers under the system prompt recorded on its
+FIRST request. Probed on Claude Code 2.1.293, default account, `claude-haiku-4-5`,
+three one-line turns:
+
+- a session started with an appended prompt saying "You are the PLAN agent,
+  codeword ZEBRA", then told "the number is 41", answered `ZEBRA`;
+- `--resume`d with a DIFFERENT appended prompt saying "You are the BUILD agent,
+  codeword QUAIL", it answered `ZEBRA` and "The number is 41". The conversation
+  carried; the agent did not;
+- the controls close it: a FRESH session with the build prompt answers `QUAIL`,
+  and the same resume with `--system-prompt-snapshot off` answers `QUAIL` and
+  still remembers the number.
+
+So carrying across an agent switch would leave Claude operating under the plan
+agent's instructions, tool descriptions and prohibitions while opencode has
+granted the build agent's permissions, with no sign of it in the reply. That is
+exactly the hazard that keeps `forkSessions` off by default, and here it would
+be automatic for every user rather than behind an option. `--system-prompt-snapshot off`
+is not the escape hatch: (h #g187) already records that it stops recording for
+the rest of the session. **An agent switch replays, on purpose.**
+
+**The replay clipping is taken**, as a partial cherry-pick keeping the author
+(`aa41f50`). It is independent of the handoff and fixes a defect that is still
+live on master, on the path every refused resume falls back to. Claude Code runs
+its own tools without ending a step, so a reply's `tool-call` and `tool-result`
+parts sit in the SAME assistant message as the prose, ahead of it, and
+`renderMessageContentForCompaction` renders parts in content order. One tool
+result alone is capped at `MAX_TOOL_RESULT_CHARS` (10,000) against the replay's
+2,000 per message, so a single tool call guarantees the answer behind it is cut.
+`compactConversationHistory`'s `fresh-session` mode now clips the MIDDLE
+(`clipMiddle`, head capped at 1,000), and the newest assistant reply gets 12,000
+characters because a short follow-up ("1, 2 -> ok") points straight into it.
+The two regression tests are the author's, in
+`test/get-claude-user-message.test.ts`; reverting `src/message-builder.ts` alone
+fails both, the first on "the whole answer the operator replied to survives" and
+the second showing a replayed message that is tool output end to end with the
+conclusion gone.
+
+##### @rusagent `d2d5f46`, "Expose display-only context snapshots at tool boundaries" (their PR #92, which they closed themselves): declined
+
+It adds `providerMetadata["claude-code"].contextUsage` (`source`, `inputTokens`
+inclusive of cache, and the three components) at the tool, question and plan
+boundaries and at the terminal finishes, leaving the finish's `usage` untouched.
+The point was to give a client a context gauge while a proxied call is parked,
+without touching the (h #g169) rule that a tool-call finish with no `result`
+reports zeros so opencode cannot compact with a call in the air.
+
+**The guarantee it was written to keep does hold.** Read out of both binaries:
+opencode 1.18.35 converts a finish through `getUsage({model, usage, metadata})`,
+whose only metadata reads are `metadata.anthropic.cacheCreationInputTokens`,
+`metadata.vertex.cacheCreationInputTokens`, `metadata.bedrock.usage.cacheWriteInputTokens`
+and `metadata.venice.usage.cacheCreationInputTokens`, four named namespaces and no
+generic walk; opencode 2.0.22 builds its usage from `e.inputTokens.*` and
+`e.outputTokens.*` alone. Occupancy on both majors is
+`tokens.input + output + reasoning + cache.read + cache.write`, all of it from
+`usage`. Nothing under a `claude-code` namespace can become context occupancy.
+
+**What decides it is that on opencode 1.x the field cannot reach anyone.** At
+`step-finish` 1.18.35 writes the part `{id, reason, snapshot, messageID,
+sessionID, type, tokens, cost}` and its assistant message schema is
+`{..., cost, tokens, structured, variant, finish}`: `providerMetadata` is handed
+to `getUsage` and then dropped, with no field to land in. Only opencode 2 keeps
+it, as `providerState` on `Session.Message.Assistant`. So the change is a new
+documented public contract (a docs section, a skill paragraph, a metadata key)
+that is inert on the maintainer's own host, half-reachable on the other, has no
+deployed consumer (the author withdrew the PR saying the integration was never
+deployed), and carries a "display only, never for compaction" rule the plugin
+cannot enforce. At the terminal finishes it is also pure duplication: `usage`
+there already carries the same last-call input through `lastCallContextUsage`.
+Reopen it if a client that reads it actually ships; the safety half of the
+question is answered and does not need re-measuring.
+
+##### @Rocket-Alumni-Solutions `303a3db`, `c48688d`, `6d5bf3f` (RE-5630, "live steering"): declined
+
+`303a3db` and `c48688d` solve the problem #88 solved: new user input arriving
+while a proxied call is parked. Their design interrupts the CLI's parked turn,
+rejects every sibling proxy call so its later result arrives as context on a
+fresh turn, re-renders the matched tool results as TEXT through a
+`getClaudeUserMessage(..., { interruptedContinuation: true })` path, and prefixes
+a hardcoded English paragraph telling the model not to repeat the actions it
+already finished. It also refuses the interactive transport outright ("Live
+steering during a tool call requires the headless Claude Code transport") and
+widens `hasNewUserContent` with a `includeToolResults` flag to tell steering from
+a continuation.
+
+Master's answer since #88 (h #g204, h #g206) is strictly less destructive and
+already covers both transports: `getTrailingUserMessages` reads the plain user
+messages after the last assistant message, `forwardTrailingUserMessages` writes
+them BEFORE the parked calls are resolved (with `FORWARD_SETTLE_MS` of head start,
+because the CLI reads stdin and the proxy response on separate paths), the CLI
+attaches them to the model call that follows the result so they stay in the same
+turn, `ActiveProcess.forwardedUserMessages` stops a later tool-result turn for the
+same boundary sending them twice, and on the interactive transport they go into
+the running TUI turn's own input queue rather than stdin, which would supersede
+the parked turn. The turn survives, the real `tool_result` is delivered, the
+`tool_use`/`tool_result` pairing is kept, and siblings stay pending for their own
+results. Taking the fork's path would trade all of that for a prompt-level
+instruction not to redo the work. Nothing in it is reachable only by their
+design, so there is nothing to port.
+
+`6d5bf3f` is one `.gitignore` line, `.worktrees/`, for a workflow that keeps
+worktrees inside the checkout. This repo's lanes use sibling directories
+(`../<repo>-<topic>`), so the pattern matches nothing here, and a `.gitignore`
+line cannot carry the failing-without-it regression test every absorb in this
+sweep was held to. Declined as a fork-local preference, not a defect.
+
+##### Gates
+
+`npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
+pull request.
