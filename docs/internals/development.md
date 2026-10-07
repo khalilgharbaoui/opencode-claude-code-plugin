@@ -105,4 +105,4 @@ In your `opencode.json`, point at the local build with a `file://` URL:
 }
 ```
 
-CI installs and builds on **Node 24** (`.github/workflows/publish.yml`), which is the only version this package is built against. `package.json` declares no `engines` range, so older Node versions are untested rather than deliberately unsupported. opencode itself may run under Bun; the [interactive transport](../guides/interactive-transport.md) requires that.
+CI installs and builds on **Node 24** (`.github/workflows/publish.yml`), which is the only version this package is built against. Every pull request also runs a typecheck, a build and the portable test files on `windows-latest` (`.github/workflows/ci-windows.yml`), because Windows is the one platform where the plugin builds a command line by hand; the files that job skips, and why each is POSIX-only, are listed in `.github/windows-skipped-tests.txt`. `package.json` declares no `engines` range, so older Node versions are untested rather than deliberately unsupported. opencode itself may run under Bun; the [interactive transport](../guides/interactive-transport.md) requires that.

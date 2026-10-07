@@ -1,8 +1,29 @@
-import { execFile } from "node:child_process"
+import { execFile, type ExecFileOptions } from "node:child_process"
 import { promisify } from "node:util"
 import { log } from "./logger.js"
+import { planClaudeSpawn } from "./windows-spawn.js"
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Every probe spawn goes through the Windows plan.
+ *
+ * `execFile` is `CreateProcess`, which cannot start a `.cmd` at all, and
+ * `claude` on Windows is normally the `claude.cmd` npm shim. So before this
+ * the three probes below failed on every such install, which withheld every
+ * version-gated flag, the skill bridge and `/btw` for the whole process: the
+ * exact failure (h #g181) went to such lengths to make temporary.
+ */
+function probeExec(cliPath: string, args: string[], options: ExecFileOptions) {
+  const plan = planClaudeSpawn(cliPath, args)
+  return execFileAsync(plan.file, plan.args, {
+    ...options,
+    // utf8 is already `execFile`'s default; naming it is what keeps the
+    // promisified overload returning strings rather than Buffers.
+    encoding: "utf8",
+    windowsVerbatimArguments: plan.windowsVerbatimArguments,
+  })
+}
 
 export interface CliVersion {
   major: number
@@ -152,7 +173,7 @@ export function detectCliVersion(cliPath: string): Promise<CliVersion | null> {
   let deadlineKill = false
   const promise = (async (): Promise<CliVersion | null> => {
     try {
-      const { stdout } = await execFileAsync(cliPath, ["--version"], {
+      const { stdout } = await probeExec(cliPath, ["--version"], {
         timeout: probeTimeoutMs,
       })
       const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout.trim())
@@ -343,7 +364,7 @@ export function detectHeadlessSupport(cliPath: string): Promise<HeadlessSupport>
   let deadlineKill = false
   const promise = (async (): Promise<HeadlessSupport> => {
     try {
-      const execution = execFileAsync(cliPath, [
+      const execution = probeExec(cliPath, [
         "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--help",
       ], { timeout: probeTimeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 })
       execution.child.stdin?.end()
@@ -387,7 +408,7 @@ export function detectCliSupportsFlag(cliPath: string, flag: string): Promise<bo
   let deadlineKill = false
   const promise = (async (): Promise<boolean> => {
     try {
-      const execution = execFileAsync(cliPath, ["--help"], {
+      const execution = probeExec(cliPath, ["--help"], {
         timeout: probeTimeoutMs,
         killSignal: "SIGKILL",
         maxBuffer: 4 * 1024 * 1024,

@@ -1,0 +1,63 @@
+name: CI (Windows)
+
+# Windows is the only platform where this plugin builds a command line by hand
+# (`src/windows-spawn.ts`), so it is the only platform with a CI job. macOS and
+# Linux are covered by `npm test` locally and by nothing here on purpose: this
+# job exists to keep the cmd.exe escaper honest, not to become a second suite.
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      # Git on Windows checks out CRLF by default, and several tests read repo
+      # files with regexes anchored on `\n` (the bundled skill's frontmatter,
+      # the option tables, the constants in src/). Checking out what the repo
+      # actually stores is the fix; rewriting those regexes would be rewriting
+      # them for a problem the repo does not have.
+      - name: Check out with the repository's own line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Show toolchain
+        run: node --version && npm --version
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run build
+
+      # `npm test` is a POSIX one-liner (inline env assignment, `$(mktemp -d)`),
+      # so the job drives tsx itself. The skipped files are listed in
+      # .github/windows-skipped-tests.txt with a reason each; everything else
+      # runs. A file dropping out of the glob silently is what the suite's own
+      # history warns about, so an empty selection fails the job.
+      - name: Run the portable test files
+        shell: pwsh
+        env:
+          OPENCODE_CLAUDE_CODE_LOG_FILE: '0'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:XDG_STATE_HOME = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $env:XDG_STATE_HOME | Out-Null
+
+          $skipped = Get-Content .github/windows-skipped-tests.txt |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') }
+
+          $all = Get-ChildItem test -Filter *.test.ts | Sort-Object Name
+          $run = $all | Where-Object { $skipped -notcontains $_.Name }
+
+          Write-Host "skipping $($skipped.Count) file(s), running $($run.Count) of $($all.Count)"
+          if ($run.Count -eq 0) { throw 'no test files selected' }
+
+          $missing = $skipped | Where-Object { $all.Name -notcontains $_ }
+          if ($missing) { throw "stale entries in windows-skipped-tests.txt: $($missing -join ', ')" }
+
+          $paths = $run | ForEach-Object { "test/$($_.Name)" }
+          npx tsx --test @paths
+          if ($LASTEXITCODE -ne 0) { throw "test run failed with exit code $LASTEXITCODE" }

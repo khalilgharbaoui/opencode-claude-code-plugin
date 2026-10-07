@@ -38,4 +38,20 @@ On a shared host the OS tmpdir is world-writable and the pid name is guessable, 
 
 The directory is removed on normal exit. `SIGKILL` skips that, so on first use each run the plugin also sweeps `<tmpdir>/opencode-claude-code-<pid>` directories whose pid is no longer running and which you own. Anything else, another user's directory, a live process's, a symlink, a name that is not exactly that pattern, is left alone. Set `OPENCODE_CLAUDE_CODE_NO_TMP_SWEEP=1` to turn the sweep off.
 
-**Windows is not hardened here.** Both spawn sites pass `shell: true` on `win32`, so the CLI argument list goes through `cmd.exe` unquoted. Treat Windows as unsupported until that is fixed; see the note in `docs/agents-history.md`.
+## How the CLI is started on Windows
+
+Until v0.46 every spawn of `claude` passed `shell: true` on `win32`, which hands the whole command line to `cmd.exe` with no quoting at all: an argument containing `&`, `|`, `>`, `<`, `^` or `(` ran as a second command, and an argument containing a space or a quote arrived as several broken ones. The shell was there for a real reason, since `claude` on Windows is normally `claude.cmd`, an npm shim, and `CreateProcess` cannot start a `.cmd` at all.
+
+The shell is gone. The plugin now resolves the command itself and speaks cmd.exe's language deliberately:
+
+- The command is resolved against `PATH` and `PATHEXT` before anything is spawned, so the plugin knows what it is about to run. The current directory is deliberately **not** searched, even though `CreateProcess` would: a `claude.exe` dropped into a workspace must never win over the installed one.
+- A `.exe` or `.com` is spawned with `shell: false`, where Node builds the command line itself and nothing parses `&`.
+- A `.cmd` or `.bat` goes through `cmd.exe /d /s /c` with the command path quoted and every argument wrapped in quotes, with an embedded quote written as `""` and the backslashes before one doubled, passed with `windowsVerbatimArguments` so Node does not re-quote what the plugin built. `/d` also skips a user's registry AutoRun command.
+
+The quoting is deliberately not caret escaping, and that is the part most tools get wrong. A batch shim forwards its arguments with `%*`, so cmd parses the composed line a second time before the real program starts, and carets are spent on the first pass. Doubled quotes keep cmd's quote state balanced through both passes, so every `&`, `|`, `>`, `<`, `(` and `^` in an argument stays inside quotes, where cmd treats it as ordinary text, and `CommandLineToArgvW` reads the value back exactly. It is the approach Rust adopted for `.bat` targets after CVE-2024-27980. An argument containing a newline is refused rather than silently truncated, because cmd ends the command line there.
+
+One hole stays: **`%` cannot be neutralised.** cmd expands `%NAME%` in a parsing phase that runs before anything else is considered, `^%` is unavailable (inside the quoting a caret arrives as a literal caret in the value) and `%%` is a batch-file-only escape. An argument containing `%` may therefore arrive with an environment variable substituted into it. It cannot inject a command or become a second argument, because the substitution lands inside quotes cmd has already opened. Avoid `%` in paths you point the plugin at.
+
+This is verified by a Windows CI job on every pull request (`.github/workflows/ci-windows.yml`), which spawns a real `.cmd` shim that echoes its argv back and asserts that spaces, quotes, `&`, `|`, `>`, `<`, `^`, `!`, parentheses, trailing backslashes, an empty argument and a `--settings` JSON blob all arrive byte-identical, and that a set of injection attempts runs nothing.
+
+Two Windows gaps are known and not closed: the generated [per-account wrapper](../configuration/accounts.md) is a bash script, so multi-account setups are POSIX-only, and the experimental interactive (PTY) transport refuses a `.cmd` shim rather than running one, because `cmd.exe /c` would own the terminal the TUI needs.

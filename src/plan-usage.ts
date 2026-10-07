@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import { detectHeadlessSupport } from "./cli-version.js"
 import { log } from "./logger.js"
 import { claudeSpawnEnv } from "./session-manager.js"
+import { planClaudeSpawn } from "./windows-spawn.js"
 
 /**
  * The Claude CLI's own plan-usage report, read for `/claude-code-doctor`.
@@ -117,13 +118,22 @@ function runCli(
   timeoutMs: number,
   env: Record<string, string | undefined>,
 ): Promise<string> {
+  // `-p` is a full CLI start, so on Windows it is the `claude.cmd` shim that
+  // has to be reached and its arguments that have to survive cmd.exe.
+  const plan = planClaudeSpawn(cliPath, args)
   return new Promise((resolve, reject) => {
     execFile(
-      cliPath,
-      args,
+      plan.file,
+      plan.args,
       // `killSignal` so a CLI wedged on a hook is actually gone, and a generous
       // buffer because the reply is prose of unbounded length.
-      { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024, env },
+      {
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer: 4 * 1024 * 1024,
+        env,
+        windowsVerbatimArguments: plan.windowsVerbatimArguments,
+      },
       (error, stdout) => {
         // A non-zero exit that still printed a result is usable, so stdout wins
         // over the exit code and only an empty failure rejects.

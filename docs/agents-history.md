@@ -2676,3 +2676,153 @@ pass to establish the line baseline. Seeking to the last newline instead would
 make that pass O(tail), but `taken` would stop being an absolute line index and
 the truncation reset above could no longer re-skip it. It is one pass per spawn,
 not per poll, and it is what the old code did too.
+
+<a id="g217"></a>
+
+#### Windows spawns the CLI without a shell, and a Windows CI job proves the escaper (2026-10-07)
+
+Until this change every spawn of `claude` passed `shell: process.platform ===
+"win32"`. Node documents `shell: true` as "the caller owns the escaping", and
+nothing here escaped anything: `src/session-manager.ts` handed `cliPath` plus the
+whole `cliArgs` array to `cmd.exe` raw. An argument containing `&`, `|`, `>`,
+`<`, `^` or `(` ran as a second command, and one containing a space or a quote
+arrived as several broken arguments. The arguments are not exotic: `--settings`
+carries JSON (`{"fastMode":true}`), `--append-system-prompt-file` and
+`--mcp-config` carry scratch-dir paths, `--add-dir` carries the workspace path,
+and `--model` carries a config value.
+
+The rule this replaces said not to fix it without a Windows runner to verify the
+escaper on. That was the right call and it is what this change starts with.
+
+**Three other spawn sites were not unsafe, they were simply broken on Windows.**
+`detectCliVersion`, `detectHeadlessSupport` and `detectCliSupportsFlag` in
+`src/cli-version.ts` use `execFile`, which is `CreateProcess`, which cannot start
+a `.cmd` at all; `claude` on Windows is normally the `claude.cmd` npm shim. So on
+a standard Windows install all three probes failed, which withheld every
+version-gated flag, the skill bridge and `/btw` for the life of the process: the
+exact permanent failure (#g181) was written to make temporary. `fetchPlanUsage`
+in `src/plan-usage.ts` had the same shape. That is also why `shell: true` was
+there in the first place, and why the fix could not simply be to drop it.
+
+**The design.** `src/windows-spawn.ts`, pure, no dependency, ~60 lines of
+algorithm plus its reasons. `planClaudeSpawn(command, args, deps)` is the one
+entry point and returns `{file, args, windowsVerbatimArguments?}`:
+
+  - off Windows it returns the command untouched, so no POSIX behaviour changes
+    and no POSIX test has anything new to assert,
+  - on `win32` it resolves the command against PATH and PATHEXT itself, in
+    PATHEXT order, unquoting a quoted PATH entry and skipping an empty one, and
+    deliberately **not** searching the current directory even though
+    `CreateProcess` does: a `claude.exe` dropped into a workspace must never win
+    over the installed one,
+  - a `.exe` / `.com` is spawned with `shell: false`, where Node's own
+    `CommandLineToArgvW` quoting is correct and nothing parses `&`,
+  - a `.cmd` / `.bat` goes through `cmd.exe /d /s /c` with the command path
+    quoted and each argument through `quoteBatchArgument`, with
+    `windowsVerbatimArguments: true` so Node does not re-quote what we built.
+    `/d` skips a user's registry AutoRun, `/s` makes cmd strip exactly the outer
+    quote pair and take the rest verbatim, which is also what lets the command
+    path simply be quoted (a Windows path cannot contain a quote).
+
+**The first version of this used caret escaping, which is cross-spawn's answer,
+and the Windows job rejected it.** With `quoteWindowsArgument` plus a caret on
+every cmd metacharacter, the run on `windows-latest` failed two ways: one
+argument per adversarial value came back `'b' is not recognized as an internal
+or external command`, and `x" & echo pwned > pwned.txt & "` **created
+pwned.txt**. The reason is the second parse. A batch shim forwards its arguments
+with `%*`, so cmd parses the composed line again before the real program is
+started, and the carets were all spent on the first parse. What the second parse
+then sees is `"x\" & echo pwned > pwned.txt & "`, and cmd has no backslash
+escape, so `\"` closes the quote and `&` starts a command. That is exactly
+CVE-2024-27980's shape, and the reason Node refuses to spawn a `.bat` without a
+shell at all.
+
+**What survives both parses is quoting with doubled quotes** (`quoteBatchArgument`):
+wrap in `"`, write an embedded quote as `""`, double the backslashes that run
+into one. cmd's quote state stays balanced through `""`, so every `&`, `|`, `>`,
+`<`, `(` and `^` in the value sits inside quotes on BOTH passes, where cmd
+treats it as ordinary text; and `CommandLineToArgvW` reads `""` inside a quoted
+string as one literal quote with `2n` preceding backslashes as `n`, so the
+program gets the value back exactly. No caret is emitted at all, because inside
+the quoting a caret arrives as a literal caret in the value. This is the
+algorithm Rust adopted for `.bat` targets after the same CVE. A `\r` or `\n`
+throws instead: cmd ends the command line there, and the alternative is a silent
+truncation.
+
+Reimplemented rather than depended on: the runtime dependency list is two
+packages on purpose (#g186), and cross-spawn would have been both a dependency
+and the wrong algorithm. The `CommandLineToArgvW` quoter is kept beside it as
+the oracle the batch quoting is checked against.
+
+**`%` is the hole that stays, and it is documented rather than worked around.**
+cmd expands `%NAME%` in a parsing phase that runs before anything else is
+considered. `^%` is unavailable for the reason above and `%%` is a batch-file
+escape only, so a `%` argument may arrive with a variable substituted into it.
+It can never become a second command or a second argument, because the
+substitution lands inside quotes cmd has already opened. Measured on
+`windows-latest` through an npm-shaped shim: an undefined `%NAME%` and a bare
+trailing `100%` arrive literal (pinned), `%PATH%` is the lossy case.
+
+**The proof is `.github/workflows/ci-windows.yml`**, on `pull_request` and on
+push to master, `windows-latest` + Node 24 (matching `publish.yml`), running
+`npm install`, `npm run typecheck`, `npm run build` and the portable test files.
+`test/windows-spawn.test.ts` writes a `.cmd` shim shaped like npm's
+(`@echo off` / `node "%~dp0argv.cjs" %*`) into a temp directory whose name
+contains a space, spawns it through `planClaudeSpawn`, and asserts every argument
+comes back byte-identical: spaces, embedded quotes, `&`, `|`, `>`, `<`, `^`,
+`!`, parentheses, `;` and `,`, trailing backslashes, backslashes before a quote,
+an empty string, a `--settings` JSON blob and a string of every metacharacter.
+Five injection attempts assert no `pwned.txt` is created. Two cases are excluded
+from the live run with their reason in the test: `%`, measured separately, and a
+newline, which NTFS cannot hold in a path and cmd ends the command line at.
+
+The rest of the file is cross-platform and runs in `npm test` on macOS and Linux
+too. It carries reference implementations of `CommandLineToArgvW` and of cmd's
+own parse (quote toggling, no backslash escape, metacharacters special only
+outside quotes) and models the whole pipeline against them, both passes,
+asserting that nothing is ever a metacharacter outside quotes and that the
+quoting is balanced. That is what makes the quoting reviewable off Windows, and
+it is the model that would have caught the caret version before CI did.
+`%` expansion is the one phase deliberately not modelled, and it is measured
+live.
+
+**What the Windows job does not run.** 33 of 73 test files, listed one per line
+with a reason per group in `.github/windows-skipped-tests.txt`; the job reads
+that file, runs everything else, and fails on a stale entry or an empty
+selection. Every skip is the TEST being POSIX-only, never the code: 27 of them
+build a fake CLI as a `#!/bin/sh` script made executable with `chmod`, two assert
+`0700`/`0600` modes and POSIX symlinks (`tmp-dir`, `cleanup-stale`), three are
+the interactive transport's Bun PTY and its shims, and `account-wrapper` asserts
+the generated bash wrapper. `npm test` on POSIX still runs the whole glob and is
+unchanged; no Linux test workflow was added, because there was none before.
+
+**Six assertions in five other files were POSIX-written and are now portable**,
+found by the first Windows run (765 of 777 passed). Three assert `0600`/`0700`
+mode bits, which Windows does not have, and are guarded by platform with the
+reason named (`bridge`, `claude-session-wrapper`, `compaction-model`). Two
+hardcoded POSIX separators in an expectation the production code builds with
+`path.join` / `path.resolve`, and now build it the same way (`agent-models`
+`agentDirectories`, `v2-client` `toV1Session`). One read `env.PATH` from a
+spread of `process.env`, which on Windows is spelled `Path`, and now accepts
+either (`spawn-env`). None of them is weaker on POSIX. A seventh problem was not
+in the tests at all: `actions/checkout` on Windows converts to CRLF by default,
+which broke four `configure-skill` assertions that read repo files with regexes
+anchored on `\n`, so the job sets `core.autocrlf false` before checking out
+rather than rewriting regexes for a problem the repo does not have.
+
+**Two Windows gaps are left open on purpose and are now documented rather than
+silent.** The per-account wrapper `writeAccountWrapper` generates is a bash
+script with no extension, so `accounts` cannot work on Windows at all; writing a
+`.cmd` twin is a separate change with its own live verification. And the
+interactive PTY transport now throws a named error for a `.cmd` shim instead of
+letting ConPTY fail three layers down: wrapping it in `cmd.exe /c` would give cmd
+the terminal the TUI needs to draw on, and nobody has measured an interactive
+Claude Code under ConPTY.
+
+Green on `windows-latest`, run 37677940933 on commit `dbb4102`: 779 tests, 0
+failures, 40 of 73 files, all five Windows-only tests ran. The two earlier runs
+are the evidence above: 37675796821 is the caret version creating `pwned.txt`
+(765 of 777), 37677599203 is the quoting version with one test of its own left
+to fix (778 of 779).
+
+`test/windows-spawn.test.ts`, `.github/workflows/ci-windows.yml`.

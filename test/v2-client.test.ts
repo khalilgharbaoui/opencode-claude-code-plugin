@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import * as path from "node:path"
 import { extractAgentTypeList } from "../src/proxy-mcp.js"
 import {
   createV1ClientShim,
@@ -23,7 +24,7 @@ test("a V2 session becomes a V1 one with directory and parentID", () => {
   )
   assert.equal(
     toV1Session({ id: "ses_1", location: { directory: "/repo" }, subpath: "pkg/a" })?.directory,
-    "/repo/pkg/a",
+    path.resolve("/repo", "pkg/a"),
   )
   assert.equal(toV1Session(undefined), undefined)
 })

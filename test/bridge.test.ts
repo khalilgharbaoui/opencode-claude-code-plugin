@@ -87,7 +87,8 @@ test("V2 extracts mcp.servers, not the servers container or timeout defaults", a
     const body = JSON.parse(fs.readFileSync(bridged.path, "utf8"))
     assert.deepEqual(Object.keys(body.mcpServers), ["github", "local"])
     assert.deepEqual(body.mcpServers.local, { type: "stdio", command: "fixture", args: ["--stdio"], env: { TEST: "value" } })
-    assert.equal(fs.statSync(bridged.path).mode & 0o777, 0o600)
+    // Windows has no POSIX mode bits, so there is nothing to assert there.
+    if (process.platform !== "win32") assert.equal(fs.statSync(bridged.path).mode & 0o777, 0o600)
     const connected = mergeOpencodeMcp(cwd, { off: "connected", github: "needs_auth" }, "v2")
     assert.deepEqual(connected.enabledServerNames, ["local", "off"])
     assert.notEqual(connected.hash, merged.hash)

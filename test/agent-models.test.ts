@@ -328,9 +328,9 @@ test("parseAgentFrontmatter reads cacheTtl", () => {
 
 test("agentDirectories covers both names, project before global", () => {
   assert.deepEqual(agentDirectories("/home/k", "/work/app"), [
-    "/work/app/.opencode/agents",
-    "/work/app/.opencode/agent",
-    "/home/k/.config/opencode/agents",
-    "/home/k/.config/opencode/agent",
+    join("/work/app", ".opencode", "agents"),
+    join("/work/app", ".opencode", "agent"),
+    join("/home/k", ".config", "opencode", "agents"),
+    join("/home/k", ".config", "opencode", "agent"),
   ])
 })
