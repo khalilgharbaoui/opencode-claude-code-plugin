@@ -114,6 +114,8 @@ Nothing parked.
   evasion of the billing classification; the maintainer chose the offered opt-in instead ("Build the
   opt-in you proposed"). `interactiveUserInstructions` forwards only the operator's own instruction
   files and agent prompt, by provenance, verbatim (h #g212). Smoke-tested live on 1.18.34.
+  Released as **v0.44.0** (CI publish green, registry shasum `6b1b79a1` matches the step's notice;
+  GitHub release notes written).
 - 2026-10-07: **done**: "you say: opencode's own system prompt isn't sent because it trips stuff..
   ... i mean this and the small stuff can be fixed right? and maybe find a creative solution for the
   others? to still achive parity?". System prompt: measured, the TUI trips the third-party gate on
