@@ -104,6 +104,12 @@ Nothing parked.
 
 ## Done
 
+- 2026-10-07: **done** (v0.46.0): "two issues opened on github lets address them properly", in two
+  lanes. #90 (PR #93): a compaction turn that errors fails as an error instead of storing the CLI's
+  sentence as the summary; a limited turn finishes as `error` with its note (h #g214). #91 (PR #94):
+  an effort or model change carries the Claude conversation over instead of replaying it, a crashed
+  child keeps its session id, neutral replay wording, a NOTICE per replay (h #g215); restart was
+  already fixed in 0.39.0. Reporter hmjBill credited. 1,290 tests.
 - 2026-10-07: **done**: PDF input on both transports ("Add PDF input as TODO", then "go ahead").
   Catalog `pdf: true`, a `document` block headless, an `@<path>` mention on the TUI (h #g213). Live on
   1.18.34 and 2.0.22, both transports.
