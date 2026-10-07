@@ -52,9 +52,11 @@ import {
  * that cannot work); typing instead of picking dismisses the form in opencode,
  * and that message then runs on the still-limited account and raises a second
  * form, which is the "two prompts with go" the maintainer reported; and a
- * switch is inherently a fresh Claude session with the whole thread replayed,
- * because a transcript cannot resume across accounts. None of that is wrong
- * code in the switch itself, which is why the form stays rather than going.
+ * switch was inherently a fresh Claude session with the whole thread replayed.
+ * The third of those is fixed since (h #g218): a transcript copied into the
+ * other account's config dir resumes there, so the switch carries the
+ * conversation and only a refused carry replays it. None of that was wrong
+ * code in the switch itself, which is why the form stayed rather than going.
  *
  * Three things about the form's design are deliberate and load-bearing:
  *
@@ -62,11 +64,14 @@ import {
  *    rate limit is a property of the account, so one pick governs every
  *    session running on it, and a subagent follows its parent for free
  *    without needing its own form (child sessions are never asked).
- * 2. **A switch is always a fresh Claude session with the conversation
- *    replayed.** Transcripts live under the account's own config dir, so
- *    `--resume` can never cross accounts. The caller drops the active process
- *    and the stored Claude session id, which makes `includeHistoryContext`
- *    true and rebuilds the thread from opencode's prompt.
+ * 2. **A switch carries the conversation when it can and replays it when it
+ *    cannot.** A transcript lives under one account's config dir, but a copy
+ *    of it placed under another's resumes there with its context intact
+ *    (`src/account-transcript.ts`, h #g218), so the caller drops only the
+ *    active process and keeps the Claude session id for the `--resume` both
+ *    transports already build. A refused carry drops the id too, which makes
+ *    `includeHistoryContext` true and rebuilds the thread from opencode's
+ *    prompt, exactly as every switch did before.
  * 3. **The `@account` suffix must come off the model id.** `parseModelId`
  *    keeps it on purpose because the source account's own wrapper strips it,
  *    but a failover spawn goes through a DIFFERENT wrapper (or the bare
@@ -587,6 +592,12 @@ export function createAccountFailoverQuestionCall(
      * (`describeAccountBlock`). Replaces "is out of usage" in the question.
      */
     reason?: string
+    /**
+     * Whether a switch may carry the conversation's Claude transcript to the
+     * other account rather than replaying it (`crossAccountResume`, h #g218).
+     * What the operator is promised has to match what the switch will do.
+     */
+    carryTranscript?: boolean
   },
   toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}${Math.random()
     .toString(36)
@@ -624,7 +635,9 @@ export function createAccountFailoverQuestionCall(
           options: [
             ...candidates.map((candidate) => ({
               label: candidate,
-              description: `Run on "${candidate}" until ${until}. The conversation is replayed as a fresh Claude session (a session cannot resume across accounts), and any MCP server configured only in "${source}"'s Claude profile will be missing.`,
+              description: input.carryTranscript === false
+                ? `Run on "${candidate}" until ${until}. The conversation is replayed as a fresh Claude session, and any MCP server configured only in "${source}"'s Claude profile will be missing.`
+                : `Run on "${candidate}" until ${until}. The conversation continues where it stopped if its Claude transcript can be carried across, and is replayed as a fresh Claude session if it cannot; either way, any MCP server configured only in "${source}"'s Claude profile will be missing.`,
             })),
             {
               label: STOP_ANSWER,
@@ -800,29 +813,41 @@ export function stripAccountFailoverParts(prompt: Prompt): Prompt {
   return changed ? out : prompt
 }
 
-export function failoverContinuationText(target: string): string {
+/**
+ * What the target account is told on arrival. Two wordings, because the two
+ * arrivals are genuinely different conversations to be in: a fresh session
+ * reads the thread as replayed text above this message, while a session whose
+ * transcript was carried across (`crossAccountResume`, h #g218) IS the
+ * conversation and must not be told it is starting over.
+ */
+export function failoverContinuationText(target: string, resumed = false): string {
   return [
-    `The Claude account this conversation was running on hit its usage limit, so it has been moved to the "${target}" account and you are now in a fresh Claude session.`,
-    "The conversation so far is above. Continue the task from where it stopped: do not start over, do not re-plan, and do not repeat work that is already done.",
+    resumed
+      ? `The Claude account this conversation was running on hit its usage limit, so it has been moved to the "${target}" account. This is the same conversation, continued: everything you already know still stands.`
+      : `The Claude account this conversation was running on hit its usage limit, so it has been moved to the "${target}" account and you are now in a fresh Claude session. The conversation so far is above.`,
+    "Continue the task from where it stopped: do not start over, do not re-plan, and do not repeat work that is already done.",
     "Do not mention the account switch unless you are asked about it.",
   ].join(" ")
 }
 
 /**
- * The prompt to replay into the target account: the conversation with the
- * failover dialog removed, plus one user message telling the fresh session
- * what happened and to carry on.
+ * The prompt the target account is given: the conversation with the failover
+ * dialog removed, plus one user message telling the session what happened and
+ * to carry on. With `resumed`, the thread above is never sent at all (the
+ * caller leaves `includeHistoryContext` off), so that last message is the
+ * whole of this turn's input and the carried transcript supplies the rest.
  */
 export function buildFailoverContinuationPrompt(
   prompt: Prompt,
   target: string,
+  resumed = false,
 ): Prompt {
   const stripped = stripAccountFailoverParts(prompt)
   return [
     ...stripped,
     {
       role: "user",
-      content: [{ type: "text", text: failoverContinuationText(target) }],
+      content: [{ type: "text", text: failoverContinuationText(target, resumed) }],
     },
   ] as Prompt
 }

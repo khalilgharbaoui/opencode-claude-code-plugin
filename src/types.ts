@@ -99,6 +99,8 @@ export interface ClaudeCodeConfig {
   resumeAfterRestart?: boolean
   /** Carry a conversation's Claude session over when its model or effort changes. Default true. */
   resumeAcrossModelChanges?: boolean
+  /** Carry a conversation's Claude transcript over on an account switch. Default true. */
+  crossAccountResume?: boolean
   logging?: LoggingConfig
 }
 
@@ -539,6 +541,31 @@ export interface ClaudeCodeProviderSettings {
    * false` turns this off too.
    */
   resumeAcrossModelChanges?: boolean
+
+  /**
+   * Continue the same Claude conversation when it moves to another account,
+   * instead of replaying the whole thread as text into a fresh session there.
+   * Default `true`; it does nothing at all on a single-account install.
+   *
+   * An account is a `CLAUDE_CONFIG_DIR`, and a conversation is one transcript
+   * file inside it, so the move is a file copy into the target account's own
+   * `projects/<encoded cwd>/` plus the `--resume` that already exists. Claude
+   * Code 2.1.288 resumes a copied transcript with its context intact, resolves
+   * a session by FILENAME, and appends to the copy without touching the
+   * original (h #g218).
+   *
+   * Every refusal falls back to the replay and says which in the log: no
+   * transcript to carry, something that is not a plain file at the target
+   * path, or a copy that failed. The source transcript is never moved,
+   * deleted or written to, and an existing file is never overwritten (the
+   * carry takes a fresh session id instead).
+   *
+   * What was measured is the file layout, with a second config dir holding a
+   * copy of the same credentials; whether a different Anthropic account's
+   * token answers a conversation produced under another one is not yet
+   * verified live. Set `false` to keep the replay.
+   */
+  crossAccountResume?: boolean
 
   /**
    * Routing for Claude's built-in `WebSearch` tool.

@@ -17,15 +17,19 @@ import { after, test } from "node:test"
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { ensureAccountRuntime } from "../src/accounts.js"
+import { configDirForAccount } from "../src/account-transcript.js"
+import { interactiveTranscriptPath } from "../src/claude-session-bun.js"
 import {
   ACCOUNT_FAILOVER_TOOL_CALL_PREFIX,
   FAILOVER_MARKER,
@@ -80,14 +84,22 @@ import {
 const HOME = mkdtempSync(join(tmpdir(), "opencode-failover-home-"))
 const originalHome = process.env.HOME
 const originalCache = process.env.XDG_CACHE_HOME
+// The default account's config dir is `CLAUDE_CONFIG_DIR` when the operator
+// set one, and the cross-account carry writes into it, so an exported one in
+// the runner's environment would send a transcript to the real `~/.claude`
+// the redirected HOME above exists to keep out of this.
+const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 process.env.HOME = HOME
 process.env.XDG_CACHE_HOME = join(HOME, "cache")
+delete process.env.CLAUDE_CONFIG_DIR
 
 after(() => {
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
   if (originalCache === undefined) delete process.env.XDG_CACHE_HOME
   else process.env.XDG_CACHE_HOME = originalCache
+  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   rmSync(HOME, { recursive: true, force: true })
 })
 
@@ -1241,6 +1253,7 @@ async function buildFailoverModel(
   fake: ReturnType<typeof createFakeCli>,
   failoverAccounts: string[] = ["default", "appical"],
   accountFailover?: "ask" | "off",
+  extra: Record<string, unknown> = {},
 ) {
   // The limited account is reached through its own wrapper, exactly as a real
   // account provider reaches it; `default` is the failover target and has no
@@ -1257,6 +1270,7 @@ async function buildFailoverModel(
     bridgeOpencodeMcp: false,
     proxyOpencodeMcpTools: false,
     proxyTools: [],
+    ...extra,
   }).languageModel(MODEL_ID)
 }
 
@@ -1264,8 +1278,9 @@ async function buildFailoverModel(
 async function buildAskModel(
   fake: ReturnType<typeof createFakeCli>,
   failoverAccounts: string[] = ["default", "appical"],
+  extra: Record<string, unknown> = {},
 ) {
-  return buildFailoverModel(fake, failoverAccounts, "ask")
+  return buildFailoverModel(fake, failoverAccounts, "ask", extra)
 }
 
 const TOOLS = [
@@ -1572,9 +1587,14 @@ test("answering with the other account continues the task on it, replayed", asyn
     assert.equal(modelArg(failoverSpawn.argv), "claude-test-failover")
     assert.equal(String(modelArg(failoverSpawn.argv)).includes("@"), false)
 
-    // A transcript cannot resume across accounts, so the thread is replayed.
+    // The fake CLI writes no transcript, so there is nothing to carry across
+    // (h #g218) and the switch falls back to what every switch did before:
+    // a fresh session with the thread replayed as text, and no `--resume`
+    // naming a conversation the target account cannot see.
     assert.match(failoverSpawn.stdin, /<conversation_history>/)
     assert.match(failoverSpawn.stdin, /Continue the task from where it stopped/)
+    assert.match(failoverSpawn.stdin, /fresh Claude session/)
+    assert.equal(failoverSpawn.argv.includes("--resume"), false)
     // ...and the dialog itself never reaches the fresh session.
     assert.equal(
       failoverSpawn.stdin.includes(ACCOUNT_FAILOVER_TOOL_CALL_PREFIX),
@@ -1596,6 +1616,175 @@ test("answering with the other account continues the task on it, replayed", asyn
     // is what makes the pick cover every other session on that account.
     assert.equal(resolveAccountOverride("appical"), "default")
     assert.equal(resolveAccountOverride("appical", 4_102_444_800_001), undefined)
+  } finally {
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+/**
+ * The answer turn's prompt: the operator's message, the assistant turn
+ * carrying the form, and opencode's own answer sentence picking `default`.
+ */
+function switchAnswerPrompt(call: any) {
+  return [
+    ...turnOnePrompt,
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Starting." },
+        {
+          type: "tool-call",
+          toolCallId: call.toolCallId,
+          toolName: "question",
+          input: JSON.parse(call.input),
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: call.toolCallId,
+          toolName: "question",
+          output: {
+            type: "text",
+            value: opencodeAnswer(JSON.parse(call.input).questions[0].question, "default"),
+          },
+        },
+      ],
+    },
+  ]
+}
+
+/** The transcript the limited account's first turn would have written. */
+function plantTranscript(account: string, cwd: string, sessionId: string): string {
+  const file = interactiveTranscriptPath({
+    configDir: configDirForAccount(account),
+    cwd,
+    sessionId,
+  })
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, `{"type":"user","sessionId":"${sessionId}"}\n`)
+  return file
+}
+
+test("the switch carries the conversation when the transcript is there, instead of replaying it", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  try {
+    const model = await buildAskModel(fake)
+    const first = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+    const call = first.find((part) => part.type === "tool-call")
+    assert.ok(call)
+
+    // The limited account's own transcript, which the fake CLI does not write
+    // but a real one does. `limited-session` is the id its `system`/`init`
+    // frame reported, so this is the file the plugin knows this conversation
+    // by.
+    const source = plantTranscript("appical", fake.cwd, "limited-session")
+
+    const second = await drain(
+      await model.doStream({ prompt: switchAnswerPrompt(call), tools: TOOLS } as any),
+    )
+
+    const spawns = fake.spawns()
+    assert.equal(spawns.length, 2, "the switch must spawn a second process")
+    const failoverSpawn = spawns[1]
+
+    // The conversation moved by file, so the target account continues it
+    // rather than being handed the thread again as text.
+    const carried = interactiveTranscriptPath({
+      configDir: configDirForAccount("default"),
+      cwd: fake.cwd,
+      sessionId: "limited-session",
+    })
+    assert.equal(existsSync(carried), true, "the transcript must be in the target account")
+    assert.equal(statSync(carried).mode & 0o777, 0o600)
+    assert.deepEqual(
+      failoverSpawn.argv.slice(
+        failoverSpawn.argv.indexOf("--resume"),
+        failoverSpawn.argv.indexOf("--resume") + 2,
+      ),
+      ["--resume", "limited-session"],
+    )
+    assert.equal(
+      failoverSpawn.stdin.includes("<conversation_history>"),
+      false,
+      "a carried conversation must not also be replayed as text",
+    )
+    // It is told it is the same conversation, not a fresh one, and the dialog
+    // still never reaches it.
+    assert.match(failoverSpawn.stdin, /This is the same conversation, continued/)
+    assert.match(failoverSpawn.stdin, /Continue the task from where it stopped/)
+    assert.equal(failoverSpawn.stdin.includes(ACCOUNT_FAILOVER_TOOL_CALL_PREFIX), false)
+
+    // The source is never moved or emptied: the other account keeps its own
+    // copy exactly as it was.
+    assert.equal(readFileSync(source, "utf8"), '{"type":"user","sessionId":"limited-session"}\n')
+
+    const body = textOf(second)
+    assert.ok(body.trimStart().startsWith(FAILOVER_MARKER))
+    assert.match(body, /carried on/)
+  } finally {
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("crossAccountResume false keeps the replay even with the transcript right there", async () => {
+  _resetAccountOverrides()
+  _resetRateLimitReports()
+  _resetSystemInitReports()
+  const fake = createFakeCli()
+  const sk = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::default::context=["claude-code",null]`,
+  )
+  try {
+    const model = await buildAskModel(fake, ["default", "appical"], {
+      crossAccountResume: false,
+    })
+    const first = await drain(
+      await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any),
+    )
+    const call = first.find((part) => part.type === "tool-call")
+    assert.ok(call)
+    plantTranscript("appical", fake.cwd, "limited-session")
+
+    await drain(
+      await model.doStream({ prompt: switchAnswerPrompt(call), tools: TOOLS } as any),
+    )
+
+    const failoverSpawn = fake.spawns()[1]
+    assert.match(failoverSpawn.stdin, /<conversation_history>/)
+    assert.equal(failoverSpawn.argv.includes("--resume"), false)
+    // The off switch must not leave a copy behind either.
+    assert.equal(
+      existsSync(
+        interactiveTranscriptPath({
+          configDir: configDirForAccount("default"),
+          cwd: fake.cwd,
+          sessionId: "limited-session",
+        }),
+      ),
+      false,
+    )
+    // The form promised the replay, so its wording has to say so.
+    const option = JSON.parse(call.input).questions[0].options[0]
+    assert.match(option.description, /replayed as a fresh Claude session/)
+    assert.equal(option.description.includes("carried across"), false)
   } finally {
     deleteActiveProcess(sk)
     _resetAccountOverrides()

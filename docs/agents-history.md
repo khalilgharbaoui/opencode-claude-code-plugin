@@ -2826,3 +2826,118 @@ are the evidence above: 37675796821 is the caret version creating `pwned.txt`
 to fix (778 of 779).
 
 `test/windows-spawn.test.ts`, `.github/workflows/ci-windows.yml`.
+
+<a id="g218"></a>
+
+#### A Claude conversation can move between accounts, so an account switch carries it instead of replaying it (2026-10-07)
+
+Every account switch replayed the whole thread as text into a fresh Claude
+session on the target account, and three places in the code and four in the docs
+said the same reason: "a transcript cannot resume across accounts". Nobody had
+measured it. The backlog item asked for the measurement first, and the
+measurement says the opposite.
+
+**The probe, on Claude Code 2.1.288, the default account and
+`claude-haiku-4-5`.** Only one account is logged in on this machine
+(`~/.claude`; `~/.claude-appical` is work and out of bounds for this repo), so
+the second "account" was a scratch config dir holding a copy of the same
+credentials. That isolates the file-layout question exactly and leaves the
+identity question open, which is said again at the end.
+
+Credentials, incidentally, are a FILE on this machine, not the login Keychain:
+`~/.claude/.credentials.json`, `0600`, holding a `claudeAiOauth` block. A scratch
+config dir holding nothing but a copy of it ran a real turn, with no onboarding
+or trust prompt under `-p`. That is what made a second config dir measurable at
+all.
+
+```text
+# baseline, default account, cwd /tmp/ccxa/a
+$ claude -p --model claude-haiku-4-5 --output-format json \
+    "Remember this codeword: QUETZAL. Reply with just: ok"
+session_id= 0cb9cd94-9f53-4424-af17-595d6a1ca048   is_error= False   result= 'ok'
+
+# control: resume in place
+$ claude -p --model claude-haiku-4-5 --resume $SID "What codeword did I give you? ..."
+is_error= False   result= 'QUETZAL'   session_id= 0cb9cd94-...   (unchanged)
+
+# B2, the question: the transcript COPIED into another config dir
+$ cp ~/.claude/projects/-private-tmp-ccxa-a/$SID.jsonl \
+     /tmp/ccxa/cfg2/projects/-private-tmp-ccxa-a/$SID.jsonl
+$ CLAUDE_CONFIG_DIR=/tmp/ccxa/cfg2 claude -p --model claude-haiku-4-5 --resume $SID ...
+is_error= False   result= 'QUETZAL'   session_id= 0cb9cd94-...
+```
+
+So a config dir resumes a transcript copied into it, with the conversation's
+context intact. Four more facts came out of the same probe, and each one is
+load-bearing in the code:
+
+- **The source is untouched.** Byte-identical sha256 before and after, 42 lines
+  both times. The copy is append-only: its first 42 records stayed
+  byte-identical and 12 were added.
+- **The FILENAME is the id the CLI resolves, not the `sessionId` in the
+  records.** The same transcript saved as `11111111-2222-...` resumed under that
+  new id (`result= 'QUETZAL'`, `session_id= 11111111-...`), while `--resume`
+  with the original id in a config dir holding only the renamed copy answered
+  `No conversation found with session ID: 0cb9cd94-...`, which is the string the
+  plugin's own backstop already watches for (h #g197).
+- **The CLI appends where it FOUND the file.** A transcript placed under the
+  wrong encoded cwd still resumed, and the CLI kept writing it there: the file
+  under `-private-tmp-ccxa-b` grew from 42 to 63 lines while the cwd's own
+  directory stayed empty. The interactive transport tails the path it computes
+  from the cwd (h #g175), so a carry has to write the target's own encoded cwd
+  and nothing else.
+- **There is nothing account-specific to rewrite.** The union of record keys
+  over a real conversation is `apiBlockIndex, atis, attachment, content, cwd,
+  entrypoint, gitBranch, ... sessionId, ... userType, uuid, version`: no user,
+  org or account id anywhere.
+
+**So the switch carries the conversation** (`src/account-transcript.ts`,
+`crossAccountResume`, default on, inert with one account configured). On a turn
+whose account differs from the one its Claude session lives on, the transcript
+is copied into the target account's `projects/<encodeCwd(cwd)>/` (`0600`, the
+directory `0700`) and the session id is kept, so the `--resume` both transports
+already build does the rest: `buildCliArgs` adds it headless, and the PTY's
+`resumeSessionId` plus `skillBridgeSpawn(failover).configDir` make the TUI
+resume and tail the target's own dir with no new code at all. It runs in both
+directions, so it also carries the conversation home when the override expires.
+
+**Which copy is live is decided by SIZE, and that is the one rule the
+measurement did not hand over.** A switch from A to B leaves A's now-stale
+original in place; a later switch back to A finds two files and resuming the one
+that happens to sit at the target path would silently drop everything that
+happened on B. A transcript is append-only and every copy of one conversation
+shares a prefix with every other, so the longest is the live one. The target
+path being taken is also why a carry may rename: never overwriting is the rule,
+and the CLI resolving a session by filename is what makes a fresh id a complete
+answer rather than a compromise.
+
+Every refusal falls back to the replay, which is exactly what every switch did
+before: nothing to carry, something that is not a plain file at the target path
+(a symlink above all, which `copyFile` would write through), or a copy the
+filesystem refused. `COPYFILE_EXCL` closes the race the `lstat` leaves. One
+NOTICE line says which happened, with a kebab reason token rather than a
+sentence for the (h #g215) reason.
+
+**One stale defect fell out of this.** On a switch the code kept the Claude
+session id whenever no live process was there to compare paths against (an
+evicted child, a restart), and `buildCliArgs` then added `--resume <id>` against
+an account that could not see it, so the turn failed and the CLI's own backstop
+dropped the id. The carry's refusal branch now drops it deliberately, and so
+does the `crossAccountResume: false` path.
+
+**What is NOT measured is the other half: whether a different Anthropic login
+answers a conversation the other one produced.** One usable account on this
+machine made that unmeasurable, and it is the only reason this is an option with
+an off switch rather than plain behaviour. There is no known mechanism for it to
+fail: the API is stateless, each turn posts the whole message list, and a
+transcript carries no server-side conversation handle. If it does fail, the turn
+errors, the "No conversation found" backstop drops the id, and the next turn
+replays. Note also that the switch itself has never been live-verified (h #g98,
+h #g194), so this rides on a path whose replay was equally unverified.
+
+Prompt caching is the one measured cost that moves: the cache is per account, so
+the first turn after a carry writes rather than reads. In the probe, which shared
+credentials, the resumed turn read 25,809 and wrote 488.
+
+`test/account-transcript.test.ts`, `test/account-failover.test.ts`,
+`test/interactive-pty.test.ts`.

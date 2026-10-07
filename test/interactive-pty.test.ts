@@ -1835,7 +1835,7 @@ test("a refused model on the PTY hands the turn to the next one in the chain", a
 // the process an opencode client that advertises `question`.
 // ---------------------------------------------------------------------------
 
-test("a usage limit on the PTY asks to switch accounts, and the switch replays on the other one", async () => {
+test("a usage limit on the PTY asks to switch accounts, and the switch carries the conversation over", async () => {
   const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
   const previousHome = process.env.HOME
   const previousCache = process.env.XDG_CACHE_HOME
@@ -1915,9 +1915,38 @@ test("a usage limit on the PTY asks to switch accounts, and the switch replays o
     const switched = children[1]!
     assert.equal(switched.argv[0], baseCli, "the default account is the bare binary")
     assert.equal(switched.argv[switched.argv.indexOf("--model") + 1], "claude-test-pty-failover")
-    assert.ok(!switched.argv.includes("--resume"), "a transcript cannot follow across accounts")
+
+    // The TUI writes its transcript under its own account's config dir and
+    // tails the one it computes from the cwd, so a switch has to put the
+    // conversation under the TARGET's before the fresh TUI resumes it
+    // (h #g218). The limited TUI's own copy is left where it was.
+    const limitedId = children[0]!.argv[children[0]!.argv.indexOf("--session-id") + 1]!
+    assert.deepEqual(
+      switched.argv.slice(switched.argv.indexOf("--resume"), switched.argv.indexOf("--resume") + 2),
+      ["--resume", limitedId],
+    )
+    const carried = interactiveTranscriptPath({
+      configDir: path.join(dirs.root, ".claude"),
+      cwd: dirs.cwd,
+      sessionId: limitedId,
+    })
+    assert.equal(fs.existsSync(carried), true, "the transcript is under the target account")
+    assert.equal(fs.statSync(carried).mode & 0o777, 0o600)
+    assert.equal(
+      fs.existsSync(interactiveTranscriptPath({
+        configDir: runtime.configDir, cwd: dirs.cwd, sessionId: limitedId,
+      })),
+      true,
+      "and the limited account still has its own",
+    )
+
     const typed = switched.writes.join("")
-    assert.match(typed, /<conversation_history>/)
+    assert.equal(
+      typed.includes("<conversation_history>"),
+      false,
+      "a carried conversation must not also be replayed as text",
+    )
+    assert.match(typed, /This is the same conversation, continued/)
     assert.match(typed, /Continue the task from where it stopped/)
     assert.match(textOf(second), /carried on, on default/)
     assert.equal(second.find((part) => part.type === "finish").finishReason.unified, "stop")

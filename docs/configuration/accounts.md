@@ -66,7 +66,7 @@ The reset time is in **your** time zone, to the minute, and is left out when Cla
 
 The turn also **finishes as an error**, not as a reply. Nothing was served, so filing it as a (very short) answer was wrong: opencode's own retry and failure handling never ran, and the account-block case below has always finished this way.
 
-Nothing moves on its own: switching account means picking a model from another account's provider in opencode's model list and sending your message again. That costs a fresh Claude session on the new account (see *The conversation is replayed, not resumed* below), which is why the plugin does not do it for you.
+Nothing moves on its own: switching account means picking a model from another account's provider in opencode's model list and sending your message again. Doing it that way starts a fresh Claude session on the new account, because the session key changes with the model; the automatic switch below carries the conversation across instead.
 
 ### Account failover
 
@@ -88,19 +88,23 @@ Pick an account and the task continues on it **inside the same opencode turn**, 
 This was the default until the round trip was measured end to end against a real five-hour limit (2026-10-03) and found wanting in three ways, two of which are not the plugin's to fix:
 
 - **Typing instead of picking dismisses the form.** opencode treats a new message while a question is open as a dismissal, and that message then runs on the still-limited account, hits the limit again and raises a second form. That is the "I had to send two messages before anything happened" shape.
-- **A switch is always a full replay.** It cannot be anything else; see below.
+- **A switch was always a full replay.** That one is fixed: a switch now carries the conversation's Claude transcript to the other account and continues it, and only falls back to the replay when it cannot (see below).
 - **Every pick was refused** as `unrecognised answer`, because another plugin in the chain appends a routing tag to tool results. That half is fixed, so the form works again; it stays opt-in because the first two do not go away.
 
 What a pick does, in full:
 
 - **It is sticky for the limited account, not for the session.** A usage limit belongs to the account, so one pick governs every session running on `work`, and subagents follow their parent for free. It lasts until the limit's reset time, or until opencode restarts when the CLI did not report one. Child sessions never show the form themselves.
-- **The conversation is replayed, not resumed.** Claude transcripts live under each account's own `CLAUDE_CONFIG_DIR`, so `--resume` cannot cross accounts. The plugin starts a fresh Claude session on the target and replays the thread from opencode's history, then tells it to carry on. That costs input tokens on the new account, and anything the CLI held but opencode did not is gone.
+- **The conversation moves with you.** A Claude conversation is one transcript file under one account's `CLAUDE_CONFIG_DIR`, and Claude Code resumes a copy of that file placed under another account's. So the switch copies the transcript into the target account's own `projects/<encoded cwd>/` and continues it with `--resume`, instead of replaying the whole thread as text. The source file is never moved, emptied or overwritten; the other account keeps its own copy exactly as it was. Set `"crossAccountResume": false` to keep the old replay.
+
+  When the copy cannot be made (there is no transcript to carry, or something that is not a plain file sits at the target path), the switch falls back to the replay: a fresh Claude session on the target, the thread rebuilt from opencode's history, and a note telling it to carry on. That costs input tokens on the new account, and anything the CLI held but opencode did not is gone. Which of the two happened is one NOTICE line in the log, `carried this conversation's claude transcript to the other account` or `replaying this conversation as text on the other account` with the reason.
+
+  What was measured (Claude Code 2.1.288) is the file layout: a copied transcript resumes under another config dir with its context intact, the CLI resolves a session by filename, and it appends to the copy without touching the original. What has not been verified live is a *different* Anthropic login answering a conversation the other one produced. If that ever fails, the turn errors, the CLI's own "No conversation found" handling drops the session id, and the next turn replays.
 - **Per-profile MCP servers do not come along.** A server configured only in the limited account's Claude profile is simply absent on the target.
 - **`stop`, dismissing the form, or any answer that is not one of the offered accounts** ends the turn the way a limited turn ends without the form.
 
 Only two things count as "out of usage", for the note and for the form alike: a `rate_limit_event` the CLI marked `rejected`, and the two known account-limit error texts (`Third-party apps now draw from your extra usage…`, `You've hit your individual spend limit`). A generic 4xx, a timeout or a bad flag never does, deliberately: a transient failure must not quietly move where your usage is billed.
 
-The form works on both transports: on the [interactive transport](../guides/interactive-transport.md) a switch closes the limited account's TUI and starts the other account's, with the thread replayed into it exactly as on headless. It is not available on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, which [fails outright instead](../guides/compaction-and-thinking.md#when-compaction-hits-a-usage-limit).
+The form works on both transports: on the [interactive transport](../guides/interactive-transport.md) a switch closes the limited account's TUI and starts the other account's, carrying the transcript (or replaying the thread) into it exactly as on headless, since the TUI reads and writes the same transcript file. It is not available on compaction turns, or in a child session, which follows its parent's account for free. The note is written on every limited turn except a compaction turn, which [fails outright instead](../guides/compaction-and-thinking.md#when-compaction-hits-a-usage-limit).
 
 ### An account that cannot serve at all
 

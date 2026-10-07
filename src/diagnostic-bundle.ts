@@ -129,6 +129,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   emitted: "flag",
   enabled: "flag",
   executed: "flag",
+  failedOver: "flag",
+  renamed: "flag",
   isUsingOverage: "flag",
   hadProxyActivity: "flag",
   hadReasoning: "flag",

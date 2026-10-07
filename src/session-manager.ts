@@ -62,9 +62,12 @@ export interface ActiveProcess {
   /**
    * The binary this child was spawned with. Account failover compares it
    * against the path the current turn resolves to: a difference means the
-   * conversation has moved to another account, and the process plus its
-   * Claude session id have to go because a transcript cannot resume across
-   * accounts. Absent on the interactive shim, which never fails over.
+   * conversation has moved to another account, and this child has to go,
+   * because it speaks to the CLI it was spawned as. Its Claude session id
+   * does not have to go with it: a transcript copied into the other account's
+   * config dir resumes there (`src/account-transcript.ts`, h #g218), and only
+   * a refused carry drops the id and replays the thread. The interactive shim
+   * records it too, so a TUI fails over on the same terms (h #g209).
    */
   cliPath?: string
   cliArgs?: string[]

@@ -138,6 +138,10 @@ import {
 } from "./session-resume-store.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
 import {
+  carryTranscriptToAccount,
+  configDirForAccount,
+} from "./account-transcript.js"
+import {
   formatStaleBuildNote,
   staleBuildWatch,
   type StaleBuild,
@@ -1234,14 +1238,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       })
     }
 
-    // A live process belongs to the account it was spawned with, and its
-    // Claude transcript lives under that account's config dir, so neither can
-    // follow the conversation across a switch. Dropping both here (before
-    // `includeHistoryContext` is computed) is what turns the switch into a
-    // fresh session with the thread replayed, and it is equally what switches
-    // back once the override expires. The interactive shim carries the path
-    // it was spawned with too (h #g209), so a TUI on the limited account is
-    // replaced the same way.
+    // A live process belongs to the account it was spawned with, so it cannot
+    // follow the conversation across a switch: a child speaks to the CLI it
+    // was spawned as, and the interactive shim carries the path it was spawned
+    // with too (h #g209), so a TUI on the limited account is replaced the same
+    // way. The CONVERSATION is a separate question, answered just below.
     const processForAccount = getActiveProcess(sk)
     if (
       !compactionMode &&
@@ -1255,6 +1256,80 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         failedOver: failover.failedOver,
       })
       deleteActiveProcess(sk)
+    }
+
+    // The conversation itself moves by file: a Claude transcript is one file
+    // under one account's config dir, and 2.1.288 resumes a copy of it placed
+    // under another one with its context intact (h #g218). So a switch carries
+    // the transcript into the account this turn is about to spawn and keeps
+    // the session id, and the `--resume` both transports already build does
+    // the rest; a refusal drops the id and the thread is replayed as text,
+    // which is what every switch did before. Runs in both directions, so it
+    // also carries the conversation home when the override expires.
+    //
+    // Gated on more than one account: an install that cannot fail over must
+    // not pay a `stat` per turn for a question it can never ask. A turn
+    // stopped between the copy and the spawn leaves the copy behind, which is
+    // harmless: the next turn finds the conversation already there.
+    let conversationOnTarget = false
+    const multiAccount = (this.config.failoverAccounts?.length ?? 0) > 1
+    const sessionBeforeAccountCheck = getClaudeSessionId(sk)
+    if (
+      !compactionMode &&
+      multiAccount &&
+      this.config.crossAccountResume !== false &&
+      sessionBeforeAccountCheck
+    ) {
+      const carry = await carryTranscriptToAccount({
+        sessionId: sessionBeforeAccountCheck,
+        cwd,
+        targetConfigDir: resolveConfigDir(this.skillBridgeSpawn(failover).configDir),
+        // Every account's own directory, plus this model's configured one:
+        // `configDir` is an option, so an account's directory is not always
+        // the `~/.claude-<name>` the name alone would build.
+        accountConfigDirs: [
+          ...(this.config.failoverAccounts ?? []).map(configDirForAccount),
+          resolveConfigDir(this.config.configDir),
+        ],
+      })
+      if (carry.kind === "carried" || carry.kind === "already-there") {
+        // A renamed copy is the same conversation under a new id, because the
+        // CLI resolves a session by filename and the target path was taken by
+        // an older copy from an earlier switch.
+        if (carry.sessionId !== sessionBeforeAccountCheck) {
+          setClaudeSessionId(sk, carry.sessionId)
+        }
+        conversationOnTarget = true
+        if (carry.kind === "carried") {
+          log.notice("carried this conversation's claude transcript to the other account", {
+            sessionKey: sk,
+            renamed: carry.renamed,
+            sessionId: carry.sessionId,
+            failedOver: failover.failedOver,
+          })
+        }
+      } else if (!getActiveProcess(sk)) {
+        // The id names a transcript the account this turn spawns cannot see,
+        // and `--resume` on it would fail outright, so it goes and the thread
+        // is replayed. Only with the child gone: while it is alive the
+        // conversation is in the child rather than in a file, nothing is about
+        // to resume anything, and dropping the id would take the todo ledger
+        // and the resume record with it for no reason.
+        log.notice("replaying this conversation as text on the other account", {
+          sessionKey: sk,
+          reason: carry.reason,
+          failedOver: failover.failedOver,
+        })
+        deleteClaudeSessionId(sk)
+      }
+    } else if (
+      !compactionMode &&
+      sessionBeforeAccountCheck &&
+      processForAccount?.cliPath &&
+      processForAccount.cliPath !== cliPath
+    ) {
+      // The carry is off, or there is only one account: the account this turn
+      // spawns cannot see that transcript either way.
       deleteClaudeSessionId(sk)
     }
 
@@ -1263,8 +1338,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     let includeHistoryContext =
       !hasExistingSession && !hasActiveProcess && hasPriorConversation
     // A fresh session on the other account holds none of this conversation,
-    // so the replay is not optional on a switch the way it is on a normal turn.
-    if (failoverAnswer?.kind === "switch" && hasPriorConversation) {
+    // so the replay is not optional on a switch the way it is on a normal
+    // turn. A carried transcript IS this conversation, so there is nothing to
+    // replay into it and doing so would hand the model the thread twice.
+    if (failoverAnswer?.kind === "switch" && hasPriorConversation && !conversationOnTarget) {
       includeHistoryContext = true
     }
 
@@ -1457,7 +1534,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // telling the fresh session to carry on goes in as the current message.
     const effectivePrompt =
       failoverAnswer?.kind === "switch"
-        ? buildFailoverContinuationPrompt(options.prompt, failoverAnswer.target)
+        ? buildFailoverContinuationPrompt(
+            options.prompt,
+            failoverAnswer.target,
+            conversationOnTarget,
+          )
         : options.prompt
     const userMsg =
       exitPlanModeQuestionResult ??
@@ -2560,6 +2641,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               resetsAt: state.accountLimitHit?.resetsAt,
               window: state.accountLimitHit?.window,
               reason: state.accountLimitHit || !state.accountBlock ? undefined : describeAccountBlock(state.accountBlock),
+              carryTranscript: self.config.crossAccountResume !== false,
             })
             log.warn(
               `Claude account "${sourceAccount}" ${
