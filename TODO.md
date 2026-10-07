@@ -134,7 +134,8 @@ Nothing parked.
   permission policy via `--dangerously-skip-permissions` plus `skipDangerousModePermissionPrompt`, and
   proxied calls kept in the foreground past the TUI's 120 s auto-background (h #g210). Live on 1.18.34
   and 2.0.22 except the switch (no limited account). Correction: PDFs are dropped on BOTH transports
-  (catalog `pdf: false`), so not a PTY gap. 1,267 tests.
+  (catalog `pdf: false`), so not a PTY gap. 1,267 tests. Released as **v0.43.0** (CI publish green,
+  registry shasum `4ae69917` matches the step's notice; GitHub release notes written).
 - 2026-10-07: **done**: "5 hours have passed i switched us to default profile try the live stuff you
   did not try and im ok with your suggestion about the warning now carry on with the recommended".
   The #g205 warning stays as built. Live on the default account, A/B against a v0.42.0 worktree:
