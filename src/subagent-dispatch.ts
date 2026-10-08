@@ -388,6 +388,35 @@ const claims: DispatchClaim[] = []
 const sessionChoices = new Map<string, SubagentChoice>()
 const MAX_SESSION_CHOICES = 512
 
+/**
+ * Whether a child's first user message is the task this claim was written for.
+ *
+ * opencode 1.18.35 hands a subagent the task `prompt` verbatim, which is what
+ * (h #g227) measured and what the exact comparison was built on. opencode
+ * 2.0.22 does not: its own `subagent` tool prompts the child with
+ * `["You are a subagent spawned by another session.", prompt].join("\n")`, so
+ * an exact comparison matched nothing there and every child of an answered
+ * dispatch silently ran the defaults, which is the billing surprise the form
+ * exists to prevent (measured live on 2.0.22, h #g229).
+ *
+ * So a host preamble is allowed, and only a preamble: the match is anchored at
+ * a line boundary and at the END of the message, which is where a wrapper can
+ * put the task text without altering it. Nothing is stripped, pattern-matched
+ * or named, because the sentence is opencode's to change; what is asserted is
+ * only that the task prompt is the last thing the child was told.
+ *
+ * An exact match always wins over a wrapped one (`claimDispatchChoice` looks
+ * for one first), so a host that forwards the prompt verbatim behaves exactly
+ * as it did before.
+ */
+function promptMatchesClaim(claimPrompt: string, childPrompt: string): boolean {
+  if (childPrompt === claimPrompt) return true
+  // An empty task prompt would make every child a match; it is also never a
+  // real dispatch, so it is refused rather than widened.
+  if (claimPrompt.length === 0) return false
+  return childPrompt.endsWith(`\n${claimPrompt}`)
+}
+
 let testStoreSeq = 0
 
 /**
@@ -461,7 +490,9 @@ export function hasCandidateClaim(
 ): boolean {
   if (!agent || prompt === undefined) return false
   pruneClaims(now)
-  return claims.some((claim) => claim.agent === agent && claim.prompt === prompt)
+  return claims.some(
+    (claim) => claim.agent === agent && promptMatchesClaim(claim.prompt, prompt),
+  )
 }
 
 /**
@@ -485,12 +516,17 @@ export function claimDispatchChoice(input: {
     return undefined
   }
   pruneClaims(input.now ?? Date.now())
-  const index = claims.findIndex(
-    (claim) =>
-      claim.parentSessionId === input.parentSessionId &&
-      claim.agent === input.agent &&
-      claim.prompt === input.prompt,
-  )
+  const belongsHere = (claim: DispatchClaim) =>
+    claim.parentSessionId === input.parentSessionId && claim.agent === input.agent
+  const childPrompt = input.prompt
+  // Exact first, so a host that forwards the prompt verbatim is unchanged and
+  // a wrapped child can never take a verbatim child's claim out from under it.
+  let index = claims.findIndex((claim) => belongsHere(claim) && claim.prompt === childPrompt)
+  if (index === -1) {
+    index = claims.findIndex(
+      (claim) => belongsHere(claim) && promptMatchesClaim(claim.prompt, childPrompt),
+    )
+  }
   if (index === -1) return undefined
   const [claim] = claims.splice(index, 1)
   sessionChoices.set(input.sessionId, claim.choice)

@@ -4584,3 +4584,209 @@ removing either cap fails its own test; and cutting
 Equivalent, and left in as intent rather than chased: `advanceTypes`'s
 `perTask.length > 0 || perTypeAccounts` guard, because `detailForm` releases on
 an empty prompt list anyway.
+
+<a id="g229"></a>
+
+#### The three newest features, live on opencode 2.0.22, and the one thing that was not portable (2026-10-08)
+
+Three features shipped in v0.51.0 to v0.53.0 had been run live against opencode
+1.18.35 only: the by-hand account carry and the `accountGroups` guard (h #g226),
+and the subagent dispatch form with its per-type accounts and its remembered
+choice (h #g227, h #g228). The package supports both majors, so "measured on one
+of them" is half a measurement. All three were re-run on **opencode 2.0.22**.
+Two passed unchanged. The third was broken there, in the quiet direction, and
+the defect is this entry's point.
+
+##### How it was driven, and what it cost
+
+Nothing was billed. `cliPath` pointed at a scripted fake `claude` which answers
+`--version` with `2.1.293`, records every spawn's argv, `CLAUDE_CONFIG_DIR` and
+`CLAUDE_CODE_EFFORT_LEVEL`, writes a real transcript JSONL at the path Claude
+Code writes one (its own `encodeCwd`, realpath and all, so the resume store and
+the carry have a file to find), and POSTs a two-task `task_batch` to the proxy
+MCP server when the prompt asks for it. The second account is a scratch config
+dir under a scratch `HOME`, so the two providers are `claude-code-default` and
+`claude-code-alpha` and the work account was never read, written or spawned
+against.
+
+The host is the sandbox's `~/opencode-v2-sandbox/bin/opencode` (2.0.22) as a
+private `serve` with `OPENCODE_SERVER_PASSWORD`, the recipe (h #g219) settled,
+because every one of these needs an answer posted back while a turn is still
+running. Scratch `HOME`, all four XDG dirs and `TMPDIR`, one cwd per feature,
+the plugin loaded from this worktree's `dist`, `plugin ready` asserted once per
+run.
+
+##### The by-hand account carry: PASS
+
+One opencode session. A turn on `claude-code-default/claude-haiku-4-5`, then
+`POST /api/session/{id}/model` to `claude-code-alpha/claude-haiku-4-5@alpha` and
+a second prompt. The second spawn:
+
+```
+--model claude-haiku-4-5 ... --resume fake-37166-1791460694191
+CLAUDE_CONFIG_DIR=<scratch>/.claude-alpha
+```
+
+and the plugin logged
+
+```
+NOTICE: continuing this conversation's claude session under the new model or
+effort instead of replaying it {"sessionKey":"...::claude-haiku-4-5@alpha::tools::
+ses_...::context=[\"claude-code-alpha\",\"build\"]","siblingKey":"...::claude-haiku-4-5::
+tools::ses_...::context=[\"claude-code-default\",\"build\"]","matchedMessages":1,
+"from":"default","account":"alpha"}
+```
+
+The transcript was in alpha's own `projects/-private-tmp-...-work-carry/` at
+`0600`, the default's original was left exactly where it was, and the envelope
+carried only the new message (no `conversation_history`, no earlier text).
+
+A third turn switched back. It resumed under a **fresh uuid**, which is the
+(h #g218) rename: the default account's own path still held the stale 229-byte
+original from before the first switch, so the carry would have had to overwrite
+it and took a new id instead. The file that came home was alpha's 458-byte copy,
+not the stale one, which is the size rule doing the one job it exists for.
+
+Note for whoever greps for it: the by-hand switch does **not** write
+`carried this conversation's claude transcript to the other account`. That
+NOTICE belongs to the prologue carry, which runs when the key already has a
+session id; a by-hand switch changes the session key (the provider is in its
+context blob), so it goes through the sibling lookup, whose own NOTICE is the
+one quoted above and names `from` and `account`. Both call
+`carryTranscriptToAccount`.
+
+##### `accountGroups`: PASS
+
+The same two turns with `"accountGroups": {"alpha": "work"}`. Alpha's spawn had
+no `--resume` at all, wrote a transcript of its own under a new session id
+rather than receiving a copy, and was handed an envelope holding only the latest
+message: no `conversation_history`, no `MARLIN`, no `Reply OK`. The reply began
+with the note, as its own text part:
+
+```
+▌ **account group:** this conversation was running on the Claude account
+"default" (group "default") and is now on "alpha" (group "work"), so none of it
+was carried over: accountGroups keeps a conversation inside one group. ...
+```
+
+and the log carried one line:
+
+```
+NOTICE: starting fresh on this account: it is in another account group
+{"reason":"another-account-group","account":"alpha","from":"default","group":"work"}
+```
+
+The startup block printed the resolved map, `accountGroups: ["alpha=work"]`,
+which is (h #g159)'s rule holding on V2 as well.
+
+##### The dispatch form: the form works, the children did not
+
+Every screen arrived. `GET /api/session/{id}/form` answered a `Form` with
+`metadata.kind: "question"` and one field per row, and each
+`POST .../form/{formID}/reply` with
+`{"answer":{"q0":...,"q1":...,"q2":...}}` returned 204:
+
+1. One question, six options (`Default`, four curated combos, `Customise…`).
+2. `Customise…` opened `q0` = `implementor`, `q1` = `designer`, `q2` = `Account`
+   offering `default`, `alpha` and `Per type…`. The two type rows carried the
+   measured `Add "@alpha" to a typed answer to send it to that account.` hint.
+3. `Per type…` opened one account row per type.
+
+`holding a subagent dispatch for the operator's answer` and
+`releasing a held subagent dispatch {tasks:2, claims:2, released:1, dropped:0}`
+both fired, the subagent type reached each child's prologue as the opencode
+agent (`opencodeAgent: "implementor"` / `"designer"`), and the step resolved its
+parked `task_batch` normally.
+
+And then both children spawned `--model claude-haiku-4-5` with no effort and the
+**default** config dir, after three screens of the operator saying otherwise.
+No `subagent dispatch choice claimed by its child session` line anywhere.
+
+##### Why: opencode 2 wraps the task prompt, and the claim key is the prompt
+
+(h #g227) measured on 1.18.35 that a child session's first user envelope is the
+task `prompt` **verbatim**, and built the claim key on an equality. Read out of
+the 2.0.22 binary, its own `subagent` tool does this instead:
+
+```js
+i.prompt({ sessionID: oe.id, text: ["You are a subagent spawned by another session.", x.prompt].join("\n"), ... })
+```
+
+and the recorded envelopes confirm it:
+
+```
+"You are a subagent spawned by another session.\nALPHA: build the parser."
+"You are a subagent spawned by another session.\nBETA: draw the screen."
+```
+
+So `hasCandidateClaim` scanned past every claim, `claimDispatchChoice` was never
+even reached, and the dispatch fell back to the defaults **silently**. That is
+exactly the failure the form exists to prevent: the operator is told a subagent
+will run on another account, or on Opus at `high`, and it does not. Here it
+failed cheap (haiku instead of opus), but the same miss drops a deliberate
+"run this one on the other account" and would equally drop a remembered choice
+that moves work onto an account with usage left.
+
+##### The fix: a wrapped prompt, and only a wrapped prompt
+
+`promptMatchesClaim(claimPrompt, childPrompt)` in `src/subagent-dispatch.ts`:
+exact, or `childPrompt.endsWith("\n" + claimPrompt)`. Both `hasCandidateClaim`
+and `claimDispatchChoice` go through it, and `claimDispatchChoice` searches for
+an **exact** match first, so a host that forwards the prompt verbatim is
+byte-identical to before and a wrapped child can never take a verbatim child's
+claim out from under it.
+
+Four things about that shape, each of them deliberate:
+
+- **Anchored at a line boundary AND at the end.** A wrapper can put a preamble
+  in front of the task text without altering it; it cannot append to it without
+  altering it. `ALPHA\nsomething else entirely` does not match a claim for
+  `ALPHA`, and neither does `ALPHABET`.
+- **Nothing is stripped, and opencode's sentence is never named.** A rule that
+  matched that literal would break the next time opencode rewords it, and a rule
+  that stripped a leading line would be deciding what a child was told.
+- **An empty task prompt is refused rather than widened**, because `endsWith("\n")`
+  would make every wrapped child a match for it.
+- **The agent type and the parent check are untouched**, so the two things that
+  actually keep a choice off the wrong child are exactly as strong as they were.
+
+Re-run live after the fix, same session, same three screens: the children
+spawned `claude-opus-5-5` / `CLAUDE_CODE_EFFORT_LEVEL=high` / `~/.claude-alpha`
+and `claude-haiku-5-5` / `low` / the default dir, and the log carried both
+
+```
+INFO: subagent dispatch choice claimed by its child session
+{"agent":"implementor","model":"claude-opus-5-5","effort":"high","account":"alpha"}
+{"agent":"designer","model":"claude-haiku-5-5","effort":"low","account":"default"}
+```
+
+`Same as last time` on a second dispatch reproduced both exactly. The `serve`
+was then stopped and a new one started on the same opencode session: the form
+still offered `Same as last time`, the store under the scratch
+`XDG_STATE_HOME` still held the record, and both children spawned with their own
+model, effort and account again. The parent's own spawn came back with
+`--resume`, which is `resumeAfterRestart` (h #g197) doing its half in the same
+run.
+
+##### Tests
+
+Four unit cases in `test/subagent-dispatch.test.ts` and one end-to-end case in
+`test/subagent-dispatch-stream.test.ts`. Reverting `src/subagent-dispatch.ts`
+alone fails *a child whose host wrapped the task prompt still takes its claim*
+and *a wrapped child takes only the claim whose task it was actually given*; the
+two negative cases (*an exact child wins over a wrapped one, and the preamble is
+not a wildcard*, *an empty task prompt is never matched by a wrapped child*)
+pass both ways on purpose, because they pin the edges the widening must not
+cross rather than the widening itself.
+
+##### Two probe traps, for whoever drives V2 next
+
+- **`GET /api/model` and `GET /api/provider` answer `{data: []}`** for a provider
+  a plugin registers, while turns on that provider run perfectly. A driver
+  cannot discover the model id and has to name `claude-code-<account>/<model>`
+  itself; an account provider's model ids carry the `@<account>` marker.
+- **`GET /api/session/{id}/form` is `{data: [Form]}`**, and a `Form`'s `fields[]`
+  carry `options[].label`, not a JSON Schema. The same form keeps being returned
+  until a reply lands, so a driver must remember the ids it has answered or it
+  re-answers the first one forever; replying to an id it never read is a 400
+  naming `frm_`.

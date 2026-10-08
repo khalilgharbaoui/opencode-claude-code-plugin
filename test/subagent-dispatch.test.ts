@@ -547,6 +547,89 @@ test("the wrong agent type never takes another type's claim", () => {
   )
 })
 
+// opencode 2.0.22's own `subagent` tool prompts a child with
+// `["You are a subagent spawned by another session.", prompt].join("\n")`,
+// where 1.18.35 sends the prompt verbatim (h #g229). Before this the exact
+// comparison matched nothing on V2 and every child of an answered dispatch ran
+// the defaults, silently.
+const V2_PREAMBLE = "You are a subagent spawned by another session."
+
+test("a child whose host wrapped the task prompt still takes its claim", () => {
+  _resetSubagentDispatchForTests()
+  claims([[task({ prompt: "ALPHA: build the parser." }), { model: "claude-opus-5-5", effort: "high", account: "alpha" }]])
+  const wrapped = `${V2_PREAMBLE}\nALPHA: build the parser.`
+  assert.equal(hasCandidateClaim("implementor", wrapped), true)
+  assert.deepEqual(
+    claimDispatchChoice({
+      sessionId: "ses_child",
+      agent: "implementor",
+      prompt: wrapped,
+      parentSessionId: "ses_parent",
+    }),
+    { model: "claude-opus-5-5", effort: "high", account: "alpha" },
+  )
+})
+
+test("a wrapped child takes only the claim whose task it was actually given", () => {
+  _resetSubagentDispatchForTests()
+  claims([
+    [task({ agent: "implementor", prompt: "ALPHA" }), { model: "claude-opus-5-5" }],
+    [task({ agent: "implementor", prompt: "BETA" }), { model: "claude-haiku-5-5" }],
+  ])
+  assert.deepEqual(
+    claimDispatchChoice({
+      sessionId: "ses_beta",
+      agent: "implementor",
+      prompt: `${V2_PREAMBLE}\nBETA`,
+      parentSessionId: "ses_parent",
+    }),
+    { model: "claude-haiku-5-5" },
+  )
+  assert.deepEqual(
+    claimDispatchChoice({
+      sessionId: "ses_alpha",
+      agent: "implementor",
+      prompt: `${V2_PREAMBLE}\nALPHA`,
+      parentSessionId: "ses_parent",
+    }),
+    { model: "claude-opus-5-5" },
+  )
+})
+
+test("an exact child wins over a wrapped one, and the preamble is not a wildcard", () => {
+  _resetSubagentDispatchForTests()
+  claims([[task({ prompt: "ALPHA" }), { effort: "max" }]])
+  // A wrapped child of an unrelated task takes nothing: the match is anchored
+  // at a line boundary and at the end of the message, not a substring search.
+  assert.equal(hasCandidateClaim("implementor", `ALPHA\nsomething else entirely`), false)
+  assert.equal(hasCandidateClaim("implementor", "ALPHABET"), false)
+  assert.deepEqual(
+    claimDispatchChoice({
+      sessionId: "ses_exact",
+      agent: "implementor",
+      prompt: "ALPHA",
+      parentSessionId: "ses_parent",
+    }),
+    { effort: "max" },
+  )
+})
+
+test("an empty task prompt is never matched by a wrapped child", () => {
+  _resetSubagentDispatchForTests()
+  claims([[task({ prompt: "" }), { effort: "max" }]])
+  assert.equal(hasCandidateClaim("implementor", `${V2_PREAMBLE}\nanything at all`), false)
+  // Its own exact child still takes it.
+  assert.deepEqual(
+    claimDispatchChoice({
+      sessionId: "ses_child",
+      agent: "implementor",
+      prompt: "",
+      parentSessionId: "ses_parent",
+    }),
+    { effort: "max" },
+  )
+})
+
 test("an empty choice records no claim, so a default dispatch costs a child nothing", () => {
   _resetSubagentDispatchForTests()
   const recorded = recordDispatchClaims(

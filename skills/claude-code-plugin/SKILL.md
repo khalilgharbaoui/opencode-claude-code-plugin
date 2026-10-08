@@ -270,6 +270,7 @@ Same package, same config. 2.x's native key is `plugins` (plural), but it still 
 - Provider settings, lowest precedence first: `provider.claude-code.options` (1.x's spelling, still read on 2.x), `provider.claude-code.settings`, `providers.claude-code.settings` (2.x's own), and the plugin entry's own `options`, which wins over all three. Any option of this plugin can sit in any of them; the plugin entry is the usual home for `accounts`: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
 - A local checkout is loaded by pointing `plugins` at its **`dist`** directory, never the repository root: 2.x resolves a configured plugin path as `<dir>/server` or `<dir>/index`.
 - Known 2.x differences: `/btw` is answered after the running turn rather than inside it, and there is no todo panel (2.x has no `todowrite` tool). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
+- Every form the plugin raises is answered through 2.x's own `Form` surface rather than a question tool, which changes nothing the operator does. The account-switch form and the plan-mode approval were measured live on 2.0.22, and the `subagentDispatch` form (including `Customise…`, `Per type…` accounts and `Same as last time` across a restart) on 2026-10-08. The by-hand account carry and the `accountGroups` guard were measured live there the same day: both behave exactly as on 1.x.
 
 #### V2 MCP and Code Mode
 

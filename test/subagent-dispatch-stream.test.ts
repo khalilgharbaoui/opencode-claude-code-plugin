@@ -408,6 +408,64 @@ test("the chosen model and effort reach the child session's own spawn", async ()
   }
 })
 
+test("a child whose host wrapped the task prompt still spawns as chosen", async () => {
+  // opencode 2.0.22's own `subagent` tool prompts a child with
+  // `["You are a subagent spawned by another session.", prompt].join("\n")`
+  // rather than the prompt verbatim, which is what 1.18.35 sends (h #g229).
+  // Measured live: before this, every child of an answered dispatch on V2 ran
+  // the defaults while the operator had been told it would not.
+  _resetSubagentDispatchForTests()
+  const fake = createFakeCli()
+  process.env.FAKE_CLI_DISPATCH = "1"
+  const childKey = sessionKey(
+    fake.cwd,
+    `claude-opus-5-5::tools::${CHILD_SESSION}::context=["claude-code","implementor"]::effort=max`,
+  )
+  try {
+    const model = buildModel(fake, { subagentDispatch: "ask" })
+    const first = await drain(await model.doStream(promptFor(PARENT_SESSION, "go") as any))
+    const question = first.find((part) => part.type === "tool-call")
+    const second = await drain(
+      await model.doStream(answerPrompt(PARENT_SESSION, question, ["Customise…"]) as any),
+    )
+    const typeForm = second.find((part) => part.type === "tool-call")
+    await drain(
+      await model.doStream(
+        answerPrompt(PARENT_SESSION, typeForm, ["claude-opus-5-5 / max", "Default"]) as any,
+      ),
+    )
+
+    delete process.env.FAKE_CLI_DISPATCH
+    await drain(
+      await model.doStream({
+        prompt: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `You are a subagent spawned by another session.\n${ALPHA_PROMPT}`,
+              },
+            ],
+          },
+        ],
+        providerOptions: {
+          "claude-code": { opencodeSessionID: CHILD_SESSION, opencodeAgent: "implementor" },
+        },
+        tools: [],
+      } as any),
+    )
+    const childSpawn = fake.spawns().at(-1)
+    assert.equal(modelArg(childSpawn.argv), "claude-opus-5-5")
+    assert.equal(childSpawn.effort, "max")
+  } finally {
+    delete process.env.FAKE_CLI_DISPATCH
+    deleteActiveProcess(parentKey(fake))
+    deleteActiveProcess(childKey)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
 test("the child that was NOT chosen for keeps the spawn it would have had", async () => {
   _resetSubagentDispatchForTests()
   const fake = createFakeCli()

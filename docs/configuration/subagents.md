@@ -146,7 +146,7 @@ Every row also takes a typed answer, because opencode's form has a custom-answer
 
 **What the answer actually changes.** Each subagent opencode starts gets its own `claude` process, and the answer reaches that process directly: the model as `--model`, the effort as `CLAUDE_CODE_EFFORT_LEVEL`, and the account as that account's wrapper and `CLAUDE_CONFIG_DIR`. A dispatch answer beats `forceModel`, `defaultSubagentModel` and the inherited effort, because it is about this dispatch and a file on disk could not have known about it. It stays with that subagent session for the whole of its life, so its later turns do not change model halfway through.
 
-**How a choice finds its child.** opencode starts each subagent as a new session whose first user message is the task prompt the dispatch wrote, verbatim, with `parentID` set to the dispatching session. The plugin records one claim per task keyed on those three things (the dispatching session, the subagent type, the task prompt) and a child takes a claim only when its own `parentID` confirms the parent. Two concurrent subagents of the same type are told apart by their prompts; two tasks whose prompt and type are byte-identical are interchangeable, and take one claim each.
+**How a choice finds its child.** opencode starts each subagent as a new session whose first user message is the task prompt the dispatch wrote, with `parentID` set to the dispatching session. The plugin records one claim per task keyed on those three things (the dispatching session, the subagent type, the task prompt) and a child takes a claim only when its own `parentID` confirms the parent. opencode 1.x sends that prompt verbatim; opencode 2.x puts one line of its own in front of it, so the plugin accepts the task prompt either as the whole first message or as its last line. Two concurrent subagents of the same type are told apart by their prompts; two tasks whose prompt and type are byte-identical are interchangeable, and take one claim each.
 
 **Dismissing the form never loses the dispatch.** A dismissed, unanswered or unrecognised form releases the subagents with the defaults, which is exactly what would have happened without the option, and writes one line saying so:
 
@@ -170,6 +170,8 @@ picked still applies.
 ```
 
 **The rest of the rails.** Never on compaction turns. Never inside a child session: a subagent that dispatches subagents of its own follows the choice its parent made for it, so a form never appears in a session you are not looking at. Only where opencode's registry actually has the `question` entry, since a `question` call on a build without it renders as `⚙ invalid`. Both transports, both opencode majors.
+
+Measured live on opencode 1.x and opencode 2.x (2026-10-08 on 2.0.22): a two-type dispatch raised all three screens, and each child spawned with the model, the effort and the account config dir picked for its own agent type. `Same as last time` reproduced both children on the next dispatch, and still did after opencode was restarted.
 
 ## Fallback model chain
 

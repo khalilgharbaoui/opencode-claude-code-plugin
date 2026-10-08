@@ -27,4 +27,5 @@ Verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxi
 
 - **`/btw` is answered after the running turn**, not inside it. opencode 2's plugin API has no session-status route, which is what 1.x uses to write the answer into a turn that is still running. The aside is queued, so it can never swallow the turn's own continuation.
 - **No todo panel.** opencode 2 has no `todowrite` tool, so Claude's task list is not mirrored into one.
-- **Account failover and the plan-mode form** use opencode 2's `question` tool, which takes the same input as 1.x. Both are covered by offline tests only on 2.x, since neither can be triggered on demand.
+- **Forms are opencode 2's own `Form` surface** rather than a question tool, which changes nothing you do: pick an option as usual. The account-switch form and the plan-mode approval were measured live on 2.0.22 (2026-10-07), and the [subagent dispatch form](configuration/subagents.md#choosing-per-dispatch-not-per-file) on 2026-10-08.
+- **An account switch, by hand or through the form, carries the conversation** on opencode 2 exactly as on 1.x, and [`accountGroups`](configuration/accounts.md#account-groups) blocks it exactly as on 1.x. Both measured live on 2.0.22 (2026-10-08).

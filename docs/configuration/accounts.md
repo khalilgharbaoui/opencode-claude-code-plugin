@@ -89,6 +89,8 @@ What it needs, and what it refuses:
 
 Which of the two happened is one NOTICE line in the log: `continuing this conversation's claude session under the new model or effort instead of replaying it`, or `replaying the conversation as text: no claude session was available to continue` with the reason it refused on.
 
+Measured live on opencode 1.x and opencode 2.x (2026-10-08 on 2.0.22): one session, a turn on the default account, then a turn on the second account's provider, which resumed the first account's Claude session id after the transcript was copied into its config dir. Switching back resumed it again, taking a fresh id because the first account's own path still held the older copy it left behind, and it was the longer copy (the one the second account had been writing) that came home.
+
 If the two accounts are not meant to see each other's work, name them into separate [account groups](#account-groups).
 
 ### Account groups
@@ -130,6 +132,7 @@ Details worth knowing:
 - Compaction turns are exempt, as they are from every other account rule, and a child session follows its parent's account as it always did.
 - The [subagent dispatch form](subagents.md#choosing-per-dispatch-not-per-file) (`subagentDispatch: "ask"`) is the one way a subagent runs on another account, and every account it offers, typed `@name` answers included, is in the dispatching account's own group. Other groups are offered only with `"subagentDispatchCrossGroup": true`, which is off by default.
 - The resolved map is shown in the startup block and in `/claude-code-doctor` as `accountGroups`, names only.
+- Measured live on opencode 1.x and opencode 2.x (2026-10-08 on 2.0.22): with the two accounts in different groups, the same by-hand switch spawned with no `--resume`, copied no transcript, sent an envelope holding only the latest message, and wrote the note once.
 - This is a guard on what the **plugin** moves on its own. It is not a permission system: it cannot stop you typing a secret into the other account yourself, and it does not change what either account's Claude Code can read on disk.
 - The guard reads which account answered this conversation from the plugin's own session state and from the resume store. With `"resumeAfterRestart": false` **and** an opencode restart in between, this process has never seen the other account and cannot know a switch happened; nothing is carried either way in that case, because the carry reads the same record, so the worst outcome is a replay rather than a leak.
 
