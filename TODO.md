@@ -84,9 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer on v0.52.0's two open decisions: "make that also possible account choice per
-  agent type i guess, same as last time should persist during that session i guess restart or no
-  restart should follow the session". In progress, one lane.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
@@ -105,12 +102,16 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.53.0): "make that also possible account choice per agent type ... same as
+  last time should persist during that session ... restart or no restart should follow the session".
+  `Per type…` on the dispatch's Account row, `@<account>` in a typed answer for one task, and the last
+  choice persisted per opencode session (PR #106, h #g228). Live on 1.18.35 with a fake CLI, including
+  a server restart. 1,505 tests.
 - 2026-10-08: **done** (v0.52.0): "go for 1 ... allow distinction if agent type is diffrent ... one
   implementor to be more powerfull than the rest ... design this thoughtfull and carefully". Opt-in
   `subagentDispatch: "ask"`: one question first, then per type (plus account), then per task; account
   same-group only unless `subagentDispatchCrossGroup` (PR #105, h #g227). Live on 1.18.35 with a fake
-  CLI; not live on 2.x or the PTY. Left for the maintainer: the account is one choice per dispatch
-  (not per type), and "same as last time" lives in memory (not across an opencode restart).
+  CLI; not live on 2.x or the PTY. Both open decisions were changed in v0.53.0.
 - 2026-10-08: **done** (v0.51.0): "if i have a conversatiin in claude ... switch to claude-appical and
   continue", then "lets build the guard and make it optional ... mark which account is work account".
   A by-hand account switch now carries the conversation like a model change, and `accountGroups`
