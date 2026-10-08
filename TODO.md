@@ -84,6 +84,13 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "if i have a conversatiin in claude for example and limits hit and i want to
+  switch to claude-appical and continue would 3 be helpfull for that?" Found: `crossAccountResume`
+  carries the conversation only through the switch form or the override that follows it (same session
+  key). Picking a `claude-appical` model by hand changes the key's provider, so `findSiblingResumePoint`
+  never matches (`modelSiblingSignature` keeps the provider) and the thread is replayed as text.
+  Proposed: treat a key that differs only in its account provider as a sibling and carry the
+  transcript. Awaiting the maintainer: build it or not.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
