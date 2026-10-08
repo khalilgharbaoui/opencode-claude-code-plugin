@@ -149,6 +149,7 @@ import {
   findSiblingResumePoint,
   recordResumePoint,
 } from "./session-resume-store.js"
+import { recordSessionSpawn } from "./spawn-record-store.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
 import {
   carryTranscriptToAccount,
@@ -1405,6 +1406,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
 
     if (!compactionMode) invalidateOtherEffortSessions(baseKey, reasoningEffort)
+
+    // What this session REALLY spawns as, for the TUI's Subagents section
+    // (h #g234). Written here, past every branch that answers without the CLI
+    // (title, doctor, aside, the dispatch form), because opencode only ever
+    // knows the model it asked for: forceModel, an agent's effort, the dispatch
+    // form, the fallback chain and a failover all change the spawn without
+    // telling it. One write per session per process, more only on change.
+    if (!compactionMode && affinity !== "default") {
+      recordSessionSpawn(affinity, {
+        model: stripAccountSuffix(failover.modelId),
+        effort: reasoningEffort,
+        account:
+          (this.config.failoverAccounts?.length ?? 0) > 1
+            ? (failover.target ?? sourceAccount)
+            : undefined,
+      })
+    }
 
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")

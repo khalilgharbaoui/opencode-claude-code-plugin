@@ -258,6 +258,18 @@ Everything else is optional. Models appear in the picker without extra config. T
 `plugin` key is read by both opencode majors, so this block needs no edit after an
 opencode 2 upgrade.
 
+On opencode 1.x, the sidebar's **Subagents** section (below) also needs the same spec in
+`~/.config/opencode/tui.json`, because 1.x loads TUI plugins only from that file's
+`plugin` array, never from `opencode.json`'s:
+
+```json
+{ "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"] }
+```
+
+Same spec as in `opencode.json`, a `file://` checkout path included (1.x reads the
+package's `exports["./tui"]`). opencode 2 needs nothing: it finds `<dir>/tui` through the
+`plugins` entry it already has.
+
 ### opencode 2
 
 Same package, same config. 2.x's native key is `plugins` (plural), but it still reads 1.x's `plugin` key, so an existing install needs no edit:
@@ -865,6 +877,21 @@ the batch is reported as an error). Foreground results and every other tool
 are unchanged. The lookup is bounded (four at a time, 500 ms in all) and the line is
 simply left out when it runs over or a child cannot be read, so a missing line is not a
 fault. There is no option for it.
+
+### Subagents in the sidebar
+
+Always on, no option. While the viewed session has subagents, the sidebar ends with a
+`Subagents` section: one row each, running first (spinner in the theme accent), then up
+to three finished ones (✓ or ✗, greyed out, gone after ten minutes), with the agent type,
+the task description, a dim `bg` for background dispatches, and a muted second line
+`model · effort · account` (account only on a multi-account install). That line is what
+the plugin really spawned, read from `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json`,
+so `forceModel`, an agent's `reasoningEffort`, a dispatch-form answer, the fallback chain
+and a failover all show there, while opencode's own footer shows the model it asked for.
+Clicking a row opens the subagent's session; `up` returns to the parent. More than two
+rows fold behind a `▼` heading. Setup: nothing on opencode 2; on opencode 1 the
+`tui.json` line under Minimum install. If the section never appears on 1.x, that line is
+missing or opencode was not fully restarted.
 
 ### Let Claude load the user's opencode skills
 

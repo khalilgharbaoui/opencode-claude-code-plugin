@@ -29,6 +29,14 @@ opencode reads a global config at `~/.config/opencode/opencode.json` (or `$XDG_C
 
 That package spec is the whole install. Do **not** `npm install` the package yourself: opencode resolves and caches plugin packages on its own. You do not need a `provider` block either, unless you want to change one of the [options](./configuration/options.md).
 
+On opencode 1.x, add the same spec to `~/.config/opencode/tui.json` as well, to get the [Subagents section in the sidebar](./guides/subagents-sidebar.md): opencode 1 loads TUI plugins from that file's `plugin` array, not from `opencode.json`'s. opencode 2 needs nothing extra.
+
+```json
+{
+  "plugin": ["@khalilgharbaoui/opencode-claude-code-plugin"]
+}
+```
+
 ## 3. Restart opencode and verify
 
 Quit opencode fully and relaunch it: plugins are loaded once, at process start, so a reload is not enough.

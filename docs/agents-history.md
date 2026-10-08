@@ -5152,3 +5152,140 @@ the line is added. Test: `test/background-running-count.test.ts` (a batch of
 two started, one `kind: "error"`, one `isError` text carrying an envelope, one
 missing); both mutations (nothing read from an error result, failed sections
 read) fail it.
+
+<a id="g234"></a>
+
+#### The sidebar's Subagents section, and what each major's TUI can see (2026-10-08)
+
+The maintainer asked for a short, always-on list of running subagents at the
+bottom of the sidebar, spinner first, clickable, with "what model/effort/account
+its on at that moment" shown subtly. It shipped as the package's first TUI
+module (`src/tui.ts`), on both majors from one file. Everything below was
+measured live, nothing billed: the real opencode TUI in Bun's PTY, mirrored into
+`@xterm/headless` for screen text and cell colours, SGR mouse sequences for
+clicks and hover, a scratch `HOME` and all four XDG dirs plus `TMPDIR`, a
+scripted fake `claude` (`--version` 2.1.293) whose parent turn called the proxy's
+`task` twice (one `background: true` `explore` on a scratch second account, one
+foreground `implementor`), and children that slept 45 s and 20 s. The work
+account was never read, written or spawned against.
+
+##### How a TUI plugin is loaded
+
+- **opencode 1.18.35** builds its TUI plugin list from `tui.json` only: global
+  `~/.config/opencode/tui.json`, `OPENCODE_TUI_CONFIG`, project `tui.json` and
+  `.opencode/tui.json` (`TuiConfig.loadState`, read out of the binary). A package
+  is resolved to `exports["./tui"]` (server stays `exports["./server"]` or
+  `main`), and the module must default-export `{ id?, tui }` without `server`
+  (it throws on both). Measured: with only the `opencode.json` entry the section
+  never appeared; with `{"plugin": ["file://<checkout>"]}` in `tui.json` it did.
+  So 1.x needs that one line and nothing can remove it short of writing the
+  operator's config, which the plugin does not own. `opencode plugin <spec>`
+  writes both files for a package exposing both targets (read, not run).
+- **opencode 2.0.22** resolves a configured plugin directory to
+  `{server: <dir>/server|<dir>, tui: <dir>/tui, rpc: <dir>/rpc}` and the TUI
+  module must default-export `{ id, setup }` (`_Ct`). Measured: with the existing
+  `<checkout>/dist` entry and no other config, the build without `setup` showed
+  `1 plugin failed` / `Invalid V2 TUI plugin module`, and the build with it
+  rendered the section. So 2.x needs nothing.
+- **Both majors resolve `@opentui/core`, `@opentui/solid` and `solid-js` in a
+  plugin module to their own bundled copies** (1.18.35:
+  `bun-plugin-opentui-runtime-modules`, `nodeModulesRuntimeSpecifiers: true`), and
+  compile `.tsx` only outside `node_modules`. So the module is plain JS using the
+  universal renderer's `createElement` / `insert` / `setProp` / `effect`, exactly
+  what opencode's own compiled sidebar sections call, and the package gains no
+  dependency.
+
+##### What the TUI can see
+
+- **1.x: a RUNNING `task` part carries no `state.metadata`** (three ticks 3 s apart
+  during a 20 s child), so the child session id is only on the part once it
+  completes; it then holds `{parentSessionId, sessionId, model, background?}`.
+  The child session is titled `<description> (@<agent> subagent)`, which is how a
+  running part is matched to its child. 1.x's TUI state has no session list, so
+  children come from `session.created` / `session.updated` events (they arrive
+  for unviewed children, with `parentID`), one `client.session.children` fetch
+  per parent, and finished parts.
+- **1.x: `session.status` events and `api.state.session.status(child)` are live
+  for a child nobody is viewing**: `busy` at dispatch, `idle` at 18:09:54 when the
+  45 s child ended.
+- **A background part completes at once** with `<task id state="running">`; the
+  child's end is a synthetic user part in the parent,
+  `<task id="ses_..." state="completed">` (1.x), or a message of type `synthetic`
+  with `<subagent sessionID="ses_..." state="completed">` and
+  `metadata.childID` (2.x).
+- **2.x** hands a TUI plugin `data.session.list()` (children carry `parentID`,
+  `agent`, `model`, `time`; the title is the bare description),
+  `data.session.status(id)` as `"running" | "idle"`, and assistant messages with
+  inline `content[]` tool items named `subagent` whose running state DOES carry
+  `metadata.sessionID`. Its theme is a different shape (`text.base`,
+  `text.muted`, `text.feedback.{success,error}.{base,muted}`,
+  `background.raised.base`, `hue.accent[100..900]`).
+- **Neither major routes to a message or scrolls**: 1.x `route.navigate("session",
+  {sessionID})`, 2.x `ui.router.navigate({type: "session", sessionID})`. A click
+  opens the child session; opencode's own `up` (`session_parent`, no leader in a
+  child view) returns, `left`/`right` step siblings. Measured on both.
+- **`onMouseDown`, `onMouseOver` and `onMouseOut` on a slot's box reach the
+  plugin** (1.x event x/y are 0-based). A keyboard path of our own was not added:
+  opencode's child-session keys already are one.
+
+##### Effort, and why the server half had to say what spawned
+
+An `implementor` agent file with `forceModel: claude-sonnet-5-5` and
+`reasoningEffort: high` spawned (`--model claude-sonnet-5-5`,
+`CLAUDE_CODE_EFFORT_LEVEL=high`, read off the fake's own log), while the finished
+part's `metadata.model` said `claude-code-default/claude-opus-5-5`, no message
+carried an effort, and opencode's own footer in the child read `Implementor ·
+Claude Opus 5.5 (4×)` on both majors. Everything that rewrites a spawn on the
+plugin side is invisible to opencode by construction, so the TUI-side sources
+are wrong exactly when the operator configured something. The two halves share no
+memory on either major, so the provider writes
+`$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json`
+(`recordSessionSpawn`, on change only, `{model, effort, account, at}`, account only
+with several accounts) and the TUI re-reads it when its `stat` changes. Both the
+1.x TUI and the 2.x plugin subprocess saw the same file. The section showed
+`sonnet-5.5 · high · default` for that child and `haiku-4.5 · alpha` for the
+`explore` one on the scratch account.
+
+##### Layout and look, measured
+
+`sidebar_footer` is 1.x's `single_winner` slot held by opencode's own footer, so
+the section is `sidebar_content` at order 900 (after files at 500); it renders
+below Context and LSP. The sidebar is 42 columns with 2+2 padding and a 1-column
+inner pad, so rows are laid out for 36 cells. Cell colours read back on 1.18.35's
+default dark theme: heading and agent/description `#eeeeee` (`text`), spinner
+`#9d7cd8` (`accent`), `bg` and the model line `#808080` (`textMuted`), a finished
+row's ✓ `#7fb088` (success mixed 45% toward muted) with the rest of the row muted,
+and a hovered row's background `#1e1e1e` (`backgroundElement`) restored to the
+panel's `#141414` on leave. 2.x draws its own conversation spinner muted; ours
+keeps the accent so a running row reads at a glance. Four rows put a `▼` on the
+heading; clicking it folded the list to `▶ Subagents (1 running)` and back.
+
+Screens captured on 1.18.35, running and then finished:
+
+```
+Subagents
+⠼ explore Survey docs for stale…  bg
+  haiku-4.5 · alpha
+⠼ implementor Fix the dispatch form…
+  sonnet-5.5 · high · default
+```
+
+```
+Subagents
+✓ explore Survey docs for stale…  bg
+  haiku-4.5 · alpha
+✓ implementor Fix the dispatch form…
+  sonnet-5.5 · high · default
+```
+
+2.0.22 rendered the same rows below its Context block, flipped both to ✓ and
+navigated on click.
+
+##### Rig trap
+
+A fake `claude` must not answer a stdin line that arrives while it is inside a
+proxied call: the plugin forwards a user message that arrives beside a tool
+result (PR #88), a real CLI queues it, and a fake that answers it
+with a `result` frame ends the turn while the call is parked, which surfaced as
+`Provider stream was aborted while opencode was running its proxy tool calls`.
+That is the fake's fault, not the plugin's.
