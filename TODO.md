@@ -93,8 +93,9 @@ raised, so they survive context compaction; removed when answered, done or dropp
   next call came after). The parent here is ~1,500 messages / 10 MB, and tool round trips in it grew from
   ~4 s to 100 to 250 s over the day. The subagent's claude waits for opencode_proxy, hits Claude Code's
   30 s MCP connect timeout and starts WITHOUT its tools ("no shell tool"). Next: confirm in a fresh session;
-  find whether opencode or a plugin (dcp's message transform) burns the time; plugin-side, raise the
-  spawn's MCP connect timeout so a subagent waits instead of running toolless. Awaiting the maintainer.
+  find whether opencode or a plugin (dcp's message transform) burns the time. Maintainer: "1". The
+  plugin-side half is **done** (v0.54.2, h #g235): `MCP_TIMEOUT=120000` on every spawn unless set.
+  Still open: attribute the stall (opencode vs dcp) by comparing in a fresh session.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
