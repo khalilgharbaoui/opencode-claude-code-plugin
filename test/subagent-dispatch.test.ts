@@ -36,6 +36,7 @@ import {
 import { parseQuestionAnswers } from "../src/plan-mode-question.js"
 import { taskBatchTasks } from "../src/proxy-mcp.js"
 import { _reloadDispatchChoiceStore } from "../src/dispatch-choice-store.js"
+import { deleteActiveProcessesForSession } from "../src/session-manager.js"
 
 const SK = "/work::claude-opus-5::tools::ses_parent::context=[\"claude-code\",\"build\"]"
 
@@ -1028,4 +1029,46 @@ test("a remembered choice is dropped when the opencode session is deleted", () =
   forgetDispatchChoicesForSession("ses_parent")
   _reloadDispatchChoiceStore()
   assert.equal(recallDispatchChoice("ses_parent", "implementor"), undefined)
+})
+
+test("a per-type account row overrides an account typed on the type's own row", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker", "spare"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  // The type row names a model, an effort and an account in one typed answer,
+  // and the Account row asks to decide the account on the next screen. The
+  // later, narrower screen is the one that has to win.
+  const detail = answerForm(form, [
+    "claude-opus-5-5 max @worker",
+    DEFAULT_ANSWER,
+    PER_TYPE_ANSWER,
+  ])
+  assert.equal(detail?.kind, "form")
+  if (detail?.kind !== "form") return
+  const step = answerForm(detail.call, ["spare", DEFAULT_ANSWER])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "spare",
+  })
+  assert.deepEqual(step.choices.get(1), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "spare",
+  })
+  assert.equal(step.choices.get(2), undefined)
+})
+
+test("deleting the opencode session drops the remembered choices from disk", () => {
+  _resetSubagentDispatchForTests()
+  rememberDispatchChoice("ses_parent", "implementor", { effort: "max" })
+  rememberDispatchChoice("ses_other", "implementor", { effort: "low" })
+  // The `session.deleted` path, which is the only thing that reaches the store
+  // with a session id rather than a session key.
+  deleteActiveProcessesForSession("ses_parent")
+  _reloadDispatchChoiceStore()
+  assert.equal(recallDispatchChoice("ses_parent", "implementor"), undefined)
+  assert.deepEqual(recallDispatchChoice("ses_other", "implementor"), { effort: "low" })
 })

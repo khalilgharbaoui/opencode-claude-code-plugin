@@ -117,7 +117,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `accountInProcess` | boolean | unset/derived | Set by the config hook on Windows, where there is no per-account wrapper script: the spawn exports `CLAUDE_CONFIG_DIR` itself and strips the `@<account>` marker off `--model`. Do not hand-wire it. |
-| `subagentDispatch` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` raises the form**, so unset and `"off"` are identical and a dispatch is handed to opencode exactly as it is today. With `"ask"`, a proxied `task` or `task_batch` call is held at the drain and the turn ends on opencode's native `question` form asking how the subagents should run; the real `task` calls are released, with the answer applied, on the next step of the SAME opencode turn. Always exactly one question first (`Same as last time` when this conversation has one, `Default`, four curated model/effort combos, `Customise…`), so the common answer is one click. `Customise…` opens a second form with one row per agent type plus one account row when more than one account is offered, and a type row can ask for a third form with one row per task in that group. Every row takes a typed answer too: a model id, an effort level, or both (`claude-opus-5-5 max`); anything unrecognised keeps that row's default with a NOTICE. The answer applies to each child's own `claude` spawn (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`, and the account's wrapper and `CLAUDE_CONFIG_DIR`) and beats `forceModel`, `defaultSubagentModel` and the inherited effort, because it is about this dispatch. A child is matched to its task by the dispatching session, the subagent type and the task prompt, verified against `parentID`. A dismissed or unanswered form dispatches with the defaults and writes one `▌ **subagent dispatch:**` note; the dispatch is never lost. Never on compaction turns, never inside a child session (a subagent follows the choice its own parent made for it), and only where opencode's registry has the `question` entry. `Same as last time` is per conversation and per agent type, in memory, so it is not offered again after an opencode restart. Both transports, both opencode majors. |
+| `subagentDispatch` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` raises the form**, so unset and `"off"` are identical and a dispatch is handed to opencode exactly as it is today. With `"ask"`, a proxied `task` or `task_batch` call is held at the drain and the turn ends on opencode's native `question` form asking how the subagents should run; the real `task` calls are released, with the answer applied, on the next step of the SAME opencode turn. Always exactly one question first (`Same as last time` when this conversation has one, `Default`, four curated model/effort combos, `Customise…`), so the common answer is one click. `Customise…` opens a second form with one row per agent type plus one account row when more than one account is offered. That account row also offers `Per type…` when the dispatch has more than one agent type, and a type row with more than one task offers `Per task…`; either one opens a third form, and asking for both gives one third form carrying the per-type account rows followed by the per-task rows. Every row takes a typed answer too: a model id, an effort level, an `@account`, or any combination (`claude-opus-5-5 max @worker`); anything unrecognised keeps that row's default with a NOTICE. **The account is choosable at three widths and the narrowest wins**: the dispatch (`Account` row), the agent type (`Per type…` or `@name` on the type's row) and one task (`@name` on its row in the third form). Every account answer, typed ones included, is checked against the same same-group candidate list. The answer applies to each child's own `claude` spawn (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`, and the account's wrapper and `CLAUDE_CONFIG_DIR`) and beats `forceModel`, `defaultSubagentModel` and the inherited effort, because it is about this dispatch. A child is matched to its task by the dispatching session, the subagent type and the task prompt, verified against `parentID`. A dismissed or unanswered form dispatches with the defaults and writes one `▌ **subagent dispatch:**` note; the dispatch is never lost. Never on compaction turns, never inside a child session (a subagent follows the choice its own parent made for it), and only where opencode's registry has the `question` entry. `Same as last time` is per opencode session and per agent type and is kept in `$XDG_STATE_HOME/opencode-claude-code-plugin/subagent-dispatch.json` (`0600`, capped at 128 sessions and 32 agent types each, pruned at 30 days, merged rather than overwritten between opencode processes, deleted with the session), so it survives an opencode restart; only the model id, effort level and account name are stored. A remembered model this install no longer has, or an account no longer configured or no longer in the group, is dropped from the row and named in one note. Both transports, both opencode majors. |
 | `subagentDispatchCrossGroup` | boolean | `false` | Let `subagentDispatch`'s account row offer accounts outside the dispatching account's own `accountGroups` group. **Off by default and never implied by anything else**: a subagent is handed the task text the main agent writes, which can quote the conversation, and it reads the repository, so offering another group is offering that group the conversation by another route. Does nothing when `accountGroups` is unset, where every account is already one group, or when `subagentDispatch` is off. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
 | `defaultSubagentCacheTtl` | string | unset | Prompt cache TTL (`5m` / `1h`) for discovered `mode: subagent` agents that declare no `cacheTtl`; the agent's own value takes precedence. Unset leaves the CLI's default (1 hour on a subscription). Unknown values warn and change nothing. Headless and interactive spawns, never compaction. |
@@ -605,25 +605,34 @@ What happens, in order:
 3. Answering anything but `Customise…` releases the subagents immediately, with that
    answer applied, on the next step of the SAME opencode turn.
 4. `Customise…` opens one row per agent type, plus an `Account` row when more than one
-   account is offered. A type with more than one task also offers `Per task…`, which
-   opens one row per task in that group.
-5. Each subagent opencode starts spawns its own `claude` with the chosen `--model`,
+   account is offered. A type with more than one task also offers `Per task…`, and the
+   account row offers `Per type…` when the dispatch has more than one agent type.
+5. Either of those opens one third form, carrying the per-type account rows first and
+   the per-task rows after them. Asking for neither never builds it.
+6. Each subagent opencode starts spawns its own `claude` with the chosen `--model`,
    `CLAUDE_CODE_EFFORT_LEVEL` and account wrapper.
 
 Rules worth stating to a user:
 
 - A dispatch answer beats `forceModel`, `defaultSubagentModel` and the inherited effort.
-- Any row takes a typed answer: a registered model id, an effort level, or both
-  (`claude-opus-5-5 max`). Unrecognised text keeps that row's default with a NOTICE.
+- Any row takes a typed answer: a registered model id, an effort level, an `@account`,
+  or any combination (`claude-opus-5-5 max @worker`). Unrecognised text keeps that row's
+  default with a NOTICE.
+- The account has three widths and the narrowest wins: the dispatch's `Account` row, the
+  agent type (`Per type…` or `@name` on the type's row), and one task (`@name` on its row
+  in the third form, which is how a single task gets its own account).
 - Dismissing or ignoring the form dispatches with the defaults and writes one
   `▌ **subagent dispatch:**` note. The dispatch is never lost.
-- The account row lists only accounts in the dispatching account's own `accountGroups`
-  group. `subagentDispatchCrossGroup: true` is the explicit, default-off opt-in for the
-  rest; it does nothing when `accountGroups` is unset.
+- Every account answer, offered or typed, is checked against the accounts in the
+  dispatching account's own `accountGroups` group. `subagentDispatchCrossGroup: true` is
+  the explicit, default-off opt-in for the rest; it does nothing when `accountGroups` is
+  unset.
 - Never on compaction, never inside a child session, and only where opencode's registry
   has the `question` entry.
-- `Same as last time` is per conversation and per agent type, in memory, so an opencode
-  restart offers `Default` again.
+- `Same as last time` is per opencode session and per agent type, kept in
+  `$XDG_STATE_HOME/opencode-claude-code-plugin/subagent-dispatch.json`, so it survives an
+  opencode restart and is deleted with the session. A remembered model or account that is
+  no longer available is dropped and named in one note.
 
 ### Degrade to another model instead of failing
 

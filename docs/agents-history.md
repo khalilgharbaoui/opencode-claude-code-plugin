@@ -4405,3 +4405,182 @@ disabling the group filter in `dispatchAccountCandidates` fails three account
 tests together; and accepting a typed account without checking it against the
 candidates fails *a typed account outside the group is refused even when the row
 exists*.
+
+<a id="g228"></a>
+
+#### The dispatch account per agent type, and a `Same as last time` that survives a restart (2026-10-08)
+
+v0.52.0 shipped the dispatch form (h #g227) with two decisions deliberately
+left open, and the maintainer reviewed both and wanted both changed: *"make that
+also possible account choice per agent type"* and *"same as last time should
+persist during that session ... restart or no restart should follow the
+session"*. Neither is a new mechanism; both are about where a decision lives.
+
+##### Why per-type accounts could not just be more options
+
+The constraint is the one (h #g227) measured and it has not moved: a form's
+question takes **exactly one answer**, and opencode has no conditional
+follow-ups inside one form. So a type row cannot offer both the four curated
+model/effort combos and the accounts as options. The three ways out, and why one
+of them was taken:
+
+- **Combo times account options.** Four combos becomes four times N, on every
+  type row. That is the explosion the four-entry combo list exists to avoid.
+- **`multiple: true` on the type row.** Measured working in (h #g227), so it is
+  real, but it turns a single-choice row into a checkbox list for everyone,
+  including the far more common install with one account and nothing to choose,
+  and it admits "two combos selected", which has no meaning.
+- **A second row per agent type.** Doubles the second form for every dispatch,
+  including every dispatch that does not want per-type accounts, which is the
+  thing the brief forbade.
+
+What was taken instead is the idiom the form already has twice. `Customise…` on
+the summary opens the type rows; `Per task…` on a type row opens the task rows;
+now **`Per type…` on the `Account` row opens one account row per agent type**.
+It costs ONE option on a row that already exists, and only when the dispatch has
+more than one agent type, because with one type that row already *is* the
+per-type choice. `Per type…` and `Per task…` build **one** third form between
+them, accounts first, since opencode answers every question of a form together
+and two screens would be two round trips for one decision.
+
+The per-task half of the brief ("a task's own row should be able to carry its
+own account too, if that fits the form cleanly") is answered by the other half
+of the design rather than by more rows: **every row's typed answer takes an
+`@name` token**, alongside the model id and the effort level it already took.
+`claude-opus-5-5 max @worker` on a type row, `@worker` on a task row. opencode's
+rows take free text and a typed answer comes back verbatim (h #g227), so this
+costs nothing but a sentence appended to the question, which is itself written
+only when there is more than one account to choose between. The `@` is
+load-bearing and not decoration: an account is a name the operator chose, a bare
+word could be a model this install does not have yet, and the marker is what
+keeps a typo refused rather than silently moving work to another usage window.
+
+So the account has **three widths and the narrowest wins**: one task, one agent
+type, the whole dispatch. A task that names none of the three runs where it
+would have run anyway, which is what keeps a dispatch with no account answer
+byte-identical to one from before any of this existed.
+
+##### The one structural subtlety, which a mutation found
+
+A per-type account is held in `PendingDispatch.typeAccounts` and deliberately
+NOT folded into `typeChoices`. The first version of this lane folded it, and the
+fold survived every test written for it, which is exactly why the mutation pass
+is run: with the account inside the type's choice, the sequence *type row typed
+`claude-opus-5-5 max @worker`, `Account` row answered `Per type…`, third form
+answered `spare`* resolves to `worker`, because `choices[i].account` is read
+before `typeAccounts`. The later, narrower screen has to win. The split is also
+what stops a per-task row that picks a bare combo, which REPLACES that task's
+choice, from silently dropping the account its type was given. The test that
+holds it is *a per-type account row overrides an account typed on the type's own
+row*.
+
+##### Where `Same as last time` lives now
+
+In `src/dispatch-choice-store.ts`, under
+`$XDG_STATE_HOME/opencode-claude-code-plugin/subagent-dispatch.json`. This
+supersedes (h #g227)'s "in memory, and that is deliberate rather than
+unfinished". That argument was that persisting it would mean a file whose
+staleness nobody can see, and the cost of not persisting was one extra read of a
+form. The maintainer's correction is the part the argument missed: an opencode
+restart is a routine thing (a config edit, a plugin upgrade, a crash) and the
+conversation on the other side of one is the **same conversation**, so forgetting
+there is forgetting something nobody said to forget. The staleness objection is
+answered directly rather than avoided, below.
+
+One record per opencode session id, holding one `{model, effort, account}` per
+agent type. Nothing else is written, and the test that holds that line passes an
+extra field in and asserts it never reaches the file: a task prompt would be
+conversation content on disk and a session key would be a working directory
+nobody asked to persist. A model id, an effort level and an account name are the
+three things the form resolves and the three things a spawn needs.
+
+The discipline is `src/session-resume-store.ts`'s (h #g197), because the failure
+modes are that file's: a missing, unreadable, truncated or half-written file is
+an EMPTY store rather than an error, a write reads the file back and merges
+first so two opencode processes keeping different conversations do not erase
+each other, the write lands by `rename`, the file is `0600` in the `0700`
+directory `claude-sessions.json` and `cleanup-stale.json` already share. Bounded
+three ways, because this is written on every answered dispatch and nothing ever
+revisits an old conversation: 128 sessions, 32 agent types inside one session,
+30 days. A deleted opencode session drops its record outright, through the same
+`deleteActiveProcessesForSession` that already forgot the child-side claim (h
+#g63), which is what keeps a reused session id from reading somebody else's
+answer.
+
+**Staleness is answered rather than hidden**, which is the piece the old
+in-memory argument was right to worry about. `usableRemembered` reduces a
+remembered choice to the parts this dispatch can still honour before the row is
+built: a model id this install no longer registers is dropped (the refusal
+`qualifyModelName` makes, because the alternative is a `--model` the CLI rejects
+on a turn somebody is waiting for), and an account that is no longer configured
+or no longer in this conversation's `accountGroups` group is dropped too. The
+row says so in its own description, AND the release writes one
+`▌ **subagent dispatch:**` note naming the agent type and the account that went
+away. Both, not one: an operator answering at the first screen reads a condensed
+per-type line and may well not notice a sentence in it, and "my subagents went
+to the wrong account" is not a thing to find out from a bill.
+
+##### The guard, which is still one rule
+
+Every account answer goes through `dispatchAccountCandidates`: the dispatch-wide
+row, the per-type rows, `parseCustomChoice`'s `@name` token (which refuses one
+outright when given no candidate list, so a caller that knows no accounts cannot
+vouch for one) and `readAccountAnswer`. That last one is deliberately NOT routed
+through `classifyAnswer`, which is about models and efforts: on a row whose whole
+answer is an account, an account the operator happened to name `high` would
+otherwise be read as a reasoning effort.
+
+`readAccountAnswer` also treats an empty row and a row left at `Default` as "do
+not move it", which is what a row nobody touched means.
+
+##### What stayed byte-identical
+
+A single-account install, or one where the group leaves one candidate, gets no
+account row, no `Per type…` option and no `@` hint in any question text: the
+whole of this is invisible there, which the test *one account on offer adds no
+row, no Per type and no typed-account hint* pins. All 36 of (h #g227)'s unit
+tests passed unmodified against this change before a line of new test was
+written, which is the other half of the same claim. With `subagentDispatch`
+unset nothing here is reached at all, and `test/subagent-dispatch-stream.test.ts`
+still asserts the argv both ways.
+
+##### What the tests cover, and what the mutations proved
+
+`test/subagent-dispatch.test.ts` grew from 36 to 51: the `Per type…` option and
+when it is offered, the per-type account rows and which tasks they land on, one
+third form carrying both kinds of row, a typed `@account` on a type row and on a
+task row, the precedence between the three widths, the per-type row overriding
+an account typed on the type's own row, the group restriction on every offered
+and typed path, `parseCustomChoice` with and without candidates, a remembered
+choice read back after a simulated restart, a remembered account and a
+remembered model that went away, and the delete through
+`deleteActiveProcessesForSession`. `test/dispatch-choice-store.test.ts` (15) is
+the file itself: round trip, restart, two writers merging, a malformed file, a
+record of the wrong shape, the age cutoff, both caps, the `0600` mode and the
+fact that nothing but the three strings is written.
+`test/subagent-dispatch-stream.test.ts` grew from 7 to 9 with two real-`doStream`
+runs: two agent types in one `task_batch` answered through `Per type…` spawn
+under two different accounts (`.claude-worker` and `.claude-spare` as each
+child's own `CLAUDE_CONFIG_DIR`), and `Same as last time` offered with the same
+model and effort after every in-memory map is dropped and only the state
+directory survives, reaching the child's spawn as `--model claude-opus-5-5` and
+`CLAUDE_CODE_EFFORT_LEVEL=max`.
+
+Twelve mutations, ten caught and two found equivalent. Caught: accepting an
+`@account` without the candidate list fails two account tests; dropping
+`readAccountAnswer`'s candidate check fails two more; reversing the account
+precedence fails *a typed @account on one task row beats its type's and the
+dispatch's*; folding the account into `typeChoices` fails the per-type override
+test (the one this pass was written for, see above); keeping a remembered
+account that is gone fails *a remembered account that is gone is not offered,
+not applied, and said out loud*; offering `Per type…` with a single agent type
+fails two; writing the `@` hint with one candidate fails the byte-identical
+test; dropping the store's merge-on-write fails *a second opencode process
+writing the same file is not erased*; never reaching the disk fails thirteen
+tests across all three files; making `forgetDispatchChoices` a no-op fails two;
+removing either cap fails its own test; and cutting
+`forgetDispatchChoicesForSession` out of the session-delete path fails
+*deleting the opencode session drops the remembered choices from disk*.
+Equivalent, and left in as intent rather than chased: `advanceTypes`'s
+`perTask.length > 0 || perTypeAccounts` guard, because `detailForm` releases on
+an empty prompt list anyway.
