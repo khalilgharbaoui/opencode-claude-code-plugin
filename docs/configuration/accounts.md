@@ -128,6 +128,7 @@ Details worth knowing:
 
 - An account name that is not in `accounts` is a typo, so it is ignored with one WARN rather than silently creating a group that guards nothing. Group names are compared case-insensitively, and so are account names.
 - Compaction turns are exempt, as they are from every other account rule, and a child session follows its parent's account as it always did.
+- The [subagent dispatch form](subagents.md#choosing-per-dispatch-not-per-file) (`subagentDispatch: "ask"`) is the one way a subagent runs on another account, and every account it offers, typed `@name` answers included, is in the dispatching account's own group. Other groups are offered only with `"subagentDispatchCrossGroup": true`, which is off by default.
 - The resolved map is shown in the startup block and in `/claude-code-doctor` as `accountGroups`, names only.
 - This is a guard on what the **plugin** moves on its own. It is not a permission system: it cannot stop you typing a secret into the other account yourself, and it does not change what either account's Claude Code can read on disk.
 - The guard reads which account answered this conversation from the plugin's own session state and from the resume store. With `"resumeAfterRestart": false` **and** an opencode restart in between, this process has never seen the other account and cannot know a switch happened; nothing is carried either way in that case, because the carry reads the same record, so the worst outcome is a replay rather than a leak.
