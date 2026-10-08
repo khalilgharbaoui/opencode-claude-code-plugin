@@ -84,14 +84,17 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: subagent startup on `appical` (~25 s), maintainer: "go" (measure it). Measured: not the
-  account and not Claude Code's startup (ready in 1.5 to 6.5 s on both accounts, three at once included).
-  Check A's own transcript: hooks done 3 s after spawn, then the first message waited 22 s for the
-  ACCOUNT's own MCP servers (the plugin passes no `--strict-mcp-config`); `slack` there is
-  `op run -- npx -y slack-mcp-server@latest`, 2.4 to 8.4 s alone or three at once today, slower at 19:00
-  (npm `@latest` resolution behind Aikido's filter, plus 1Password). Options offered: pin the slack
-  server version, drop `slack` from the two Claude accounts' own config (opencode already serves it),
-  or `strictMcpConfig: true` (also drops the claude.ai connectors). Awaiting the maintainer's pick.
+- 2026-10-08: subagent startup (~25 s). Maintainer: "do 1 but not fully just comment it out, 2 pin it, 3 lets
+  try 1 and 2 and see if 3 is needed". Done: `slack` parked under `_parkedMcpServers` in both Claude accounts'
+  `.claude.json` (pinned 1.3.0), opencode's slack pinned to 1.3.0 (backups `*.bak-slack-20261008-214042`).
+  It did not fix the wait, and option 3 (`strictMcpConfig`) would not either. Measured cause: opencode's
+  server worker FREEZES 30 to 35 s when the parent session takes its next step after a dispatch (probe on
+  the in-process proxy: no answer 21:47:20 to 21:47:56, no plugin log line in that window; the plugin's
+  next call came after). The parent here is ~1,500 messages / 10 MB, and tool round trips in it grew from
+  ~4 s to 100 to 250 s over the day. The subagent's claude waits for opencode_proxy, hits Claude Code's
+  30 s MCP connect timeout and starts WITHOUT its tools ("no shell tool"). Next: confirm in a fresh session;
+  find whether opencode or a plugin (dcp's message transform) burns the time; plugin-side, raise the
+  spawn's MCP connect timeout so a subagent waits instead of running toolless. Awaiting the maintainer.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
