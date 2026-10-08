@@ -6,6 +6,7 @@ import {
   DEFAULT_ANSWER,
   LAST_ANSWER_PREFIX,
   PER_TASK_ANSWER,
+  PER_TYPE_ANSWER,
   SUBAGENT_DISPATCH_MARKER,
   SUBAGENT_DISPATCH_TOOL_CALL_PREFIX,
   _resetSubagentDispatchForTests,
@@ -17,6 +18,8 @@ import {
   dispatchAgentTypes,
   dispatchTasksFromCalls,
   firstUserText,
+  forgetDispatchChoicesForSession,
+  rememberDispatchChoice,
   hasCandidateClaim,
   isSubagentDispatchActive,
   lookupSessionChoice,
@@ -32,6 +35,7 @@ import {
 } from "../src/subagent-dispatch.js"
 import { parseQuestionAnswers } from "../src/plan-mode-question.js"
 import { taskBatchTasks } from "../src/proxy-mcp.js"
+import { _reloadDispatchChoiceStore } from "../src/dispatch-choice-store.js"
 
 const SK = "/work::claude-opus-5::tools::ses_parent::context=[\"claude-code\",\"build\"]"
 
@@ -724,4 +728,304 @@ test("the dispatch dialog never reaches a rebuilt transcript", () => {
   // A prompt with nothing of ours in it comes back as the same object.
   const clean = [{ role: "user", content: [{ type: "text", text: "go" }] }]
   assert.equal(stripSubagentDispatchParts(clean as any), clean)
+})
+
+// ---------------------------------------------------------------------------
+// The account, at three widths (h #g228)
+// ---------------------------------------------------------------------------
+
+const TWO_TYPES = () => [
+  task({ agent: "implementor", prompt: "a", description: "first" }),
+  task({ agent: "implementor", prompt: "b", description: "second" }),
+  task({ agent: "designer", prompt: "c", description: "screen" }),
+]
+
+/** Summary then `Customise…`, which is where every account path starts. */
+function typeForm(tasks: DispatchTask[], ctx: DispatchContext) {
+  const first = createSubagentDispatchQuestion(SK, ["call-1"], tasks, ctx)
+  const step = answerForm(first, [CUSTOMISE_ANSWER])
+  if (step?.kind !== "form") throw new Error("expected the type form")
+  return step.call
+}
+
+test("the account row offers Per type only with more than one agent type", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker"] })
+  const many = typeForm(TWO_TYPES(), ctx)
+  const accountRow = many.input.questions.at(-1)!
+  assert.equal(accountRow.header, "Account")
+  assert.deepEqual(
+    accountRow.options.map((option) => option.label),
+    ["default", "worker", PER_TYPE_ANSWER],
+  )
+
+  _resetSubagentDispatchForTests()
+  const one = typeForm([task({ agent: "implementor", prompt: "a" })], ctx)
+  assert.deepEqual(
+    one.input.questions.at(-1)!.options.map((option) => option.label),
+    ["default", "worker"],
+    "with one type, per type IS this row",
+  )
+})
+
+test("one account on offer adds no row, no Per type and no typed-account hint", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  assert.deepEqual(
+    form.input.questions.map((question) => question.header),
+    ["implementor", "designer"],
+  )
+  for (const question of form.input.questions) {
+    assert.ok(!question.question.includes("@"), question.question)
+  }
+})
+
+test("Per type opens one account row per agent type, and each lands on its own tasks", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker", "spare"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  const detail = answerForm(form, [DEFAULT_ANSWER, DEFAULT_ANSWER, PER_TYPE_ANSWER])
+  assert.equal(detail?.kind, "form")
+  if (detail?.kind !== "form") return
+  assert.deepEqual(
+    detail.call.input.questions.map((question) => question.header),
+    ["implementor account", "designer account"],
+  )
+  assert.deepEqual(
+    detail.call.input.questions[0].options.map((option) => option.label),
+    ["default", "worker", "spare"],
+    "a per-type account row never offers Per type again",
+  )
+  const step = answerForm(detail.call, ["worker", "spare"])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.equal(step.choices.get(0)?.account, "worker")
+  assert.equal(step.choices.get(1)?.account, "worker")
+  assert.equal(step.choices.get(2)?.account, "spare")
+})
+
+test("Per type and Per task build ONE detail form carrying both", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  const detail = answerForm(form, [PER_TASK_ANSWER, DEFAULT_ANSWER, PER_TYPE_ANSWER])
+  assert.equal(detail?.kind, "form")
+  if (detail?.kind !== "form") return
+  assert.deepEqual(
+    detail.call.input.questions.map((question) => question.header),
+    ["implementor account", "designer account", "first", "second"],
+  )
+  const step = answerForm(detail.call, [
+    "worker",
+    DEFAULT_ANSWER,
+    "claude-opus-5-5 / max",
+    DEFAULT_ANSWER,
+  ])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+  // The task that kept the default still takes its TYPE's account: a per-task
+  // row is about the model and the effort it lists, not about the account.
+  assert.deepEqual(step.choices.get(1), { account: "worker" })
+  assert.equal(step.choices.get(2), undefined)
+})
+
+test("a typed @account on a type row moves only that type", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  const step = answerForm(form, [
+    "claude-opus-5-5 max @worker",
+    DEFAULT_ANSWER,
+    DEFAULT_ANSWER,
+  ])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+  assert.deepEqual(step.choices.get(1), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+  assert.equal(step.choices.get(2), undefined)
+})
+
+test("a typed @account on one task row beats its type's and the dispatch's", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker", "spare"] })
+  const form = typeForm(TWO_TYPES(), ctx)
+  // The whole dispatch to `spare`, the implementors to `worker` by typing it on
+  // their row, and then the first implementor alone to `default`.
+  const detail = answerForm(form, [
+    `${PER_TASK_ANSWER}`,
+    DEFAULT_ANSWER,
+    "spare",
+  ])
+  assert.equal(detail?.kind, "form")
+  if (detail?.kind !== "form") return
+  const step = answerForm(detail.call, ["@default", DEFAULT_ANSWER])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.equal(step.choices.get(0)?.account, "default")
+  assert.equal(step.choices.get(1)?.account, "spare")
+  assert.equal(step.choices.get(2)?.account, "spare")
+})
+
+test("a typed account outside the group is refused on a type row and on a task row", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({
+    accounts: ["default", "worker", "secret"],
+    groups: { secret: "locked" },
+  })
+  const form = typeForm(TWO_TYPES(), ctx)
+  // On the type row the whole answer is refused, so the row keeps its default.
+  const detail = answerForm(form, [
+    `${PER_TASK_ANSWER}`,
+    "claude-haiku-5-5 low @secret",
+    DEFAULT_ANSWER,
+  ])
+  assert.equal(detail?.kind, "form")
+  if (detail?.kind !== "form") return
+  const step = answerForm(detail.call, ["@secret", DEFAULT_ANSWER])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  for (const index of [0, 1, 2]) {
+    assert.equal(step.choices.get(index)?.account, undefined)
+  }
+  assert.equal(step.choices.get(2)?.model, undefined, "the designer kept its default")
+})
+
+test("a per-type account row never lists an account from another group", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({
+    accounts: ["default", "worker", "secret"],
+    groups: { secret: "locked" },
+  })
+  const form = typeForm(TWO_TYPES(), ctx)
+  const detail = answerForm(form, [DEFAULT_ANSWER, DEFAULT_ANSWER, PER_TYPE_ANSWER])
+  if (detail?.kind !== "form") throw new Error("expected the detail form")
+  assert.deepEqual(
+    detail.call.input.questions[0].options.map((option) => option.label),
+    ["default", "worker"],
+  )
+  // And a picked label that is not a candidate is refused there too.
+  const step = answerForm(detail.call, ["secret", "worker"])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.equal(step.choices.get(0)?.account, undefined)
+  assert.equal(step.choices.get(2)?.account, "worker")
+})
+
+test("a typed @account is accepted only against the candidates it is given", () => {
+  assert.equal(parseCustomChoice("@worker"), null, "no candidates means no account")
+  assert.deepEqual(parseCustomChoice("@worker", ["default", "worker"]), {
+    account: "worker",
+  })
+  assert.equal(parseCustomChoice("@secret", ["default", "worker"]), null)
+  assert.deepEqual(parseCustomChoice("claude-opus-5-5 max @worker", ["worker"]), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+  assert.equal(parseCustomChoice("@", ["default"]), null)
+})
+
+// ---------------------------------------------------------------------------
+// Remembering, across a restart (h #g228)
+// ---------------------------------------------------------------------------
+
+test("a remembered choice survives an opencode restart", () => {
+  _resetSubagentDispatchForTests()
+  const ctx = context({ accounts: ["default", "worker"] })
+  const tasks = [task({ agent: "implementor" })]
+  const form = typeForm(tasks, ctx)
+  answerForm(form, ["claude-opus-5-5 / max", "worker"])
+  assert.deepEqual(recallDispatchChoice("ses_parent", "implementor"), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+
+  // The next opencode process: nothing in memory, the same state directory.
+  _reloadDispatchChoiceStore()
+  assert.deepEqual(recallDispatchChoice("ses_parent", "implementor"), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+  const next = createSubagentDispatchQuestion(SK, ["call-2"], tasks, ctx)
+  const last = next.input.questions[0].options[0]
+  assert.equal(last.label, LAST_ANSWER_PREFIX)
+  assert.match(last.description, /claude-opus-5-5 \/ max @worker/)
+  const step = answerForm(next, [LAST_ANSWER_PREFIX])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), {
+    model: "claude-opus-5-5",
+    effort: "max",
+    account: "worker",
+  })
+})
+
+test("a remembered account that is gone is not offered, not applied, and said out loud", () => {
+  _resetSubagentDispatchForTests()
+  const withWorker = context({ accounts: ["default", "worker"] })
+  const tasks = [task({ agent: "implementor" })]
+  answerForm(typeForm(tasks, withWorker), ["claude-opus-5-5 / max", "worker"])
+
+  // The operator removed `worker` from `accounts`, or fenced it into another
+  // group. Either way this conversation may no longer reach it.
+  _reloadDispatchChoiceStore()
+  const fenced = context({
+    accounts: ["default", "worker"],
+    groups: { worker: "locked" },
+  })
+  const next = createSubagentDispatchQuestion(SK, ["call-2"], tasks, fenced)
+  const last = next.input.questions[0].options[0]
+  assert.equal(last.label, LAST_ANSWER_PREFIX)
+  assert.match(last.description, /claude-opus-5-5 \/ max\./)
+  assert.ok(!last.description.includes("@worker"))
+  assert.match(last.description, /no longer available/)
+
+  const step = answerForm(next, [LAST_ANSWER_PREFIX])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), { model: "claude-opus-5-5", effort: "max" })
+  assert.ok(step.note?.includes(SUBAGENT_DISPATCH_MARKER))
+  assert.match(step.note!, /"implementor" \(was "worker"\)/)
+})
+
+test("a remembered model this install no longer has is dropped from the row", () => {
+  _resetSubagentDispatchForTests()
+  rememberDispatchChoice("ses_parent", "implementor", {
+    model: "claude-opus-9-retired",
+    effort: "max",
+  })
+  const call = createSubagentDispatchQuestion(SK, ["call-1"], [task()], context())
+  const last = call.input.questions[0].options[0]
+  assert.equal(last.label, LAST_ANSWER_PREFIX)
+  // The effort survives; the model falls back to what this agent runs today.
+  assert.match(last.description, /claude-opus-5 \/ max/)
+  const step = answerForm(call, [LAST_ANSWER_PREFIX])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), { effort: "max" })
+})
+
+test("a remembered choice is dropped when the opencode session is deleted", () => {
+  _resetSubagentDispatchForTests()
+  rememberDispatchChoice("ses_parent", "implementor", { effort: "max" })
+  assert.deepEqual(recallDispatchChoice("ses_parent", "implementor"), { effort: "max" })
+  forgetDispatchChoicesForSession("ses_parent")
+  _reloadDispatchChoiceStore()
+  assert.equal(recallDispatchChoice("ses_parent", "implementor"), undefined)
 })

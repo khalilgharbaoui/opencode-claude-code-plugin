@@ -32,6 +32,7 @@ import {
   SUBAGENT_DISPATCH_TOOL_CALL_PREFIX,
   _resetSubagentDispatchForTests,
 } from "../src/subagent-dispatch.js"
+import { _setDispatchChoiceStorePath } from "../src/dispatch-choice-store.js"
 
 // Every account runtime this file builds lands under a throwaway HOME, so no
 // test writes a wrapper or a config dir into the real one.
@@ -67,10 +68,11 @@ setOpencodeClient({
     list: async () => ({ data: [{ id: "question", description: "", parameters: {} }] }),
   },
   session: {
-    // Only the child is a child; the dispatching session is a root, which is
-    // what keeps the form out of a subagent (the gate's `childSession`).
+    // Only the dispatching session is a root; everything else opencode starts
+    // here is a child of it, which is what keeps the form out of a subagent
+    // (the gate's `childSession`).
     get: async ({ path }: any) => ({
-      data: path.id === CHILD_SESSION ? { parentID: PARENT_SESSION } : {},
+      data: path.id === PARENT_SESSION ? {} : { parentID: PARENT_SESSION },
     }),
   },
 })
@@ -549,5 +551,149 @@ test("a dismissed form releases the dispatch and writes the note", async () => {
     delete process.env.FAKE_CLI_DISPATCH
     deleteActiveProcess(parentKey(fake))
     rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+/** One child doStream, as opencode starts it: its own session, its own agent. */
+async function runChild(
+  model: any,
+  sessionID: string,
+  agent: string,
+  prompt: string,
+): Promise<void> {
+  await drain(
+    await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      providerOptions: { "claude-code": { opencodeSessionID: sessionID, opencodeAgent: agent } },
+      tools: [],
+    } as any),
+  )
+}
+
+test("two agent types in one batch can go to two different accounts", async () => {
+  _resetSubagentDispatchForTests()
+  const fake = createFakeCli()
+  process.env.FAKE_CLI_DISPATCH = "1"
+  const implementorKey = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::${CHILD_SESSION}::context=["claude-code","implementor"]`,
+  )
+  const designerKey = sessionKey(
+    fake.cwd,
+    `${MODEL_ID}::tools::ses_child_designer::context=["claude-code","designer"]`,
+  )
+  try {
+    const model = buildModel(fake, {
+      subagentDispatch: "ask",
+      failoverAccounts: ["default", "worker", "spare"],
+    })
+    const first = await drain(await model.doStream(promptFor(PARENT_SESSION, "go") as any))
+    const question = first.find((part) => part.type === "tool-call")
+    const second = await drain(
+      await model.doStream(answerPrompt(PARENT_SESSION, question, ["Customise…"]) as any),
+    )
+    const typeForm = second.find((part) => part.type === "tool-call")
+    assert.deepEqual(
+      JSON.parse(typeForm.input).questions.map((entry: any) => entry.header),
+      ["implementor", "designer", "Account"],
+    )
+    // The account row sends the choice down one level instead of answering it.
+    const third = await drain(
+      await model.doStream(
+        answerPrompt(PARENT_SESSION, typeForm, ["Default", "Default", "Per type…"]) as any,
+      ),
+    )
+    const detailForm = third.find((part) => part.type === "tool-call")
+    assert.equal(detailForm.toolName, "question")
+    assert.deepEqual(
+      JSON.parse(detailForm.input).questions.map((entry: any) => entry.header),
+      ["implementor account", "designer account"],
+    )
+    const released = await drain(
+      await model.doStream(
+        answerPrompt(PARENT_SESSION, detailForm, ["worker", "spare"]) as any,
+      ),
+    )
+    assert.equal(released.filter((part) => part.type === "tool-call").length, 2)
+
+    delete process.env.FAKE_CLI_DISPATCH
+    await runChild(model, CHILD_SESSION, "implementor", ALPHA_PROMPT)
+    const implementorSpawn = fake.spawns().at(-1)
+    await runChild(model, "ses_child_designer", "designer", BETA_PROMPT)
+    const designerSpawn = fake.spawns().at(-1)
+
+    // The POSIX wrapper exports the config dir itself, so what each child's
+    // spawn recorded is the account that actually answered for it.
+    if (process.platform !== "win32") {
+      assert.match(String(implementorSpawn.configDir), /\.claude-worker$/)
+      assert.match(String(designerSpawn.configDir), /\.claude-spare$/)
+      assert.notEqual(implementorSpawn.configDir, designerSpawn.configDir)
+    }
+  } finally {
+    delete process.env.FAKE_CLI_DISPATCH
+    deleteActiveProcess(parentKey(fake))
+    deleteActiveProcess(implementorKey)
+    deleteActiveProcess(designerKey)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("Same as last time survives an opencode restart and reaches the child", async () => {
+  _resetSubagentDispatchForTests()
+  const stateDir = mkdtempSync(join(tmpdir(), "opencode-dispatch-state-"))
+  const store = join(stateDir, "subagent-dispatch.json")
+  _setDispatchChoiceStorePath(store)
+  const fake = createFakeCli()
+  process.env.FAKE_CLI_DISPATCH = "1"
+  const childKey = sessionKey(
+    fake.cwd,
+    `claude-opus-5-5::tools::${CHILD_SESSION}::context=["claude-code","implementor"]::effort=max`,
+  )
+  try {
+    const model = buildModel(fake, { subagentDispatch: "ask" })
+    const first = await drain(await model.doStream(promptFor(PARENT_SESSION, "go") as any))
+    const question = first.find((part) => part.type === "tool-call")
+    await drain(
+      await model.doStream(
+        answerPrompt(PARENT_SESSION, question, ["claude-opus-5-5 / max"]) as any,
+      ),
+    )
+
+    // The opencode process restarts: every in-memory map this plugin keeps is
+    // gone, and only the state directory survives. Same conversation on the
+    // other side of it, so the same answer has to still be on offer.
+    _resetSubagentDispatchForTests()
+    _setDispatchChoiceStorePath(store)
+    deleteActiveProcess(parentKey(fake))
+
+    const afterRestart = await drain(
+      await model.doStream(promptFor(PARENT_SESSION, "again") as any),
+    )
+    const nextQuestion = afterRestart.find(
+      (part) => part.type === "tool-call" && part.toolName === "question",
+    )
+    assert.ok(nextQuestion, "the dispatch is held again")
+    const options = JSON.parse(nextQuestion.input).questions[0].options
+    assert.equal(options[0].label, "Same as last time")
+    assert.match(options[0].description, /claude-opus-5-5 \/ max/)
+
+    await drain(
+      await model.doStream(
+        answerPrompt(PARENT_SESSION, nextQuestion, ["Same as last time"]) as any,
+      ),
+    )
+
+    delete process.env.FAKE_CLI_DISPATCH
+    await runChild(model, CHILD_SESSION, "implementor", ALPHA_PROMPT)
+    const childSpawn = fake.spawns().at(-1)
+    assert.equal(modelArg(childSpawn.argv), "claude-opus-5-5")
+    assert.equal(childSpawn.effort, "max")
+  } finally {
+    delete process.env.FAKE_CLI_DISPATCH
+    _setDispatchChoiceStorePath(null)
+    deleteActiveProcess(parentKey(fake))
+    deleteActiveProcess(childKey)
+    rmSync(fake.cwd, { recursive: true, force: true })
+    rmSync(stateDir, { recursive: true, force: true })
   }
 })

@@ -16,6 +16,7 @@ import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mod
 import { clearAccountFailoverQuestions } from "./account-failover.js"
 import {
   clearSubagentDispatchQuestions,
+  forgetDispatchChoicesForSession,
   forgetSessionChoice,
 } from "./subagent-dispatch.js"
 import { clearCompression } from "./compression-store.js"
@@ -677,8 +678,10 @@ export function deleteActiveProcessesForSession(sessionID: string): string[] {
   for (const key of released) clearBackgroundTasks(key)
   // A deleted subagent session must not keep the choice its dispatch gave it:
   // nothing will ever ask for it again, and an id opencode reuses would read
-  // somebody else's answer (h #g227).
+  // somebody else's answer (h #g227). The dispatching side of the same pair is
+  // on disk now, so the delete has to reach the file too (h #g228).
   forgetSessionChoice(sessionID)
+  forgetDispatchChoicesForSession(sessionID)
   return released
 }
 

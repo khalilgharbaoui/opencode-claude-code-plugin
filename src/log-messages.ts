@@ -16,6 +16,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "Code Mode execute not forwarded: read-only permission preset",
   "MCP server asked for operator input and was declined: a headless Claude Code session cannot prompt, so its elicitation can only be refused. Run that server's flow in Claude Code directly, or configure it not to elicit.",
   "MCP tool not routed through the proxy: another proxy tool already holds that name, and it keeps it",
+  "a remembered subagent dispatch account is no longer available",
   "account failover declined; ending the turn",
   "accountGroups must be an object mapping an account name to a group name; ignoring it",
   "accountGroups names an account that is not configured; ignoring it",

@@ -51,11 +51,36 @@
  * another route, which is the exact thing the guard exists to stop. The
  * separate `subagentDispatchCrossGroup: true` is the explicit override, and it
  * is off by default and never implied by anything else.
+ *
+ * The account is choosable at three widths, and the narrower one wins: the
+ * whole dispatch (the `Account` row), one agent type (`Per type…` on that row,
+ * or an `@name` token typed into the type's own row) and one task (an `@name`
+ * token typed into its row). Every one of those goes through
+ * `dispatchAccountCandidates`, so the group guard holds on the typed paths
+ * exactly as it does on the offered ones (h #g228).
+ *
+ * ## Remembering
+ *
+ * `Same as last time` is kept per opencode session and per agent type in
+ * `src/dispatch-choice-store.ts`, which is a file under `$XDG_STATE_HOME`: an
+ * opencode restart is a routine thing and the conversation on the other side of
+ * it is the same conversation, so the choice follows the session rather than
+ * the process (h #g228). A remembered model this install no longer has, or a
+ * remembered account this conversation may no longer reach, is dropped before
+ * it is offered and the form says so.
  */
+import { join } from "node:path"
 import { DEFAULT_ACCOUNT, ensureAccountRuntime, normalizeAccountName } from "./accounts.js"
 import { accountsShareGroup, type AccountGroups } from "./account-groups.js"
 import { REASONING_EFFORTS } from "./agent-models.js"
+import {
+  _setDispatchChoiceStorePath,
+  forgetDispatchChoices,
+  readDispatchChoice,
+  writeDispatchChoice,
+} from "./dispatch-choice-store.js"
 import { defaultModels } from "./models.js"
+import { pluginTmpDir } from "./tmp.js"
 import {
   parseQuestionAnswers,
   QUESTION_TOOL_NAME,
@@ -79,6 +104,8 @@ export const LAST_ANSWER_PREFIX = "Same as last time"
 export const CUSTOMISE_ANSWER = "Customise…"
 /** Per-type answer label that opens the per-task form for that type. */
 export const PER_TASK_ANSWER = "Per task…"
+/** Account-row answer label that opens one account row per agent type. */
+export const PER_TYPE_ANSWER = "Per type…"
 
 /**
  * The curated model and effort pairs the form offers.
@@ -140,7 +167,13 @@ export interface DispatchTask {
   description: string
 }
 
-type DispatchStage = "summary" | "types" | "tasks"
+/**
+ * `detail` is the third and last form. It carries the per-task rows `Per task…`
+ * asks for and the per-type account rows `Per type…` asks for, in one screen,
+ * because opencode answers every question of a form together and two screens
+ * would be two round trips for one decision.
+ */
+type DispatchStage = "summary" | "types" | "detail"
 
 /** What a question in a raised form is asking about. */
 type FormField =
@@ -148,6 +181,7 @@ type FormField =
   | { kind: "type"; agent: string }
   | { kind: "task"; taskIndex: number }
   | { kind: "account" }
+  | { kind: "typeAccount"; agent: string }
 
 interface PendingDispatch {
   sessionKey: string
@@ -166,7 +200,18 @@ interface PendingDispatch {
   fields: FormField[]
   /** Resolved so far, by task index. Later stages narrow these. */
   choices: Map<number, SubagentChoice>
+  /** The `Account` row's answer: every task that names nothing narrower. */
   account: string | undefined
+  /**
+   * The account for one agent type, from a typed `@name` on that type's row or
+   * from the per-type account rows `Per type…` opens. Kept apart from `choices`
+   * so a later per-task row that picks a bare model cannot silently drop it.
+   */
+  typeAccounts: Map<string, string>
+  /** What each type row resolved to, so a per-task row can offer "same". */
+  typeChoices: Map<string, SubagentChoice>
+  /** Remembered accounts that were dropped, named in one note at the release. */
+  droppedAccounts: Array<{ agent: string; account: string }>
   context: DispatchContext
 }
 
@@ -240,44 +285,77 @@ export function isSubagentDispatchActive(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * The last choice made for an agent type in one opencode conversation.
+ * The last choice made for an agent type in one opencode conversation, kept in
+ * `src/dispatch-choice-store.ts` so it survives an opencode restart (h #g228).
  *
- * In memory only, and that is deliberate rather than unfinished: it is a
- * preference about one conversation's fan-out, the two other per-conversation
- * dialogs (the plan approval and the failover override) are in memory for the
- * same reason, and persisting it would mean a file under `XDG_STATE_HOME` whose
- * staleness nobody can see. After an opencode restart the first dispatch offers
- * `Default` where it would have offered `Same as last time`, which is one extra
- * read of a form the operator was going to look at anyway.
+ * The store owns the file, the caps and the failure modes; this is the pair of
+ * names the form reads and writes. Nothing here caches on top of it: the store
+ * reads its file once per process and answers from memory after that, so a
+ * second layer would only be a second thing to invalidate.
  */
-const lastChoices = new Map<string, SubagentChoice>()
-const MAX_REMEMBERED_CHOICES = 256
-
-function lastChoiceKey(parentSessionId: string, agent: string): string {
-  return `${parentSessionId}${KEY_SEPARATOR}${agent}`
-}
-
 export function rememberDispatchChoice(
   parentSessionId: string,
   agent: string,
   choice: SubagentChoice,
 ): void {
-  if (!parentSessionId || parentSessionId === "default") return
-  const key = lastChoiceKey(parentSessionId, agent)
-  lastChoices.delete(key)
-  lastChoices.set(key, { ...choice })
-  while (lastChoices.size > MAX_REMEMBERED_CHOICES) {
-    const oldest = lastChoices.keys().next().value
-    if (oldest === undefined) break
-    lastChoices.delete(oldest)
-  }
+  writeDispatchChoice(parentSessionId, agent, choice)
 }
 
 export function recallDispatchChoice(
   parentSessionId: string,
   agent: string,
 ): SubagentChoice | undefined {
-  return lastChoices.get(lastChoiceKey(parentSessionId, agent))
+  return readDispatchChoice(parentSessionId, agent)
+}
+
+/** Drop a deleted opencode conversation's remembered choices (h #g63). */
+export function forgetDispatchChoicesForSession(opencodeSessionId: string): void {
+  forgetDispatchChoices(opencodeSessionId)
+}
+
+/**
+ * A remembered choice reduced to the parts this dispatch can still honour.
+ *
+ * Two things go stale between the answer and the next dispatch, and neither may
+ * be acted on: a model id this install no longer registers (the same refusal
+ * `qualifyModelName` makes, because the alternative is a `--model` the CLI
+ * rejects on a turn somebody is waiting for), and an account this conversation
+ * may no longer reach, because it was removed from `accounts` or moved into
+ * another `accountGroups` group. The account is the one worth naming out loud:
+ * silently running a subagent on the dispatching account when the operator
+ * asked for another one is a billing surprise, and silently running it on a
+ * group it was deliberately fenced out of would be worse.
+ *
+ * Returns `undefined` when nothing usable is left, which makes the row offer
+ * `Default` exactly as it did before anything was remembered.
+ */
+function usableRemembered(
+  context: DispatchContext,
+  agent: string,
+): { choice: SubagentChoice; droppedAccount?: string } | undefined {
+  const remembered = recallDispatchChoice(context.parentSessionId, agent)
+  if (!remembered) return undefined
+  const choice: SubagentChoice = {}
+  if (remembered.model && Object.hasOwn(defaultModels, remembered.model)) {
+    choice.model = remembered.model
+  }
+  if (remembered.effort && REASONING_EFFORTS.includes(remembered.effort)) {
+    choice.effort = remembered.effort
+  }
+  let droppedAccount: string | undefined
+  if (remembered.account) {
+    if (dispatchAccountCandidates(context).includes(remembered.account)) {
+      choice.account = remembered.account
+    } else {
+      droppedAccount = remembered.account
+    }
+  }
+  if (!choice.model && !choice.effort && !choice.account) {
+    // The account was the whole of it and it is gone: there is nothing left to
+    // offer, but the operator still has to be told why.
+    return droppedAccount ? { choice, droppedAccount } : undefined
+  }
+  return droppedAccount ? { choice, droppedAccount } : { choice }
 }
 
 // ---------------------------------------------------------------------------
@@ -310,11 +388,21 @@ const claims: DispatchClaim[] = []
 const sessionChoices = new Map<string, SubagentChoice>()
 const MAX_SESSION_CHOICES = 512
 
+let testStoreSeq = 0
+
+/**
+ * Test seam. The remembered choices live in a file now, so this points the
+ * store at a fresh one inside the plugin's own `0700` scratch directory rather
+ * than clearing the operator's: a suite run outside `npm test`, which gives
+ * every run its own `XDG_STATE_HOME`, must still never touch the real store.
+ */
 export function _resetSubagentDispatchForTests(): void {
   pending.clear()
-  lastChoices.clear()
   claims.length = 0
   sessionChoices.clear()
+  _setDispatchChoiceStorePath(
+    join(pluginTmpDir(), `dispatch-choices-${++testStoreSeq}.json`),
+  )
 }
 
 function pruneClaims(now: number): void {
@@ -561,7 +649,13 @@ function describeChoice(
   choice: SubagentChoice,
   fallback: { model: string; effort?: string },
 ): string {
-  return comboLabel(choice.model ?? fallback.model, choice.effort ?? fallback.effort)
+  const combo = comboLabel(choice.model ?? fallback.model, choice.effort ?? fallback.effort)
+  return choice.account ? `${combo} @${choice.account}` : combo
+}
+
+/** The half-sentence a row adds when a remembered account is no longer on offer. */
+function droppedAccountPhrase(account: string): string {
+  return ` The account "${account}" you picked last time is no longer available to this conversation, so this stays on the account you are on.`
 }
 
 /** The combos whose model this install actually knows. */
@@ -588,22 +682,47 @@ export function dispatchAccountCandidates(context: DispatchContext): string[] {
   return out
 }
 
-function accountQuestion(context: DispatchContext): {
+/**
+ * The account rows, which are the same row at two widths.
+ *
+ * `scope` is the whole dispatch or one agent type. Both read the same
+ * `dispatchAccountCandidates`, which is what makes the group guard one rule
+ * rather than two, and both return null below two candidates: with one account
+ * on offer there is nothing to choose and the row would be noise, which is the
+ * behaviour a single-account install has always had.
+ */
+function accountQuestion(
+  context: DispatchContext,
+  scope: { agent: string } | { types: number },
+): {
   question: string
   options: Array<{ label: string; description: string }>
 } | null {
   const candidates = dispatchAccountCandidates(context)
   if (candidates.length < 2) return null
   const source = candidates[0]
+  const perType = "agent" in scope
+  const subject = perType ? `the "${scope.agent}" subagents` : "these subagents"
+  const options = candidates.map((account) => ({
+    label: account,
+    description:
+      account === source
+        ? `Stay on this conversation's own account. This is what happens today.`
+        : `Spawn ${subject} with "${account}"'s Claude config dir, so the work draws on that account's usage window.`,
+  }))
+  // Offered only on the dispatch-wide row, and only when there is more than one
+  // type to tell apart: with one type, per type IS this row.
+  if (!perType && scope.types > 1) {
+    options.push({
+      label: PER_TYPE_ANSWER,
+      description: `Choose the account separately for each of these ${scope.types} agent types on the next screen.`,
+    })
+  }
   return {
-    question: "Which Claude account should these subagents run on?",
-    options: candidates.map((account) => ({
-      label: account,
-      description:
-        account === source
-          ? `Stay on this conversation's own account. This is what happens today.`
-          : `Spawn each subagent with "${account}"'s Claude config dir, so its work draws on that account's usage window.`,
-    })),
+    question: perType
+      ? `Which Claude account should the "${(scope as { agent: string }).agent}" subagents run on?`
+      : "Which Claude account should these subagents run on?",
+    options,
   }
 }
 
@@ -624,16 +743,20 @@ function summaryQuestion(
       : `About to dispatch ${tasks.length} subagents (${counts.join(", ")}). How should they run?`
 
   const options: Array<{ label: string; description: string }> = []
-  const remembered = types.map((agent) => recallDispatchChoice(context.parentSessionId, agent))
-  if (remembered.every((choice) => choice !== undefined)) {
+  const remembered = types.map((agent) => usableRemembered(context, agent))
+  if (remembered.every((entry) => entry !== undefined)) {
+    const dropped = remembered
+      .map((entry) => entry!.droppedAccount)
+      .find((account): account is string => !!account)
     options.push({
       label: LAST_ANSWER_PREFIX,
-      description: types
-        .map(
-          (agent, index) =>
-            `${agent}: ${describeChoice(remembered[index]!, context.describeDefault(agent))}`,
-        )
-        .join(". "),
+      description:
+        types
+          .map(
+            (agent, index) =>
+              `${agent}: ${describeChoice(remembered[index]!.choice, context.describeDefault(agent))}`,
+          )
+          .join(". ") + (dropped ? `.${droppedAccountPhrase(dropped)}` : ""),
     })
   }
   options.push({
@@ -656,7 +779,7 @@ function summaryQuestion(
     description:
       tasks.length === 1
         ? "Choose the account, or type a model and effort of your own."
-        : "Choose per agent type on the next screen, and per task after that.",
+        : "Choose per agent type on the next screen, and per account or per task after that.",
   })
   return { question, options }
 }
@@ -669,16 +792,18 @@ function typeQuestion(
   const mine = tasks.filter((task) => task.agent === agent)
   const fallback = context.describeDefault(agent)
   const question =
-    mine.length === 1
+    (mine.length === 1
       ? `"${agent}" (${mine[0].description || "no description"}): how should it run?`
-      : `"${agent}" (${mine.length} subagents): how should they run?`
+      : `"${agent}" (${mine.length} subagents): how should they run?`) + accountHint(context)
 
   const options: Array<{ label: string; description: string }> = []
-  const remembered = recallDispatchChoice(context.parentSessionId, agent)
+  const remembered = usableRemembered(context, agent)
   if (remembered) {
     options.push({
       label: LAST_ANSWER_PREFIX,
-      description: `${describeChoice(remembered, fallback)}, the last thing you picked for "${agent}" in this conversation.`,
+      description:
+        `${describeChoice(remembered.choice, fallback)}, the last thing you picked for "${agent}" in this conversation.` +
+        (remembered.droppedAccount ? droppedAccountPhrase(remembered.droppedAccount) : ""),
     })
   }
   options.push({
@@ -707,7 +832,7 @@ function taskQuestion(
 ): { question: string; options: Array<{ label: string; description: string }> } {
   const fallback = context.describeDefault(task.agent)
   const options: Array<{ label: string; description: string }> = []
-  if (typeChoice && (typeChoice.model || typeChoice.effort)) {
+  if (typeChoice && (typeChoice.model || typeChoice.effort || typeChoice.account)) {
     options.push({
       label: `Same as the rest (${describeChoice(typeChoice, fallback)})`,
       description: `What you picked for every "${task.agent}" subagent in this dispatch.`,
@@ -721,9 +846,29 @@ function taskQuestion(
     options.push({ label: comboLabel(combo.model, combo.effort), description: combo.description })
   }
   return {
-    question: `"${task.agent}": ${task.description || task.prompt.slice(0, 60)}`,
+    question: `"${task.agent}": ${
+      task.description || task.prompt.slice(0, 60)
+    }${accountHint(context)}`,
     options,
   }
+}
+
+/**
+ * The one sentence that makes a per-type and a per-task account reachable
+ * without a row of its own.
+ *
+ * A form's question takes exactly one answer, so a row cannot offer both the
+ * four model/effort combos and the accounts as options without either a
+ * combo-times-account explosion or a second row per type. opencode's rows do
+ * take free text, though, and a typed answer comes back verbatim (h #g227), so
+ * `@name` rides along with whatever else was typed. Said only when there is
+ * more than one account to choose between, so a single-account install's form
+ * is byte-identical to what it was.
+ */
+function accountHint(context: DispatchContext): string {
+  const candidates = dispatchAccountCandidates(context)
+  if (candidates.length < 2) return ""
+  return ` Add "@${candidates[1]}" to a typed answer to send it to that account.`
 }
 
 /**
@@ -783,6 +928,9 @@ export function createSubagentDispatchQuestion(
     fields: [{ kind: "all" }],
     choices: new Map(),
     account: undefined,
+    typeAccounts: new Map(),
+    typeChoices: new Map(),
+    droppedAccounts: [],
     context,
   }
   const summary = summaryQuestion(tasks, context)
@@ -794,15 +942,27 @@ export function createSubagentDispatchQuestion(
 // ---------------------------------------------------------------------------
 
 /**
- * A model and effort typed by hand.
+ * A model, an effort and an account typed by hand.
  *
  * Forgiving about the separator because an operator writes `opus 5.5 / max`,
  * `claude-opus-5-5 max` and `claude-opus-5-5, max` interchangeably, and strict
  * about the values: an unknown model or effort level is refused here rather
- * than forwarded to a spawn that would reject it. Either half alone is a valid
- * answer, so `max` on its own changes the effort and leaves the model.
+ * than forwarded to a spawn that would reject it. Any one of the three alone is
+ * a valid answer, so `max` changes only the effort and `@worker` only the
+ * account.
+ *
+ * The account must be written with a leading `@`, which is not decoration: an
+ * account is a name the operator chose and a bare word could be a model this
+ * install does not have yet, so the marker is what keeps a typo being refused
+ * rather than silently moving the work to another usage window. `candidates` is
+ * `dispatchAccountCandidates`, so the `accountGroups` guard is enforced on this
+ * path by construction; with none passed an `@name` token is refused, because a
+ * caller that knows no accounts cannot vouch for one.
  */
-export function parseCustomChoice(answer: string): SubagentChoice | null {
+export function parseCustomChoice(
+  answer: string,
+  candidates: readonly string[] = [],
+): SubagentChoice | null {
   const words = answer
     .trim()
     .split(/[\s,/]+/)
@@ -813,6 +973,12 @@ export function parseCustomChoice(answer: string): SubagentChoice | null {
   const choice: SubagentChoice = {}
   for (const word of words) {
     const lower = word.toLowerCase()
+    if (lower.startsWith("@")) {
+      const account = normalizeAccountName(lower.slice(1))
+      if (!account || !candidates.includes(account)) return null
+      choice.account = account
+      continue
+    }
     if (REASONING_EFFORTS.includes(lower)) {
       choice.effort = lower
       continue
@@ -823,7 +989,7 @@ export function parseCustomChoice(answer: string): SubagentChoice | null {
     }
     return null
   }
-  return choice.model || choice.effort ? choice : null
+  return choice.model || choice.effort || choice.account ? choice : null
 }
 
 /** A combo label (`claude-opus-5-5 / max`) back to a choice, or null. */
@@ -845,7 +1011,7 @@ type AnswerKind =
   | { kind: "choice"; choice: SubagentChoice }
   | { kind: "unknown"; answer: string }
 
-function classifyAnswer(answer: string): AnswerKind {
+function classifyAnswer(answer: string, candidates: readonly string[] = []): AnswerKind {
   const trimmed = answer.trim()
   if (!trimmed) return { kind: "default" }
   if (trimmed === DEFAULT_ANSWER) return { kind: "default" }
@@ -855,7 +1021,7 @@ function classifyAnswer(answer: string): AnswerKind {
   if (trimmed.startsWith("Same as the rest")) return { kind: "sameAsRest" }
   const combo = parseComboLabel(trimmed)
   if (combo) return { kind: "choice", choice: combo }
-  const custom = parseCustomChoice(trimmed)
+  const custom = parseCustomChoice(trimmed, candidates)
   if (custom) return { kind: "choice", choice: custom }
   return { kind: "unknown", answer: trimmed }
 }
@@ -931,7 +1097,7 @@ function advance(entry: PendingDispatch, part: any): SubagentDispatchStep {
     case "types":
       return advanceTypes(entry, answers)
     default:
-      return advanceTasks(entry, answers)
+      return advanceDetail(entry, answers)
   }
 }
 
@@ -939,18 +1105,29 @@ function applyToAll(entry: PendingDispatch, choice: SubagentChoice): void {
   for (const index of entry.tasks.keys()) entry.choices.set(index, { ...choice })
 }
 
+/** Remember that a remembered account went away, once per agent type. */
+function noteDroppedAccount(entry: PendingDispatch, agent: string, account: string): void {
+  if (entry.droppedAccounts.some((dropped) => dropped.agent === agent)) return
+  entry.droppedAccounts.push({ agent, account })
+}
+
 function advanceSummary(
   entry: PendingDispatch,
   answers: Map<string, string>,
 ): SubagentDispatchStep {
-  const answer = classifyAnswer(answers.get(entry.questions[0]) ?? "")
+  const candidates = dispatchAccountCandidates(entry.context)
+  const answer = classifyAnswer(answers.get(entry.questions[0]) ?? "", candidates)
 
   if (answer.kind === "customise") return typesForm(entry)
 
   if (answer.kind === "last") {
     for (const [index, task] of entry.tasks.entries()) {
-      const remembered = recallDispatchChoice(entry.context.parentSessionId, task.agent)
-      if (remembered) entry.choices.set(index, { ...remembered })
+      const remembered = usableRemembered(entry.context, task.agent)
+      if (!remembered) continue
+      if (remembered.droppedAccount) {
+        noteDroppedAccount(entry, task.agent, remembered.droppedAccount)
+      }
+      entry.choices.set(index, { ...remembered.choice })
     }
     return release(entry, null)
   }
@@ -983,7 +1160,7 @@ function typesForm(entry: PendingDispatch): SubagentDispatchStep {
     ...typeQuestion(agent, entry.tasks, entry.context),
   }))
   const fields: FormField[] = types.map((agent) => ({ kind: "type", agent }))
-  const account = accountQuestion(entry.context)
+  const account = accountQuestion(entry.context, { types: types.length })
   if (account) {
     prompts.push({ header: "Account", ...account })
     fields.push({ kind: "account" })
@@ -996,30 +1173,52 @@ function typesForm(entry: PendingDispatch): SubagentDispatchStep {
   }
 }
 
+/**
+ * Read an account out of a row whose whole answer IS an account: the
+ * dispatch-wide row and the per-type ones.
+ *
+ * Deliberately NOT routed through `classifyAnswer`, which is about models and
+ * efforts: an account the operator happened to name `high` would otherwise be
+ * read as a reasoning effort on its own row. The one rule that matters is the
+ * same on every path: the answer has to be in `dispatchAccountCandidates`, so
+ * an account outside this one's `accountGroups` group is refused with a NOTICE
+ * rather than quietly taking the dispatch (h #g226).
+ */
+function readAccountAnswer(
+  entry: PendingDispatch,
+  raw: string,
+  agent: string | null,
+): string | undefined {
+  const trimmed = raw.trim()
+  // An empty row and a row left at `Default` both mean "do not move it".
+  if (!trimmed || trimmed === DEFAULT_ANSWER) return undefined
+  const picked = normalizeAccountName(trimmed.startsWith("@") ? trimmed.slice(1) : trimmed)
+  const candidates = dispatchAccountCandidates(entry.context)
+  if (picked && candidates.includes(picked)) return picked
+  log.notice("subagent dispatch account answer refused", {
+    sessionKey: entry.sessionKey,
+    agent,
+    answer: trimmed,
+    candidates,
+  })
+  return undefined
+}
+
 function advanceTypes(
   entry: PendingDispatch,
   answers: Map<string, string>,
 ): SubagentDispatchStep {
+  const candidates = dispatchAccountCandidates(entry.context)
   const perTask: string[] = []
-  const typeChoices = new Map<string, SubagentChoice>()
+  let perTypeAccounts = false
 
   for (const [position, field] of entry.fields.entries()) {
     const raw = answers.get(entry.questions[position]) ?? ""
-    const answer = classifyAnswer(raw)
+    const answer = classifyAnswer(raw, candidates)
 
     if (field.kind === "account") {
-      if (answer.kind === "unknown") {
-        const picked = normalizeAccountName(answer.answer)
-        const candidates = dispatchAccountCandidates(entry.context)
-        if (candidates.includes(picked)) entry.account = picked
-        else {
-          log.notice("subagent dispatch account answer refused", {
-            sessionKey: entry.sessionKey,
-            answer: answer.answer,
-            candidates,
-          })
-        }
-      }
+      if (raw.trim() === PER_TYPE_ANSWER) perTypeAccounts = true
+      else entry.account = readAccountAnswer(entry, raw, null) ?? entry.account
       continue
     }
     if (field.kind !== "type") continue
@@ -1029,12 +1228,15 @@ function advanceTypes(
       continue
     }
     if (answer.kind === "last") {
-      const remembered = recallDispatchChoice(entry.context.parentSessionId, field.agent)
-      if (remembered) typeChoices.set(field.agent, { ...remembered })
+      const remembered = usableRemembered(entry.context, field.agent)
+      if (remembered?.droppedAccount) {
+        noteDroppedAccount(entry, field.agent, remembered.droppedAccount)
+      }
+      if (remembered) applyTypeChoice(entry, field.agent, remembered.choice)
       continue
     }
     if (answer.kind === "choice") {
-      typeChoices.set(field.agent, answer.choice)
+      applyTypeChoice(entry, field.agent, answer.choice)
       continue
     }
     if (answer.kind === "unknown") {
@@ -1047,18 +1249,44 @@ function advanceTypes(
   }
 
   for (const [index, task] of entry.tasks.entries()) {
-    const choice = typeChoices.get(task.agent)
+    const choice = entry.typeChoices.get(task.agent)
     if (choice) entry.choices.set(index, { ...choice })
   }
 
-  if (perTask.length > 0) return tasksForm(entry, perTask, typeChoices)
+  if (perTask.length > 0 || perTypeAccounts) {
+    return detailForm(entry, perTask, perTypeAccounts)
+  }
   return release(entry, null)
 }
 
-function tasksForm(
+/**
+ * Record one agent type's answer, with the account it may carry kept apart.
+ *
+ * The split is what makes the precedence survive the third form: a per-task row
+ * that picks a bare combo REPLACES that task's choice, and an account folded
+ * into it would vanish with it. Held in `typeAccounts`, it is reapplied at the
+ * release to every task of the type that named nothing narrower.
+ */
+function applyTypeChoice(
   entry: PendingDispatch,
-  agents: string[],
-  typeChoices: Map<string, SubagentChoice>,
+  agent: string,
+  choice: SubagentChoice,
+): void {
+  const { account, ...rest } = choice
+  if (account) entry.typeAccounts.set(agent, account)
+  entry.typeChoices.set(agent, rest)
+}
+
+/**
+ * The third and last form: one account row per agent type when `Per type…` was
+ * picked, then one row per task for every type that asked for `Per task…`.
+ * Built only for what was actually asked for, which is what keeps a dispatch
+ * answered at the first screen from costing anything at all.
+ */
+function detailForm(
+  entry: PendingDispatch,
+  perTaskAgents: string[],
+  perTypeAccounts: boolean,
 ): SubagentDispatchStep {
   const prompts: Array<{
     header: string
@@ -1066,26 +1294,60 @@ function tasksForm(
     options: Array<{ label: string; description: string }>
   }> = []
   const fields: FormField[] = []
+
+  if (perTypeAccounts) {
+    for (const agent of dispatchAgentTypes(entry.tasks)) {
+      const account = accountQuestion(entry.context, { agent })
+      if (!account) continue
+      prompts.push({ header: `${agent} account`, ...account })
+      fields.push({ kind: "typeAccount", agent })
+    }
+  }
+
   for (const [index, task] of entry.tasks.entries()) {
-    if (!agents.includes(task.agent)) continue
+    if (!perTaskAgents.includes(task.agent)) continue
+    // What the type row settled on, account included, so the "same as the rest"
+    // option names the whole of it rather than half.
+    const typeChoice = entry.typeChoices.get(task.agent)
+    const typeAccount = entry.typeAccounts.get(task.agent)
     prompts.push({
       header: task.description || task.agent,
-      ...taskQuestion(task, typeChoices.get(task.agent), entry.context),
+      ...taskQuestion(
+        task,
+        typeChoice || typeAccount
+          ? { ...typeChoice, ...(typeAccount ? { account: typeAccount } : {}) }
+          : undefined,
+        entry.context,
+      ),
     })
     fields.push({ kind: "task", taskIndex: index })
   }
-  entry.stage = "tasks"
+
+  // Nothing to ask (every type has one account on offer and no task row was
+  // requested): release rather than raise an empty form.
+  if (prompts.length === 0) return release(entry, null)
+
+  entry.stage = "detail"
   entry.fields = fields
-  return { kind: "form", call: buildCall(entry, prompts, questionCallId("tasks")) }
+  return { kind: "form", call: buildCall(entry, prompts, questionCallId("detail")) }
 }
 
-function advanceTasks(
+function advanceDetail(
   entry: PendingDispatch,
   answers: Map<string, string>,
 ): SubagentDispatchStep {
+  const candidates = dispatchAccountCandidates(entry.context)
   for (const [position, field] of entry.fields.entries()) {
+    const raw = answers.get(entry.questions[position]) ?? ""
+
+    if (field.kind === "typeAccount") {
+      const picked = readAccountAnswer(entry, raw, field.agent)
+      if (picked) entry.typeAccounts.set(field.agent, picked)
+      continue
+    }
     if (field.kind !== "task") continue
-    const answer = classifyAnswer(answers.get(entry.questions[position]) ?? "")
+    const answer = classifyAnswer(raw, candidates)
+
     if (answer.kind === "choice") {
       entry.choices.set(field.taskIndex, answer.choice)
       continue
@@ -1107,13 +1369,37 @@ function advanceTasks(
   return release(entry, null)
 }
 
+/**
+ * The one note a release writes when a remembered account could not be honoured.
+ *
+ * It is the complement of the option text: an operator who answers at the first
+ * screen reads a condensed per-type line and may well not notice the sentence
+ * there, and "my subagents went to the wrong account" is not a thing to find out
+ * from a bill. Named per agent type, because that is the width the choice was
+ * remembered at.
+ */
+function droppedAccountNote(
+  dropped: ReadonlyArray<{ agent: string; account: string }>,
+): string {
+  const list = dropped.map((entry) => `"${entry.agent}" (was "${entry.account}")`).join(", ")
+  return (
+    `\n${SUBAGENT_DISPATCH_MARKER} The account you last picked for ${list} is no` +
+    ` longer configured for this conversation, or no longer in its account group,` +
+    ` so that work stays on the account you are on. Everything else you picked` +
+    ` still applies.\n`
+  )
+}
+
 function release(entry: PendingDispatch, note: string | null): SubagentDispatchStep {
-  if (entry.account) {
-    for (const [index, task] of entry.tasks.entries()) {
-      const current = entry.choices.get(index) ?? {}
-      entry.choices.set(index, { ...current, account: entry.account })
-      void task
-    }
+  // The account, narrowest width first: a task's own, then its agent type's,
+  // then the dispatch-wide row. A task that names none of the three is left
+  // exactly as it was, which is what keeps a dispatch with no account answer
+  // byte-identical to one from before this existed.
+  for (const [index, task] of entry.tasks.entries()) {
+    const current = entry.choices.get(index)
+    const account = current?.account ?? entry.typeAccounts.get(task.agent) ?? entry.account
+    if (!account) continue
+    entry.choices.set(index, { ...(current ?? {}), account })
   }
   // Remembered per agent type, from the first task of that type that resolved
   // to anything: a per-task override is about one task, not about the type.
@@ -1124,6 +1410,15 @@ function release(entry: PendingDispatch, note: string | null): SubagentDispatchS
     if (!choice || (!choice.model && !choice.effort && !choice.account)) continue
     seen.add(task.agent)
     rememberDispatchChoice(entry.context.parentSessionId, task.agent, choice)
+  }
+  if (!note && entry.droppedAccounts.length > 0) {
+    log.notice("a remembered subagent dispatch account is no longer available", {
+      sessionKey: entry.sessionKey,
+      // `agent` rather than a key of its own: `dropped` already means a count
+      // in the bundle allowlist, and these are agent names like every other.
+      agent: entry.droppedAccounts.map((dropped) => dropped.agent),
+    })
+    note = droppedAccountNote(entry.droppedAccounts)
   }
   return {
     kind: "release",
