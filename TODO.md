@@ -84,22 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "if i have a conversatiin in claude for example and limits hit and i want to
-  switch to claude-appical and continue would 3 be helpfull for that?" Found: `crossAccountResume`
-  carries the conversation only through the switch form or the override that follows it (same session
-  key). Picking a `claude-appical` model by hand changes the key's provider, so `findSiblingResumePoint`
-  never matches (`modelSiblingSignature` keeps the provider) and the thread is replayed as text.
-  Proposed: treat a key that differs only in its account provider as a sibling and carry the
-  transcript. Maintainer follow-up: "is it not smart to build something that allows all accounts and
-  all models to access ? (maybe by symlinking or something?)". Answered: one rule for any account and
-  any model (provider, model and effort may all differ), storage stays copy-on-switch; a shared or
-  symlinked `projects/` would not fix the by-hand case (the plugin's key lookup is the gap, not file
-  visibility) and would merge the work and private accounts' history and auto-memory. Maintainer
-  2026-10-08: "lets build the guard and make it optional just in case we need to turn it on maybe make
-  it smart that we can 1 turn it on and 2 mark which account is work account". In progress: account
-  groups (off unless set), a conversation follows any account and model within a group, never across;
-  a cross-group switch starts fresh with no history (a replay would send it too) and the form offers
-  same-group accounts only.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
@@ -118,6 +102,11 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.51.0): "if i have a conversatiin in claude ... switch to claude-appical and
+  continue", then "lets build the guard and make it optional ... mark which account is work account".
+  A by-hand account switch now carries the conversation like a model change, and `accountGroups`
+  (off unless set) keeps it inside a group; across groups nothing is sent, not even a replay
+  (PR #104, h #g226). Live on 1.18.35 with a scratch second account. 1,430 tests.
 - 2026-10-07: **done** (v0.46.1): Windows spawns through `cmd.exe` with no argument quoting
   (open since 2026-09-26). Fixed with a resolver and doubled-quote escaping, verified by the
   Windows CI job (PR #95, h #g217); `accounts` on Windows followed in v0.48.0 (h #g221).
