@@ -84,13 +84,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "port these and lets see what is next" (notify.ts, moshi-hooks.ts for opencode 2).
-  Found: neither needs a hand port. Moshi 0.4.21 generates one hook that works on both majors (proven
-  in scratch opencode 1.18.35 and 2.0.22 against a fake Moshi socket); installed is 0.3.22, so it needs
-  `brew upgrade moshi-hook` + `moshi-hook install --target opencode`, which also restarts the daemon
-  that serves the Claude Code and Gemini hooks. kdco notify is retired upstream; opencode 2's built-in
-  `attention` settings cover the defaults in use (`~/opencode-v2-sandbox/migration-dryrun/cli.notify.json`).
-  Awaiting: go for the Moshi upgrade.
+- 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
+  remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
+  path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
 - 2026-10-08: maintainer: "is it now ok to daily drive opencode 2?" Answered: this plugin yes (core
   verified on 2.0.22), but the maintainer's other plugins are V1-only (opencode-dcp, notify.ts,
   opentmux, opencode-local-ollama, herdr-agent-state, moshi-hooks) and V1 plugins do not run in V2;
@@ -120,6 +116,12 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done**: "port these and lets see what is next", then "go". No hand port was needed.
+  Moshi upgraded 0.3.22 -> 0.4.21 (brew), daemon restarted (same host id, gateway up), opencode hook
+  regenerated: one `moshi-hooks.ts` serving opencode 1 and 2 plus `moshi-hooks-tui/`; proven against a
+  fake socket on scratch 1.18.35 and 2.0.22; Claude Code and Gemini settings byte-identical; backup in
+  `~/.config/opencode/plugins.bak-moshi-0.3.22-20261008-150344/`. notify: retired upstream, replaced on
+  opencode 2 by `attention` in cli.json (`~/opencode-v2-sandbox/migration-dryrun/cli.notify.json`).
 - 2026-10-08: **done**: "does this add any value now opentmux ?" then "remove it". tmux is not installed and
   opencode runs in Ghostty under Herdr, so opentmux never had a session to open panes in; removed from
   the `plugin` list in `~/.config/opencode/opencode.json` (takes effect on the next opencode start).
