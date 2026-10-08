@@ -14,7 +14,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
 
-import { bridgeOpencodeMcp, mergeOpencodeMcp, loadMergedOpencodeConfig, __test } from "../src/mcp-bridge.js"
+import {
+  bridgeOpencodeMcp,
+  mergeOpencodeMcp,
+  loadMergedOpencodeConfig,
+  _resetBearerWarnings,
+  __test,
+} from "../src/mcp-bridge.js"
 import { defaultModels, toConfigModel } from "../src/models.js"
 
 const {
@@ -42,12 +48,17 @@ async function withIsolatedEnv<T>(fn: (xdgRoot: string) => Promise<T> | T): Prom
     OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
     OPENCODE_WORKTREE: process.env.OPENCODE_WORKTREE,
     HOME: process.env.HOME,
+    // `bridgeMcpOauthTokens` resolves its store under `XDG_DATA_HOME`, so a
+    // spec in this file could otherwise read the operator's real MCP
+    // credentials. Point it at the scratch root like everything else.
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
   }
   process.env.XDG_CONFIG_HOME = xdgRoot
   delete process.env.OPENCODE_CONFIG
   delete process.env.OPENCODE_CONFIG_DIR
   delete process.env.OPENCODE_WORKTREE
   process.env.HOME = xdgRoot
+  process.env.XDG_DATA_HOME = path.join(xdgRoot, "data")
   try {
     return await fn(xdgRoot)
   } finally {
@@ -638,5 +649,295 @@ test("runtime overlay: missing entry leaves disk value untouched", async () => {
       mcpServers: Record<string, any>
     }
     assert.equal(written.mcpServers.gh.command, "gh-mcp")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// opencode's stored MCP OAuth tokens (`bridgeMcpOauthTokens`)
+//
+// The thing under test is a credential crossing from opencode's own store
+// into the config file the plugin writes for the Claude CLI, so these specs
+// are as much about what must NOT happen as about the injection: nothing
+// without the option, nothing for a server the token was not minted for,
+// nothing over a header the operator wrote, and no server lost either way.
+// ---------------------------------------------------------------------------
+
+const FAR_FUTURE_EXPIRES = new Date("2099-01-01T00:00:00Z").getTime() / 1000
+const LONG_PAST_EXPIRES = new Date("2000-01-01T00:00:00Z").getTime() / 1000
+const MCP_URL = "https://mcp.example.test/mcp"
+
+function writeMcpAuth(stateDir: string, data: unknown): void {
+  fs.mkdirSync(stateDir, { recursive: true })
+  fs.writeFileSync(path.join(stateDir, "mcp-auth.json"), JSON.stringify(data), {
+    mode: 0o600,
+  })
+}
+
+/** A repo with one remote server, plus a scratch opencode state dir. */
+function bearerFixture(
+  xdgRoot: string,
+  servers: Record<string, unknown> = { "my-server": { type: "remote", url: MCP_URL } },
+): { repo: string; stateDir: string } {
+  writeJson(path.join(xdgRoot, "opencode", "opencode.json"), { mcp: servers })
+  const repo = path.join(xdgRoot, "proj")
+  fs.mkdirSync(path.join(repo, ".git"), { recursive: true })
+  return { repo, stateDir: path.join(xdgRoot, "opencode-state") }
+}
+
+function bridgedServers(result: { path: string } | null): Record<string, any> {
+  assert.ok(result && result.path, "expected a bridged config file")
+  return (JSON.parse(fs.readFileSync(result.path, "utf8")) as { mcpServers: Record<string, any> })
+    .mcpServers
+}
+
+test("a bridged remote server carries opencode's stored token when the option is on", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-live", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(servers["my-server"].headers?.Authorization, "Bearer tok-live")
+  })
+})
+
+test("the token is never read without bridgeMcpOauthTokens, and the store is never opened", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-live", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    // Default: the option absent entirely.
+    const off = bridgedServers(bridgeOpencodeMcp(repo, undefined, undefined, "v1"))
+    assert.equal(off["my-server"].headers, undefined)
+    // Explicitly false, with a state dir in hand, must behave the same.
+    const explicit = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: false, stateDir }),
+    )
+    assert.equal(explicit["my-server"].headers, undefined)
+
+    // And the real default lookup finds nothing either: put a live token
+    // where `opencodeStateDir()` itself would read it, and the off path is
+    // still header-free. This is the production shape of the question, not a
+    // stub of `fs`.
+    // `withIsolatedEnv` points `XDG_DATA_HOME` at the scratch root, which is
+    // where `opencodeStateDir()` reads, so this is the production lookup and
+    // not a stub of `fs`.
+    writeMcpAuth(path.join(process.env.XDG_DATA_HOME!, "opencode"), {
+      "my-server": {
+        tokens: { accessToken: "tok-default-path", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    const defaults = bridgedServers(bridgeOpencodeMcp(repo, undefined, undefined, "v1"))
+    assert.equal(defaults["my-server"].headers, undefined)
+    // ... and the same call with the option on does find it, so the assertion
+    // above is about the gate and not about a broken fixture.
+    const on = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true }),
+    )
+    assert.equal(on["my-server"].headers?.Authorization, "Bearer tok-default-path")
+  })
+})
+
+test("a token is only used for the server opencode minted it for", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    // Two servers on the same URL, one authenticated. A URL-only match would
+    // hand `other` the token that belongs to `my-server`.
+    const { repo, stateDir } = bearerFixture(xdgRoot, {
+      "my-server": { type: "remote", url: MCP_URL },
+      other: { type: "remote", url: MCP_URL },
+    })
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-live", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(servers["my-server"].headers?.Authorization, "Bearer tok-live")
+    assert.equal(servers.other.headers, undefined)
+  })
+})
+
+test("an entry whose serverUrl no longer matches the config is not used", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-stale", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: "https://moved.example.test/mcp",
+      },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(servers["my-server"].headers, undefined)
+  })
+})
+
+test("an Authorization header the operator wrote always wins, whatever its casing", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot, {
+      upper: { type: "remote", url: MCP_URL, headers: { Authorization: "Bearer mine" } },
+      lower: { type: "remote", url: MCP_URL, headers: { authorization: "Bearer mine-lower" } },
+    })
+    writeMcpAuth(stateDir, {
+      upper: { tokens: { accessToken: "tok-a", expiresAt: FAR_FUTURE_EXPIRES }, serverUrl: MCP_URL },
+      lower: { tokens: { accessToken: "tok-b", expiresAt: FAR_FUTURE_EXPIRES }, serverUrl: MCP_URL },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(servers.upper.headers.Authorization, "Bearer mine")
+    assert.deepEqual(Object.keys(servers.lower.headers), ["authorization"])
+    assert.equal(servers.lower.headers.authorization, "Bearer mine-lower")
+  })
+})
+
+test("an expired token leaves the server bridged unchanged and warns once", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot, {
+      "my-server": { type: "remote", url: MCP_URL },
+      "local-tool": { type: "local", command: ["my-mcp-server"] },
+    })
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-expired", expiresAt: LONG_PAST_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    _resetBearerWarnings()
+    const warnings: string[] = []
+    const originalError = console.error
+    console.error = (line: unknown) => {
+      warnings.push(String(line))
+    }
+    let servers: Record<string, any>
+    try {
+      servers = bridgedServers(
+        bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+      )
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir })
+    } finally {
+      console.error = originalError
+    }
+    // The fork dropped the server here. Dropping it is a new failure with no
+    // trace in the CLI's own mcp_servers list, so it stays, uncredentialed.
+    assert.ok(servers!["my-server"], "an expired token must not remove the server")
+    assert.equal(servers!["my-server"].headers, undefined)
+    assert.ok(servers!["local-tool"], "an unrelated server must be untouched")
+    const expired = warnings.filter((line) => line.includes("has expired"))
+    assert.equal(expired.length, 1, "one WARN per server per process")
+    assert.ok(expired[0].includes("my-server"))
+    assert.ok(!expired.join("\n").includes("tok-expired"), "a WARN must never carry the token")
+  })
+})
+
+test("an entry with no tokens at all is not treated as a server needing one", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    // The shape of a handshake opencode started and never finished. One of
+    // the three entries in the real store on the measurement machine looks
+    // exactly like this.
+    writeMcpAuth(stateDir, {
+      "my-server": { serverUrl: MCP_URL, clientInfo: { clientId: "abc" } },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.ok(servers["my-server"], "a half-finished handshake must not drop the server")
+    assert.equal(servers["my-server"].headers, undefined)
+  })
+})
+
+test("a local server is never given a token, however the store is keyed", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot, {
+      "local-tool": { type: "local", command: ["my-mcp-server"] },
+    })
+    writeMcpAuth(stateDir, {
+      "local-tool": {
+        tokens: { accessToken: "tok-never", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: "stdio://local-tool",
+      },
+    })
+    const servers = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(servers["local-tool"].headers, undefined)
+    assert.ok(!JSON.stringify(servers).includes("tok-never"))
+  })
+})
+
+test("a rotated token moves the bridge hash, and the default hash never moves", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    const baseline = bridgeOpencodeMcp(repo, undefined, undefined, "v1")
+
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-v1", expiresAt: FAR_FUTURE_EXPIRES },
+        serverUrl: MCP_URL,
+      },
+    })
+    const first = bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir })
+
+    writeMcpAuth(stateDir, {
+      "my-server": {
+        tokens: { accessToken: "tok-v2", expiresAt: FAR_FUTURE_EXPIRES + 3600 },
+        serverUrl: MCP_URL,
+      },
+    })
+    const second = bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir })
+
+    assert.ok(baseline && first && second)
+    // A refresh always moves the expiry, which is what hotReloadMcp sees.
+    assert.notEqual(first.hash, second.hash, "a rotation must force a respawn")
+    // With the option off the hash is what every release before this one
+    // produced, so upgrading respawns nobody.
+    const off = bridgeOpencodeMcp(repo, undefined, undefined, "v1")
+    assert.equal(off!.hash, baseline.hash)
+    assert.notEqual(first.hash, baseline.hash)
+  })
+})
+
+test("a symlinked or foreign-owned auth store is refused, and a broken one is silent", async () => {
+  await withIsolatedEnv(async (xdgRoot) => {
+    const { repo, stateDir } = bearerFixture(xdgRoot)
+    const elsewhere = path.join(xdgRoot, "planted.json")
+    fs.writeFileSync(
+      elsewhere,
+      JSON.stringify({
+        "my-server": {
+          tokens: { accessToken: "tok-planted", expiresAt: FAR_FUTURE_EXPIRES },
+          serverUrl: MCP_URL,
+        },
+      }),
+    )
+    fs.mkdirSync(stateDir, { recursive: true })
+    fs.symlinkSync(elsewhere, path.join(stateDir, "mcp-auth.json"))
+    const viaSymlink = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(viaSymlink["my-server"].headers, undefined)
+
+    // Unparseable content degrades to "no token", never to a throw.
+    fs.unlinkSync(path.join(stateDir, "mcp-auth.json"))
+    fs.writeFileSync(path.join(stateDir, "mcp-auth.json"), "{ not json", { mode: 0o600 })
+    const viaGarbage = bridgedServers(
+      bridgeOpencodeMcp(repo, undefined, undefined, "v1", { oauthTokens: true, stateDir }),
+    )
+    assert.equal(viaGarbage["my-server"].headers, undefined)
   })
 })

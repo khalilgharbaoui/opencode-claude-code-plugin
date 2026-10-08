@@ -1880,9 +1880,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // The abort reason is the same `AbortError` either way, so
             // opencode's session status decides: still busy means it is
             // running the tool, idle means the operator stopped the turn.
-            // Unknown keeps the call, which at worst leaves a real abort
-            // waiting for the next message, as it did before release-on-
-            // abort existed.
+            // Only a positive `busy` keeps the call; `unknown` releases it,
+            // the same as `idle` (h #g26), because a call kept by mistake
+            // waits on a turn nobody is running.
             const stoppedProcess = state.activeProcess
             if (
               stoppedProcess &&

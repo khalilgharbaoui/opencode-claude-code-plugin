@@ -257,6 +257,9 @@ export function createClaudeCode(
       mcpConfig: settings.mcpConfig,
       strictMcpConfig: settings.strictMcpConfig,
       bridgeOpencodeMcp: settings.bridgeOpencodeMcp ?? true,
+      // No `?? true` twin: reading opencode's credential store is opt-in, so
+      // the absent value has to stay falsy.
+      bridgeMcpOauthTokens: settings.bridgeMcpOauthTokens,
       controlRequestBehavior:
         preset?.controlRequestBehavior ?? settings.controlRequestBehavior ?? "allow",
       controlRequestToolBehaviors: preset

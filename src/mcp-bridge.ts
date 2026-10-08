@@ -9,6 +9,14 @@ import {
 } from "jsonc-parser"
 import { log } from "./logger.js"
 import { pluginTmpDir } from "./tmp.js"
+import {
+  buildFreshnessKey,
+  injectBearerHeaders,
+  opencodeStateDir,
+  readMcpAuthStore,
+  selectBearerToken,
+  type McpAuthStore,
+} from "./mcp-auth.js"
 
 /**
  * Bridge opencode's MCP config into a Claude CLI `--mcp-config` file.
@@ -315,9 +323,96 @@ function substituteEnvPlaceholders(
   return out
 }
 
+/**
+ * One WARN per server per process for a token this feature found and could
+ * not use. Only the expired case is reported: an operator can act on that
+ * (re-authenticate the server in opencode), and the alternative is a server
+ * that silently keeps answering `needs-auth` with the option switched on.
+ * Every other refusal means "this server was never meant to get a token from
+ * us", which is the normal state of every server on a default install.
+ */
+const warnedExpiredBearer = new Set<string>()
+
+/** Test seam: the WARN dedup is per process, and a spec needs to re-arm it. */
+export function _resetBearerWarnings(): void {
+  warnedExpiredBearer.clear()
+}
+
+/**
+ * Add the bearer token opencode holds for `name`, when the operator has
+ * turned `bridgeMcpOauthTokens` on and the store has a live one.
+ *
+ * Returns the spec UNCHANGED for every other outcome. The fork dropped a
+ * server whose token was missing or expired, on the argument that an
+ * unauthenticated call to an OAuth-required server is a fatal MCP error. That
+ * trade is not taken here for three measured reasons: a server the operator
+ * authenticated by hand with their own `headers.Authorization` would be
+ * dropped along with it; one of the three entries in this machine's real
+ * store has a `serverUrl` and no `tokens` at all (an abandoned handshake), so
+ * "has an entry" does not mean "needs our token"; and a server that merely
+ * reports `needs-auth` is the behaviour every install has today, while a
+ * server that vanishes from the spawn is a new failure with no trace in the
+ * CLI's own `mcp_servers` list. Additive only.
+ */
+function withBearerToken(
+  name: string,
+  spec: Record<string, unknown>,
+  url: string,
+  auth: BearerAuthContext | undefined,
+): Record<string, unknown> {
+  if (!auth) return spec
+  const lookup = selectBearerToken(auth.store, name, url)
+  if (lookup.token === null) {
+    if (lookup.refusal === "expired" && !warnedExpiredBearer.has(name)) {
+      warnedExpiredBearer.add(name)
+      log.warn(
+        "opencode's stored OAuth token for this MCP server has expired, so the bridged server carries no credential; re-authenticate it in opencode",
+        { server: name },
+      )
+    } else {
+      log.debug("no opencode OAuth token for bridged MCP server", {
+        server: name,
+        reason: lookup.refusal,
+      })
+    }
+    return spec
+  }
+  log.info("bridged MCP server carries opencode's stored OAuth token", { server: name })
+  return injectBearerHeaders(spec, lookup.token)
+}
+
+/** The store, read once per bridge call. Absent means the option is off. */
+interface BearerAuthContext {
+  store: McpAuthStore
+}
+
+/**
+ * Read the store for this bridge call, or nothing at all when the option is
+ * off. Off is the default, and off must never touch the file: a plugin that
+ * stats a credential store on every turn whether or not the operator asked
+ * for the feature is a worse default than one that does not.
+ */
+function bearerAuthContext(options: McpBridgeAuthOptions | undefined): BearerAuthContext | undefined {
+  if (!options?.oauthTokens) return undefined
+  return { store: readMcpAuthStore(options.stateDir ?? opencodeStateDir()) }
+}
+
+/**
+ * How a bridge call reaches opencode's MCP OAuth store.
+ *
+ * `oauthTokens` is the `bridgeMcpOauthTokens` provider option and is false
+ * unless the operator set it. `stateDir` exists so a spec can point the read
+ * at a scratch directory; production callers never pass it.
+ */
+export interface McpBridgeAuthOptions {
+  oauthTokens?: boolean
+  stateDir?: string
+}
+
 function translateServer(
   name: string,
   spec: Record<string, unknown>,
+  auth?: BearerAuthContext,
 ): Record<string, unknown> | null {
   if (spec.enabled === false) return null
 
@@ -346,7 +441,7 @@ function translateServer(
       log.warn("skipping remote MCP server with no url", { name })
       return null
     }
-    const out: Record<string, unknown> = {
+    let out: Record<string, unknown> = {
       type: "http",
       url: spec.url,
     }
@@ -355,7 +450,10 @@ function translateServer(
         spec.headers as Record<string, unknown>,
       )
     }
-    return out
+    // Opt-in, additive, and keyed on this server's own name. See
+    // `withBearerToken` for why a server without a usable token is bridged
+    // unchanged rather than dropped.
+    return withBearerToken(name, out, spec.url, auth)
   }
 
   log.warn("skipping MCP server with unknown type", {
@@ -501,18 +599,28 @@ export const MCP_PENDING_STATUS = "pending"
  * translate each server to Claude CLI format, write a scratch file, and
  * return its path + a stable hash. Returns null when no enabled MCP servers
  * remain after the merge + overlay.
+ *
+ * @param stateDir  Override the opencode state directory (`~/.local/share/opencode`
+ *                  by default) where `mcp-auth.json` is read from. Exposed for
+ *                  testing; production callers should omit it.
  */
 export function bridgeOpencodeMcp(
   cwd: string,
   runtimeStatus?: RuntimeMcpStatus,
   excludeServers?: ReadonlySet<string>,
   hostApi: McpHostApi = "v1",
+  auth?: McpBridgeAuthOptions,
 ): BridgedMcp | null {
   const {
     servers: merged,
     enabledServerNames: allEnabledServerNames,
     hash,
-  } = mergeOpencodeMcp(cwd, runtimeStatus, hostApi)
+  } = mergeOpencodeMcp(cwd, runtimeStatus, hostApi, auth)
+
+  // Read opencode's OAuth store once per call, and only when the operator
+  // asked for it: with the option off this is `undefined` and nothing below
+  // touches the file.
+  const authContext = bearerAuthContext(auth)
 
   // Translate every still-enabled server, skipping any caller has asked us
   // to exclude (because they're being routed through the proxy instead).
@@ -521,7 +629,7 @@ export function bridgeOpencodeMcp(
   for (const [name, spec] of Object.entries(merged)) {
     if (!spec || typeof spec !== "object") continue
     if (excludeServers?.has(name)) continue
-    const translated = translateServer(name, spec as Record<string, unknown>)
+    const translated = translateServer(name, spec as Record<string, unknown>, authContext)
     if (translated) {
       servers[name] = translated
       bridgedServerNames.push(name)
@@ -611,11 +719,16 @@ export function loadMergedOpencodeConfig(cwd: string, hostApi: McpHostApi = "v1"
  * `bridgeOpencodeMcp` so read-only callers (startup diagnostics) can inspect
  * what would be bridged without translating servers or writing a scratch
  * config file.
+ *
+ * When `stateDir` is provided, bearer-token freshness keys from
+ * `mcp-auth.json` are folded into the hash so token rotation forces a
+ * process respawn even when the on-disk opencode config is unchanged.
  */
 export function mergeOpencodeMcp(
   cwd: string,
   runtimeStatus?: RuntimeMcpStatus,
   hostApi: McpHostApi = "v1",
+  auth?: McpBridgeAuthOptions,
 ): MergedMcp {
   let merged: Record<string, OpencodeServer> = {}
   for (const layer of opencodeConfigLayers(cwd, hostApi)) {
@@ -660,12 +773,33 @@ export function mergeOpencodeMcp(
 
   // Hash the pre-exclusion merged block so the hot-reload detector picks up
   // upstream config changes even when every server is excluded.
+  //
+  // With `bridgeMcpOauthTokens` on, also fold in a freshness key per server
+  // that got a token. The token lives in opencode's own store rather than in
+  // opencode.json, so a rotation leaves the config hash unchanged, nothing
+  // respawns, and the long-lived child keeps a credential that has died. The
+  // key is the token's EXPIRY and never anything derived from the token
+  // itself (`buildFreshnessKey`), because this hash is logged and compared by
+  // the hot-reload diff.
+  //
+  // With the option off, which is the default, nothing below runs and the
+  // hash is byte-identical to every release before this one.
   const mergedBody = JSON.stringify({ mcpServers: merged }, null, 2)
-  const hash = crypto
-    .createHash("sha256")
-    .update(mergedBody)
-    .digest("hex")
-    .slice(0, 12)
+  const hasher = crypto.createHash("sha256").update(mergedBody)
+
+  const authContext = bearerAuthContext(auth)
+  if (authContext) {
+    for (const [name, spec] of Object.entries(merged)) {
+      if (!spec || typeof spec !== "object") continue
+      const server = spec as Record<string, unknown>
+      if (server.type !== "remote" || typeof server.url !== "string") continue
+      const lookup = selectBearerToken(authContext.store, name, server.url)
+      if (lookup.token === null) continue
+      hasher.update(`\x00bearer:${name}:${buildFreshnessKey(lookup.expiresAt)}`)
+    }
+  }
+
+  const hash = hasher.digest("hex").slice(0, 12)
 
   return { servers: merged, enabledServerNames, hash }
 }

@@ -102,6 +102,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "no proxyTools entry was recognised; nothing will be proxied this turn",
   "no stdout after envelope write; respawning claude process to resume conversation",
   "opencode 2 event subscription ended; deleted sessions keep their claude process until idle eviction",
+  "opencode's stored OAuth token for this MCP server has expired, so the bridged server carries no credential; re-authenticate it in opencode",
   "pending proxy call arrived after stream close; rejecting",
   "permissionMode \"plan\" is enforced: claude cannot edit files or run commands, and --dangerously-skip-permissions is deliberately not passed so it stays that way. Headless Claude Code is not offered an ExitPlanMode tool, so nothing releases plan mode mid-session; approving a plan in chat does not unlock writes. Leaving plan mode means changing the config and restarting opencode.",
   "permissionPreset \"read-only\": this claude CLI has no --permission-prompts (2.1.263+), so permission requests are denied by the plugin's own can_use_tool handler instead of by the CLI. Same outcome, one layer fewer.",
