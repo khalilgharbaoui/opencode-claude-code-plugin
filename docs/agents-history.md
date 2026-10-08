@@ -4072,3 +4072,37 @@ releases. The code is right.
 
 `npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
 pull request.
+
+<a id="g225"></a>
+
+#### Real usage at a tool-call finish compacts mid-turn and kills the parked call (2026-10-08)
+
+The maintainer asked whether opencode's context gauge could move during a long,
+tool-heavy turn. Today a tool-call finish reports zeros (h #g169), so it cannot.
+Measured, A/B, before deciding anything: two builds differing only in that the
+tool-call finish reports `lastCallContextUsage`, a shared env-gated seam that
+shrinks one model's window to 20,000 so the threshold is reachable in two steps,
+Claude Code 2.1.293, haiku, `proxyTools: ["Bash"]`, scratch XDG dirs.
+
+- **opencode 1.18.35.** The overflow check runs in `SessionProcessor`'s
+  `step-finish` handler, after the step's tool calls have run, with no look at
+  anything still outstanding (only `!assistantMessage.summary`). With real usage
+  (37,227 at the boundary) the next thing in the session was a `compaction` part
+  (`auto: true, overflow: false`); the parked call was rejected as orphaned 25 s
+  later, the reused child was interrupted, and its unattended reply told the
+  operator the bash call "was rejected by your permission settings". With zeros
+  the same turn resolved the call and answered normally.
+- **opencode 2.0.22.** The check runs at the top of every step in
+  `SessionRunner.runStep` (`compact({reason: "auto"})`, then the step restarts on
+  the compacted context). With real usage the compaction completed, the parked
+  call was rejected (`proxy MCP server closed`), a new server and a new child
+  started, and the model ran the shell command a second time. A repeated side
+  effect, for `bash`, `write` or `edit`.
+- **A V2 nuance.** opencode 2 picks the last assistant message with non-zero
+  input plus cache as the measurement anchor and estimates everything after it,
+  so today's zeros make the boundary message ineligible rather than "empty".
+
+There is no safe variant at this boundary: a tool-call finish exists only
+because proxied calls are being handed to opencode, so "report only when no call
+is parked" is never true there. Not measured: the interactive transport (same
+finish code) and how often a real window reaches the threshold mid-turn.
