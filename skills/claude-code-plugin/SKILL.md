@@ -823,9 +823,12 @@ opencode 2 uses different envelopes and the plugin's tool descriptions follow th
 there a background dispatch answers in prose,
 `The subagent is working in the background (sessionID: ses_...)`, and the completion
 arrives as `<subagent sessionID="..." state="completed" description="...">`. The
-`sessionID` is the `task_id`. Both extra tools work on both majors (on opencode 2 over
+`sessionID` is the `task_id`, and a cancel pushes the same envelope with
+`state="cancelled"`. Both extra tools work on both majors (on opencode 2 over
 `session.context` and `session.interrupt`, the session routes a plugin is given there);
-verified live on 2.0.16.
+verified live on 2.0.22, and before that on 2.0.16. With `subagentDispatch: "ask"` a
+background dispatch is held for the same form a foreground one is and the answer reaches
+the background child's own spawn, with the dispatch itself unchanged.
 
 Without it, opencode rejects a `background: true` call outright
 (`Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`), losing

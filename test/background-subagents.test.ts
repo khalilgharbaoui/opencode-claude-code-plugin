@@ -31,11 +31,17 @@ import {
   TASK_BACKGROUND_NOTE,
   TASK_BACKGROUND_NOTE_V2,
   TASK_BATCH_TOOL_NAME,
+  TASK_INPUT_PROPERTIES,
   TASK_PROXY_NOTE,
   type ProxyMcpServer,
   type ProxyToolCall,
   type ProxyToolDef,
 } from "../src/proxy-mcp.js"
+import {
+  BACKGROUND_SUBAGENT_HINT,
+  BACKGROUND_SUBAGENT_HINT_V2,
+  backgroundSubagentHint,
+} from "../src/prompts.js"
 import {
   cancelBackgroundTask,
   clearBackgroundTasks,
@@ -447,6 +453,64 @@ test("the task_id description names where the id comes from on both majors", () 
   }
 })
 
+// The same rule, for the field that turns a dispatch into a background one.
+// It is shared by `task` and every `task_batch` item and is built with no
+// dialect in hand, so like `task_id` it names both. Measured on 2.0.22
+// (h #g230): the live schema said only `<task id="..." state="running">`,
+// which that host never sends.
+test("the background field description names both majors' envelopes", () => {
+  const background = TASK_INPUT_PROPERTIES.background.description
+  assert.match(background, /opencode 1\.x/)
+  assert.match(background, /opencode 2/)
+  assert.match(background, /state="running"/)
+  assert.match(background, /sessionID: ses_/)
+
+  // And it must stay that way once the V2 tool set has been built, which is
+  // what the model actually reads: the `task` schema and every `task_batch`
+  // item carry the same text.
+  const tools = applyBackgroundSubagentSupport(DEFAULT_PROXY_TOOLS, true, "v2")
+  const task = taskDef(tools, "task").inputSchema.properties as Record<
+    string,
+    { description: string }
+  >
+  assert.match(task.background.description, /sessionID: ses_/)
+  const batch = taskDef(tools, TASK_BATCH_TOOL_NAME).inputSchema
+    .properties as {
+    tasks: { items: { properties: Record<string, { description: string }> } }
+  }
+  assert.match(batch.tasks.items.properties.background.description, /sessionID: ses_/)
+})
+
+// The system prompt is the other place the model is told what a background
+// dispatch answers with, and it is chosen where the dialect is known, so it
+// gets a V2 twin rather than naming both. Before this it handed a V2 model
+// V1's envelope and told it the `id` in it was the task_id: there is no such
+// id on that host, so neither task_status nor task_cancel was reachable.
+test("the background system hint describes this host's own envelopes", () => {
+  assert.equal(backgroundSubagentHint("v1"), BACKGROUND_SUBAGENT_HINT)
+  assert.equal(backgroundSubagentHint("v2"), BACKGROUND_SUBAGENT_HINT_V2)
+
+  assert.match(BACKGROUND_SUBAGENT_HINT, /<task id="ses_\.\.\." state="running">/)
+  assert.equal(BACKGROUND_SUBAGENT_HINT.includes("<subagent sessionID"), false)
+
+  // V2's two envelopes, and nothing of V1's.
+  assert.match(
+    BACKGROUND_SUBAGENT_HINT_V2,
+    /The subagent is working in the background \(sessionID: ses_\.\.\.\)/,
+  )
+  assert.match(BACKGROUND_SUBAGENT_HINT_V2, /<subagent sessionID="\.\.\." state="completed">/)
+  assert.equal(BACKGROUND_SUBAGENT_HINT_V2.includes('<task id='), false)
+  assert.equal(BACKGROUND_SUBAGENT_HINT_V2.includes('state="running"'), false)
+
+  // Both still name the two recovery tools and still forbid polling.
+  for (const hint of [BACKGROUND_SUBAGENT_HINT, BACKGROUND_SUBAGENT_HINT_V2]) {
+    assert.match(hint, /mcp__opencode_proxy__task_status/)
+    assert.match(hint, /mcp__opencode_proxy__task_cancel/)
+    assert.match(hint, /background: true/)
+    assert.match(hint, /progress poll/)
+  }
+})
+
 // V2's plugin session domain is a `Pick` of the HTTP client that does not
 // include `active`, so `fetchSessionRunState` can only answer `unknown` there.
 // The transcript is then the only signal, and reading it wrong would report a
@@ -718,4 +782,99 @@ test("an unsupported host registers neither interceptor", async () => {
   } finally {
     await srv.close()
   }
+})
+
+/**
+ * The wiring, end to end: a real `doStream` on a V2 host must put the V2 hint
+ * in the file the CLI is actually handed, and a V1 host the V1 one. The two
+ * constants above can both be right while the selector is passed the wrong
+ * dialect, which is how the V1 text reached a 2.0.22 spawn in the first place.
+ */
+async function backgroundHintInSpawnedPrompt(hostApi: "v1" | "v2") {
+  const fsMod = await import("node:fs")
+  const pathMod = await import("node:path")
+  const osMod = await import("node:os")
+  const cryptoMod = await import("node:crypto")
+  const { createClaudeCode } = await import("../src/index.js")
+  const { deleteActiveProcessAndWait, sessionKey, deleteClaudeSessionId } =
+    await import("../src/session-manager.js")
+
+  const id = cryptoMod.randomUUID().slice(0, 8)
+  const root = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "oc-bg-hint-"))
+  const cwd = pathMod.join(root, "project")
+  fsMod.mkdirSync(cwd, { recursive: true })
+  const cliPath = pathMod.join(root, `bg-hint-claude-${id}.cjs`)
+  const argvPath = pathMod.join(root, `bg-hint-argv-${id}.json`)
+  fsMod.writeFileSync(
+    cliPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs")
+const readline = require("node:readline")
+if (process.argv.includes("--version")) { process.stdout.write("2.1.293\\n"); process.exit(0) }
+if (process.argv.includes("--help")) { process.stdout.write("Usage: claude [options]\\n"); process.exit(0) }
+fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))
+readline.createInterface({ input: process.stdin }).on("line", () => {
+  const session_id = "fake-bg-hint-session"
+  process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id }) + "\\n")
+  process.stdout.write(JSON.stringify({ type: "assistant", session_id, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } }) + "\\n")
+  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", session_id, is_error: false, duration_ms: 1, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } }) + "\\n")
+})
+`,
+  )
+  fsMod.chmodSync(cliPath, 0o755)
+
+  const modelId = `claude-test-bg-hint-${id}`
+  const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  // A real turn finishes successfully here, so give it a throwaway HOME and
+  // state dir: run outside `npm test`'s scratch `XDG_STATE_HOME` this would
+  // otherwise write the operator's own resume store (h #g116).
+  const saved = { HOME: process.env.HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME }
+  process.env.HOME = root
+  process.env.XDG_STATE_HOME = pathMod.join(root, "state")
+  try {
+    const model = createClaudeCode({
+      cliPath,
+      cwd,
+      hostApi,
+      proxyTools: ["Task"],
+      bridgeOpencodeMcp: false,
+      bridgeOpencodeSkills: false,
+      proxyOpencodeMcpTools: false,
+      autoContinueIncompleteTurns: false,
+    }).languageModel(modelId)
+    const response = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Say done." }] }],
+      tools: [],
+    } as never)
+    for await (const _part of (response as { stream: AsyncIterable<unknown> }).stream) {
+      // drain
+    }
+    const argv: string[] = JSON.parse(fsMod.readFileSync(argvPath, "utf8"))
+    const flag = argv.indexOf("--append-system-prompt-file")
+    assert.ok(flag >= 0, "no appended system prompt file")
+    return fsMod.readFileSync(argv[flag + 1]!, "utf8")
+  } finally {
+    await deleteActiveProcessAndWait(sk)
+    deleteClaudeSessionId(sk)
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+}
+
+test("a V2 spawn is handed the V2 background hint, a V1 spawn the V1 one", async () => {
+  // `liveTaskSupportsBackground` answers true for V2 without a registry, so
+  // this turn reaches the supported branch with no opencode client at all.
+  const v2 = await backgroundHintInSpawnedPrompt("v2")
+  assert.ok(v2.includes(BACKGROUND_SUBAGENT_HINT_V2), "V2 hint missing from the V2 spawn")
+  assert.equal(v2.includes(BACKGROUND_SUBAGENT_HINT), false, "V1 hint reached a V2 spawn")
+
+  // V1 with no registry reports no background support at all, which is the
+  // measured default (h #g172), so it carries neither hint. That is the whole
+  // point of the gate and is asserted here so the V2 case cannot be read as
+  // "the hint is just always V2 now".
+  const v1 = await backgroundHintInSpawnedPrompt("v1")
+  assert.equal(v1.includes(BACKGROUND_SUBAGENT_HINT_V2), false)
+  assert.equal(v1.includes(BACKGROUND_SUBAGENT_HINT), false)
 })

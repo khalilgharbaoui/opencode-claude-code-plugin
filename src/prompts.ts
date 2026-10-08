@@ -90,6 +90,30 @@ This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` t
 - Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
 
 /**
+ * The same hint for opencode 2, where neither envelope is the one above.
+ * Measured on 2.0.22 (h #g230): a background dispatch answers in prose,
+ * `The subagent is working in the background (sessionID: ses_...)`, and the
+ * completion arrives as `<subagent sessionID="..." state="completed">`. There
+ * is no `<task id=...>` anywhere in that host, so the V1 text sent a V2 model
+ * looking for an envelope it never receives and left it with no task_id for
+ * either recovery tool: exactly the hazard `TASK_BACKGROUND_NOTE_V2` exists to
+ * stop, in the one place that had not been given a V2 twin.
+ */
+export const BACKGROUND_SUBAGENT_HINT_V2 = `## Background subagents
+
+This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` takes \`background: true\`.
+
+- A background dispatch returns at once with \`The subagent is working in the background (sessionID: ses_...)\` instead of the subagent's answer. That is success, not a truncated result.
+- After starting one, keep working on something that does not overlap it, then end your turn normally. When the subagent finishes, opencode delivers its result into this conversation on its own, as a \`<subagent sessionID="..." state="completed">\` message. Do not sleep, poll, or ask the operator to wait.
+- That \`sessionID\` is the task_id. \`mcp__opencode_proxy__task_status\` reads a result back if the automatic delivery did not arrive (an interrupted or errored turn); \`mcp__opencode_proxy__task_cancel\` stops a background subagent you no longer want. Neither is a progress poll.
+- Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
+
+/** The hint describing this host's own envelopes, picked like the tool note. */
+export function backgroundSubagentHint(dialect: "v1" | "v2"): string {
+  return dialect === "v2" ? BACKGROUND_SUBAGENT_HINT_V2 : BACKGROUND_SUBAGENT_HINT
+}
+
+/**
  * Appended to the system prompt whenever the `question` proxy tool is
  * enabled. Live testing (2026-07-05, haiku) showed the model's reasoning
  * correctly identified `mcp__opencode_proxy__question` as the tool to use,

@@ -837,9 +837,17 @@ export const TASK_INPUT_PROPERTIES = {
   },
   background: {
     type: "boolean",
+    // Both majors, for the reason the `task_id` field names both: a model
+    // told to look for only V1's envelope finds nothing on opencode 2, where
+    // a background dispatch answers in prose, and then has no task_id to pass
+    // to task_status or task_cancel. This constant is shared by `task` and by
+    // every `task_batch` item and is built with no dialect in hand, so it
+    // names both rather than being rewritten per host.
     description:
-      "Run the subagent in the background and return immediately with a" +
-      ' `<task id="..." state="running">` envelope instead of its answer.' +
+      "Run the subagent in the background and return immediately instead of" +
+      " its answer: opencode 1.x answers with a" +
+      ' `<task id="..." state="running">` envelope, opencode 2 with' +
+      " `The subagent is working in the background (sessionID: ses_...)`." +
       " You are notified automatically when it completes. Do NOT sleep," +
       " poll or proactively check on its progress.",
   },

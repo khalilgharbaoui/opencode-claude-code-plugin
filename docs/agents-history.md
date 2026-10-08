@@ -4790,3 +4790,132 @@ cross rather than the widening itself.
   until a reply lands, so a driver must remember the ids it has answered or it
   re-answers the first one forever; replying to an id it never read is a 400
   naming `frm_`.
+
+<a id="g230"></a>
+
+#### Background subagents on opencode 2.0.22, and the two places a V2 model was still handed opencode 1's envelope (2026-10-08)
+
+Background subagents were measured end to end on **opencode 2.0.16** only
+(h #g172, h #g173, h #g176, h #g177). The 2.0.22 compatibility sweep re-read the
+gate live and left the triple itself as "not re-run" (`V2.md`). With 2.0.22 about
+to become the maintainer's daily driver, the whole feature was re-measured there:
+the gate, a background dispatch, the completion push, `task_status` running and
+finished, collect-once, `task_cancel`, the parent guard, one dispatch through
+`subagentDispatch: "ask"`, and the doctor's section. Everything behaved as it did
+on 2.0.16. Two strings did not, and they are this entry's point.
+
+##### How it was driven, and what it cost
+
+Nothing was billed. `cliPath` pointed at a scripted fake `claude` that answers
+`--version` with `2.1.293`, records every spawn's argv, `CLAUDE_CONFIG_DIR` and
+`CLAUDE_CODE_EFFORT_LEVEL`, reads the proxy MCP server's url and bearer out of
+its own `--mcp-config`, and runs a per-turn script of `tools/list` and
+`tools/call` requests against it. A turn's prompt names the script
+(`[[CLI:<name>]]`), which also reaches a child session, so one fake binary plays
+both the parent and every subagent: a "long" child sleeps in seven-second steps
+(under the 60 s inactivity watchdog) and a "fast" child answers at once.
+
+The host is `~/opencode-v2-sandbox/bin/opencode` (2.0.22) as a private `serve`
+with `OPENCODE_SERVER_PASSWORD`, the recipe (h #g219) settled, on ports 4785x
+with its own scratch `HOME`, all four XDG dirs and `TMPDIR`. The work account was
+never read, written or spawned against. Two cwds, one per feature. `plugin ready`
+appeared exactly once per server and named the local build both times, so no npm
+copy (h #g219) muddied the log.
+
+##### What passed, with the evidence
+
+- **The gate.** `background subagent gate {"supported":true,"registryResolved":true,"hostApi":"v2","note":"task accepts \`background\`; task_status and task_cancel are registered"}`,
+  and the fake CLI's own `tools/list` against the proxy returned exactly
+  `["task","task_batch","task_status","task_cancel"]` with `TASK_BACKGROUND_NOTE_V2`
+  at the end of the `task` description.
+- **The dispatch.** `background: true` answered in 133 ms and 141 ms with
+  `The subagent is working in the background (sessionID: ses_...). You will be
+  notified automatically when it finishes.` plus two sentences of opencode's own
+  do-not-poll advice. Prose, no XML, exactly as 2.0.16.
+- **The push.** `<subagent sessionID="ses_..." state="completed" description="fast probe">`
+  arrived in the parent as a `synthetic` message and ran as its own Claude turn.
+  A **cancel** pushes one too: `<subagent sessionID="..." state="cancelled">`.
+- **`task_status`.** Running: `<task id="..." state="running">` in 3 ms, off the
+  child's own transcript, because `session.active` is still absent from V2's
+  `Pick` (h #g176). Finished: the result once, then
+  `Already delivered to this conversation earlier ...` without repeating it.
+- **`task_cancel`.** `<task id="..." state="cancelled">\nStopped.` and
+  `cancelled background subagent {...,"wasRunning":true}`. **And the negative
+  case is measured now rather than inferred:** cancelling a child that had
+  already finished returned `Could not cancel background task ...: opencode did
+  not accept the abort`, so V2's `session.interrupt` really does answer
+  `{interrupted: false}` there, the shim passes the boolean through, and
+  `Stopped.` is gated on a true interrupt on this host.
+- **The parent guard.** `task_status` and `task_cancel` naming a second top-level
+  session were both refused with `is not a subagent of this conversation`.
+- **`subagentDispatch: "ask"` over a background dispatch.** The form arrived at
+  `GET /api/session/{id}/form` as a `Form` with `metadata.kind: "question"`,
+  `Customise…` opened the per-type screen (one row for `general`, one `Account`
+  row offering `default` and `alpha`), and the background child spawned with
+  `--model claude-opus-5-5`, `CLAUDE_CODE_EFFORT_LEVEL=high` and
+  `CLAUDE_CONFIG_DIR=<scratch>/.claude-alpha`. The log shows the whole chain:
+  `holding a subagent dispatch for the operator's answer`, `releasing a held
+  subagent dispatch {released: 1, dropped: 0}`, then `subagent dispatch choice
+  claimed by its child session {agent: "general", model: "claude-opus-5-5",
+  effort: "high", account: "alpha"}`, which is (h #g229)'s wrapped-prompt claim
+  rule working on a background child. The dispatch itself was unchanged: the same
+  prose envelope and the same completion push.
+- **The doctor.** The **Background subagents** section read `background` offered
+  `yes`, the pair `registered`, `opencode API v2`, `decided from: opencode 2
+  offers background unconditionally, so the registry is not consulted`, and one
+  ledger row naming the collected child and the cancelled one.
+
+##### The defect: two places still described opencode 1's envelope
+
+(h #g176) made the tool-level note per dialect and made the `task_id` field
+description name both majors, because "a V2 model is told to find an id in an
+envelope it never receives" is the failure mode. Two other strings that tell the
+model the same thing were missed, and both reached a 2.0.22 spawn verbatim:
+
+- **The `background` input field's own description** in `TASK_INPUT_PROPERTIES`,
+  which the live schema confirmed: `Run the subagent in the background and return
+  immediately with a \`<task id="..." state="running">\` envelope`. That envelope
+  does not exist on opencode 2.
+- **`BACKGROUND_SUBAGENT_HINT`**, the system-prompt block appended whenever the
+  gate is open, which on V2 is always. Read out of the spawn's own
+  `--append-system-prompt-file`: `A background dispatch returns at once with
+  \`<task id="ses_..." state="running">\`` and `The \`id\` in that envelope is the
+  task_id`. So the host's own answer contradicted the system prompt, and the one
+  line naming where the task_id comes from named a place that has none.
+
+Neither breaks a dispatch: opencode runs the subagent either way. What they cost
+is the recovery path, which is the entire reason `task_status` and `task_cancel`
+exist (h #g173): a model that believed the system prompt has no id to pass to
+them when the automatic delivery does not arrive.
+
+##### The fix, and why the two halves are shaped differently
+
+- **The field description names both majors**, exactly as the `task_id` field
+  beside it does. `TASK_INPUT_PROPERTIES` is one constant shared by `task` and by
+  every `task_batch` item, and it is built where no dialect is in hand; threading
+  one in would mean rewriting a nested schema to change a sentence.
+- **The system hint gets a V2 twin** (`BACKGROUND_SUBAGENT_HINT_V2`, picked by
+  `backgroundSubagentHint(dialect)`), because it is chosen at a site that already
+  knows the dialect, which is the same shape as `TASK_BACKGROUND_NOTE_V2`. The
+  dialect itself moved up next to `backgroundSubagentsSupported` and travels in
+  the wiring object, so the headless and interactive spawn sites read one value.
+
+Three tests in `test/background-subagents.test.ts`. Reverting the field
+description and passing `BACKGROUND_SUBAGENT_HINT` at both call sites fails *the
+background field description names both majors' envelopes* (on the missing
+`opencode 1.x` marker) and *a V2 spawn is handed the V2 background hint, a V1
+spawn the V1 one* (`V2 hint missing from the V2 spawn`), and leaves the other 28
+green. The last of those drives a real `doStream` against a fake CLI and reads
+the generated `--append-system-prompt-file`, because the two constants can both
+be correct while the selector is handed the wrong dialect, which is how the V1
+text reached a 2.0.22 spawn to begin with. Verified live on 2.0.22 afterwards:
+the schema and the prompt file both carry the V2 wording, and the whole triple
+was re-run on the fixed build.
+
+##### Not covered
+
+A real `claude` was never spawned, so nothing here says anything about how a
+model behaves given these descriptions, only about what it is given. The V1 half
+of the background triple was not re-run (it is unchanged and 1.18.33's
+measurement stands), and `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` does not
+exist on opencode 2, so the unsupported branch has no live case on this host.

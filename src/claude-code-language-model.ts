@@ -196,6 +196,7 @@ import {
   QUESTION_PROXY_HINT,
   SUBAGENT_DISPATCH_HINT,
   BACKGROUND_SUBAGENT_HINT,
+  backgroundSubagentHint,
   codeModeProxyHint,
 } from "./prompts.js"
 import {
@@ -284,6 +285,8 @@ export {
   QUESTION_PROXY_HINT,
   SUBAGENT_DISPATCH_HINT,
   BACKGROUND_SUBAGENT_HINT,
+  BACKGROUND_SUBAGENT_HINT_V2,
+  backgroundSubagentHint,
 } from "./prompts.js"
 export type { AppendedSystemPromptOptions } from "./prompts.js"
 export {
@@ -2504,6 +2507,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   }
             let enrichedProxy = resolvedProxy
             let backgroundSubagentsSupported = false
+            // Which opencode major this model serves. Everything the model is
+            // told about a background dispatch is picked with it, because
+            // neither envelope is the same on the two majors (h #g176, #g230).
+            const hostDialect: "v1" | "v2" =
+              self.config.hostApi === "v2" ? "v2" : "v1"
             if (enrichedProxy && taskProxyEnabled) {
               enrichedProxy = overlayTaskProxyDescription(
                 enrichedProxy,
@@ -2526,7 +2534,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // pair and the note, unsupported strips `background` from the
               // schema so the model cannot burn a call on opencode's hard
               // refusal. Spawn-time only, like every other overlay here.
-              const hostDialect = self.config.hostApi === "v2" ? "v2" : "v1"
               backgroundSubagentsSupported = liveTaskSupportsBackground(
                 liveToolInfo.taskParameters,
                 hostDialect,
@@ -2655,6 +2662,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               excludeServers,
               taskProxyEnabled,
               backgroundSubagentsSupported,
+              hostDialect,
               questionProxyActive,
               opencodeToolDefs,
               pluginCompressEnabled,
@@ -2739,7 +2747,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                       // dispatch instead of calling the proxy (h #g74).
                       [
                         ...(wiring.taskProxyEnabled ? [SUBAGENT_DISPATCH_HINT] : []),
-                        ...(wiring.backgroundSubagentsSupported ? [BACKGROUND_SUBAGENT_HINT] : []),
+                        ...(wiring.backgroundSubagentsSupported
+                          ? [backgroundSubagentHint(wiring.hostDialect)]
+                          : []),
                         ...(wiring.questionProxyActive ? [QUESTION_PROXY_HINT] : []),
                       ],
                       {
@@ -2872,6 +2882,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               excludeServers,
               taskProxyEnabled,
               backgroundSubagentsSupported,
+              hostDialect,
               questionProxyActive,
               opencodeToolDefs,
               pluginCompressEnabled,
@@ -2892,7 +2903,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     ...extractSystemMessages(options.prompt),
                     ...(taskProxyEnabled ? [SUBAGENT_DISPATCH_HINT] : []),
                     ...(backgroundSubagentsSupported
-                      ? [BACKGROUND_SUBAGENT_HINT]
+                      ? [backgroundSubagentHint(hostDialect)]
                       : []),
                     ...(questionProxyActive ? [QUESTION_PROXY_HINT] : []),
                     ...(self.config.hostApi === "v2" && options.tools?.some((t) => t.name === "execute")
