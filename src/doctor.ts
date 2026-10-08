@@ -172,6 +172,8 @@ export interface DoctorReport {
    */
   interactiveMeasured?: { measured: string; unmeasured: boolean }
   planModeQuestion: boolean
+  subagentDispatch: "ask" | "off"
+  subagentDispatchCrossGroup: boolean
   turnStats: boolean
   anthropicApiKeyInEnv: boolean
   processes: ActiveProcessSnapshot[]
@@ -290,6 +292,13 @@ export function formatDoctorReport(report: DoctorReport): string {
     )
   }
   lines.push(`| planModeQuestion | ${report.planModeQuestion} |`)
+  lines.push(
+    `| subagentDispatch | ${report.subagentDispatch}${
+      report.subagentDispatch === "ask" && report.subagentDispatchCrossGroup
+        ? " (cross-group accounts allowed)"
+        : ""
+    } |`,
+  )
   lines.push(`| turnStats | ${report.turnStats} |`)
   lines.push(`| ANTHROPIC_API_KEY in env | ${report.anthropicApiKeyInEnv ? "yes" : "no"} |`)
 
@@ -650,6 +659,8 @@ export async function gatherDoctorReport(
         ? { measured: INTERACTIVE_MEASURED_CLI, unmeasured: isUnmeasuredInteractiveCli(cli) }
         : undefined,
     planModeQuestion: base.planModeQuestion,
+    subagentDispatch: base.subagentDispatch,
+    subagentDispatchCrossGroup: base.subagentDispatchCrossGroup,
     turnStats: options.turnStats,
     anthropicApiKeyInEnv: base.anthropicApiKeyInEnv,
     processes,

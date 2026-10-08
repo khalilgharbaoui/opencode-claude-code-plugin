@@ -85,6 +85,66 @@ To force an **account** rather than a model, pin the full string. This only appl
 model: claude-code-work/claude-opus-5@work
 ```
 
+## Choosing per dispatch, not per file
+
+Everything above is static: it lives in an agent file or a provider option and it answers the question "how does a `designer` always run". It cannot answer "how should *these three* subagents run, right now", and that is the question you actually have in front of you when a fan-out is about to start: two implementors on a mechanical change and one designer on something subtle, or one worker that needs Opus while the other two are fine on Haiku, or a batch you would rather bill to the other account so this one's window survives the afternoon.
+
+`subagentDispatch: "ask"` turns that into a question. **It is off by default**, and with it off nothing here is reached at all: a proxied `task` or `task_batch` call is handed to opencode exactly as it is today.
+
+```json
+{ "provider": { "claude-code": { "options": { "subagentDispatch": "ask" } } } }
+```
+
+With it on, the dispatch is held at the point it would have left for opencode, and the turn ends on opencode's own `question` form. **There is always exactly one question first**, so the common answer is one click:
+
+```
+About to dispatch 3 subagents (2 implementor, designer). How should they run?
+
+  Same as last time      implementor: claude-sonnet-5-5 / medium. designer: claude-opus-5-5 / high
+  Default                implementor: claude-opus-5 / high. designer: claude-opus-5 / high
+  claude-haiku-5-5 / low Every subagent in this dispatch. Cheapest and fastest.
+  claude-sonnet-5-5 / medium  Every subagent in this dispatch. Balanced.
+  claude-opus-5-5 / high Every subagent in this dispatch. Most capable.
+  claude-opus-5-5 / max  Every subagent in this dispatch. Deepest thinking.
+  Customise…             Choose per agent type on the next screen, and per task after that.
+```
+
+`Default` is today's behaviour, spelled out: whatever the agent definition, `defaultSubagentModel` and the inherited effort already give each type. `Same as last time` only appears once this conversation has answered for every type in the dispatch. Both of them, and each combo, release the dispatch immediately.
+
+`Customise…` opens a second form with **one row per agent type**, plus one `Account` row when more than one account is on offer:
+
+```
+implementor (2 subagents): how should they run?
+  Default / claude-haiku-5-5 / low / claude-sonnet-5-5 / medium / … / Per task…
+
+"designer" (draw the screen): how should it run?
+  Default / claude-haiku-5-5 / low / …
+
+Which Claude account should these subagents run on?
+  default   Stay on this conversation's own account. This is what happens today.
+  worker    Spawn each subagent with "worker"'s Claude config dir, …
+```
+
+`Per task…` is offered only on a row whose type has more than one task, and it opens a third form with one row per task in that group, so one implementor can be given Opus while the other two stay on the default. **Customisation you do not ask for costs nothing**: a dispatch answered at the first screen never builds the second or the third.
+
+Every row also takes a typed answer, because opencode's form has a custom-answer field. A model id, an effort level, or both, in whichever order and with whatever separator you reach for: `claude-opus-5-5 max`, `claude-opus-5-5 / max`, `xhigh`. Anything the plugin does not recognise as one of its registered models or as a CLI effort level keeps that row's default and logs a NOTICE, rather than being forwarded to a spawn that would reject it.
+
+**What the answer actually changes.** Each subagent opencode starts gets its own `claude` process, and the answer reaches that process directly: the model as `--model`, the effort as `CLAUDE_CODE_EFFORT_LEVEL`, and the account as that account's wrapper and `CLAUDE_CONFIG_DIR`. A dispatch answer beats `forceModel`, `defaultSubagentModel` and the inherited effort, because it is about this dispatch and a file on disk could not have known about it. It stays with that subagent session for the whole of its life, so its later turns do not change model halfway through.
+
+**How a choice finds its child.** opencode starts each subagent as a new session whose first user message is the task prompt the dispatch wrote, verbatim, with `parentID` set to the dispatching session. The plugin records one claim per task keyed on those three things (the dispatching session, the subagent type, the task prompt) and a child takes a claim only when its own `parentID` confirms the parent. Two concurrent subagents of the same type are told apart by their prompts; two tasks whose prompt and type are byte-identical are interchangeable, and take one claim each.
+
+**Dismissing the form never loses the dispatch.** A dismissed, unanswered or unrecognised form releases the subagents with the defaults, which is exactly what would have happened without the option, and writes one line saying so:
+
+```
+▌ **subagent dispatch:** The dispatch form was dismissed, so these subagents run
+exactly as they would have without the form: the model, effort and account their
+agent definition and this conversation already give them. Nothing was lost.
+```
+
+**The account row only ever offers same-group accounts.** A subagent is handed the task text the main agent writes, which can quote the conversation, and it reads the repository, so offering an account from another [`accountGroups`](../configuration/accounts.md) group would be handing that group the conversation by another route. `subagentDispatchCrossGroup: true` is the explicit opt-in, it is `false` by default and nothing else implies it, and it does nothing at all when `accountGroups` is unset (where every account is already one group).
+
+**The rest of the rails.** Never on compaction turns. Never inside a child session: a subagent that dispatches subagents of its own follows the choice its parent made for it, so a form never appears in a session you are not looking at. Only where opencode's registry actually has the `question` entry, since a `question` call on a build without it renders as `⚙ invalid`. `Same as last time` is remembered per conversation and per agent type, **in memory**, so after an opencode restart the first dispatch of a conversation offers `Default` where it would have offered the remembered choice. Both transports, both opencode majors.
+
 ## Fallback model chain
 
 `forceModel` and the model picker each name exactly one model, so a model this

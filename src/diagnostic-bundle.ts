@@ -147,6 +147,7 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   interactiveTransport: "flag",
   isError: "flag",
   planModeQuestion: "flag",
+  subagentDispatchCrossGroup: "flag",
   kept: "flag",
   listsAgentTypes: "flag",
   opencodeHasQuestion: "flag",
@@ -178,7 +179,13 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   port: "count",
   postTokens: "count",
   preTokens: "count",
+  released: "count",
   removed: "count",
+  // The three counts of a released subagent dispatch: how many subagents, how
+  // many of them carried a choice, and which task a refused answer was for.
+  claims: "count",
+  tasks: "count",
+  taskIndex: "count",
   skills: "count",
   stderrBytes: "count",
   textLength: "count",
@@ -222,6 +229,7 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   state: "enum",
   status: "enum",
   stopReason: "enum",
+  subagentDispatch: "enum",
   subtype: "enum",
   transport: "enum",
   trigger: "enum",
@@ -238,6 +246,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   account: "name",
   accounts: "name",
   accountGroups: "name",
+  // The accounts a dispatch form was allowed to offer: the same class of
+  // operator-chosen label as `accounts` above.
+  candidates: "name",
   group: "name",
   agent: "name",
   bundled: "name",
@@ -288,6 +299,7 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   toKey: "id",
   siblingKey: "id",
   parentKey: "id",
+  questionToolCallId: "id",
   toolCallId: "id",
   toolCallIds: "id",
   toolUseId: "id",

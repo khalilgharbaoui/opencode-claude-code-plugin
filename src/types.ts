@@ -61,6 +61,10 @@ export interface ClaudeCodeConfig {
    * that has already been validated and warned about (h #g226).
    */
   accountGroups?: AccountGroups | null
+  /** See `ClaudeCodeProviderSettings.subagentDispatch`. */
+  subagentDispatch?: SubagentDispatchMode
+  /** See `ClaudeCodeProviderSettings.subagentDispatchCrossGroup`. */
+  subagentDispatchCrossGroup?: boolean
   providerID?: string
   skipPermissions?: boolean
   /**
@@ -158,6 +162,9 @@ export type WebSearchRouting = "claude" | "disabled" | (string & {})
  */
 export type AccountFailoverMode = "ask" | "off"
 
+/** `subagentDispatch`. Unset behaves as `"off"`; see the option's own note. */
+export type SubagentDispatchMode = "ask" | "off"
+
 export interface ClaudeCodeProviderSettings {
   cliPath?: string
   /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostApi`. */
@@ -235,6 +242,35 @@ export interface ClaudeCodeProviderSettings {
    * `/claude-code-doctor`, names only.
    */
   accountGroups?: Record<string, string>
+  /**
+   * Ask, before a proxied `task` or `task_batch` dispatch reaches opencode,
+   * how the subagents it is about to start should run: which model, which
+   * reasoning effort, and which Claude account.
+   *
+   * `"off"` by default, and unset behaves as `"off"`: with it unset the
+   * dispatch is handed to opencode exactly as it is today, no form is raised
+   * and nothing is recorded.
+   *
+   * With `"ask"`, the dispatch is held, the operator gets one question (so the
+   * common answer is one click: `Default`, or `Same as last time`), and only
+   * then are the real `task` calls released, inside the same opencode turn.
+   * `Customise…` opens a second form with one row per agent type, and a row
+   * can ask for a third form with one row per task. Dismissing any of them
+   * dispatches with the defaults and says so; the dispatch is never lost.
+   *
+   * See `docs/configuration/subagents.md` and `src/subagent-dispatch.ts`.
+   */
+  subagentDispatch?: SubagentDispatchMode
+  /**
+   * Let the dispatch form offer Claude accounts outside the dispatching
+   * account's own `accountGroups` group. **False by default, and never
+   * implied**: a subagent is handed the task text the main agent writes, which
+   * can quote the conversation, and it reads the repository, so offering
+   * another group is offering that group the conversation by another route.
+   * Does nothing when `accountGroups` is unset, where every account is already
+   * one group.
+   */
+  subagentDispatchCrossGroup?: boolean
   /**
    * Model that subagents run on when their own definition pins nothing.
    * Unset means no implicit override at all, so an agent keeps inheriting the

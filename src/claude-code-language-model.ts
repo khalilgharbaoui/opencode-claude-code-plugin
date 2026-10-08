@@ -19,6 +19,7 @@ import { translateStreamForHost } from "./host-tools.js"
 import { getClaudeUserMessage, getTrailingUserMessages } from "./message-builder.js"
 import {
   getAgentRegistry,
+  qualifyModelName,
   resolveAgentCacheTtl,
   resolveAgentEffort,
   resolveAgentModel,
@@ -84,6 +85,7 @@ import { parseModelId } from "./models.js"
 import {
   consumeExitPlanModeQuestionResult,
   hasExitPlanModeQuestions,
+  type QuestionToolCall,
 } from "./plan-mode-question.js"
 import { RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
@@ -167,6 +169,9 @@ import {
   applyBackgroundSubagentSupport,
   liveTaskSupportsBackground,
   setProxyDeadlineGuard,
+  TASK_BATCH_TOOL_NAME,
+  taskBatchChildToolCallId,
+  taskBatchTasks,
   type McpProxyToolResolution,
   type ModelToolEntry,
   type ProxyMcpServer,
@@ -177,6 +182,7 @@ import {
   findPendingProxyCall,
   getPendingProxyCalls,
   isPendingProxyCallChannelClosed,
+  markPendingProxyCallEmitted,
   onPendingProxyCall,
   rejectAllPendingProxyCallsForSession,
   rejectPendingProxyCallById,
@@ -237,6 +243,21 @@ import {
   toFinishReason,
   toUsage,
 } from "./usage.js"
+import {
+  claimDispatchChoice,
+  consumeSubagentDispatchAnswer,
+  createSubagentDispatchQuestion,
+  dispatchTasksFromCalls,
+  firstUserText,
+  hasCandidateClaim,
+  isSubagentDispatchActive,
+  lookupSessionChoice,
+  recordDispatchClaims,
+  resolveDispatchAccountSpawn,
+  type DispatchContext,
+  type SubagentChoice,
+  type SubagentDispatchStep,
+} from "./subagent-dispatch.js"
 import { createTurnState } from "./turn-state.js"
 import { watchTurnAbort } from "./turn-abort.js"
 import { createLineHandler } from "./stream-parser.js"
@@ -247,6 +268,7 @@ import {
   clearStartWatchdog,
   deliverPendingCompletions,
   drainNow,
+  enqueueProxyToolCall,
   finishWithQuestionCall,
   noteProxyActivity,
   noteResultBoundaryCall,
@@ -434,6 +456,34 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   }
 
   /**
+   * What a subagent dispatch form chose for THIS session, or undefined.
+   *
+   * Two lookups, cheapest first. A session that already claimed a choice keeps
+   * it for the rest of its life, because the model and effort are in its
+   * session key and a choice that came and went mid-conversation would strand
+   * the key behind it. Otherwise, and only when a released dispatch actually
+   * recorded a claim this session could match, the parent is fetched and the
+   * claim taken: a choice must never land on the wrong child (h #g227).
+   */
+  private async resolveDispatchChoice(
+    options: LanguageModelV3CallOptions,
+    affinity: string,
+  ): Promise<SubagentChoice | undefined> {
+    if (affinity === "default") return undefined
+    const claimed = lookupSessionChoice(affinity)
+    if (claimed) return claimed
+    const agent = this.getOpencodeAgent(options)
+    const prompt = firstUserText(options.prompt)
+    if (!hasCandidateClaim(agent, prompt)) return undefined
+    return claimDispatchChoice({
+      sessionId: affinity,
+      agent,
+      prompt,
+      parentSessionId: await fetchSessionParentId(affinity),
+    })
+  }
+
+  /**
    * Whether the ExitPlanMode approval bridge is live for this turn: the
    * operator opted in AND opencode's registry actually has the `question`
    * tool. Without the registry entry the emitted tool-call would render as
@@ -444,6 +494,117 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     loadLiveToolInfo = () => this.fetchLiveToolInfo(),
   ): Promise<boolean> {
     return resolvePlanModeQuestion(this.config, compactionMode, loadLiveToolInfo)
+  }
+
+  /**
+   * A dispatch form, as a turn: one synthetic `question` tool call and a
+   * `tool-calls` finish, which is how the operator's answer comes back on the
+   * next `doStream` as a `tool-result` with the same id. The same mechanism
+   * `finishWithQuestionCall` gives the plan-approval bridge and the
+   * account-switch form, minus a Claude process, because there is nothing for
+   * the CLI to do while the operator reads a form.
+   */
+  private subagentDispatchFormStream(
+    call: QuestionToolCall,
+    warnings: SharedV3Warning[],
+  ): Awaited<ReturnType<LanguageModelV3["doStream"]>> {
+    const toUsage = this.toUsage.bind(this)
+    const toFinishReason = this.toFinishReason.bind(this)
+    const stream = new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: "stream-start", warnings })
+        controller.enqueue({
+          type: "tool-input-start",
+          id: call.toolCallId,
+          toolName: call.toolName,
+          providerExecuted: false,
+        } as any)
+        controller.enqueue({
+          type: "tool-call",
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          input: JSON.stringify(call.input),
+          providerExecuted: false,
+        } as any)
+        controller.enqueue({
+          type: "finish",
+          finishReason: toFinishReason("tool-calls"),
+          usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+          providerMetadata: {
+            "claude-code": { synthetic: true, path: "subagent-dispatch-form" },
+          },
+        })
+        controller.close()
+      },
+    })
+    return { stream, request: { body: { text: "" } } }
+  }
+
+  /**
+   * The release: the dispatch the form was holding, handed to opencode as the
+   * `task` tool calls it would have been without the form, with every task's
+   * answer recorded as a claim its child will take.
+   *
+   * A held call that is gone (its deadline, an abort, the child dying while
+   * the form was up) is skipped rather than invented, and with every call gone
+   * the turn finishes on `stop`: there is nothing left to dispatch and ending
+   * on `tool-calls` with no tool calls is a protocol violation.
+   */
+  private subagentDispatchReleaseStream(
+    step: Extract<SubagentDispatchStep, { kind: "release" }>,
+    sessionKey: string,
+    warnings: SharedV3Warning[],
+  ): Awaited<ReturnType<LanguageModelV3["doStream"]>> {
+    const recorded = recordDispatchClaims(step.parentSessionId, step.tasks, step.choices)
+    const held = step.heldCallIds
+      .map((id) => findPendingProxyCall(id))
+      .filter((call): call is PendingProxyCall => !!call)
+    log.notice("releasing a held subagent dispatch", {
+      sessionKey,
+      tasks: step.tasks.length,
+      claims: recorded,
+      released: held.length,
+      dropped: step.heldCallIds.length - held.length,
+    })
+    const toUsage = this.toUsage.bind(this)
+    const toFinishReason = this.toFinishReason.bind(this)
+    const note = step.note
+    const stream = new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: "stream-start", warnings })
+        if (note) {
+          const id = generateId()
+          controller.enqueue({ type: "text-start", id } as any)
+          controller.enqueue({ type: "text-delta", id, delta: note })
+          controller.enqueue({ type: "text-end", id })
+        }
+        for (const call of held) {
+          if (call.toolName === TASK_BATCH_TOOL_NAME) {
+            for (const [index, task] of taskBatchTasks(call.input).entries()) {
+              enqueueProxyToolCall(
+                controller,
+                taskBatchChildToolCallId(call.toolCallId, index),
+                "task",
+                task,
+              )
+            }
+          } else {
+            enqueueProxyToolCall(controller, call.toolCallId, call.toolName, call.input)
+          }
+          markPendingProxyCallEmitted(call.toolCallId)
+        }
+        controller.enqueue({
+          type: "finish",
+          finishReason: toFinishReason(held.length > 0 ? "tool-calls" : "stop"),
+          usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+          providerMetadata: {
+            "claude-code": { synthetic: true, path: "subagent-dispatch-release" },
+          },
+        })
+        controller.close()
+      },
+    })
+    return { stream, request: { body: { text: "" } } }
   }
 
   /**
@@ -879,6 +1040,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const affinity = this.sessionAffinity(options)
     const cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
     const compactionMode = this.isCompactionCall(options)
+    // What a dispatch form chose for THIS session, when it is a subagent one
+    // chose for (h #g227). Resolved here because the model and the effort it
+    // can carry are both part of the session key below, and the account it can
+    // carry decides which binary the turn spawns.
+    //
+    // A default install pays one `Map.get` and one scan of an empty array:
+    // `hasCandidateClaim` can only be true once a dispatch has actually been
+    // released, and `fetchSessionParentId` is reached only behind it.
+    const dispatchChoice = compactionMode
+      ? undefined
+      : await this.resolveDispatchChoice(options, affinity)
     // Use a separate session key for compaction so its short-lived spawn
     // never collides with the main conversation's claude process.
     // A fallback attempt replaces the model NAME and nothing else, which is
@@ -886,9 +1058,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // needs no separate plumbing: the id flows into the session key, the
     // effort key, the spawn, the logs and the metadata exactly as a
     // `forceModel` would. Compaction is never given one.
+    //
+    // A dispatch choice beats both the agent definition and the provider
+    // options, because the operator answered a form about THIS dispatch and a
+    // file on disk cannot have known about it. A model it names that this
+    // install does not have is refused by `qualifyModelName` exactly as a
+    // `forceModel` is, and the default stands.
+    const dispatchModelId = dispatchChoice?.model
+      ? qualifyModelName(dispatchChoice.model, this.modelId)
+      : null
     const effectiveModelId = compactionMode
       ? this.resolveCompactionModel()
       : (attempt?.modelOverride ??
+        dispatchModelId ??
         resolveAgentModel(
           this.getOpencodeAgent(options),
           this.modelId,
@@ -897,10 +1079,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Compaction skips request/agent effort overrides; other calls key on it.
     const reasoningEffort = compactionMode
       ? undefined
-      : (resolveAgentEffort(
-          this.getOpencodeAgent(options),
-          this.getReasoningEffort(options.providerOptions),
-        ) as ReasoningEffort | undefined)
+      : ((dispatchChoice?.effort ??
+          resolveAgentEffort(
+            this.getOpencodeAgent(options),
+            this.getReasoningEffort(options.providerOptions),
+          )) as ReasoningEffort | undefined)
     // Compaction keeps the CLI's own cache default, exactly as it skips
     // effort: its spawn is short-lived and its cost belongs to no agent.
     const promptCacheTtl = compactionMode
@@ -970,9 +1153,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     //
     // Both transports: the TUI spawns the other account's wrapper and tails
     // that account's transcripts (h #g209).
-    const sourceAccount = normalizeAccountName(
+    // A dispatch form can name the account a subagent runs on, and from that
+    // point this session IS that account's: the limit memory, the switch form
+    // and the transcript carry below all have to be about the account that
+    // actually spawns (h #g227). The form only ever offers an account the
+    // dispatching one shares a group with, unless `subagentDispatchCrossGroup`
+    // is on.
+    const providerAccount = normalizeAccountName(
       this.config.account ?? DEFAULT_ACCOUNT,
     )
+    const dispatchAccount =
+      dispatchChoice?.account &&
+      normalizeAccountName(dispatchChoice.account) !== providerAccount
+        ? normalizeAccountName(dispatchChoice.account)
+        : undefined
+    const sourceAccount = dispatchAccount ?? providerAccount
     // The account topology (h #g226). `accountProviders` is empty on a
     // single-account install, which is what keeps every signature below
     // byte-identical there; `groups` is null unless the operator set
@@ -980,15 +1175,31 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const accountProviders = accountProviderMap(this.config.failoverAccounts)
     const groups = this.config.accountGroups ?? null
     const baseCliPath = this.config.baseCliPath ?? this.config.cliPath
-    let failover: FailoverSpawn =
-      compactionMode
-        ? { cliPath: this.config.cliPath, modelId: effectiveModelId, failedOver: false }
-        : await resolveFailoverSpawn({
-            account: sourceAccount,
-            baseCliPath,
-            cliPath: this.config.cliPath,
-            modelId: effectiveModelId,
-          })
+    // Where the dispatch moved the account, the spawn it would otherwise have
+    // used is replaced before the failover override is resolved on top, so a
+    // limit on the account this subagent was sent to is the limit that counts.
+    const dispatchSpawn: FailoverSpawn | null = dispatchAccount
+      ? await resolveDispatchAccountSpawn({
+          account: dispatchAccount,
+          baseCliPath,
+          modelId: effectiveModelId,
+        })
+      : null
+    let failover: FailoverSpawn
+    if (compactionMode) {
+      failover = { cliPath: this.config.cliPath, modelId: effectiveModelId, failedOver: false }
+    } else {
+      const overridden = await resolveFailoverSpawn({
+        account: sourceAccount,
+        baseCliPath,
+        cliPath: dispatchSpawn?.cliPath ?? this.config.cliPath,
+        modelId: dispatchSpawn?.modelId ?? effectiveModelId,
+      })
+      // A usage-limit override on the account the dispatch chose wins; with no
+      // override the dispatch's own spawn stands, and with neither this is the
+      // untouched value every install had before.
+      failover = overridden.failedOver ? overridden : (dispatchSpawn ?? overridden)
+    }
     let cliPath = failover.cliPath
 
     // First checkpoint: the two awaits above both talk to opencode and both
@@ -1163,6 +1374,25 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         },
       })
       return { stream, request: { body: { text: "" } } }
+    }
+
+    // The subagent dispatch form's own turns (h #g227). Both of them are
+    // answered here, in the prologue, and neither one touches the Claude CLI:
+    // the child is parked inside the `task` MCP call it made, and everything
+    // this turn has to do is write stream parts.
+    //
+    // It must return before `setup()` runs, and that is not an optimisation.
+    // The held calls are pending-but-unemitted, and the orphan sweep in there
+    // rejects exactly those on a turn that carries no matching tool result,
+    // which is what this turn is: it carries the answer to a `question`.
+    const dispatchStep = compactionMode
+      ? null
+      : consumeSubagentDispatchAnswer(sk, options.prompt as any)
+    if (dispatchStep?.kind === "form") {
+      return this.subagentDispatchFormStream(dispatchStep.call, warnings)
+    }
+    if (dispatchStep?.kind === "release") {
+      return this.subagentDispatchReleaseStream(dispatchStep, sk, warnings)
     }
 
     if (!compactionMode) invalidateOtherEffortSessions(baseKey, reasoningEffort)
@@ -1867,6 +2097,39 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       if (staleBuild && (await fetchSessionParentId(affinity))) staleBuild = null
     }
 
+    // Whether a dispatch from this turn stops to ask (h #g227). Resolved in the
+    // prologue for the same reason the failover form is: the drain that needs
+    // the answer runs inside a synchronous handler. Every check behind the
+    // `=== "ask"` one costs nothing on a default install, where the option is
+    // unset and this is false before anything is fetched.
+    const subagentDispatchActive =
+      !compactionMode &&
+      mode !== "generate" &&
+      this.config.subagentDispatch === "ask" &&
+      affinity !== "default" &&
+      isSubagentDispatchActive({
+        configured: this.config.subagentDispatch,
+        opencodeHasQuestion: (await loadLiveToolInfo()).hasQuestion,
+        compactionMode,
+        // A subagent that dispatches subagents of its own follows the choice
+        // its parent made for it, which it is already running under.
+        childSession: !!(await fetchSessionParentId(affinity)),
+      })
+    const dispatchContext: DispatchContext = {
+      parentSessionId: affinity,
+      sourceAccount,
+      accounts: this.config.failoverAccounts ?? [],
+      groups,
+      crossGroup: this.config.subagentDispatchCrossGroup === true,
+      describeDefault: (agent: string) => ({
+        model: stripAccountSuffix(resolveAgentModel(agent, this.modelId)),
+        effort: resolveAgentEffort(
+          agent,
+          this.getReasoningEffort(options.providerOptions),
+        ),
+      }),
+    }
+
     log.info("doStream starting", {
       cwd,
       model: effectiveModelId,
@@ -1938,6 +2201,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         })
         state.activeProcess = getActiveProcess(sk)
         state.proxyServer = state.activeProcess?.proxyServer ?? null
+        // The dispatch gate the drain consults (h #g227). Null unless the
+        // operator opted in, which is what keeps `drainNow` the drain it has
+        // always been on a default install.
+        if (subagentDispatchActive) {
+          state.subagentDispatchForm = (calls) => {
+            const tasks = dispatchTasksFromCalls(calls, taskBatchTasks)
+            if (tasks.length === 0) return null
+            return createSubagentDispatchQuestion(
+              sk,
+              calls.map((call) => call.toolCallId),
+              tasks,
+              dispatchContext,
+            )
+          }
+        }
 
         // A proxy MCP server this turn created but never handed to a child is
         // a listening socket nothing will ever close. Only ours: the server on

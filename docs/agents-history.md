@@ -4222,3 +4222,186 @@ carry AND the replay, and says so once`, disabling the store's
 `allowAccount` refusal fails `a sibling on another account is found, carried
 from ITS config dir, and refused by group`, and emptying the account-provider
 map fails the headless and PTY carry tests together.
+
+<a id="g227"></a>
+
+#### The subagent dispatch form: choosing a subagent's model, effort and account per dispatch (2026-10-08)
+
+Everything that decided how a subagent ran was static. `forceModel`,
+`reasoningEffort` and `cacheTtl` live in an agent file; `defaultSubagentModel`
+and `defaultSubagentCacheTtl` live in the provider options; the account is the
+provider opencode routed the call to, and only a full `model:
+claude-code-<account>/<id>` pin moves it, which also pins the model. None of
+that can answer the question an operator actually has in front of a fan-out:
+how should *these three* subagents run, now. The maintainer asked for it twice,
+first as "a question asked do you want default subagent behavior or pick what
+model and effor for the sub agents that will spawn or say use what was used
+before ... this feature should be opt-in", then as "task_batch would get 1
+question but maybe allow distinction if agent type is diffrent ... maybe user
+also wants one implementor to be more powerfull than the rest. If this can be
+done in a good UX way implement this type of customisation question from the get
+go".
+
+##### What was measured first, because it decided the UX
+
+All of it on **opencode 1.18.35** (`opencode serve` on 127.0.0.1 under scratch
+`XDG_CONFIG_HOME`/`DATA`/`CACHE`/`STATE`, its own `TMPDIR` and its own cwd, with
+the plugin loaded from this worktree's `dist`), with a fake `claude` driving the
+proxy so no Claude usage was spent on a measurement. The default account was
+usage-limited for the first two hours of the lane, which is also why the fake
+CLI is the instrument throughout.
+
+- **One form can carry several questions, and they are answered together.** Read
+  out of the 1.18.35 binary: `QuestionInfo` is `{question, header, options:
+  [{label, description}], multiple?, custom?}` on both the V1 tool and the V2
+  one, byte for byte, and the reply is `answers: string[][]`, one array of
+  selected labels per question. So there are no conditional follow-ups inside
+  one form, which is what forced the stepped design below rather than one big
+  screen.
+- **`multiple: true` works, and so does free text.** A live two-question form
+  (`multiple: false` then `multiple: true`) answered through `POST
+  /question/{requestID}/reply` came back as
+  `User has answered your questions: "Pick a model for implementor"="claude-sonnet-5-5 / medium", "Which extras?"="alpha, gamma". You can now continue with the user's answers in mind.`
+  `custom` defaults to **true** in the schema, and a typed answer comes back
+  verbatim: a second probe answered `claude-opus-5 and effort xhigh, please`,
+  commas and all, and a question left blank came back as `Unanswered`.
+- **Which is why nothing may be split on.** Question pairs are joined with `, `
+  and so are the labels of one `multiple` answer, and a custom answer can
+  contain `", "` and quotes of its own. `parseQuestionAnswers`
+  (`src/plan-mode-question.ts`) walks the caller's own question texts in order
+  instead: each answer runs from its `"<q>"="` head to the quote before the next
+  head. The existing single-question reader is untouched.
+- **A second form inside the same opencode turn is the mechanism this package
+  already has.** `finishWithQuestionCall` ends a step on a synthetic `question`
+  tool call and the answer arrives on the next `doStream` as a `tool-result`
+  with the same id, which is how the plan-approval bridge (h #g95) and the
+  account-switch form (h #g98) work, both live-verified on both majors (h
+  #g219). Three of them in a row is three steps of one turn.
+- **A child session's first user envelope is the task prompt, verbatim.** Live,
+  dispatching two concurrent `general` subagents with different prompts: the
+  children's envelopes were
+  `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"CHILD-ALPHA: say the word ALPHA and stop."}]}}`
+  and the same for `CHILD-BETA`, with nothing added. `GET
+  /session/{parent}/children` showed both with `parentID` set to the dispatching
+  session and titles `"<description> (@general subagent)"`, and the plugin's own
+  log showed each child's session key carrying its own `ses_...` and
+  `context=["claude-code","general"]`, so the **subagent type reaches the child's
+  prologue synchronously** as the opencode agent. That triple (dispatching
+  session, agent type, task prompt) is the matching key, and it is the hard
+  requirement the lane was told to stop on if it could not be met.
+- **An account moves per spawn with machinery that already exists.**
+  `ensureAccountRuntime(account, baseCliPath)` builds that account's wrapper and
+  `stripAccountSuffix` takes the `@<account>` marker off the model id, which is
+  exactly the pair `resolveFailoverSpawn` builds; `skillBridgeSpawn` derives the
+  target `CLAUDE_CONFIG_DIR` from the same `FailoverSpawn`.
+
+##### The design those measurements produced
+
+One question first, always. A dispatch of any shape raises exactly one question:
+`Same as last time` (only when this conversation has a remembered choice for
+every type in the dispatch), `Default` (with what it resolves to per type spelled
+out), four curated model/effort combos applied to the whole dispatch, and
+`Customise…`. Everything but `Customise…` releases immediately, so the common
+case is one click. `Customise…` opens one row per agent type plus one `Account`
+row when more than one account is on offer, and a row whose type has more than
+one task also offers `Per task…`, which opens one row per task in that group. A
+dispatch answered at the first screen never builds the second or the third, so
+the customisation costs nothing when it is not used.
+
+The combo list is deliberately four entries rather than generated: the catalog is
+twenty-two models times six effort levels, and a form nobody reads is not a
+choice. Anything else is typed, which the `custom` field makes real:
+`parseCustomChoice` accepts a registered model id, a CLI effort level, or both,
+separated by whitespace, a comma or a slash, and refuses anything else rather
+than forwarding a `--model` the CLI would reject.
+
+##### How it is wired, and why each piece is where it is
+
+`drainNow` consults `TurnState.subagentDispatchForm`, which is **null unless the
+operator opted in**: with `subagentDispatch` unset the drain is the drain it has
+always been. With the gate on and the batch carrying `task` or `task_batch`, the
+step ends on the question instead and the calls stay in the broker, unemitted.
+`task` and `task_batch` have had no deadline since v0.20.0 (h #g83), so a held
+dispatch costs nothing while the operator reads.
+
+Both answer turns are handled **in the prologue**, before `setup()`, and that is
+not an optimisation: the held calls are pending-but-unemitted and the orphan
+sweep inside `setup()` rejects exactly those on a turn that carries no matching
+proxy result, which is what a `question` answer turn is. The form turn and the
+release turn are synthetic streams that never touch the CLI, which is correct
+rather than convenient: the child is parked inside the `task` MCP call it made,
+and there is nothing for the CLI to do while a form is on screen.
+
+The child side resolves before the session key is built, because the model and
+the effort are both in that key. `lookupSessionChoice` answers a session that has
+already claimed (a `Map` get), `hasCandidateClaim` is an empty-array scan on a
+default install, and only behind it does `fetchSessionParentId` run. A claim is
+consumed once and then held per child session id for the rest of that session's
+life, so a child cannot change model halfway through its own conversation. Two
+byte-identical tasks produce two identical claims and each child takes one, which
+is correct in either order because they are the same task.
+
+A chosen account is applied before `resolveFailoverSpawn`, so `sourceAccount`
+becomes the account that actually spawns and the limit memory, the switch form
+and the transcript carry are all about it. A usage-limit override on that account
+still wins over the dispatch's own spawn. A wrapper that cannot be written leaves
+the subagent on the dispatching account, which is where it would have run without
+the form.
+
+##### Every refusal, and the one that is a safety guard
+
+`subagentDispatch` is `"ask"` or nothing: unset and `"off"` are identical, for
+the reason `accountFailover` reads an explicit `"ask"` (h #g194). Never on
+compaction, never in a child session (a subagent that dispatches follows the
+choice its own parent made for it), and never without opencode's `question`
+registry entry, where the emitted call renders `⚙ invalid`.
+
+**A dismissed, unanswered or unrecognised form releases the dispatch with the
+defaults and writes one `▌ **subagent dispatch:**` note.** The alternative,
+ending the step, leaves the parked MCP call for the next message's orphan sweep,
+which the model reports to the operator as a denied tool. Releasing with the
+defaults is byte-for-byte today's behaviour, so dismissing costs nothing but the
+note.
+
+**The account row offers only same-group accounts, and
+`subagentDispatchCrossGroup` is the explicit opt-in, default false.** A subagent
+is handed the task text the main agent writes, which can quote the conversation,
+and it reads the repository, so another group's account is the same exposure
+`accountGroups` exists to stop (h #g226). The guard is enforced in
+`dispatchAccountCandidates`, which both the options list and the typed-answer
+check read, so a typed account outside the group is refused as well as not
+offered.
+
+`Same as last time` is per conversation and per agent type and lives **in
+memory**, like the plan-approval and failover dialogs it sits beside. Persisting
+it would mean a second file under `XDG_STATE_HOME` whose staleness nobody can
+see, and the cost of not persisting it is one extra read of a form the operator
+was going to look at anyway.
+
+##### What the tests cover, and what the mutations proved
+
+`test/subagent-dispatch.test.ts` (36) covers the gate, the three form stages,
+the per-type and per-task overrides, the remembered choice, the custom-answer
+parser, the claim store, the group restriction and the answer sentence,
+including the live-measured shapes: an answer containing `", "`, one containing
+quotes, `Unanswered`, and opencode-dcp's trailing `<dcp-message-id>` tag.
+`test/subagent-dispatch-stream.test.ts` (7) drives a real `doStream` with a fake
+`claude` that dispatches a two-type `task_batch`: the option off emits both
+`task` calls straight out, turning it on changes no argv on a turn that
+dispatches nothing, the dispatch turn ends on one question, the next turn
+releases both tasks with their prompts intact and spawns nothing, the chosen
+model and effort reach the child's own spawn (`--model claude-opus-5-5`,
+`CLAUDE_CODE_EFFORT_LEVEL=max`) while the type that was left alone keeps the
+turn's own model and no effort, a chosen account spawns that account's wrapper
+and `CLAUDE_CONFIG_DIR` (POSIX only, guarded on `process.platform`), and a
+dismissed form releases with the note.
+
+Six mutations, each caught: dropping the parent check from the claim fails *a
+session that is not the dispatcher's child can never take a claim*; dropping the
+prompt check fails *two concurrent children of the same type each take their own
+choice*; dropping the agent check fails *the wrong agent type never takes
+another type's claim*; not consuming the claim fails *a claim is consumed once*;
+disabling the group filter in `dispatchAccountCandidates` fails three account
+tests together; and accepting a typed account without checking it against the
+candidates fails *a typed account outside the group is refused even when the row
+exists*.

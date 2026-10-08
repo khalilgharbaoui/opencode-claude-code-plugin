@@ -333,6 +333,33 @@ function closeDeferredCliToolResults(state: TurnState): void {
   }
 }
 
+/**
+ * Hand one proxied call to opencode as a tool-call part.
+ *
+ * Shared with the subagent dispatch release (h #g227), which emits the same
+ * parts for the same calls out of a synthetic stream that has no `TurnState`:
+ * two copies of this would be two places for the part shape to drift.
+ */
+export function enqueueProxyToolCall(
+  controller: ReadableStreamDefaultController<any>,
+  toolCallId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): void {
+  controller.enqueue({
+    type: "tool-input-start",
+    id: toolCallId,
+    toolName,
+  } as any)
+  controller.enqueue({
+    type: "tool-call",
+    toolCallId,
+    toolName,
+    input: JSON.stringify(input),
+    providerExecuted: false,
+  } as any)
+}
+
 export function finishWithToolCalls(
   state: TurnState,
   calls: PendingProxyCall[],
@@ -345,18 +372,7 @@ export function finishWithToolCalls(
     toolName: string,
     input: Record<string, unknown>,
   ) => {
-    state.controller.enqueue({
-      type: "tool-input-start",
-      id: toolCallId,
-      toolName,
-    } as any)
-    state.controller.enqueue({
-      type: "tool-call",
-      toolCallId,
-      toolName,
-      input: JSON.stringify(input),
-      providerExecuted: false,
-    } as any)
+    enqueueProxyToolCall(state.controller, toolCallId, toolName, input)
     state.skipResultForIds.add(toolCallId)
   }
   for (const call of calls) {
@@ -477,6 +493,22 @@ export function drainNow(state: TurnState): void {
   state.activeProcess?.interactiveControl?.flushTranscript()
   if (state.controllerClosed) return
   const batch = state.drainBuffer.splice(0, state.drainBuffer.length)
+  // The subagent dispatch form (h #g227). With `subagentDispatch` off, which
+  // is the default, the slot is null and this is the drain it always was.
+  // With it on, a batch that starts subagents ends this step on a `question`
+  // instead; the calls stay in the broker, unemitted, and the next doStream
+  // releases them with the operator's answer applied.
+  const form = state.subagentDispatchForm?.(batch) ?? null
+  if (form) {
+    log.notice("holding a subagent dispatch for the operator's answer", {
+      sessionKey: state.sessionKey,
+      count: batch.length,
+      toolCallIds: batch.map((c) => c.toolCallId),
+      questionToolCallId: form.toolCallId,
+    })
+    finishWithQuestionCall(state, form)
+    return
+  }
   log.info("draining pending proxy calls into stream finish", {
     sessionKey: state.sessionKey,
     count: batch.length,

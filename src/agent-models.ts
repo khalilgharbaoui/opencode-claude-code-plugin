@@ -52,8 +52,12 @@ export const AGENT_DIR_NAMES = ["agents", "agent"]
  */
 const PROMPT_CACHE_TTLS = ["5m", "1h"]
 
-/** Levels the Claude CLI accepts; anything else is refused, not forwarded. */
-const REASONING_EFFORTS = [
+/**
+ * Levels the Claude CLI accepts; anything else is refused, not forwarded.
+ * Exported so the subagent dispatch form refuses exactly what this does: two
+ * lists of the same thing would drift the first time the CLI gains a level.
+ */
+export const REASONING_EFFORTS = [
   "minimal",
   "low",
   "medium",

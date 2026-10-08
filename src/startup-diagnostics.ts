@@ -58,6 +58,13 @@ export interface StartupDiagnostics {
   interactiveTransport: boolean
   /** ExitPlanMode approval routed through opencode's `question` tool. */
   planModeQuestion: boolean
+  /**
+   * `subagentDispatch`, resolved rather than echoed: `"ask"` only when a
+   * provider set exactly that, so a typo can never read as if the form is on
+   * (h #g227). `crossGroup` is its account escape hatch.
+   */
+  subagentDispatch: "ask" | "off"
+  subagentDispatchCrossGroup: boolean
   anthropicApiKeyInEnv: boolean
 }
 
@@ -244,6 +251,10 @@ export function collectStartupDiagnostics(
     transport,
     interactiveTransport: transport === "interactive",
     planModeQuestion: firstOption(providers, "planModeQuestion") === true,
+    subagentDispatch:
+      firstOption(providers, "subagentDispatch") === "ask" ? "ask" : "off",
+    subagentDispatchCrossGroup:
+      firstOption(providers, "subagentDispatchCrossGroup") === true,
     anthropicApiKeyInEnv: Boolean(
       process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
     ),

@@ -117,6 +117,8 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `accountInProcess` | boolean | unset/derived | Set by the config hook on Windows, where there is no per-account wrapper script: the spawn exports `CLAUDE_CONFIG_DIR` itself and strips the `@<account>` marker off `--model`. Do not hand-wire it. |
+| `subagentDispatch` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` raises the form**, so unset and `"off"` are identical and a dispatch is handed to opencode exactly as it is today. With `"ask"`, a proxied `task` or `task_batch` call is held at the drain and the turn ends on opencode's native `question` form asking how the subagents should run; the real `task` calls are released, with the answer applied, on the next step of the SAME opencode turn. Always exactly one question first (`Same as last time` when this conversation has one, `Default`, four curated model/effort combos, `Customise…`), so the common answer is one click. `Customise…` opens a second form with one row per agent type plus one account row when more than one account is offered, and a type row can ask for a third form with one row per task in that group. Every row takes a typed answer too: a model id, an effort level, or both (`claude-opus-5-5 max`); anything unrecognised keeps that row's default with a NOTICE. The answer applies to each child's own `claude` spawn (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`, and the account's wrapper and `CLAUDE_CONFIG_DIR`) and beats `forceModel`, `defaultSubagentModel` and the inherited effort, because it is about this dispatch. A child is matched to its task by the dispatching session, the subagent type and the task prompt, verified against `parentID`. A dismissed or unanswered form dispatches with the defaults and writes one `▌ **subagent dispatch:**` note; the dispatch is never lost. Never on compaction turns, never inside a child session (a subagent follows the choice its own parent made for it), and only where opencode's registry has the `question` entry. `Same as last time` is per conversation and per agent type, in memory, so it is not offered again after an opencode restart. Both transports, both opencode majors. |
+| `subagentDispatchCrossGroup` | boolean | `false` | Let `subagentDispatch`'s account row offer accounts outside the dispatching account's own `accountGroups` group. **Off by default and never implied by anything else**: a subagent is handed the task text the main agent writes, which can quote the conversation, and it reads the repository, so offering another group is offering that group the conversation by another route. Does nothing when `accountGroups` is unset, where every account is already one group, or when `subagentDispatch` is off. |
 | `defaultSubagentModel` | string | unset | Seed-config default for discovered `mode: subagent` agents without a full `provider/model` pin; `forceModel` takes precedence. Keeps the caller's account. Unknown ids warn and keep the inherited model. Not independently read per expanded account. |
 | `defaultSubagentCacheTtl` | string | unset | Prompt cache TTL (`5m` / `1h`) for discovered `mode: subagent` agents that declare no `cacheTtl`; the agent's own value takes precedence. Unset leaves the CLI's default (1 hour on a subscription). Unknown values warn and change nothing. Headless and interactive spawns, never compaction. |
 | `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when the `accountFailover` form is not taking the turn, which is the case whenever it is `"off"` (its default) or has no other account to offer; with `"ask"` and another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction or title stubs; both transports. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
@@ -576,6 +578,52 @@ the opencode schema requires it. Markdown fallback reads top-level scalar fields
 | `reasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid declarations warn and keep inherited effort. `minimal` maps to CLI `low`. Compaction skips this override. |
 | `cacheTtl` | `5m` or `1h`; anything else warns and leaves the CLI's default alone. Exported as `CLAUDE_CODE_PROMPT_CACHE_TTL`, beating a shell export of the same name. Works for any discovered agent mode; compaction skips it. |
 | `fallbackModels` | Ordered registered bare model ids to try when this agent's model is refused. Both YAML spellings (`[a, b]` or a `- ` block). Replaces the provider-level `fallbackModels` rather than extending it. Keeps the caller's account; an entry carrying `@account` has it stripped. Unknown ids warn and are skipped. |
+
+### Ask before each subagent dispatch
+
+Opt-in; off by default. Turns a fan-out into one question instead of a static agent file.
+
+```json
+{
+  "provider": {
+    "claude-code": {
+      "options": {
+        "proxyTools": ["Bash", "Write", "Edit", "WebFetch", "Task"],
+        "subagentDispatch": "ask"
+      }
+    }
+  }
+}
+```
+
+What happens, in order:
+
+1. The model calls `mcp__opencode_proxy__task` or `mcp__opencode_proxy__task_batch`.
+2. The plugin holds the call and ends the step on opencode's `question` form with ONE
+   question: `Same as last time` (when this conversation has one), `Default`, four
+   curated model/effort combos, and `Customise…`.
+3. Answering anything but `Customise…` releases the subagents immediately, with that
+   answer applied, on the next step of the SAME opencode turn.
+4. `Customise…` opens one row per agent type, plus an `Account` row when more than one
+   account is offered. A type with more than one task also offers `Per task…`, which
+   opens one row per task in that group.
+5. Each subagent opencode starts spawns its own `claude` with the chosen `--model`,
+   `CLAUDE_CODE_EFFORT_LEVEL` and account wrapper.
+
+Rules worth stating to a user:
+
+- A dispatch answer beats `forceModel`, `defaultSubagentModel` and the inherited effort.
+- Any row takes a typed answer: a registered model id, an effort level, or both
+  (`claude-opus-5-5 max`). Unrecognised text keeps that row's default with a NOTICE.
+- Dismissing or ignoring the form dispatches with the defaults and writes one
+  `▌ **subagent dispatch:**` note. The dispatch is never lost.
+- The account row lists only accounts in the dispatching account's own `accountGroups`
+  group. `subagentDispatchCrossGroup: true` is the explicit, default-off opt-in for the
+  rest; it does nothing when `accountGroups` is unset.
+- Never on compaction, never inside a child session, and only where opencode's registry
+  has the `question` entry.
+- `Same as last time` is per conversation and per agent type, in memory, so an opencode
+  restart offers `Default` again.
 
 ### Degrade to another model instead of failing
 

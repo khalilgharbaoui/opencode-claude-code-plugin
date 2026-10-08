@@ -270,6 +270,11 @@ export function createClaudeCode(
       // already validated. `failoverAccounts` is what the expansion configured,
       // which is exactly the set a group may name (h #g226).
       accountGroups: accountGroups(settings),
+      // Passed through with no default, for the same reason `accountFailover`
+      // is: the form is opt-in and `isSubagentDispatchActive` asks for an
+      // explicit `"ask"` (h #g227).
+      subagentDispatch: settings.subagentDispatch,
+      subagentDispatchCrossGroup: settings.subagentDispatchCrossGroup,
       providerID: settings.providerID,
       skipPermissions: preset?.skipPermissions ?? settings.skipPermissions ?? true,
       permissionMode: preset?.permissionMode ?? settings.permissionMode,

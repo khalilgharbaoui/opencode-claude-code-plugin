@@ -277,6 +277,18 @@ export interface TurnState {
 
   // ---- The batched drain --------------------------------------------------
 
+  /**
+   * The subagent dispatch gate, or null when `subagentDispatch` is off, which
+   * is the default. Given the batch the drain is about to emit, it returns the
+   * form to raise instead, or null to emit the batch exactly as today. Held on
+   * the state rather than closed over because `drainNow` lives in
+   * `src/turn-controller.ts` and the gate needs this turn's prologue
+   * (the account topology, the live registry, the dispatching session).
+   */
+  subagentDispatchForm:
+    | ((calls: PendingProxyCall[]) => import("./plan-mode-question.js").QuestionToolCall | null)
+    | null
+
   /** Proxy calls waiting to leave in one `tool-calls` finish. */
   readonly drainBuffer: PendingProxyCall[]
   /** Quiet timer for the drain and for the result boundary; they share it. */
@@ -432,6 +444,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     accountBlock: null,
     modelRefusal: null,
 
+    subagentDispatchForm: null,
     drainBuffer: [],
     drainTimer: null,
     pendingResultCompletion: null,

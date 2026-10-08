@@ -248,6 +248,81 @@ function unwrapOpencodeQuestionResult(value: string, question?: string): string 
 }
 
 /**
+ * Every answer of a MULTI-question form, by the question it answers, or null
+ * when the result is not an answer sentence at all (a dismissal, a denial, a
+ * failed tool call).
+ *
+ * The single-question reader above cannot be reused for this, and the reason is
+ * the shape opencode builds, read out of the 1.18.35 binary and measured live
+ * (h #g227):
+ *
+ *   User has answered your questions: "q1"="a1", "q2"="alpha, gamma". You can
+ *   now continue with the user's answers in mind.
+ *
+ * Question pairs are joined with `, ` and so are the labels of ONE `multiple`
+ * answer, and a custom answer is free text that can contain `", "` and quotes
+ * of its own (measured: `claude-opus-5 and effort xhigh, please` came back
+ * verbatim). So nothing can be split on, and the questions are walked in order
+ * instead: each answer runs from its own `"<question>"="` head to the quote
+ * immediately before the next head, or to the end for the last one. The
+ * question texts are the caller's own, which is what makes that unambiguous.
+ *
+ * A question with no head in the sentence is absent from the map rather than
+ * empty, so a caller can tell "not answered" from "answered with nothing".
+ */
+export function parseQuestionAnswers(
+  part: any,
+  questions: readonly string[],
+): Map<string, string> | null {
+  const outputType = part?.output?.type
+  if (outputType === "error-text" || outputType === "error-json") return null
+
+  const output = unwrapToolOutput(part)
+  if (
+    output &&
+    typeof output === "object" &&
+    (output as { denied?: unknown }).denied === true
+  ) {
+    return null
+  }
+  if (typeof output !== "string") return null
+
+  const sentence = output.replace(DCP_MESSAGE_ID_SUFFIX, "").trim()
+  if (
+    !sentence.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
+    !sentence.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)
+  ) {
+    return null
+  }
+  const body = sentence.slice(
+    OPENCODE_QUESTION_RESULT_PREFIX.length,
+    sentence.length - OPENCODE_QUESTION_RESULT_SUFFIX.length,
+  )
+
+  const out = new Map<string, string>()
+  let cursor = 0
+  for (const [index, question] of questions.entries()) {
+    const head = `"${question}"="`
+    const start = body.indexOf(head, cursor)
+    if (start === -1) continue
+    const valueStart = start + head.length
+    let valueEnd = body.length - 1
+    for (let next = index + 1; next < questions.length; next++) {
+      const nextHead = `, "${questions[next]}"="`
+      const stop = body.indexOf(nextHead, valueStart)
+      if (stop === -1) continue
+      valueEnd = stop - 1
+      break
+    }
+    if (valueEnd < valueStart) continue
+    const value = body.slice(valueStart, valueEnd)
+    out.set(question, value === OPENCODE_UNANSWERED ? "" : value)
+    cursor = valueEnd
+  }
+  return out
+}
+
+/**
  * Flatten an unwrapped `question` result into the answer strings it holds.
  * `question` is the text the form asked, when the caller knows it; see
  * `unwrapOpencodeQuestionResult` for why it matters.

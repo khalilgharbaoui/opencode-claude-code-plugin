@@ -14,6 +14,10 @@ import {
 import { clearLedger } from "./todo-ledger.js"
 import { clearExitPlanModeQuestions, hasExitPlanModeQuestions } from "./plan-mode-question.js"
 import { clearAccountFailoverQuestions } from "./account-failover.js"
+import {
+  clearSubagentDispatchQuestions,
+  forgetSessionChoice,
+} from "./subagent-dispatch.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
 import { forgetForkFingerprint, moveForkFingerprint } from "./session-fork.js"
@@ -671,6 +675,10 @@ export function deleteActiveProcessesForSession(sessionID: string): string[] {
   // Every key this call released, whether it had a live process or only a
   // remembered session id: a deleted opencode session must leave no ledger.
   for (const key of released) clearBackgroundTasks(key)
+  // A deleted subagent session must not keep the choice its dispatch gave it:
+  // nothing will ever ask for it again, and an id opencode reuses would read
+  // somebody else's answer (h #g227).
+  forgetSessionChoice(sessionID)
   return released
 }
 
@@ -868,6 +876,7 @@ export function _forgetClaudeSessionIdInMemory(key: string): void {
 export function deleteClaudeSessionId(key: string): void {
   clearExitPlanModeQuestions(key)
   clearAccountFailoverQuestions(key)
+  clearSubagentDispatchQuestions(key)
   const claudeSessionId = claudeSessions.get(key)
   if (claudeSessionId) clearLedger(claudeSessionId)
   claudeSessions.delete(key)
@@ -919,6 +928,7 @@ export function transferClaudeSession(
   // overrides recorded against it are stale the moment the id leaves.
   clearExitPlanModeQuestions(fromKey)
   clearAccountFailoverQuestions(fromKey)
+  clearSubagentDispatchQuestions(fromKey)
   log.notice("carrying the claude conversation over to the new session key", {
     fromKey,
     toKey,

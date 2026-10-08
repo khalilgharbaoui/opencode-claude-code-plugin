@@ -5,6 +5,10 @@ import {
   USAGE_LIMIT_MARKER,
   stripAccountFailoverParts,
 } from "./account-failover.js"
+import {
+  stripSubagentDispatchParts,
+  SUBAGENT_DISPATCH_MARKER,
+} from "./subagent-dispatch.js"
 import { ACCOUNT_GROUP_MARKER } from "./account-groups.js"
 import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
 import {
@@ -52,6 +56,7 @@ const PLUGIN_NOTE_MARKERS = [
   MODEL_FALLBACK_MARKER,
   UNATTENDED_REPLAY_MARKER,
   STALE_BUILD_MARKER,
+  SUBAGENT_DISPATCH_MARKER,
 ]
 
 function isPluginNote(part: any): boolean {
@@ -78,7 +83,7 @@ export function filterSideQuestionHistory(prompt: Prompt): Prompt {
   // The account-failover form is a synthetic `question` call Claude never
   // issued, answered by a `tool-result` it never saw. It has to come out
   // before anything is replayed, which is on the switch turn by definition.
-  prompt = stripAccountFailoverParts(prompt)
+  prompt = stripSubagentDispatchParts(stripAccountFailoverParts(prompt))
   let pluginCommand = false
   const kept = prompt.filter((message) => {
     if (message.role === "user") {
@@ -536,7 +541,7 @@ export function getClaudeUserMessage(
   // already; the current message did not, so on the turn after a form the
   // answer reached Claude as a stray `<opencode_tool_result>` ("The user
   // dismissed this question"), measured 2026-09-23.
-  prompt = stripAccountFailoverParts(prompt)
+  prompt = stripSubagentDispatchParts(stripAccountFailoverParts(prompt))
 
   // Done once here, at the top, so every path below (the current message,
   // the fresh-session rebuild and the /compact transcript) sees the cleaned
@@ -724,7 +729,7 @@ export function getTrailingUserMessages(
 } {
   // The same cleaning `getClaudeUserMessage` applies, so a forwarded message
   // never carries what the envelope path would have removed.
-  prompt = stripAccountFailoverParts(prompt)
+  prompt = stripSubagentDispatchParts(stripAccountFailoverParts(prompt))
   if (opts.stripContextReminders) prompt = stripContextReminders(prompt).prompt
   let assistantIndex = -1
   for (let i = prompt.length - 1; i >= 0; i--) {
