@@ -1602,35 +1602,35 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               from: sibling.siblingAccount,
             })
           } else {
-          // The sibling's own child, if it still has one, is holding the
-          // transcript this turn is about to resume. It goes first, so one
-          // `claude` owns one conversation; the transfer then moves the id,
-          // the resume record and the fork fingerprint across, leaving the
-          // sibling key with no claim on it at all.
-          deleteActiveProcess(sibling.siblingKey)
-          const carried = transferClaudeSession(sibling.siblingKey, sk)
-          if (carried) {
-            // A renamed copy is the same conversation under a new id, because
-            // the CLI resolves a session by filename and the target path was
-            // taken by an older copy from an earlier switch (h #g218).
-            if (carriedSessionId && carriedSessionId !== carried) {
-              setClaudeSessionId(sk, carriedSessionId)
+            // The sibling's own child, if it still has one, is holding the
+            // transcript this turn is about to resume. It goes first, so one
+            // `claude` owns one conversation; the transfer then moves the id,
+            // the resume record and the fork fingerprint across, leaving the
+            // sibling key with no claim on it at all.
+            deleteActiveProcess(sibling.siblingKey)
+            const carried = transferClaudeSession(sibling.siblingKey, sk)
+            if (carried) {
+              // A renamed copy is the same conversation under a new id, because
+              // the CLI resolves a session by filename and the target path was
+              // taken by an older copy from an earlier switch (h #g218).
+              if (carriedSessionId && carriedSessionId !== carried) {
+                setClaudeSessionId(sk, carriedSessionId)
+              }
+              includeHistoryContext = false
+              log.notice(
+                "continuing this conversation's claude session under the new model or effort instead of replaying it",
+                {
+                  sessionKey: sk,
+                  siblingKey: sibling.siblingKey,
+                  matchedMessages: sibling.matched,
+                  ...(sibling.siblingAccount
+                    ? { from: sibling.siblingAccount, account: sourceAccount }
+                    : {}),
+                },
+              )
+            } else {
+              replayReason = "sibling-carry-over-failed"
             }
-            includeHistoryContext = false
-            log.notice(
-              "continuing this conversation's claude session under the new model or effort instead of replaying it",
-              {
-                sessionKey: sk,
-                siblingKey: sibling.siblingKey,
-                matchedMessages: sibling.matched,
-                ...(sibling.siblingAccount
-                  ? { from: sibling.siblingAccount, account: sourceAccount }
-                  : {}),
-              },
-            )
-          } else {
-            replayReason = "sibling-carry-over-failed"
-          }
           }
         }
       }

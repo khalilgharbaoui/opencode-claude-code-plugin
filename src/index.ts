@@ -19,7 +19,7 @@ import {
   resolveAccounts,
 } from "./accounts.js"
 import { readAccountTier } from "./account-tier.js"
-import { describeAccountGroups, resolveAccountGroups } from "./account-groups.js"
+import { resolveAccountGroups } from "./account-groups.js"
 import {
   type AgentRecord,
   agentDirectories,
