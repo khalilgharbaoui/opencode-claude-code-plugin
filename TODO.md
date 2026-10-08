@@ -84,9 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: live context gauge. Maintainer: "1 is interesting maybe". Measured (h #g225): real usage
-  at a tool boundary makes opencode compact mid-turn on both majors, losing (1.x) or re-running (2.x)
-  the parked proxied call. Recommended: drop. Awaiting the maintainer: drop, or keep as an idea.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
