@@ -88,7 +88,8 @@ raised, so they survive context compaction; removed when answered, done or dropp
   verified on 2.0.22), but the maintainer's other plugins are V1-only (opencode-dcp, notify.ts,
   opentmux, opencode-local-ollama, herdr-agent-state, moshi-hooks) and V1 plugins do not run in V2;
   the V2 installer replaces the V1 binary. Offered: live-check accountGroups, the by-hand account carry
-  and subagentDispatch on 2.0.22 (scripted CLI), and a V2 config dry run in the sandbox. Awaiting.
+  and subagentDispatch on 2.0.22 (scripted CLI), and a V2 config dry run in the sandbox. Maintainer:
+  "prep now and decide after". In progress, two lanes; the switch decision stays the maintainer's.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
