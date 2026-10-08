@@ -84,31 +84,17 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
-  remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
-  path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
-- 2026-10-08: maintainer: "is it now ok to daily drive opencode 2?" Answered: this plugin yes (core
-  verified on 2.0.22), but the maintainer's other plugins are V1-only (opencode-dcp, notify.ts,
-  opentmux, opencode-local-ollama, herdr-agent-state, moshi-hooks) and V1 plugins do not run in V2;
-  the V2 installer replaces the V1 binary. Offered: live-check accountGroups, the by-hand account carry
-  and subagentDispatch on 2.0.22 (scripted CLI), and a V2 config dry run in the sandbox. Maintainer:
-  "prep now and decide after". Prep **done** (v0.53.1): the three newest features pass live on 2.0.22
-  after one fix (the dispatch choice never reached a V2 child, PR #108, h #g229); the config dry run
-  is in `~/opencode-v2-sandbox/migration-dryrun/REPORT.md` (config runs as is with the plugin path
-  ending in `/dist` and `compaction.prune` dropped; dcp is V2-ready; notify.ts, moshi-hooks.ts,
-  opentmux, herdr-agent-state have no V2 version; ollama is built into V2; rollback is
-  `VERSION=1.18.35 curl -fsSL https://opencode.ai/install | bash`). Awaiting: the switch decision.
-- 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
-  measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
-  (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
-  27 forks, v0.50.0 (PR #102, #103; h #g223, #g224): @nic-lan's MCP OAuth bridge taken as opt-in
-  `bridgeMcpOauthTokens`, @bangnh1's replay clipping taken, the rest declined with reasons. Still
-  open: (3) optional: a Linux CI job for
-  the whole suite, an MCP elicitation round trip into an opencode form. Needs the maintainer: a
-  second non-work login, for a live two-account switch and an expired-login switch.
 ## Parked
 
-Nothing parked.
+- 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
+  checkout 2 somewhere next week". Prep is done (v0.53.1, v0.53.2; h #g229, #g230): the plugin is
+  verified live on 2.0.22, Moshi 0.4.21 serves both majors, and the dry run with the exact config
+  changes and the rollback is in `~/opencode-v2-sandbox/migration-dryrun/REPORT.md` (plugin path ends
+  in `/dist`, drop `compaction.prune`, notify becomes cli.json `attention` from `cli.notify.json`,
+  herdr-agent-state.js has no V2 version).
+- 2026-10-08: optional, needs the maintainer: a second non-work Claude login, only to live-test a
+  switch between two real logins and an expired-login switch. Every failure path falls back to the
+  replay, so normal use answers it too. MCP elicitation as a form is parked in Future Features.
 
 ## In progress
 
