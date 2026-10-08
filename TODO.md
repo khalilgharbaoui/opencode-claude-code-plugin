@@ -84,19 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: two subagent questions. (1) "is it now possible to use subagents from other accounts in the
-  same group? or even cross group? ... options to choose within same group and or even cross group".
-  (2) "a question asked do you want default subagent behavior or pick what model and effor for the sub
-  agents that will spawn or say use what was used before ... also this feature should be opt-in".
-  Found: a subagent follows its parent's account; only an agent definition pinning
-  `model: claude-code-<account>/<model>` runs elsewhere (static, per agent type); opencode 1.x's `task`
-  tool has no model or effort field; `accountGroups` does not touch subagents. Proposed: one opt-in
-  "ask before dispatch" form (default / pick model, effort, account / same as last time), accounts
-  limited to the parent's group unless cross-group is allowed explicitly. Maintainer: "go for 1 (but
-  task_batch would get 1 question but maybe allow distinction if agent type is diffrent ... maybe user
-  also wants one implementor to be more powerfull than the rest ... design this thoughtfull and
-  carefully)". In progress, one lane: measure the question form first, then build; cross-group off
-  unless explicitly allowed.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
@@ -115,6 +102,12 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.52.0): "go for 1 ... allow distinction if agent type is diffrent ... one
+  implementor to be more powerfull than the rest ... design this thoughtfull and carefully". Opt-in
+  `subagentDispatch: "ask"`: one question first, then per type (plus account), then per task; account
+  same-group only unless `subagentDispatchCrossGroup` (PR #105, h #g227). Live on 1.18.35 with a fake
+  CLI; not live on 2.x or the PTY. Left for the maintainer: the account is one choice per dispatch
+  (not per type), and "same as last time" lives in memory (not across an opencode restart).
 - 2026-10-08: **done** (v0.51.0): "if i have a conversatiin in claude ... switch to claude-appical and
   continue", then "lets build the guard and make it optional ... mark which account is work account".
   A by-hand account switch now carries the conversation like a model change, and `accountGroups`
