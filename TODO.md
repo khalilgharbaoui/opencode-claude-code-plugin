@@ -84,6 +84,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "2 is maybe usefull wont take too much resources build it". In progress: a
+  background dispatch's reply to the model also says how many background subagents are running, cheap
+  and bounded (omitted rather than delayed when a lookup is slow).
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
