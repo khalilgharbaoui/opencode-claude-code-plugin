@@ -94,7 +94,12 @@ raised, so they survive context compaction; removed when answered, done or dropp
   all models to access ? (maybe by symlinking or something?)". Answered: one rule for any account and
   any model (provider, model and effort may all differ), storage stays copy-on-switch; a shared or
   symlinked `projects/` would not fix the by-hand case (the plugin's key lookup is the gap, not file
-  visibility) and would merge the work and private accounts' history and auto-memory. Awaiting: build.
+  visibility) and would merge the work and private accounts' history and auto-memory. Maintainer
+  2026-10-08: "lets build the guard and make it optional just in case we need to turn it on maybe make
+  it smart that we can 1 turn it on and 2 mark which account is work account". In progress: account
+  groups (off unless set), a conversation follows any account and model within a group, never across;
+  a cross-group switch starts fresh with no history (a replay would send it too) and the form offers
+  same-group accounts only.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
