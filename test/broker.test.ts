@@ -391,29 +391,45 @@ test("a call with no deadline warns repeatedly while it waits", async () => {
   rejectAllPendingProxyCallsForSession("sess-stall", new Error("cleanup"))
 })
 
+/**
+ * The stall warnings logged after `endedAt`. Asserted instead of an exact
+ * count before it: Windows timers fire on a ~15.6 ms clock, so a 25 ms pause
+ * can already hold two 15 ms heartbeats, and the rule under test is only that
+ * none follow the end of the call.
+ */
+function stallLinesAfter(lines: string[], endedAt: number): string[] {
+  return stallLines(lines).filter((line) => Date.parse(line.slice(1, 25)) > endedAt)
+}
+
 test("resolving a call stops its stall warnings", async () => {
   const handle = makeCall("task")
+  let endedAt = 0
   const lines = await captureLogsAsync(async () => {
     queuePendingProxyCall("sess-stall-stop", handle.call, undefined, 15)
     await pause(25)
     resolvePendingProxyCallById(handle.id, { kind: "text", text: "done" })
+    endedAt = Date.now()
     await pause(60)
   })
-  // One heartbeat before the result, none after: the interval was cleared
+  // Heartbeats before the result, none after: the interval was cleared
   // rather than left running against a deleted entry.
-  assert.equal(stallLines(lines).length, 1, stallLines(lines).join("\n"))
+  assert.ok(stallLines(lines).length >= 1, "armed before the result")
+  assert.deepEqual(stallLinesAfter(lines, endedAt), [])
   assert.equal(getPendingProxyCalls("sess-stall-stop").length, 0)
 })
 
 test("rejecting a call stops its stall warnings", async () => {
   const handle = makeCall("task_batch")
+  let endedAt = 0
   const lines = await captureLogsAsync(async () => {
     queuePendingProxyCall("sess-stall-reject", handle.call, undefined, 15)
     await pause(25)
     rejectPendingProxyCallById(handle.id, new Error("aborted"))
+    endedAt = Date.now()
     await pause(60)
   })
-  assert.equal(stallLines(lines).length, 1, stallLines(lines).join("\n"))
+  assert.ok(stallLines(lines).length >= 1, "armed before the rejection")
+  assert.deepEqual(stallLinesAfter(lines, endedAt), [])
   await handle.promise.catch(() => undefined)
 })
 
