@@ -40,7 +40,7 @@ changing, reverting or "simplifying" a rule.
 - Single focused test file: `npx tsx --test test/get-claude-user-message.test.ts` (replace file as needed).
 - Build: `npm run build` (`tsup`, emits ESM + d.ts to `dist/`).
 - Before release, run: `npm run typecheck && npm test && npm run build`.
-- There is no lockfile. CI uses Node 24 and runs `npm install`, then `npm run build`.
+- There is no lockfile. CI uses Node 24. `ci-linux.yml` runs `npm install`, typecheck, `npm test` and build on every push to master and every PR; `ci-windows.yml` runs the portable files on Windows; `publish.yml` builds and publishes on a tag. `[skip-ci]` in the commit message (or PR title) skips both CI jobs, never the publish. A release still waits for both CI jobs green on the master commit it tags, so do not tag a `[skip-ci]` commit.
 
 ## Release Workflow
 

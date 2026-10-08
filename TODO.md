@@ -84,6 +84,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "maybe yes add the Linux CI Job now.. but also allow me to [skip-ci] to skip
+  it when i add that to commit and park the MCP thing for now ... also all is compatible with opencode
+  2.0 right". In progress.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all

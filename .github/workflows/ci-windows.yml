@@ -1,9 +1,9 @@
 name: CI (Windows)
 
 # Windows is the only platform where this plugin builds a command line by hand
-# (`src/windows-spawn.ts`), so it is the only platform with a CI job. macOS and
-# Linux are covered by `npm test` locally and by nothing here on purpose: this
-# job exists to keep the cmd.exe escaper honest, not to become a second suite.
+# (`src/windows-spawn.ts`). This job exists to keep the cmd.exe escaper honest;
+# the whole suite runs on Linux in ci-linux.yml. `[skip-ci]` in the pushed
+# commit's message (or a pull request's title) skips both jobs.
 on:
   pull_request:
   push:
@@ -12,6 +12,7 @@ on:
 
 jobs:
   windows:
+    if: ${{ !contains(github.event.head_commit.message || github.event.pull_request.title || '', '[skip-ci]') }}
     runs-on: windows-latest
     steps:
       # Git on Windows checks out CRLF by default, and several tests read repo

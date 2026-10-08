@@ -1,0 +1,32 @@
+name: CI (Linux)
+
+# The whole suite, typecheck and build on every push to master and every pull
+# request, so a change is checked somewhere other than the maintainer's Mac.
+# The Windows job keeps the cmd.exe escaper honest; this one runs everything.
+#
+# `[skip-ci]` in the pushed commit's message (or in a pull request's title)
+# skips this job and the Windows one. GitHub's own `[skip ci]` works too.
+# Publishing is never skipped: it runs on a version tag, not here.
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  linux:
+    if: ${{ !contains(github.event.head_commit.message || github.event.pull_request.title || '', '[skip-ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Show toolchain
+        run: node --version && npm --version
+      - run: npm install
+      - run: npm run typecheck
+      # `npm test` itself: it already forces OPENCODE_CLAUDE_CODE_LOG_FILE=0 and a
+      # scratch XDG_STATE_HOME, so CI runs exactly what a local gate runs.
+      - run: npm test
+      - run: npm run build
