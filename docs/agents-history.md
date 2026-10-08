@@ -3808,7 +3808,7 @@ filesystem. The cherry-pick is `6fb3af0`, author preserved; the resolution was
 mechanical (master's `hostApi` parameter, `test/*.test.ts` layout, the glob test
 script, docs instead of `README.md`).
 
-**Six adaptations, each of them load-bearing** (`1d6d9f3`):
+**Six adaptations, each of them load-bearing** (`217c023`):
 
 1. **`bridgeMcpOauthTokens`, off by default.** The fork's version is always on.
    The operator authenticated that server *to opencode*; copying the token into
