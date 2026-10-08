@@ -166,6 +166,30 @@ export function backgroundTaskIdsIn(text: string): string[] {
   return [...ids]
 }
 
+/** A `task_batch` child's section header, as `formatTaskBatchResults` writes it. */
+const BATCH_SECTION = /^## task \d+ of \d+: /m
+
+/**
+ * The background dispatches one `task` / `task_batch` result accepted. A
+ * `task_batch` result is flagged `isError` as a whole when ANY child failed,
+ * but every child keeps its own section and a failed one opens with `[error]`
+ * or `[missing]`, so the children that did start are read from the other
+ * sections. Reading nothing there lost every child a batch had started the
+ * moment one sibling failed (found in PR #111's lane). A failed single `task`
+ * has no sections and started nothing.
+ */
+function acceptedBackgroundTaskIds(result: ProxyToolResult): string[] {
+  if (result.kind !== "text") return []
+  if (result.isError !== true) return backgroundTaskIdsIn(result.text)
+  const ids = new Set<string>()
+  for (const section of result.text.split(BATCH_SECTION).slice(1)) {
+    const body = section.slice(section.indexOf("\n") + 1)
+    if (body.startsWith("[error] ") || body.startsWith("[missing] ")) continue
+    for (const id of backgroundTaskIdsIn(body)) ids.add(id)
+  }
+  return [...ids]
+}
+
 /**
  * Remember the background dispatches one proxied `task` or `task_batch` result
  * reports. Called where opencode's result is handed back to the CLI, which is
@@ -176,8 +200,7 @@ export function noteBackgroundDispatchResult(
   result: ProxyToolResult,
   now = Date.now(),
 ): void {
-  if (result.kind !== "text" || result.isError === true) return
-  for (const taskId of backgroundTaskIdsIn(result.text)) {
+  for (const taskId of acceptedBackgroundTaskIds(result)) {
     // Re-inserting moves a re-dispatched id to the newest end.
     started.delete(taskId)
     started.set(taskId, { sessionKey, at: now })
@@ -316,9 +339,10 @@ async function countOtherRunningWithin(
 /**
  * opencode's answer to a background `task` / `task_batch` dispatch, with one
  * line appended saying how many background subagents are running now, so the
- * model can see the load it is adding to. Anything that is not an accepted
- * background dispatch (a foreground answer, an error, every other tool) is
- * returned untouched, and so is a dispatch whose count did not arrive inside
+ * model can see the load it is adding to. Anything that started no background
+ * subagent (a foreground answer, a failed `task`, every other tool) is
+ * returned untouched; a `task_batch` whose other children failed still gets
+ * the line for the ones that started. So is a dispatch whose count did not arrive inside
  * the budget: the line is omitted rather than the dispatch delayed.
  *
  * The line goes AFTER opencode's text, so `backgroundTaskIdsIn` and both id
@@ -332,8 +356,8 @@ export async function withBackgroundRunningCount(
   result: ProxyToolResult,
   budgetMs = BACKGROUND_COUNT_BUDGET_MS,
 ): Promise<ProxyToolResult> {
-  if (result.kind !== "text" || result.isError === true) return result
-  const dispatched = backgroundTaskIdsIn(result.text)
+  if (result.kind !== "text") return result
+  const dispatched = acceptedBackgroundTaskIds(result)
   if (dispatched.length === 0) return result
   const others = await countOtherRunningWithin(new Set(dispatched), budgetMs)
   if (others === undefined) {

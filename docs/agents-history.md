@@ -5131,3 +5131,24 @@ interactive transport was not probed live; it resolves proxied calls through the
 same loop. Not probed: a `task_batch` through a live opencode (covered by the
 fake-CLI `doStream` test), and the overrun path against a live opencode, which
 answered every lookup well inside the budget.
+
+<a id="g233"></a>
+
+#### A failed batch child no longer hides the ones that started (2026-10-08)
+
+Found by the PR #111 lane, pre-existing since h #g231. `formatTaskBatchResults`
+flags the whole `task_batch` result `isError` when any one child failed, and
+`noteBackgroundDispatchResult` and `withBackgroundRunningCount` both returned
+early on `isError`. So a batch that started three background children and lost
+a fourth recorded none of the three: they were missing from the doctor's
+`running now` ledger, and the reply carried no running-count line.
+
+`acceptedBackgroundTaskIds` now reads an `isError` result section by section
+(`## task N of M: `), skipping a section whose body opens `[error] ` or
+`[missing] ` and reading the envelopes in the rest. A failed single `task` has
+no sections and records nothing, exactly as before, and a failed child's own
+text is never read, envelope or not. The result keeps `isError: true`; only
+the line is added. Test: `test/background-running-count.test.ts` (a batch of
+two started, one `kind: "error"`, one `isError` text carrying an envelope, one
+missing); both mutations (nothing read from an error result, failed sections
+read) fail it.

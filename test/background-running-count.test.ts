@@ -24,6 +24,7 @@ import { test } from "node:test"
 import {
   backgroundTaskIdsIn,
   collectBackgroundTask,
+  countRunningBackgroundTasks,
   formatBackgroundRunningLine,
   hasCollectedBackgroundTask,
   noteBackgroundDispatchResult,
@@ -204,6 +205,27 @@ test("foreground answers, errors and failed results are returned untouched, with
     assert.equal(await withBackgroundRunningCount(result), result)
   }
   assert.deepEqual(calls, [], "nothing was asked of opencode")
+})
+
+test("a task_batch with a failed child still records and counts the children that started", async () => {
+  _resetBackgroundTasks()
+  setOpencodeClient(fakeClient({ status: {} }).client)
+  const batch = formatTaskBatchResults([
+    { task: { description: "a", subagent_type: "general" }, result: { kind: "text", text: v1Envelope("ses_a") } },
+    { task: { description: "b", subagent_type: "general" }, result: { kind: "error", message: "boom" } },
+    // A failed child's own text is never read, envelope or not.
+    { task: { description: "c", subagent_type: "general" }, result: { kind: "text", text: v1Envelope("ses_bad"), isError: true } },
+    { task: { description: "d", subagent_type: "general" }, result: null },
+    { task: { description: "e", subagent_type: "general" }, result: { kind: "text", text: v2Envelope("ses_e") } },
+  ])
+  assert.equal((batch as { isError?: boolean }).isError, true, "the batch as a whole is an error")
+
+  const out = (await dispatch(batch)) as { text: string; isError?: boolean }
+  assert.equal(out.isError, true, "still reported as an error")
+  assert.ok(out.text.endsWith(`${LINE} 2 (including the 2 just started).`), out.text)
+  assert.equal(out.text.split(LINE).length - 1, 1, "one line per batch")
+  const { started: recorded } = await countRunningBackgroundTasks()
+  assert.equal(recorded, 2, "ses_a and ses_e recorded, ses_bad not")
 })
 
 // --- bounded and cheap ---------------------------------------------------
