@@ -86,7 +86,11 @@ raised, so they survive context compaction; removed when answered, done or dropp
 
 - 2026-10-08: maintainer: "2 is maybe usefull wont take too much resources build it". In progress: a
   background dispatch's reply to the model also says how many background subagents are running, cheap
-  and bounded (omitted rather than delayed when a lookup is slow).
+  and bounded (omitted rather than delayed when a lookup is slow). First lane got no tools: its claude
+  could not reach the in-process opencode_proxy (CONNECT_TIMEOUT); opencode logged nothing for 49 s after
+  the spawn, then the child's output arrived in one burst, so opencode itself stalled. Intermittent:
+  21 s, 20 s and 49 s today, none on a probed rerun (6.8 s). Next: relaunch opencode onto v0.53.3, retry
+  the lane; if the stall recurs, catch it with a long-running probe and sample of the opencode process.
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
