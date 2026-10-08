@@ -48,11 +48,12 @@ function restart(): void {
 test("the store path is under the plugin's own state directory", () => {
   _setDispatchChoiceStorePath(null)
   const previous = process.env.XDG_STATE_HOME
-  process.env.XDG_STATE_HOME = "/tmp/state-probe"
+  const root = join(tmpdir(), "state-probe")
+  process.env.XDG_STATE_HOME = root
   try {
     assert.equal(
       dispatchChoiceStorePath(),
-      "/tmp/state-probe/opencode-claude-code-plugin/subagent-dispatch.json",
+      join(root, "opencode-claude-code-plugin", "subagent-dispatch.json"),
     )
   } finally {
     if (previous === undefined) delete process.env.XDG_STATE_HOME
