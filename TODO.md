@@ -84,6 +84,15 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "yes do that please because the startup confuses (an keep this experimental
+  thing on i like it its non blocking and freeing.. just need to know how many agents are working at a
+  time to not overload)". Background subagents stay on. Found: a new `claude` waits up to ~30 s for MCP
+  servers; `slack` (`op`) and `obsidian` (`zsh`) never connect in a subagent's spawn. They are bridged to
+  it directly only because opencode gave `explore` no MCP tools. Maintainer: "both are good indeed but
+  when subagents do need some MCPs they will be get them right?" (yes: allowed servers stay proxied).
+  In progress, one lane: per server, do not bridge a server opencode has connected but withheld from
+  this agent (keep the fallback for servers opencode itself is not running); doctor shows how many
+  background subagents are running.
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
