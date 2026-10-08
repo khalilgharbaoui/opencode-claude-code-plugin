@@ -474,7 +474,7 @@ Tell the user what a pick actually does before recommending one:
   fix; a switch made from that form lasts until opencode restarts. With the form off and
   another account configured the note ends with "Or pick a model from the
   `"<account>"` account and resend." instead of offering the form.
-- Not available on the interactive transport or on compaction turns.
+- Works on both transports; not available on compaction turns.
 
 `{ "accountFailover": "off" }`, which is also the default, keeps the note.
 
