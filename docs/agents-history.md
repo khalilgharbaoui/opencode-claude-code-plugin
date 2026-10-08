@@ -3736,3 +3736,205 @@ constant.
 
 `npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
 pull request.
+
+---
+
+<a id="g224"></a>
+
+#### Fork sweep, 2026-10-08: opencode's MCP OAuth tokens absorbed opt-in, two Heiko fixes already in master
+
+Twenty-seven forks were fetched into the main checkout for this sweep. This
+entry covers the three candidates this lane was given; the candidates the other
+lane took (@rusagent `d2d5f46`, @bangnh1 `ae82650`, @Rocket-Alumni-Solutions
+RE-5630) are at (h #g223).
+
+##### @nic-lan `5001cff`, bearer tokens for bridged remote MCP servers: ABSORBED, behind a new opt-in
+
+**The problem is real and master does not solve it.** A remote MCP server the
+operator authenticated through opencode's own OAuth flow reports `connected` to
+opencode, so the runtime overlay keeps it and the bridge translates it into
+`--mcp-config` with **no credential at all**: `translateServer`'s remote branch
+copies `url` and whatever `headers` the config carries, and the bridge's own
+header comment has said `"oauth"?: object | false, // remote, NOT bridged
+(Claude --mcp-config has no slot)` since it was written. The Claude CLI then
+reports that server `needs-auth` on its `system`/`init` frame and
+`reportSystemInit` WARNs once per server per process; its tools are unavailable
+to the model for the entire session. That WARN is the one the TUI toast burst
+guard was built around: one live turn on 1.18.34 produced **25 distinct**
+`MCP server "<name>" is needs-auth in Claude Code` lines in the same
+millisecond (h #g193). Until now the plugin's own answer, in
+`skills/claude-code-plugin/SKILL.md`, was that a `needs_auth` status is
+"opencode's to fix", which is true of opencode's status and not of the CLI's.
+
+**Where the token lives, measured rather than assumed.** On **opencode
+1.18.35** the store is `$XDG_DATA_HOME/opencode/mcp-auth.json` (mode `0600`);
+the string `mcp-auth.json` is in the 1.18.35 binary. Reading only the structure
+of the real file on this machine (no value was printed), all three entries have
+the shape the fork documented: a `tokens` object with `accessToken`,
+`refreshToken`, `expiresAt` and sometimes `scope`, plus `serverUrl` and
+`clientInfo`. Two facts came out of that read and both changed the design.
+First, **every entry is keyed by a configured MCP server NAME and each entry's
+`serverUrl` equals that same server's configured `url`** (3 of 3, checked
+against the merged opencode config), so name-keyed matching is both available
+and strictly tighter than the fork's URL-only scan. Second, **one of the three
+entries has a `serverUrl` and `clientInfo` and no `tokens` at all**, an OAuth
+handshake that was started and abandoned, so "this store has an entry for that
+URL" cannot mean "that server needs a token from us".
+
+On **opencode 2.0.22 the file does not exist**: `mcp-auth` appears nowhere in
+the binary, MCP credentials live in a `credential` table inside `opencode.db`
+(`CREATE TABLE credential (id, integration_id, label, value, connector_id,
+method_id, ...)`), and a plugin is handed a typed `Integration`/`Credential`
+domain instead (`@opencode/plugin`'s `integration.d.ts` has
+`IntegrationOAuthMethodRegistration` with `authorize`, `refresh` and a
+`Credential.OAuth` callback). So this is a **V1-only** path that answers
+"nothing" on V2, which is the right answer rather than a gap to close by
+opening a SQLite file the host owns.
+
+**There is no API for it on either major.** `@opencode-ai/sdk@1.18.35` has
+`POST /mcp/{name}/auth` (answers `{authorizationUrl}`),
+`/mcp/{name}/auth/callback` and `/auth/authenticate` (both answer `McpStatus`)
+and `DELETE /mcp/{name}/auth` (`{success: true}`). None of them returns a
+credential, and `/auth/{id}` is a write. Reading the file is the only way, and
+that is a large part of why the absorbed form is opt-in.
+
+**What was absorbed unchanged**: reading the store, matching a live token to a
+bridged remote server, `Authorization: Bearer <token>` merged into the
+translated spec without overriding one the operator wrote, the 30-second expiry
+skew, folding a per-server freshness key into the bridge hash so a rotation
+forces a `hotReloadMcp` respawn rather than leaving a dead credential in a
+long-lived child, and the module staying pure enough to unit-test with no
+filesystem. The cherry-pick is `6fb3af0`, author preserved; the resolution was
+mechanical (master's `hostApi` parameter, `test/*.test.ts` layout, the glob test
+script, docs instead of `README.md`).
+
+**Six adaptations, each of them load-bearing** (`1d6d9f3`):
+
+1. **`bridgeMcpOauthTokens`, off by default.** The fork's version is always on.
+   The operator authenticated that server *to opencode*; copying the token into
+   a config file written for a second program, which then lets a model drive
+   calls with it, is a decision rather than a default, and it is the same rule
+   that keeps `proxyOpencodeTools` empty, `proxyOpencodeMcpTools` false and
+   `bridgeOpencodeSkills` off. With the option off **nothing stats the file**:
+   `bearerAuthContext` returns `undefined` before any path is built, so a
+   default install's bridge is byte-identical to every release before this one,
+   hash included.
+2. **Name-keyed, URL-cross-checked.** The fork scans every entry for
+   `serverUrl === spec.url` and ignores opencode's own key, so two servers on
+   one URL (the shape of two accounts against one host) share a credential.
+   `selectBearerToken(store, name, url)` takes the entry at `name`
+   (`hasOwnProperty`, so `toString` is not an entry) and uses it only when its
+   `serverUrl` still equals the configured URL, which also drops a stale entry
+   for a server that was repointed.
+3. **A server with no usable token is bridged UNCHANGED, never dropped.** The
+   fork excludes it, arguing that an unauthenticated call to an OAuth-required
+   server is a fatal MCP error. Three reasons not to take that trade: a server
+   the operator authenticated by hand with their own `headers.Authorization`
+   would be dropped with it (the exclusion runs before any header check); the
+   abandoned-handshake entry above means "has an entry" is not "needs our
+   token", so a real server on this machine would vanish; and a server that
+   reports `needs-auth` is what every install has today and is visible in the
+   CLI's own `mcp_servers` list, while a server that silently leaves the spawn
+   has no trace anywhere. The feature is additive only.
+4. **The freshness key is the expiry and nothing derived from the token.** The
+   fork falls back to a 48-bit truncated SHA-256 of the access token when no
+   expiry is recorded. That is one-way, but it is still a confirmation oracle
+   for a secret, and it lands in the bridge hash, which is logged and compared
+   by the hot-reload diff. A refresh always moves the expiry and all three real
+   entries carry one, so `buildFreshnessKey(expiresAt)` is the expiry or the
+   constant `"no-expiry"`; a non-expiring token's rotation is picked up by the
+   next fresh spawn instead of by a respawn, which is the old behaviour and
+   costs nothing.
+5. **The `Authorization` check is case-insensitive.** HTTP header names are,
+   and the fork's `"Authorization" in headers` would have added a second
+   authorization header beside a lowercase one the operator set.
+6. **The store is `lstat`ed before it is read**: a symlink or a file owned by
+   another user is refused, which is (h #g158)'s discipline pointed the other
+   way, at a file the plugin does not own and is about to take a credential
+   out of. An attacker who can write there owns the session anyway, so this is
+   one syscall of insurance rather than a boundary.
+
+**Secret hygiene, end to end.** No token is logged, interpolated into a
+message or put in `data`. The one new WARN is a constant,
+`"opencode's stored OAuth token for this MCP server has expired, ..."`, with
+the name in `{server}` (already allowlisted as a `name`), deduped per server per
+process, regenerated into `src/log-messages.ts`; the injection itself is INFO,
+below the bundle's floor. `/claude-code-doctor` and the startup ready block
+carry MCP server **names** only, never specs or headers, so neither changed.
+The bridged file is `0600` inside the `0700` per-process scratch dir and is
+swept at exit, and it is the same file that has always carried a
+`headers.Authorization` written by hand, so this changes the source of the
+secret rather than its exposure. Two residues are accepted and documented
+rather than engineered away: the file name is a 48-bit digest of the body,
+which now has a token in it (infeasible to invert, a confirmation oracle at
+worst, and already true for header-auth users), and content addressing means a
+rotation writes a new file while the old one survives until process exit, by
+which time its token has expired.
+
+**Tests**, all of which fail if the adaptation is reverted:
+`test/mcp-auth.test.ts` (the name-versus-URL identity, every named refusal
+including the abandoned handshake, both sides of the 30 s skew, the freshness
+key carrying no token material, three casings of `Authorization`, and the
+store's symlink, directory, array, unparseable and absent paths) and the
+`bridgeMcpOauthTokens` block in `test/bridge.test.ts` (injected with the option
+on; **not** injected with it off even when a live token sits exactly where
+`opencodeStateDir()` reads, with the same call proving the fixture is good; two
+servers on one URL; a repointed URL; both header casings; an expired token
+leaving the server bridged with one WARN that does not contain the token; a
+local server never touched; the hash moving on rotation and not moving at all
+with the option off). `test/diagnostic-bundle.test.ts` pins the new WARN
+surviving as a message plus a server name while every canary secret in every
+slot of that same line does not. There is no live run against a real
+OAuth-protected MCP server: standing one up means either the maintainer's own
+credentials or an OAuth provider, and the brief forbids the first.
+
+##### @HeikoAtGitHub `eb3c37d`, a rejected overage inside an allowed window: DECLINED, master already does this
+
+Master's `isRateLimitRejected` is
+`if (status === "rejected") return true; if (status === "allowed" || status ===
+"allowed_warning") return false; return overageStatus === "rejected"`. The
+fork's is `if (status === "rejected") return true; if (overageStatus !==
+"rejected") return false; return status !== "allowed" && status !==
+"allowed_warning"`. The two agree on every input. Master's landed in `65379ea`,
+"Stop a served turn opening the failover form", at 15:05:17 on 2026-09-23;
+Heiko's is 15:07:23 the same day, so this is a concurrent independent fix
+rather than a missed one, from the same measurement (CLI 2.1.280, an org with
+extra usage disabled reporting `{status: "allowed", overageStatus: "rejected",
+overageDisabledReason: "org_level_disabled"}` on a turn that was served). Master
+also carries the coverage: the unit case in `test/cli-events.test.ts` ("an
+overage rejection on an allowed request is not a rejection", including
+`allowed_warning` and the no-status fallback), the `isAccountLimitError` half in
+`test/account-failover.test.ts`, and an end-to-end fake-CLI turn through
+`SERVED_WITH_OVERAGE_REJECTED_LINES` asserting the turn keeps its answer and
+gets no note.
+
+##### @HeikoAtGitHub `83202ab`, keeping a parked proxy call through opencode's own abort: DECLINED, superseded
+
+Same diagnosis as master's, same shape of fix, and master's is strictly ahead.
+Master's `494d921` ("Stop opencode tool-boundary aborts cancelling live calls",
+2026-09-23 18:57, about three and a half hours after Heiko's 15:23) puts the
+same poll-and-recheck in the same `turnCompleted || controllerClosed` branch
+through `settleSessionRunState`. Three things it has that the fork does not.
+It reads a three-state answer and keeps the call only on a positive `busy`,
+where `isSessionStopped` collapses `unknown` into "stopped"; master's session
+status read is **scoped to the session's own directory**
+(`fetchSessionRunState(sessionID, directory)`, PR #89, `99701af`, 2026-10-05),
+without which a session running in any other workspace is absent from the map
+and reads `idle`, which is the same bug in a second costume and accounted for
+111 wrong rejections in two and a half days; and the fork's `isSessionStopped`
+lives in `src/btw-command.ts` beside the `/btw` helpers, where master's lives
+with the other session-state reads in `src/runtime-status.ts`. Master's
+coverage is three specs in `test/process-lifecycle.test.ts`: the call kept while
+the session is still running the turn, kept for a session busy in another
+workspace, and released when that other-workspace session has really stopped.
+
+One stale comment was noticed in that branch and deliberately **not** touched,
+because it is outside this sweep: `src/claude-code-language-model.ts` says
+"Unknown keeps the call" at the top of the branch while the code ten lines
+below, its own comment, `AGENTS.md` (h #g26) and the test all say `unknown`
+releases. The code is right.
+
+##### Gates
+
+`npm run typecheck`, `npm test`, `npm run build`, and the Windows CI job on the
+pull request.

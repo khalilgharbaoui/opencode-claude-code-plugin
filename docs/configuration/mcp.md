@@ -43,6 +43,37 @@ The tool call still returns, with whatever the server does on a declined elicita
 
 This is not configurable. Accepting automatically would mean inventing the answer you were asked for.
 
+## Servers you authenticated through opencode's OAuth flow
+
+A remote MCP server you signed into through opencode reports `connected` to opencode and arrives at the Claude CLI with no credential, because the bridge has nowhere to get one. The CLI then reports it `needs-auth` on every spawn, its tools are unavailable to the model for the whole session, and the plugin warns once per server:
+
+```
+WARN: MCP server "linear" is needs-auth in Claude Code; its tools are not
+available to the model this session.
+```
+
+`bridgeMcpOauthTokens` fixes that by reading the token opencode already holds and writing `Authorization: Bearer <token>` into the bridged config:
+
+```json
+"options": {
+  "bridgeMcpOauthTokens": true
+}
+```
+
+**It is off by default, on purpose.** You authenticated that server to opencode; turning this on copies the token into the private config file the plugin writes for a second program, which then lets a model drive calls with it. Nothing reads opencode's credential store unless you set this.
+
+What it does when it is on:
+
+- A token is matched by **opencode's own key for it, which is the server's name**, and used only when the stored `serverUrl` still equals that server's configured URL. Two servers on one URL do not share a credential.
+- A server with no usable token is bridged **exactly as it is today**, never dropped. The feature only ever adds a header.
+- An `Authorization` header you set yourself always wins, in any casing.
+- A token that has expired (with 30 seconds of margin) is not used, and you get one warning per server per opencode process telling you to re-authenticate it in opencode. The plugin never runs an OAuth flow and never refreshes a token; it reads what opencode has.
+- A rotation is picked up at the start of a later turn: the token's expiry is folded into the bridge hash, so `hotReloadMcp` moves the conversation onto a `claude` process with the new credential instead of leaving a dead one in a long-lived child.
+- The bridged config is a `0600` file inside the plugin's `0700` per-process scratch directory, which is removed when opencode exits. That is the same file that has always carried any `headers.Authorization` you wrote by hand. See [Scratch files and security](/internals/scratch-files-and-security/).
+- A token never reaches a log line, the `/claude-code-doctor` report or a `/claude-code-doctor bundle`.
+
+**opencode 1 only.** opencode 1 keeps MCP OAuth tokens in `~/.local/share/opencode/mcp-auth.json` (`$XDG_DATA_HOME` is honoured), which is what this reads. opencode 2 keeps them in its database behind a typed plugin API instead, so the option finds nothing there and the server still reports `needs-auth`. The file's shape is not part of opencode's public API and has no route that returns a token, so it was read by inspection; if injection stops working after an opencode upgrade, check whether the file changed before assuming a plugin regression.
+
 ## V2 Code Mode
 
 V2 normally exposes MCP tools through Code Mode's `execute` and its catalog, rather than as individual server-prefixed model tools. `proxyOpencodeMcpTools` matches individual tools only; on a Code Mode-only snapshot it warns and falls back to the direct Claude MCP bridge. This fallback does **not** execute tools under opencode's permission policy.

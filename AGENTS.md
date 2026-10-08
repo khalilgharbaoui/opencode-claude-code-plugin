@@ -328,7 +328,14 @@ Opt-in. `spawnInteractiveProcess` returns an `ActiveProcess`-shaped shim so doSt
 
 ### Fork sweeps
 
-**Sweep the forks more often than once a quarter.** Add every fork as a remote and run `git cherry origin/master <branch>` per branch (patch-id equivalence, so absorbed cherry-picks do not show). Absorb fork work by cherry-pick with authorship preserved, credit by name in the Credits table (`docs/credits.md`), and compare fork *contents*, not commit counts. Declined work and sweep state: (h #sweep-the-forks-more-often-than), (h #4ac319f-5b4ee5d-compress-proxy).
+**Sweep the forks more often than once a quarter.** Add every fork as a remote and run `git cherry origin/master <branch>` per branch (patch-id equivalence, so absorbed cherry-picks do not show). Absorb fork work by cherry-pick with authorship preserved, credit by name in the Credits table (`docs/credits.md`), and compare fork *contents*, not commit counts. **A fork branch is not always `master`**: both HeikoAtGitHub candidates below live on `local/submit-plan-proxy`, so a `git cherry` over default branches alone would have missed them. Declined work and sweep state: (h #sweep-the-forks-more-often-than), (h #4ac319f-5b4ee5d-compress-proxy).
+
+**Sweep state, 2026-10-08, 27 forks fetched.** Verdicts and the evidence behind each: (h #g224) for this lane, (h #g223) for the other.
+
+- **Absorbed**: @nic-lan `5001cff`, opencode's stored MCP OAuth bearer token handed to a bridged remote server, as the opt-in `bridgeMcpOauthTokens` (off by default, name-keyed, additive, no token-derived material in the bridge hash). (h #g224)
+- **Declined, already in master**: @HeikoAtGitHub `eb3c37d` (a rejected overage inside an allowed window is not a rate limit; master's `65379ea` is the same logic, landed two minutes earlier the same day, with wider coverage) and `83202ab` (keeping a parked proxy call through opencode's own tool-boundary abort; master's `494d921` plus the directory-scoped run-state read of PR #89 is strictly ahead). (h #g224)
+- **The other lane**: @rusagent `d2d5f46`, @bangnh1 `ae82650` and @Rocket-Alumni-Solutions RE-5630 were swept in parallel; see (h #g223) for their verdicts.
+- **Settled in earlier sweeps, do not re-cost**: @internetisalie's run-state and forward-user-content branches (absorbed as PR #89 and PR #88, v0.42.1); @acastro2 and @derekslarson's tool-result-name fix (absorbed as PR #46); @broskees `df9af44` (declined, commits `dist/`, against policy); @akash-joshi's V2 adapter series (superseded by the plugin's own opencode 2 support since 0.26.0, and its publishing removal is fork-specific); @derekslarson `59fb3f0` (fork-specific release gating); @HeikoAtGitHub's workstream, `submit_plan`, `repo_policy_scope` and handover-doc commits (declined in earlier sweeps).
 
 ## Running The Suite
 

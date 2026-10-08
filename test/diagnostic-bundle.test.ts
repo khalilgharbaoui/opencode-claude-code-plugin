@@ -595,3 +595,31 @@ test("sanitizeLogData never drops a key, so the shape is always visible", () => 
   assert.equal(out.count, 3)
   assert.equal(out.mystery, `[redacted, ${SECRETS.toolInput!.length} chars]`)
 })
+
+test("the MCP OAuth WARN reaches a bundle as a name, never as a credential", () => {
+  // `bridgeMcpOauthTokens` is the one feature that reads a secret out of
+  // opencode's own store, so the line it can write is pinned here by hand as
+  // well as by the generic sweep above. What an operator needs is which
+  // server; what must never appear is anything that could be the token.
+  const ctx = context()
+  const message =
+    "opencode's stored OAuth token for this MCP server has expired, so the bridged server carries no credential; re-authenticate it in opencode"
+  assert.ok(
+    PLUGIN_LOG_MESSAGES.has(message),
+    "regenerate src/log-messages.ts: this WARN would arrive fully redacted",
+  )
+  const real = redactLogLine(line("WARN", message, { server: "github" }), ctx)
+  assert.ok(real?.includes(message))
+  assert.ok(real.includes("github"), "the server name is the whole point of the line")
+
+  // The same line with a token wherever one could be smuggled.
+  for (const [name, secret] of Object.entries(SECRETS)) {
+    for (const data of [
+      { server: secret },
+      { server: "github", token: secret },
+      { server: "github", headers: { Authorization: secret } },
+    ]) {
+      assertClean(redactLogLine(line("WARN", message, data), ctx)!, `the OAuth WARN with ${name}`)
+    }
+  }
+})

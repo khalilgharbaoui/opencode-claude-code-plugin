@@ -90,7 +90,9 @@ export function effectiveMcpConfig(
   let bridgedHash: string | null = null
   let allEnabledServerNames: string[] = []
   if (config.bridgeOpencodeMcp !== false) {
-    const bridged = bridgeOpencodeMcp(cwd, runtimeStatus, excludeServers, config.hostApi)
+    const bridged = bridgeOpencodeMcp(cwd, runtimeStatus, excludeServers, config.hostApi, {
+      oauthTokens: config.bridgeMcpOauthTokens === true,
+    })
     if (bridged) {
       if (bridged.path) paths.push(bridged.path)
       bridgedHash = bridged.hash

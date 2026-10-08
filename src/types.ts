@@ -68,6 +68,7 @@ export interface ClaudeCodeConfig {
   mcpConfig?: string | string[]
   strictMcpConfig?: boolean
   bridgeOpencodeMcp?: boolean
+  bridgeMcpOauthTokens?: boolean
   controlRequestBehavior?: ControlRequestBehavior
   controlRequestToolBehaviors?: Record<string, ControlRequestBehavior>
   controlRequestDenyMessage?: string
@@ -254,6 +255,25 @@ export interface ClaudeCodeProviderSettings {
    * the same MCP servers opencode is configured with.
    */
   bridgeOpencodeMcp?: boolean
+  /**
+   * Give a bridged remote MCP server the OAuth bearer token opencode already
+   * holds for it, so the Claude CLI can use a server you authenticated
+   * through opencode's own OAuth flow instead of reporting it `needs-auth`
+   * for the whole session.
+   *
+   * **Off by default, and deliberately.** You authenticated that server to
+   * opencode; this copies the token into the private config file the plugin
+   * writes for a second program, which then lets a model drive calls with it.
+   * That is your decision rather than a default. Nothing is read from
+   * opencode's credential store unless this is `true`.
+   *
+   * opencode 1 only: opencode 2 keeps MCP credentials in its database behind
+   * a typed plugin domain rather than in the `mcp-auth.json` file this reads,
+   * so the option finds nothing there. A server with no usable token is
+   * bridged exactly as it is today, never dropped, and an `Authorization`
+   * header you set yourself always wins.
+   */
+  bridgeMcpOauthTokens?: boolean
   /**
    * Behavior for Claude CLI `control_request` permission checks
    * (`subtype: can_use_tool`) when `skipPermissions` is false.
