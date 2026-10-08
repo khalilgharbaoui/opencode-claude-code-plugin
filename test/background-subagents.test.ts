@@ -863,7 +863,12 @@ readline.createInterface({ input: process.stdin }).on("line", () => {
   }
 }
 
-test("a V2 spawn is handed the V2 background hint, a V1 spawn the V1 one", async () => {
+// POSIX-only for the reason every fake-CLI file in
+// `.github/windows-skipped-tests.txt` is: the shim is a shebang script made
+// executable with `chmod`, and neither means anything on Windows. The rest of
+// this file is portable and runs there, so the gate is on the one test rather
+// than on the file.
+test("a V2 spawn is handed the V2 background hint, a V1 spawn the V1 one", { skip: process.platform === "win32" }, async () => {
   // `liveTaskSupportsBackground` answers true for V2 without a registry, so
   // this turn reaches the supported branch with no opencode client at all.
   const v2 = await backgroundHintInSpawnedPrompt("v2")
