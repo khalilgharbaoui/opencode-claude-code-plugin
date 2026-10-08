@@ -84,6 +84,10 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: live context gauge. Maintainer: "1 is interesting maybe". Measurement only, no plugin
+  change yet: would opencode auto-compact at a tool boundary if real usage were reported there (today
+  zeros, h #g169), and what happens to a parked proxied call if it does, on 1.18.35 and 2.0.22. Then
+  the maintainer decides.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
