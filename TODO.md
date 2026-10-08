@@ -92,7 +92,11 @@ raised, so they survive context compaction; removed when answered, done or dropp
   `model: claude-code-<account>/<model>` runs elsewhere (static, per agent type); opencode 1.x's `task`
   tool has no model or effort field; `accountGroups` does not touch subagents. Proposed: one opt-in
   "ask before dispatch" form (default / pick model, effort, account / same as last time), accounts
-  limited to the parent's group unless cross-group is allowed explicitly. Awaiting the maintainer.
+  limited to the parent's group unless cross-group is allowed explicitly. Maintainer: "go for 1 (but
+  task_batch would get 1 question but maybe allow distinction if agent type is diffrent ... maybe user
+  also wants one implementor to be more powerfull than the rest ... design this thoughtfull and
+  carefully)". In progress, one lane: measure the question form first, then build; cross-group off
+  unless explicitly allowed.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
