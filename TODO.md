@@ -84,10 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "do we need a new release? what about the background agents etc?" then "ok go".
-  No release needed (nothing shipped changed since v0.53.1). In progress: live check of background
-  subagents on opencode 2.0.22 (start, task_status, task_cancel, collect once; plus a background
-  dispatch through the subagent dispatch form), last measured on 2.0.16.
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
@@ -120,6 +116,12 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.53.2): "do we need a new release? what about the background agents etc?" then
+  "ok go". Background subagents re-verified live on 2.0.22 (gate, background dispatch and push,
+  task_status once, task_cancel and its parent guard, a background dispatch through subagentDispatch,
+  the doctor). One fix: the `background` field and the background hint described opencode 1's envelope
+  to an opencode 2 model (PR #109, h #g230). Not your opencode 1: background subagents are off there
+  unless `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.
 - 2026-10-08: **done**: "port these and lets see what is next", then "go". No hand port was needed.
   Moshi upgraded 0.3.22 -> 0.4.21 (brew), daemon restarted (same host id, gateway up), opencode hook
   regenerated: one `moshi-hooks.ts` serving opencode 1 and 2 plus `moshi-hooks-tui/`; proven against a
