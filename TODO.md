@@ -89,7 +89,12 @@ raised, so they survive context compaction; removed when answered, done or dropp
   opentmux, opencode-local-ollama, herdr-agent-state, moshi-hooks) and V1 plugins do not run in V2;
   the V2 installer replaces the V1 binary. Offered: live-check accountGroups, the by-hand account carry
   and subagentDispatch on 2.0.22 (scripted CLI), and a V2 config dry run in the sandbox. Maintainer:
-  "prep now and decide after". In progress, two lanes; the switch decision stays the maintainer's.
+  "prep now and decide after". Prep **done** (v0.53.1): the three newest features pass live on 2.0.22
+  after one fix (the dispatch choice never reached a V2 child, PR #108, h #g229); the config dry run
+  is in `~/opencode-v2-sandbox/migration-dryrun/REPORT.md` (config runs as is with the plugin path
+  ending in `/dist` and `compaction.prune` dropped; dcp is V2-ready; notify.ts, moshi-hooks.ts,
+  opentmux, herdr-agent-state have no V2 version; ollama is built into V2; rollback is
+  `VERSION=1.18.35 curl -fsSL https://opencode.ai/install | bash`). Awaiting: the switch decision.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
