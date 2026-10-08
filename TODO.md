@@ -102,6 +102,9 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.54.1): "looks good the effort however needs to be yellow then its perfect". The effort
+  on a sidebar row's second line is the theme's warning colour (opencode 1 `theme.warning`, opencode 2
+  `text.feedback.warning`), faded on a finished row; the second line is now one line of spans.
 - 2026-10-08: **done** (v0.54.0): the Subagents section in the TUI sidebar ("a very short reference to them
   in the sidebar at the bottom ... what model/effort/account its on ... not option in but just there always").
   Always on, `dist/tui.js` serves opencode 1 and 2; model/effort/account come from `session-spawns.json`, what
