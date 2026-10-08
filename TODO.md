@@ -90,7 +90,11 @@ raised, so they survive context compaction; removed when answered, done or dropp
   key). Picking a `claude-appical` model by hand changes the key's provider, so `findSiblingResumePoint`
   never matches (`modelSiblingSignature` keeps the provider) and the thread is replayed as text.
   Proposed: treat a key that differs only in its account provider as a sibling and carry the
-  transcript. Awaiting the maintainer: build it or not.
+  transcript. Maintainer follow-up: "is it not smart to build something that allows all accounts and
+  all models to access ? (maybe by symlinking or something?)". Answered: one rule for any account and
+  any model (provider, model and effort may all differ), storage stays copy-on-switch; a shared or
+  symlinked `projects/` would not fix the by-hand case (the plugin's key lookup is the gap, not file
+  visibility) and would merge the work and private accounts' history and auto-memory. Awaiting: build.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
