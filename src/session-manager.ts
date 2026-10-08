@@ -31,6 +31,7 @@ import {
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
   type CliVersion,
+  spawnMcpTimeoutEnv,
 } from "./cli-version.js"
 import { isReadOnlyPermissionMode } from "./permission-presets.js"
 import { planClaudeSpawn } from "./windows-spawn.js"
@@ -323,6 +324,9 @@ export function claudeSpawnEnv(opts?: {
     // non-essential network calls. Fills gaps only, so an explicit shell value
     // survives: see `cliHygieneEnv` for why the version has to hold still.
     ...cliHygieneEnv(),
+    // 120 s for MCP servers to start, so a subagent outlasts an opencode
+    // stall instead of running without the proxy: see `spawnMcpTimeoutEnv`.
+    ...spawnMcpTimeoutEnv(),
   }
 
   // Effort travels as CLAUDE_CODE_EFFORT_LEVEL, which the CLI treats as the

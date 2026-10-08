@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { claudeSpawnEnv, cliEffortLevel } from "../src/session-manager.js"
-import { CLI_HYGIENE_ENV_VARS, cliHygieneEnv } from "../src/cli-version.js"
+import {
+  CLI_HYGIENE_ENV_VARS,
+  cliHygieneEnv,
+  SPAWN_MCP_TIMEOUT_MS,
+  spawnMcpTimeoutEnv,
+} from "../src/cli-version.js"
 import { interactiveSpawnEnv } from "../src/claude-session-bun.js"
 
 /** Every hygiene var absent, which is the ordinary case for a user shell. */
@@ -162,6 +167,25 @@ test("claudeSpawnEnv never overrides a hygiene var the user set", () => {
       assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "")
     },
   )
+})
+
+test("claudeSpawnEnv gives MCP servers 120 s to start, not the CLI's 30 s (h #g235)", () => {
+  withEnv({ MCP_TIMEOUT: undefined }, () => {
+    assert.equal(SPAWN_MCP_TIMEOUT_MS, 120_000)
+    assert.equal(claudeSpawnEnv().MCP_TIMEOUT, "120000")
+    // The interactive transport's own env builder applies it too.
+    assert.equal(interactiveSpawnEnv({}).MCP_TIMEOUT, "120000")
+  })
+})
+
+test("an MCP_TIMEOUT the user set is kept on both transports, empty included", () => {
+  for (const value of ["45000", ""]) {
+    withEnv({ MCP_TIMEOUT: value }, () => {
+      assert.equal(claudeSpawnEnv().MCP_TIMEOUT, value)
+      assert.equal(interactiveSpawnEnv({}).MCP_TIMEOUT, value)
+    })
+  }
+  assert.deepEqual(spawnMcpTimeoutEnv({ MCP_TIMEOUT: "1" }), {})
 })
 
 test("cliHygieneEnv fills only the vars missing from the inherited env", () => {

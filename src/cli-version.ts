@@ -159,6 +159,23 @@ export function cliHygieneEnv(
 }
 
 /**
+ * `MCP_TIMEOUT` for every spawned child, both transports, unless the user set
+ * one: 120 s instead of the CLI's 30 s (read out of 2.1.293). The plugin's own
+ * `opencode_proxy` lives inside opencode's process: measured 2026-10-08,
+ * opencode's server worker froze for 35 s while a very long parent session
+ * took its next step, and the subagent spawned meanwhile gave up on the proxy
+ * at 30 s and ran with none of its tools (h #g235). Waiting longer is the
+ * better failure. Fills a gap only, like `cliHygieneEnv`.
+ */
+export const SPAWN_MCP_TIMEOUT_MS = 120_000
+
+export function spawnMcpTimeoutEnv(
+  inherited: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  return inherited.MCP_TIMEOUT === undefined ? { MCP_TIMEOUT: String(SPAWN_MCP_TIMEOUT_MS) } : {}
+}
+
+/**
  * Run `claude --version` once per cliPath and parse the leading semver.
  * Returns null on any failure (binary missing, unparseable output, etc.)
  * so callers can fall back to the most conservative flag set.

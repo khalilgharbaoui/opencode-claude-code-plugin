@@ -5289,3 +5289,30 @@ result (PR #88), a real CLI queues it, and a fake that answers it
 with a `result` frame ends the turn while the call is parked, which surfaced as
 `Provider stream was aborted while opencode was running its proxy tool calls`.
 That is the fake's fault, not the plugin's.
+
+<a id="g235"></a>
+
+#### A subagent started without its tools because opencode froze (2026-10-08)
+
+Background subagents took ~25 s before their first step, and one answered "no shell tool".
+Measured, in order, each step ruling out the previous suspect:
+
+- **Not Claude Code's startup, not the account.** A bare `claude` reached `system/init` in 1.3 to
+  1.8 s on both accounts, three at once included; the exact spawn argv, files and environment of a
+  slow subagent, replayed from a shell, took 3.1 to 3.5 s with every MCP server connected.
+- **Not mainly the account's own `slack`** (`op run -- npx -y slack-mcp-server@latest`, 2.4 to
+  8.4 s alone or three at once). Parked out of both accounts' `.claude.json` and pinned to 1.3.0;
+  the next subagent still waited 24.7 s between its first message being queued and processed.
+- **opencode itself.** A probe hitting the in-process proxy every 250 ms got no answer from
+  21:47:20 to 21:47:56 (34.7 s) right after a subagent spawn, and the plugin logged nothing from that
+  process in the window; its next call was the parent's next step. The server worker was busy, not
+  idle (`sample`), but JIT frames do not name the JavaScript. The parent was ~1,600 messages / 10 MB,
+  and its tool round trips had grown from ~4 s to 100 to 250 s over the day, so the cost scales with
+  the session (opencode's history processing or a message-transform plugin such as dcp; not yet
+  attributed). The subagent's `claude` hit the CLI's `MCP_TIMEOUT` (30 s, `ic()` in 2.1.293:
+  `a.MCP_TIMEOUT` or 30000; `MCP_CONNECT_TIMEOUT_MS` is a separate 5 s) and started with
+  `opencode_proxy` failed.
+
+Fix: `spawnMcpTimeoutEnv` fills `MCP_TIMEOUT=120000` on both transports unless the user set it, so
+a subagent waits out a stall instead of running toolless. The stall itself is not fixed; attributing
+it needs a fresh-session comparison. `test/spawn-env.test.ts`.

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { StringDecoder } from "node:string_decoder"
-import { cliHygieneEnv } from "./cli-version.js"
+import { cliHygieneEnv, spawnMcpTimeoutEnv } from "./cli-version.js"
 import { isBatchFile } from "./windows-spawn.js"
 import { apiCallCostUsd } from "./models.js"
 
@@ -450,6 +450,7 @@ export function interactiveSpawnEnv(opts: {
     // detected version the flag gates read, and skip non-essential traffic.
     // Fills gaps only, so a var the user exported survives untouched.
     ...cliHygieneEnv(),
+    ...spawnMcpTimeoutEnv(),
     ...(opts.ignoreAnthropicApiKey
       ? { ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined }
       : {}),
