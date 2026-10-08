@@ -37,6 +37,7 @@ side-question.test.ts
 silent-turn.test.ts
 skill-bridge.test.ts
 stale-build.test.ts
+subagent-dispatch-stream.test.ts
 startup-diagnostics.test.ts
 tool-block-index.test.ts
 unattended-replay.test.ts
