@@ -5,6 +5,7 @@ import {
   ensureAccountRuntime,
   normalizeAccountName,
 } from "./accounts.js"
+import { accountsShareGroup, type AccountGroups } from "./account-groups.js"
 import {
   describeRateLimitWindow,
   formatResetsAt,
@@ -535,16 +536,30 @@ export function isAccountFailoverQuestionActive(input: {
   return input.opencodeHasQuestion
 }
 
-/** Every configured account except the one that just hit its limit. */
+/**
+ * Every configured account except the one that just hit its limit, and, when
+ * `accountGroups` is set, only the ones in the limited account's own group
+ * (h #g226).
+ *
+ * The one place the group guard reaches the form and both notes, because this
+ * is the one list all three are built from: the form's options, the usage-limit
+ * note's "pick a model from ..." sentence and the account-block note's. An
+ * account in another group is not an answer to "where should this conversation
+ * go", so offering it would be offering a switch the switch itself refuses.
+ * With nothing left, every one of the three behaves as it does on a
+ * single-account install.
+ */
 export function failoverCandidates(
   accounts: readonly string[] | undefined,
   source: string,
+  groups?: AccountGroups | null,
 ): string[] {
   const from = normalizeAccountName(source || DEFAULT_ACCOUNT)
   const out: string[] = []
   for (const raw of accounts ?? []) {
     const name = normalizeAccountName(String(raw))
     if (!name || name === from || out.includes(name)) continue
+    if (!accountsShareGroup(from, name, groups)) continue
     out.push(name)
   }
   return out

@@ -1,3 +1,4 @@
+import type { AccountGroups } from "./account-groups"
 import type { LogLevel, LogMode } from "./logger"
 
 export type { LogLevel, LogMode }
@@ -54,6 +55,12 @@ export interface ClaudeCodeConfig {
    */
   accountInProcess?: boolean
   accountFailover?: AccountFailoverMode
+  /**
+   * The resolved `accountGroups` guard, or null for "no guard". Resolved once
+   * by `createClaudeCode` from the user's option, so every turn reads a value
+   * that has already been validated and warned about (h #g226).
+   */
+  accountGroups?: AccountGroups | null
   providerID?: string
   skipPermissions?: boolean
   /**
@@ -199,6 +206,35 @@ export interface ClaudeCodeProviderSettings {
    * error. See README "Account failover".
    */
   accountFailover?: AccountFailoverMode
+  /**
+   * Which accounts may see each other's conversations. A map from an account
+   * name in `accounts` to a group name, e.g. `{ "appical": "work" }`.
+   *
+   * **Off unless set**, and unset is the default: with no map, or an empty one,
+   * every account behaves as one group and nothing about today's behaviour
+   * changes. Every account not named here, `default` included, is in one
+   * implicit group, so naming the one account that must stay apart is the whole
+   * configuration.
+   *
+   * When it is set, the plugin only ever moves a conversation between accounts
+   * in the SAME group: the by-hand switch (picking a model under another
+   * account's provider), the account-switch form, the override that form sets,
+   * and `crossAccountResume`. A switch ACROSS groups sends the other account
+   * nothing at all, not the Claude transcript and not a text replay of the
+   * thread either, because the replay is the same history by another route. The
+   * turn there starts fresh with only the current message and says so once, in
+   * one `▌ **account group:**` note naming both accounts. The conversation is
+   * left intact on the account it was on, so switching back continues it.
+   *
+   * The switch form offers only accounts in the limited account's own group,
+   * and with none left it behaves as a single-account install does.
+   *
+   * An account name that is not in `accounts` is a typo, so it is ignored with
+   * one WARN rather than silently creating a group that guards nothing. The
+   * resolved map is printed in the startup block and in
+   * `/claude-code-doctor`, names only.
+   */
+  accountGroups?: Record<string, string>
   /**
    * Model that subagents run on when their own definition pins nothing.
    * Unset means no implicit override at all, so an agent keeps inheriting the

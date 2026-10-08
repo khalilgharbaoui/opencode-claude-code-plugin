@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 
+import { describeAccountGroups, resolveAccountGroups } from "./account-groups.js"
 import { detectCliVersion } from "./cli-version.js"
 import { requestedTransport } from "./transport.js"
 import { log } from "./logger.js"
@@ -29,6 +30,13 @@ export interface StartupDiagnostics {
   cwd: { resolved: string; source: CwdSource }
   providers: string[]
   accounts: string[]
+  /**
+   * The resolved `accountGroups` guard as `["<account>=<group>", ...]`, empty
+   * when it is unset or nothing in it validated (h #g226). Resolved rather
+   * than echoed, so a typo'd entry can never read as if it took effect, which
+   * is the same rule `permissionPresets` follows.
+   */
+  accountGroups: string[]
   proxyTools: string[]
   mcpServers: string[]
   /**
@@ -219,6 +227,15 @@ export function collectStartupDiagnostics(
     cwd,
     providers: Object.keys(providers),
     accounts,
+    // One guard per install, so the first provider that declares one answers
+    // for all of them; it is validated against the accounts the expansion
+    // produced, which is the same list every provider carries.
+    accountGroups: describeAccountGroups(
+      resolveAccountGroups(
+        firstOption(providers, "accountGroups"),
+        stringList(firstOption(providers, "failoverAccounts")),
+      ),
+    ),
     proxyTools: stringList(firstOption(providers, "proxyTools")),
     mcpServers,
     permissionPresets: Object.entries(providers).map(([name, entry]) =>

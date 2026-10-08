@@ -232,7 +232,13 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   // doctor table already prints the same class of value (providers, accounts,
   // proxyTools, MCP servers), so a bundle is no more revealing than the report
   // it is attached to.
+  // An account name and a group name are both operator-chosen labels of the
+  // same class as `accounts`, which the doctor table already prints a column
+  // of; `from` is already here as the account a conversation came from.
+  account: "name",
   accounts: "name",
+  accountGroups: "name",
+  group: "name",
   agent: "name",
   bundled: "name",
   excluded: "name",

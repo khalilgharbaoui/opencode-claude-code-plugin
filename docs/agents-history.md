@@ -4106,3 +4106,119 @@ There is no safe variant at this boundary: a tool-call finish exists only
 because proxied calls are being handed to opencode, so "report only when no call
 is parked" is never true there. Not measured: the interactive transport (same
 finish code) and how often a real window reaches the threshold mid-turn.
+
+<a id="g226"></a>
+
+#### One conversation across any account, and `accountGroups` as the guard (2026-10-08)
+
+Two things that had to land together, because the first is what makes the
+second necessary.
+
+##### The by-hand switch replayed, and nothing said so
+
+An account is a `CLAUDE_CONFIG_DIR` behind its own opencode provider
+(`claude-code-<account>`), and the provider id is the first element of a session
+key's context blob. So picking a model under the other account's provider in the
+SAME opencode session landed the conversation on a key nothing had ever answered
+and replayed the whole thread as text, which is exactly the shape issue #91 had
+for a model or effort change before (h #g215). `findSiblingResumePoint` could not
+see it: `modelSiblingSignature` blanked the model segment and dropped the
+`effort=` tail and kept the provider strict.
+
+`crossAccountResume` (h #g218) was already carrying a conversation across
+accounts, but only on the SAME session key, which is what the switch form and
+the override it sets produce. A by-hand switch is a different key, so none of
+that code was reachable from it.
+
+What changed, in `src/account-groups.ts` plus three call sites:
+
+- `modelSiblingSignature(key, accountProviders?)` also blanks the provider
+  element when it is one of this install's own account providers.
+  `accountProviderMap(accounts)` builds that map from the configured list, so it
+  is EMPTY on a single-account install and the signature is byte-identical
+  there. Keyed on the map rather than on the shape of a provider id, so a
+  provider the operator named `claude-code-something` themselves is never
+  mistaken for an account, and a session key written by a differently-configured
+  opencode is never blanked by this one.
+- The account is not a spawn flag the CLI applies to a transcript it resumes,
+  which is what makes it different from the model and the effort: the file lives
+  in the other account's config dir. So a cross-account sibling is carried with
+  the existing `carryTranscriptToAccount` before `transferClaudeSession` runs,
+  and every refusal of that carry falls back to the replay with a kebab reason
+  token, as the failover switch's does.
+- The resume record now carries the `configDir` the transcript was written under
+  and the account name that directory belongs to. **Recomputing it from the
+  account name is not available**: `configDir` is a provider option, so an
+  account's directory is not always the `~/.claude-<name>` the name would build.
+  A record written before this has neither, which makes it no cross-account
+  candidate (`sibling-account-dir-unknown`) and a perfectly good same-account
+  one. The transcript-existence check takes the sibling's own directory for the
+  same reason.
+- The `cliPath` refusal (h #g98) is relaxed for a cross-account candidate and
+  only there: every account is reached through its own wrapper, so a differing
+  path is expected, while a same-account sibling still demands the same binary
+  exactly as before.
+
+##### The guard, and why the replay is half of it
+
+Two accounts configured side by side are often two employers. Carrying a
+conversation between them is the feature above working correctly and the wrong
+outcome. `accountGroups` is a map from an account name to a group name, OFF
+unless set; everything unlisted, `default` included, is in one implicit group,
+so naming the one account that must stay apart is the whole configuration.
+
+The non-obvious half is that blocking the transcript copy is not enough. The
+replay sends the same history as text, and the replay is exactly what happens
+when the carry is refused, so a guard that only refused the carry would hand the
+other account the thread in the other format. So a cross-group switch sets
+`includeHistoryContext = false` as well, and the turn there starts with only the
+current user message.
+
+That needs a detector that is BROADER than the carry's, because it has to fire
+precisely when the carry would not: `findForeignAccountSibling` tests the sibling
+signature alone, with nothing about content, transcripts, binaries or busy-ness.
+It reads the in-memory session keys (`listClaudeSessionKeys`) first and the
+resume store second, so it still works with `resumeAfterRestart: false`, where
+nothing is written to the store at all. The one gap is that option PLUS an
+opencode restart in between, where this process has never seen the other
+account; the carry reads the same record, so the outcome there is a replay on a
+fresh account rather than a leak.
+
+The rest of the guard:
+
+- `failoverCandidates(accounts, source, groups)` is the single place the form,
+  the usage-limit note and the account-block note are all built from, so
+  filtering there covers all three at once. Nothing left in the group behaves as
+  a single-account install does.
+- The carry's `accountConfigDirs` is filtered to same-group accounts, which is
+  the rule stated literally: a transcript sitting in another group's account is
+  not a source this may read from.
+- The source keeps everything. No transfer, no `deleteClaudeSessionId`, and the
+  carry never deletes a transcript, so switching back resumes where it stopped.
+  That is what makes the note's last sentence true.
+- One `▌ **account group:**` note, registered in `PLUGIN_NOTE_MARKERS`, its own
+  text part, written where the failover note is. Fired once, on the turn that
+  was about to send the thread; the next turn on that account has a session of
+  its own and is ordinary.
+- An unknown account name is a typo, so it is dropped with one WARN rather than
+  creating a group that looks configured and guards nothing. Every refusal
+  leaves the guard off for the entry it refused rather than failing a turn, and
+  the startup block and the doctor print the RESOLVED map so a typo can never
+  read as if it took effect (the rule `permissionPresets` follows, h #g159).
+
+##### What is deliberately not here
+
+No `accountGroups` entry for the default group's name, no per-group policy, and
+no attempt to stop the operator typing a secret into the other account by hand.
+This guards what the plugin moves on its own, which is the only thing it can
+honestly guard.
+
+##### Gates
+
+`npm run typecheck`, `npm test` (1,430 passing, 0 failing), `npm run build`, and
+the Windows CI job on the pull request. Both halves of the guard are
+mutation-checked: disabling the replay block fails `accountGroups blocks the
+carry AND the replay, and says so once`, disabling the store's
+`allowAccount` refusal fails `a sibling on another account is found, carried
+from ITS config dir, and refused by group`, and emptying the account-provider
+map fails the headless and PTY carry tests together.

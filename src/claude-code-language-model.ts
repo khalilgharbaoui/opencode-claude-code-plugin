@@ -52,6 +52,13 @@ import {
   normalizeAccountName,
 } from "./accounts.js"
 import {
+  accountGroup,
+  accountProviderMap,
+  accountsInGroupOf,
+  accountsShareGroup,
+  formatAccountGroupNote,
+} from "./account-groups.js"
+import {
   buildFailoverContinuationPrompt,
   consumeAccountFailoverAnswer,
   createAccountFailoverQuestionCall,
@@ -98,6 +105,7 @@ import {
   setClaudeSessionId,
   getClaudeSessionId,
   claudeSessionIsWriting,
+  listClaudeSessionKeys,
   deleteClaudeSessionId,
   deleteActiveProcess,
   deleteActiveProcessAndWait,
@@ -134,6 +142,7 @@ import { interactivePermissionPosture, isReadOnlyPermissionMode } from "./permis
 import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
 import { findForkParent, recordForkFingerprint } from "./session-fork.js"
 import {
+  findForeignAccountSibling,
   findResumePoint,
   findSiblingResumePoint,
   recordResumePoint,
@@ -964,6 +973,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const sourceAccount = normalizeAccountName(
       this.config.account ?? DEFAULT_ACCOUNT,
     )
+    // The account topology (h #g226). `accountProviders` is empty on a
+    // single-account install, which is what keeps every signature below
+    // byte-identical there; `groups` is null unless the operator set
+    // `accountGroups`, which is what keeps the guard opt-in.
+    const accountProviders = accountProviderMap(this.config.failoverAccounts)
+    const groups = this.config.accountGroups ?? null
     const baseCliPath = this.config.baseCliPath ?? this.config.cliPath
     let failover: FailoverSpawn =
       compactionMode
@@ -1177,7 +1192,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         ? null
         : consumeAccountFailoverAnswer(sk, options.prompt as any, {
             sourceAccount,
-            candidates: failoverCandidates(this.config.failoverAccounts, sourceAccount),
+            candidates: failoverCandidates(
+              this.config.failoverAccounts,
+              sourceAccount,
+              groups,
+            ),
           })
 
     if (failoverAnswer?.kind === "stop") {
@@ -1300,8 +1319,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // Every account's own directory, plus this model's configured one:
         // `configDir` is an option, so an account's directory is not always
         // the `~/.claude-<name>` the name alone would build.
+        // Same-group accounts only (h #g226): a transcript sitting in an
+        // account from another group is not a source this may read from, and
+        // with no groups configured this is the full list exactly as before.
         accountConfigDirs: [
-          ...(this.config.failoverAccounts ?? []).map(configDirForAccount),
+          ...accountsInGroupOf(sourceAccount, this.config.failoverAccounts, groups).map(
+            configDirForAccount,
+          ),
           resolveConfigDir(this.config.configDir),
         ],
       })
@@ -1355,6 +1379,58 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // replay into it and doing so would hand the model the thread twice.
     if (failoverAnswer?.kind === "switch" && hasPriorConversation && !conversationOnTarget) {
       includeHistoryContext = true
+    }
+
+    // The `accountGroups` guard (h #g226). The operator moved this opencode
+    // conversation to an account in another group, by picking a model under
+    // its provider: nothing of the conversation may go there, so neither half
+    // of the two ways it could happens. The transcript carry is already out
+    // (the sibling lookup below refuses a cross-group account), and this is
+    // what takes the REPLAY out, which is the same history by another route
+    // and would defeat the guard on its own.
+    //
+    // Detection is deliberately broader than the carry's: any account outside
+    // this group that has answered this same opencode conversation counts,
+    // whether or not its content still lines up, because the replay is exactly
+    // what happens when the carry would have been refused.
+    //
+    // Gated on `includeHistoryContext`, so it fires once, on the turn that was
+    // about to send the thread. The next turn on this account has a session of
+    // its own and is an ordinary turn.
+    //
+    // The source keeps everything: no transfer, no `deleteClaudeSessionId`, and
+    // the carry never deletes a transcript, so switching back resumes it.
+    let accountGroupNote: string | null = null
+    if (
+      !compactionMode &&
+      groups &&
+      accountProviders.size > 0 &&
+      includeHistoryContext &&
+      failoverAnswer?.kind !== "switch"
+    ) {
+      const foreign = findForeignAccountSibling({
+        sessionKey: sk,
+        accountProviders,
+        // The live process's own view, so the guard holds with
+        // `resumeAfterRestart: false`, where the store is never written.
+        extraKeys: listClaudeSessionKeys(),
+      })
+      if (foreign && !accountsShareGroup(sourceAccount, foreign.account, groups)) {
+        includeHistoryContext = false
+        accountGroupNote = formatAccountGroupNote({
+          sourceAccount: foreign.account,
+          sourceGroup: accountGroup(foreign.account, groups),
+          targetAccount: sourceAccount,
+          targetGroup: accountGroup(sourceAccount, groups),
+        })
+        log.notice("starting fresh on this account: it is in another account group", {
+          sessionKey: sk,
+          reason: "another-account-group",
+          account: sourceAccount,
+          from: foreign.account,
+          group: accountGroup(sourceAccount, groups),
+        })
+      }
     }
 
     // A new opencode session that is a FORK of one this provider already
@@ -1433,8 +1509,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       failoverAnswer?.kind !== "switch"
     ) {
       const configDir = resolveConfigDir(this.config.configDir)
-      const transcriptPath = (id: string) =>
-        join(configDir, "projects", encodeCwd(cwd), `${id}.jsonl`)
+      // `dir` is a sibling's own recorded config dir, which is the OTHER
+      // account's on a by-hand switch (h #g226). Omitted everywhere else, so
+      // every existing caller asks about this account's directory exactly as
+      // it did before.
+      const transcriptPath = (id: string, dir?: string) =>
+        join(dir ?? configDir, "projects", encodeCwd(cwd), `${id}.jsonl`)
       const resumePoint = findResumePoint({
         sessionKey: sk,
         prompt: options.prompt,
@@ -1469,11 +1549,59 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // timers on everything it touches (the same reason the fork lookup
           // above uses it).
           isBusy: claudeSessionIsWriting,
+          // The ACCOUNT is the third thing that may differ (h #g226), and the
+          // guard is where a cross-group sibling is refused by name.
+          accountProviders,
+          allowAccount: (account) =>
+            this.config.crossAccountResume !== false &&
+            accountsShareGroup(sourceAccount, account, groups),
           onRefused: (reason) => {
             replayReason = reason
           },
         })
         if (sibling) {
+          // A sibling on ANOTHER account is one more step than a model or
+          // effort change: those are spawn flags the CLI applies to a
+          // transcript it resumes, while an account is a different config dir,
+          // so the FILE has to be here before `--resume` means anything
+          // (h #g218). A refused carry falls through to the replay exactly as
+          // the failover switch's does.
+          let carriedSessionId: string | undefined
+          let carryRefused: string | undefined
+          if (sibling.siblingAccount && sibling.siblingConfigDir) {
+            const carry = await carryTranscriptToAccount({
+              sessionId: sibling.claudeSessionId,
+              cwd,
+              targetConfigDir: resolveConfigDir(this.skillBridgeSpawn(failover).configDir),
+              // The sibling's recorded directory first, then every same-group
+              // account's. The recorded one can be stale by a turn (it is
+              // rewritten only when a turn succeeds), so the conventional
+              // directories are what make a stale record recoverable rather
+              // than a refusal.
+              accountConfigDirs: [
+                sibling.siblingConfigDir,
+                ...accountsInGroupOf(sourceAccount, this.config.failoverAccounts, groups).map(
+                  configDirForAccount,
+                ),
+                configDir,
+              ],
+            })
+            if (carry.kind === "carried" || carry.kind === "already-there") {
+              carriedSessionId = carry.sessionId
+            } else {
+              carryRefused = carry.reason
+            }
+          }
+          if (carryRefused) {
+            replayReason = `sibling-${carryRefused}`
+            log.notice("replaying this conversation rather than carrying it across accounts", {
+              sessionKey: sk,
+              siblingKey: sibling.siblingKey,
+              reason: carryRefused,
+              account: sourceAccount,
+              from: sibling.siblingAccount,
+            })
+          } else {
           // The sibling's own child, if it still has one, is holding the
           // transcript this turn is about to resume. It goes first, so one
           // `claude` owns one conversation; the transfer then moves the id,
@@ -1482,6 +1610,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           deleteActiveProcess(sibling.siblingKey)
           const carried = transferClaudeSession(sibling.siblingKey, sk)
           if (carried) {
+            // A renamed copy is the same conversation under a new id, because
+            // the CLI resolves a session by filename and the target path was
+            // taken by an older copy from an earlier switch (h #g218).
+            if (carriedSessionId && carriedSessionId !== carried) {
+              setClaudeSessionId(sk, carriedSessionId)
+            }
             includeHistoryContext = false
             log.notice(
               "continuing this conversation's claude session under the new model or effort instead of replaying it",
@@ -1489,10 +1623,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 sessionKey: sk,
                 siblingKey: sibling.siblingKey,
                 matchedMessages: sibling.matched,
+                ...(sibling.siblingAccount
+                  ? { from: sibling.siblingAccount, account: sourceAccount }
+                  : {}),
               },
             )
           } else {
             replayReason = "sibling-carry-over-failed"
+          }
           }
         }
       }
@@ -1669,6 +1807,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const failoverAccounts = failoverCandidates(
       this.config.failoverAccounts,
       sourceAccount,
+      groups,
     )
     const failoverAskActive =
       failoverAccounts.length > 0 &&
@@ -2591,6 +2730,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             state.endTextBlock()
           }
 
+          // The one thing on screen saying this account was given none of the
+          // conversation, because `accountGroups` holds the two apart (h #g226).
+          // Its own text part, led by `ACCOUNT_GROUP_MARKER`, for the same
+          // reason every other `▌` note is: the plugin wrote it.
+          if (accountGroupNote) {
+            controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: accountGroupNote,
+            })
+            state.endTextBlock()
+          }
+
           // Its own text part, led by FAILOVER_MARKER, so a later transcript
           // rebuild strips it exactly: it was never Claude's output.
           if (failoverNote) {
@@ -2622,7 +2774,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             msg.is_error !== true &&
             typeof msg.session_id === "string"
           ) {
-            recordResumePoint(sk, msg.session_id, options.prompt, cliPath)
+            // Where the transcript was written, and whose account that is, so
+            // a later by-hand switch can find the FILE: an account's config
+            // dir is configurable, so the account name alone cannot name it
+            // (h #g226).
+            recordResumePoint(sk, msg.session_id, options.prompt, cliPath, {
+              configDir: resolveConfigDir(self.skillBridgeSpawn(failover).configDir),
+              account: failover.target ?? sourceAccount,
+            })
           }
           // The socket may have closed after the tool-result prompt was matched,
           // or while the result-boundary grace timer was running.

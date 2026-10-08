@@ -5,6 +5,7 @@ import {
   USAGE_LIMIT_MARKER,
   stripAccountFailoverParts,
 } from "./account-failover.js"
+import { ACCOUNT_GROUP_MARKER } from "./account-groups.js"
 import { INLINE_ASIDE_MARKER, LEGACY_INLINE_ASIDE_MARKERS } from "./btw-command.js"
 import {
   COMPACT_BOUNDARY_MARKER,
@@ -46,6 +47,7 @@ const PLUGIN_NOTE_MARKERS = [
   SILENT_TURN_MARKER,
   FAILOVER_MARKER,
   ACCOUNT_BLOCK_MARKER,
+  ACCOUNT_GROUP_MARKER,
   USAGE_LIMIT_MARKER,
   MODEL_FALLBACK_MARKER,
   UNATTENDED_REPLAY_MARKER,

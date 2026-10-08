@@ -771,6 +771,20 @@ export function getClaudeSessionId(key: string): string | undefined {
 }
 
 /**
+ * Every session key this process has a Claude conversation for.
+ *
+ * Read-only and allocation-light (the map's own key iterator), and deliberately
+ * not touching LRU order or any timer, for the reason `findForkParent` takes
+ * `claudeSessionIsWriting` rather than `getActiveProcess`. The one caller is
+ * the `accountGroups` guard (`findForeignAccountSibling`), which needs to know
+ * that another account has answered this conversation even when nothing was
+ * written to the resume store (h #g226).
+ */
+export function listClaudeSessionKeys(): IterableIterator<string> {
+  return claudeSessions.keys()
+}
+
+/**
  * A Claude session id outlives its process on purpose, so nothing in the
  * ordinary lifecycle ever removes one: under a long-lived `opencode serve`
  * that hops projects and models this map only grows, and each entry pins a

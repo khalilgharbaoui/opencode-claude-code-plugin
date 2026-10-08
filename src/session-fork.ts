@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
+import { blankAccountProvider } from "./account-groups.js"
 import { log } from "./logger.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
@@ -273,8 +274,10 @@ export function forkSiblingSignature(sessionKey: string): string | null {
 
 /**
  * The part of a session key shared by every variant of ONE opencode
- * conversation that differs only in which model or reasoning effort answers
- * it: the key with its model segment blanked and its `effort=` tail dropped.
+ * conversation that differs only in which model, reasoning effort or ACCOUNT
+ * answers it: the key with its model segment blanked, its `effort=` tail
+ * dropped, and (with `accountProviders` given) the provider element of its
+ * context blob blanked too.
  *
  * The opposite selection to `forkSiblingSignature`, and for the opposite
  * reason. A fork is a DIFFERENT opencode session continuing the same content,
@@ -286,12 +289,32 @@ export function forkSiblingSignature(sessionKey: string): string | null {
  * Both are spawn-time choices (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`) and the
  * CLI applies either to a transcript it resumes, measured on 2.1.288.
  *
+ * The ACCOUNT is the third thing that may differ, and for the same reason
+ * (h #g226). An account is a `CLAUDE_CONFIG_DIR` behind its own opencode
+ * provider, and the provider id is the first element of the context blob, so
+ * picking a model under the other account's provider in the SAME opencode
+ * session landed the conversation on a key nothing had answered and replayed
+ * the whole thread as text, exactly as a model change did before (h #g215).
+ * Unlike the model and the effort, the account is not a spawn flag the CLI
+ * applies to a transcript it resumes: the transcript lives in the other
+ * account's config dir, so the caller has to carry the file across
+ * (`carryTranscriptToAccount`) before the `--resume` means anything. That is
+ * the caller's job; this only says the two keys are the same conversation.
+ *
+ * `accountProviders` is `accountProviderMap(accounts)`, and it is EMPTY on a
+ * single-account install, where this function is byte-identical to what it was.
+ * Blanking is keyed on that map rather than on the shape of a provider id, so a
+ * provider the operator named themselves is never mistaken for an account.
+ *
  * The effort tail is dropped by name rather than by position, and nothing is
  * truncated, so a context blob that somehow contained `::` still compares
  * whole. `null` for a compaction key and for anything too short to be a real
  * session key, which keeps compaction out of this on both sides.
  */
-export function modelSiblingSignature(sessionKey: string): string | null {
+export function modelSiblingSignature(
+  sessionKey: string,
+  accountProviders?: ReadonlyMap<string, string>,
+): string | null {
   const parts = sessionKey.split("::")
   if (parts.length < 5) return null
   if (parts[2] === "compaction") return null
@@ -301,7 +324,10 @@ export function modelSiblingSignature(sessionKey: string): string | null {
   if (withoutEffort.length < 5) return null
   const blanked = [...withoutEffort]
   blanked[1] = "*"
-  return blanked.join("::")
+  const signature = blanked.join("::")
+  return accountProviders && accountProviders.size > 0
+    ? blankAccountProvider(signature, accountProviders)
+    : signature
 }
 
 /** Move what was remembered for one key onto another, for a key that is

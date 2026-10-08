@@ -455,6 +455,7 @@ const report: DoctorReport = {
   cwd: { resolved: `${HOME}/code/app`, source: "process" },
   providers: ["claude-code"],
   accounts: [],
+  accountGroups: [],
   proxyTools: ["Bash", "Task"],
   mcpServers: ["linear"],
   permissionPresets: [{ provider: "claude-code", preset: "none", applied: false, overrides: [] }],

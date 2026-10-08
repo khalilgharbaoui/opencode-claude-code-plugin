@@ -54,6 +54,7 @@ const report: DoctorReport = {
   cwd: { resolved: "/Users/you/code/app", source: "process" },
   providers: ["claude-code-default", "claude-code-work"],
   accounts: ["default", "work"],
+  accountGroups: ["work=work"],
   proxyTools: ["Bash", "Edit", "Write", "WebFetch", "Task"],
   mcpServers: ["github"],
   permissionPresets: [
@@ -518,6 +519,7 @@ test("an empty runtime reads as empty rather than as broken", () => {
     proxyServers: [],
     providers: [],
     accounts: [],
+    accountGroups: [],
     proxyTools: [],
     mcpServers: [],
     permissionPresets: [],

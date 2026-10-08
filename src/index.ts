@@ -19,6 +19,7 @@ import {
   resolveAccounts,
 } from "./accounts.js"
 import { readAccountTier } from "./account-tier.js"
+import { describeAccountGroups, resolveAccountGroups } from "./account-groups.js"
 import {
   type AgentRecord,
   agentDirectories,
@@ -213,6 +214,20 @@ export function applyPermissionPreset(
   return resolved
 }
 
+/**
+ * The `accountGroups` guard for one provider. Validated against the accounts
+ * the expansion actually produced (`failoverAccounts`), falling back to the raw
+ * `accounts` list for a provider built by hand in a test or by `createClaudeCode`
+ * directly; with neither, nothing is checked against a list and only the shape
+ * is validated.
+ */
+function accountGroups(settings: ClaudeCodeProviderSettings) {
+  return resolveAccountGroups(
+    settings.accountGroups,
+    settings.failoverAccounts ?? settings.accounts,
+  )
+}
+
 export function createClaudeCode(
   settings: ClaudeCodeProviderSettings = {},
 ): ClaudeCodeProvider {
@@ -250,6 +265,11 @@ export function createClaudeCode(
       // unset option must stay unset rather than being written to one mode or
       // the other in only one of the two entry points (h #g194).
       accountFailover: settings.accountFailover,
+      // Resolved once here rather than per turn, so the WARNs an invalid entry
+      // raises are tied to provider creation and a turn reads a value that is
+      // already validated. `failoverAccounts` is what the expansion configured,
+      // which is exactly the set a group may name (h #g226).
+      accountGroups: accountGroups(settings),
       providerID: settings.providerID,
       skipPermissions: preset?.skipPermissions ?? settings.skipPermissions ?? true,
       permissionMode: preset?.permissionMode ?? settings.permissionMode,

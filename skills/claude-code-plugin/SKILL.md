@@ -113,6 +113,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `cliPath` | string | `"claude"` | Executable, not a shell command with flags. Use an absolute path for a non-PATH install. The opencode config hook supplies this default; only direct `createClaudeCode()` use falls back to `CLAUDE_CLI_PATH`. Account providers wrap it; never select a generated wrapper yourself. |
 | `accounts` | string[] | unset | Unset keeps provider `claude-code`. Any array, including `[]`, expands to `claude-code-default` plus normalized, deduplicated names. Non-default accounts use `~/.claude-<name>`; default uses the CLI's normal environment/auth. |
 | `accountFailover` | `"ask"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` opens the switch form**, so unset and `"off"` behave identically. `"ask"` ends a usage-limited turn on opencode's native `question` form listing the other configured accounts, and continues the task on the pick inside the same opencode turn. Only ever fires with more than one account configured. The pick is sticky for the LIMITED account until the limit's reset time (or until opencode restarts when the CLI reported none), so it covers every session on that account and subagents follow their parent; child sessions are never shown the form. Leaving it unanswered waits and costs nothing. `stop`, a dismissal, or text that is not one of the offered accounts ends the turn the way a limited turn ends without the form. Triggered only by a rejected `rate_limit_event`, one of the two known account-limit error texts, or one of the five account-level failure kinds the CLI names on its own error reply (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`); never by a generic failure. Never on compaction turns; both transports (the TUI's limit reply carries the same `error: "rate_limit"` kind). A switch carries the Claude conversation to the target account's config dir and resumes it there (`crossAccountResume`, default on) and only replays the thread as text when that copy is refused; either way, MCP servers configured only in the limited account's Claude profile are gone. With the default `"off"`, a limited turn ends on one `▌ **usage limit:**` note instead (see "When an account runs out of usage"). |
+| `accountGroups` | object | – | **Off unless set**, and unset means every account behaves as one group, so nothing changes on an install that does not set it. A map from an account name in `accounts` to a group name, e.g. `{"work": "work"}`; every account not named, `default` included, is in one implicit group. With it set the plugin only moves a conversation between accounts in the SAME group, which covers all four ways one can move: the by-hand switch (picking a model under another account's provider in the same opencode session), the `accountFailover` form, the override that form sets, and `crossAccountResume`. A switch ACROSS groups sends the other account nothing at all, neither the Claude transcript nor a text replay of the thread (the replay is the same history by another route), starts fresh with only the current user message, and writes one `▌ **account group:**` note naming both accounts and both groups. The source account keeps the conversation and its transcript, so switching back continues it. The switch form offers only same-group accounts, and with none left behaves as a single-account install; `describeOtherAccounts` in the usage-limit and account-block notes is filtered the same way. An account name that is not configured is ignored with one WARN, as is a non-object value or a non-string group. Compaction is exempt and a child session follows its parent. Shown resolved (never echoed) in the startup block and `/claude-code-doctor` as `accountGroups`, names only. Log: `starting fresh on this account: it is in another account group` (NOTICE, reason `another-account-group`). It guards what the plugin moves on its own; it is not a permission system. |
 | `failoverAccounts` | string[] | unset/derived | Account expansion supplies the resolved account list so a limited account can offer the others. Do not hand-wire it; set `accounts` instead. |
 | `baseCliPath` | string | unset/derived | The `cliPath` before the per-account wrapper substitution, so a failover can build another account's wrapper on the same binary. Supplied by the config hook. Do not hand-wire it. |
 | `accountInProcess` | boolean | unset/derived | Set by the config hook on Windows, where there is no per-account wrapper script: the spawn exports `CLAUDE_CONFIG_DIR` itself and strips the `@<account>` marker off `--model`. Do not hand-wire it. |
@@ -476,6 +477,39 @@ Tell the user what a pick actually does before recommending one:
 - Not available on the interactive transport or on compaction turns.
 
 `{ "accountFailover": "off" }`, which is also the default, keeps the note.
+
+### Switching account by hand, and keeping two accounts apart
+
+Picking a model under another account's provider in the **same** opencode session
+continues the conversation on that account rather than starting over: the Claude
+transcript is copied into the other account's `CLAUDE_CONFIG_DIR` and resumed with
+`--resume`. Both transports, either direction, and it composes with a model or effort
+change in the same step. It refuses (and replays as text, saying which in one NOTICE)
+when the thread is no longer the conversation that account was last asked to continue,
+when the transcript is gone or still being written, or with
+`"crossAccountResume": false`.
+
+When two accounts must NOT see each other's work, name them into groups:
+
+```json
+{
+  "provider": {
+    "claude-code": {
+      "options": {
+        "accounts": ["work", "hobby"],
+        "accountGroups": { "work": "work" }
+      }
+    }
+  }
+}
+```
+
+`work` is alone in the group `work`; `hobby` and `default` share the implicit `default`
+group. Moving a conversation from `work` to `hobby` now sends `hobby` nothing: no
+transcript copy and no text replay, one `▌ **account group:**` note, and the
+conversation left intact on `work` to switch back to. Recommend one group name per
+real-world boundary (employer, client, personal), and name only the accounts that have
+to stay apart, since everything unnamed is already together.
 
 ### Subagents on one model, on the caller's account
 

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
+import { sessionKeyAccount } from "./account-groups.js"
 import { log } from "./logger.js"
 import {
   continuesRecordedConversation,
@@ -54,6 +55,18 @@ interface ResumeRecord {
    * version wrote, which simply makes that record no sibling candidate.
    */
   shape?: ForkMessageDigest[]
+  /**
+   * The `CLAUDE_CONFIG_DIR` the transcript was written under, and the account
+   * name that directory belongs to. Both absent on a record an older version
+   * wrote, which simply makes that record no CROSS-ACCOUNT candidate; it stays
+   * a perfectly good same-account one.
+   *
+   * The directory is recorded rather than recomputed because an account's
+   * config dir is a configurable option, so the `~/.claude-<name>` the account
+   * name alone would build is not always where its transcripts are (h #g226).
+   */
+  configDir?: string
+  account?: string
   updatedAt: number
 }
 
@@ -91,7 +104,9 @@ function isRecord(value: unknown): value is ResumeRecord {
     Array.isArray(record.chain) &&
     record.chain.every(isDigest) &&
     (record.shape === undefined ||
-      (Array.isArray(record.shape) && record.shape.every(isDigest)))
+      (Array.isArray(record.shape) && record.shape.every(isDigest))) &&
+    (record.configDir === undefined || typeof record.configDir === "string") &&
+    (record.account === undefined || typeof record.account === "string")
   )
 }
 
@@ -167,16 +182,22 @@ export function recordResumePoint(
   claudeSessionId: string,
   prompt: Prompt,
   cliPath: string,
+  /** Where this turn's transcript was written, and whose account that is. */
+  where?: { configDir?: string; account?: string },
 ): void {
   const chain = conversationDigests(prompt)
   if (chain.length === 0) return
   const shape = conversationDigests(prompt, { assistantContent: false })
+  const configDir = where?.configDir
+  const account = where?.account
   const current = load().get(sessionKey)
   if (
     current &&
     current.claudeSessionId === claudeSessionId &&
     current.cliPath === cliPath &&
     current.shape !== undefined &&
+    current.configDir === configDir &&
+    current.account === account &&
     current.chain.length === chain.length &&
     current.chain.every((entry, i) => entry.digest === chain[i].digest)
   ) {
@@ -184,7 +205,15 @@ export function recordResumePoint(
   }
   save((merged) => {
     merged.delete(sessionKey)
-    merged.set(sessionKey, { claudeSessionId, cliPath, chain, shape, updatedAt: Date.now() })
+    merged.set(sessionKey, {
+      claudeSessionId,
+      cliPath,
+      chain,
+      shape,
+      ...(configDir === undefined ? {} : { configDir }),
+      ...(account === undefined ? {} : { account }),
+      updatedAt: Date.now(),
+    })
   })
 }
 
@@ -292,33 +321,88 @@ export function findResumePoint(opts: {
  * The caller TRANSFERS the id rather than copying it, so one Claude
  * conversation is owned by exactly one session key at a time.
  */
+export interface SiblingResumePoint {
+  claudeSessionId: string
+  siblingKey: string
+  matched: number
+  /**
+   * The account the sibling ran on, and the config dir its transcript is in,
+   * for a sibling on ANOTHER account. Both undefined for the same-account case,
+   * which is what every caller before (h #g226) was written against.
+   */
+  siblingAccount?: string
+  siblingConfigDir?: string
+}
+
 export function findSiblingResumePoint(opts: {
   sessionKey: string
   prompt: Prompt
   cliPath: string
-  transcriptPath: (claudeSessionId: string) => string
+  /**
+   * The transcript file a session id names. Given the sibling's own recorded
+   * `configDir` when it has one, because a cross-account sibling's transcript
+   * is under the OTHER account's directory and asking for this account's would
+   * refuse every real candidate.
+   */
+  transcriptPath: (claudeSessionId: string, configDir?: string) => string
   /** `claudeSessionIsWriting`, injected so this module stays free of the
    *  session manager. True while a key's transcript may still be written. */
   isBusy: (sessionKey: string) => boolean
+  /**
+   * `accountProviderMap(accounts)`. Empty or absent keeps the provider element
+   * of the context blob strict, which is exactly the pre-(h #g226) behaviour
+   * and what a single-account install gets.
+   */
+  accountProviders?: ReadonlyMap<string, string>
+  /**
+   * Whether this turn's account may take a conversation from `account`. The
+   * `accountGroups` guard, injected: this module knows nothing about groups,
+   * only that a caller can say no. Absent means yes, which is the default
+   * because the guard is opt-in.
+   */
+  allowAccount?: (account: string) => boolean
   onRefused?: (reason: string) => void
-}): { claudeSessionId: string; siblingKey: string; matched: number } | undefined {
-  const signature = modelSiblingSignature(opts.sessionKey)
+}): SiblingResumePoint | undefined {
+  const providers = opts.accountProviders
+  const signature = modelSiblingSignature(opts.sessionKey, providers)
   if (!signature) {
     opts.onRefused?.("no-sibling-possible")
     return undefined
   }
+  const ownAccount = providers ? sessionKeyAccount(opts.sessionKey, providers) : undefined
 
-  let best: { claudeSessionId: string; siblingKey: string; matched: number } | undefined
+  let best: SiblingResumePoint | undefined
   let bestUpdatedAt = -1
   let refusal: string | undefined
 
   for (const [key, record] of load()) {
     if (key === opts.sessionKey) continue
-    if (modelSiblingSignature(key) !== signature) continue
-    if (record.cliPath !== opts.cliPath) {
+    if (modelSiblingSignature(key, providers) !== signature) continue
+
+    // Which account this candidate ran on, and therefore whether a different
+    // `cliPath` is expected (every account has its own wrapper) or is a
+    // genuinely different `claude` and a refusal.
+    const siblingAccount = providers ? sessionKeyAccount(key, providers) : undefined
+    const crossAccount =
+      ownAccount !== undefined &&
+      siblingAccount !== undefined &&
+      siblingAccount !== ownAccount
+    if (crossAccount) {
+      if (opts.allowAccount && !opts.allowAccount(siblingAccount)) {
+        refusal = "sibling-another-account-group"
+        continue
+      }
+      // Without the source directory there is no file to carry: the account
+      // name alone cannot name it, because `configDir` is configurable.
+      if (!record.configDir) {
+        refusal = "sibling-account-dir-unknown"
+        continue
+      }
+    } else if (record.cliPath !== opts.cliPath) {
       refusal = "sibling-another-claude-binary"
       continue
     }
+
     if (
       !record.shape ||
       !continuesRecordedConversation(record.shape, opts.prompt, {
@@ -332,7 +416,7 @@ export function findSiblingResumePoint(opts: {
       refusal = "sibling-still-writing"
       continue
     }
-    if (!existsSync(opts.transcriptPath(record.claudeSessionId))) {
+    if (!existsSync(opts.transcriptPath(record.claudeSessionId, record.configDir))) {
       refusal = "sibling-transcript-gone"
       continue
     }
@@ -346,6 +430,9 @@ export function findSiblingResumePoint(opts: {
         claudeSessionId: record.claudeSessionId,
         siblingKey: key,
         matched: record.chain.length,
+        ...(crossAccount
+          ? { siblingAccount, siblingConfigDir: record.configDir }
+          : {}),
       }
     }
   }
@@ -356,6 +443,62 @@ export function findSiblingResumePoint(opts: {
     )
   }
   return best
+}
+
+/**
+ * Any account OTHER than this turn's that has answered this same opencode
+ * conversation, whether or not its conversation still matches.
+ *
+ * This is the `accountGroups` guard's detector, and it is deliberately broader
+ * than `findSiblingResumePoint`: the guard has to hold even when the carry
+ * would have been refused anyway, because the thing it blocks is the REPLAY,
+ * and the replay happens exactly when the carry does not. So nothing about
+ * content, transcripts, binaries or busy-ness is consulted. The one test is
+ * the sibling signature, which already pins cwd, request scope, opencode
+ * session, agent and prompt-cache TTL, and leaves only the model, the effort
+ * and the account free.
+ *
+ * `extraKeys` is the in-memory session-key set (`listClaudeSessionKeys`), so
+ * the guard still works with `resumeAfterRestart: false`, where nothing is
+ * written to the store at all. The one gap left is that combination PLUS an
+ * opencode restart in between, where nothing in this process has ever seen the
+ * other account; that is documented rather than papered over.
+ */
+export function findForeignAccountSibling(opts: {
+  sessionKey: string
+  accountProviders: ReadonlyMap<string, string>
+  extraKeys?: Iterable<string>
+}): { siblingKey: string; account: string } | undefined {
+  const providers = opts.accountProviders
+  if (providers.size === 0) return undefined
+  const signature = modelSiblingSignature(opts.sessionKey, providers)
+  if (!signature) return undefined
+  const ownAccount = sessionKeyAccount(opts.sessionKey, providers)
+  if (ownAccount === undefined) return undefined
+
+  const consider = (key: string): { siblingKey: string; account: string } | undefined => {
+    if (key === opts.sessionKey) return undefined
+    if (modelSiblingSignature(key, providers) !== signature) return undefined
+    const account = sessionKeyAccount(key, providers)
+    if (account === undefined || account === ownAccount) return undefined
+    return { siblingKey: key, account }
+  }
+
+  // The live process first: its view is the newest and it needs no store.
+  for (const key of opts.extraKeys ?? []) {
+    const hit = consider(key)
+    if (hit) return hit
+  }
+  let found: { siblingKey: string; account: string } | undefined
+  let foundUpdatedAt = -1
+  for (const [key, record] of load()) {
+    const hit = consider(key)
+    if (hit && record.updatedAt >= foundUpdatedAt) {
+      found = hit
+      foundUpdatedAt = record.updatedAt
+    }
+  }
+  return found
 }
 
 /** Test seam: point the store at a scratch file and drop the cache. */

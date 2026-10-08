@@ -59,6 +59,7 @@ import {
   deleteClaudeSessionId,
 } from "../src/session-manager.js"
 import { _resetForkFingerprints } from "../src/session-fork.js"
+import { _setResumeStorePath } from "../src/session-resume-store.js"
 import { _resetAgentRegistryForTests, setProviderFallbackModels } from "../src/agent-models.js"
 import { _resetAccountOverrides } from "../src/account-failover.js"
 import { ensureAccountRuntime } from "../src/accounts.js"
@@ -1751,6 +1752,118 @@ test("a forked opencode session branches the parent's conversation on the PTY", 
       deleteActiveProcess(keyOf(affinity))
       deleteClaudeSessionId(keyOf(affinity))
     }
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// A by-hand account switch on the PTY (h #g226): picking a model under the
+// other account's provider in the SAME opencode session carries the Claude
+// transcript into that account's config dir and resumes it there, rather than
+// typing the whole thread back in as text.
+// ---------------------------------------------------------------------------
+
+test("a by-hand account switch carries the conversation on the PTY", async () => {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const dirs = scratch()
+  const configOf = (account: string) => path.join(dirs.root, `config-${account}`)
+  // Two binaries, because each account is reached through its own wrapper and
+  // the cliPath difference is exactly what a same-account sibling refuses on.
+  const cliOf = (account: string) => {
+    const file = path.join(dirs.cwd, `fake-claude-${account}`)
+    fs.writeFileSync(
+      file,
+      "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\nexit 1\n",
+      { mode: 0o755 },
+    )
+    return file
+  }
+  const children: FakeTui[] = []
+  const answers = ["Noted.", "HERON"]
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      const answer = answers[children.length]!
+      tui.turns = [(child) => child.append(assistantRecord(`m-${children.length}`, "end_turn", textBlock(answer)))]
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const modelId = "claude-test-pty-accounts"
+  const keyOf = (account: string) =>
+    sessionKey(dirs.cwd, `${modelId}::tools::ses_accounts::context=["claude-code-${account}",null]`)
+  const modelFor = (account: string) =>
+    createClaudeCode({
+      transport: "interactive",
+      cliPath: cliOf(account),
+      baseCliPath: cliOf(account),
+      cwd: dirs.cwd,
+      configDir: configOf(account),
+      providerID: `claude-code-${account}`,
+      account,
+      failoverAccounts: ["alpha", "beta"],
+      bridgeOpencodeMcp: false,
+      proxyTools: [],
+    }).languageModel(modelId)
+  const turn = async (account: string, prompt: any[]) => {
+    const result = await modelFor(account).doStream({
+      prompt,
+      headers: { "x-session-affinity": "ses_accounts" },
+      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+    } as any)
+    const parts: any[] = []
+    for await (const part of result.stream) parts.push(part)
+    return textOf(parts)
+  }
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] })
+  const store = path.join(dirs.root, "state", "claude-sessions.json")
+  _setResumeStorePath(store)
+  try {
+    assert.equal(await turn("alpha", [user("The codeword is HERON.")]), "Noted.")
+    const alphaId = getClaudeSessionId(keyOf("alpha"))!
+    assert.ok(alphaId)
+    assert.equal(children[0]!.env.CLAUDE_CONFIG_DIR, configOf("alpha"))
+
+    assert.equal(
+      await turn("beta", [
+        user("The codeword is HERON."),
+        { role: "assistant", content: [{ type: "text", text: "Noted." }] },
+        user("What is the codeword?"),
+      ]),
+      "HERON",
+    )
+
+    const beta = children[1]!
+    const at = beta.argv.indexOf("--resume")
+    assert.deepEqual(beta.argv.slice(at, at + 2), ["--resume", alphaId], beta.argv.join(" "))
+    assert.equal(beta.env.CLAUDE_CONFIG_DIR, configOf("beta"), "and it tails beta's own dir")
+    // The file moved by copy, and the source is still there to switch back to.
+    const transcriptIn = (account: string) =>
+      interactiveTranscriptPath({ configDir: configOf(account), cwd: dirs.cwd, sessionId: alphaId })
+    assert.ok(fs.existsSync(transcriptIn("beta")))
+    assert.ok(fs.existsSync(transcriptIn("alpha")))
+    // One conversation, one owner.
+    assert.equal(getClaudeSessionId(keyOf("beta")), alphaId)
+    assert.equal(getClaudeSessionId(keyOf("alpha")), undefined)
+    // Nothing was typed back in: only this turn's message reached the TUI.
+    const typed = beta.writes.join("")
+    assert.ok(typed.includes("What is the codeword?"))
+    assert.ok(!typed.includes("conversation_history"), typed.slice(0, 300))
+  } finally {
+    for (const account of ["alpha", "beta"]) {
+      deleteActiveProcess(keyOf(account))
+      deleteClaudeSessionId(keyOf(account))
+    }
+    _setResumeStorePath(null)
     if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
     else delete (globalThis as any).Bun
     dirs.cleanup()

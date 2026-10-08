@@ -155,6 +155,8 @@ export interface DoctorReport {
   cwd: { resolved: string; source: CwdSource }
   providers: string[]
   accounts: string[]
+  /** The resolved `accountGroups` guard, `<account>=<group>` per entry. */
+  accountGroups: string[]
   proxyTools: string[]
   mcpServers: string[]
   /** One row per provider; `none` where no preset is configured. */
@@ -263,6 +265,13 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push(`| cwd | \`${report.cwd.resolved}\` (${report.cwd.source}) |`)
   lines.push(`| providers | ${list(report.providers)} |`)
   lines.push(`| accounts | ${list(report.accounts)} |`)
+  lines.push(
+    `| accountGroups | ${
+      report.accountGroups.length > 0
+        ? list(report.accountGroups)
+        : "none (every account is one group)"
+    } |`,
+  )
   lines.push(`| proxyTools | ${list(report.proxyTools)} |`)
   lines.push(`| MCP servers (on disk) | ${list(report.mcpServers)} |`)
   lines.push(`| permissionPreset | ${describePermissionPresets(report.permissionPresets)} |`)
@@ -628,6 +637,7 @@ export async function gatherDoctorReport(
     cwd: base.cwd,
     providers: base.providers,
     accounts: base.accounts,
+    accountGroups: base.accountGroups,
     proxyTools: base.proxyTools,
     mcpServers: base.mcpServers,
     permissionPresets: base.permissionPresets,

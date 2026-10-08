@@ -74,7 +74,63 @@ The reset time is in **your** time zone, to the minute, and is left out when Cla
 
 The turn also **finishes as an error**, not as a reply. Nothing was served, so filing it as a (very short) answer was wrong: opencode's own retry and failure handling never ran, and the account-block case below has always finished this way.
 
-Nothing moves on its own: switching account means picking a model from another account's provider in opencode's model list and sending your message again. Doing it that way starts a fresh Claude session on the new account, because the session key changes with the model; the automatic switch below carries the conversation across instead.
+Nothing moves on its own: switching account means picking a model from another account's provider in opencode's model list and sending your message again. That carries the conversation across too, exactly as the automatic switch below does: see [switching account by hand](#switching-account-by-hand).
+
+### Switching account by hand
+
+Picking a model under another account's provider in the same opencode session continues the conversation on that account rather than starting over. It is the same mechanism the automatic switch uses: the Claude transcript is copied into the other account's `CLAUDE_CONFIG_DIR` and resumed there with `--resume`, so nothing is re-sent and nothing is paid for twice. It works on both transports, in either direction, and it composes with a model or reasoning-effort change in the same step.
+
+What it needs, and what it refuses:
+
+- It is the **same opencode session**, same working directory, same agent. A different opencode session continuing the same content is a fork, which is [`forkSessions`](./options.md) and is off by default.
+- The thread in front of the plugin has to be the conversation that account was last asked to continue, plus Claude's own reply. An edit, a revert or an opencode compaction in between falls back to the replay.
+- The other account's transcript has to still be on disk, and nothing may be writing to it.
+- `"crossAccountResume": false` turns the copy off, and the switch replays the thread as text, which is what every by-hand switch did before.
+
+Which of the two happened is one NOTICE line in the log: `continuing this conversation's claude session under the new model or effort instead of replaying it`, or `replaying the conversation as text: no claude session was available to continue` with the reason it refused on.
+
+If the two accounts are not meant to see each other's work, name them into separate [account groups](#account-groups).
+
+### Account groups
+
+**Off unless set.** `accountGroups` says which accounts may see each other's conversations. It is a map from an account name to a group name; every account you do not name, `default` included, is in one implicit group, so naming the one account that has to stay apart is the whole configuration:
+
+```json
+{
+  "provider": {
+    "claude-code": {
+      "options": {
+        "accounts": ["work", "hobby"],
+        "accountGroups": { "work": "work" }
+      }
+    }
+  }
+}
+```
+
+That puts `work` in the group `work`, and `hobby` and `default` together in the implicit `default` group. With it set, the plugin only ever moves a conversation between accounts in the same group, which covers all four ways a conversation could move: the by-hand switch above, the account-switch form, the override that form sets, and `crossAccountResume`.
+
+A switch across groups sends the other account **nothing at all**: not the Claude transcript, and not a text replay of the thread either, because the replay is the same history by another route. The turn there starts fresh with only your latest message, and says so once:
+
+```text
+▌ **account group:** this conversation was running on the Claude account "work"
+(group "work") and is now on "hobby" (group "default"), so none of it was carried
+over: accountGroups keeps a conversation inside one group. This account is starting
+fresh and sees only your latest message. The conversation is still on "work"; switch
+back to it to continue where you stopped.
+```
+
+The note is written once, on the turn that would have sent the thread; the next turn on that account is an ordinary turn. Nothing is destroyed: the conversation is left intact on the account it was on, the transcript is not deleted, and switching back continues it where it stopped.
+
+The switch form offers only accounts in the limited account's own group, and with none left it behaves exactly as a single-account install does (the `▌ **usage limit:**` note, with no "pick a model from ..." sentence). The "or pick a model from ..." half of the account-block note is filtered the same way.
+
+Details worth knowing:
+
+- An account name that is not in `accounts` is a typo, so it is ignored with one WARN rather than silently creating a group that guards nothing. Group names are compared case-insensitively, and so are account names.
+- Compaction turns are exempt, as they are from every other account rule, and a child session follows its parent's account as it always did.
+- The resolved map is shown in the startup block and in `/claude-code-doctor` as `accountGroups`, names only.
+- This is a guard on what the **plugin** moves on its own. It is not a permission system: it cannot stop you typing a secret into the other account yourself, and it does not change what either account's Claude Code can read on disk.
+- The guard reads which account answered this conversation from the plugin's own session state and from the resume store. With `"resumeAfterRestart": false` **and** an opencode restart in between, this process has never seen the other account and cannot know a switch happened; nothing is carried either way in that case, because the carry reads the same record, so the worst outcome is a replay rather than a leak.
 
 ### Account failover
 
