@@ -84,9 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "maybe yes add the Linux CI Job now.. but also allow me to [skip-ci] to skip
-  it when i add that to commit and park the MCP thing for now ... also all is compatible with opencode
-  2.0 right". In progress.
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
   (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
@@ -105,6 +102,12 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done**: "maybe yes add the Linux CI Job now.. but also allow me to [skip-ci] to skip it
+  ... and park the MCP thing for now". `ci-linux.yml` runs install, typecheck, `npm test` and build on
+  every push to master and every PR (first run: 1,505 / 1,505); `[skip-ci]` in the commit message or PR
+  title skips it and the Windows job, never the publish (PR #107). MCP elicitation as a form parked in
+  Future Features. opencode 2: core verified on 2.0.22 (h #g222); account groups and the subagent
+  dispatch form are unit-tested there but were run live on 1.18.35 only.
 - 2026-10-08: **done**: "ok all this stuff provides more controle right? is that said on the site? also
   the site on mobile needs also to play those interactive parts". Landing: the "what it does" lead now
   says you choose account, model, effort and subagent runs; the accounts and subagents cards describe
