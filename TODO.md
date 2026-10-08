@@ -84,17 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "if agents/task are running forground or background i want a very short reference to
-  them in the sidebar at the bottom like a list each with the loading indication as prefix when i click it it
-  takes me to the agent/task in the thread ... is this doable?" Answered: yes, as a TUI plugin. 1.18.35
-  (`@opencode-ai/plugin/tui`): `sidebar_footer` slot, `state.session.messages/part/status`,
-  `route.navigate("session", {sessionID})`, `event.on`; module must be TUI-only (`server?: never`), so a
-  second entry point. 2.0.22: `sidebar.footer` slot, `router.navigate`, session tabs. Limit on both: a
-  route targets a session, not a message, so a click opens the subagent's session directly (no scroll to
-  the task in the parent). Maintainer: "sure fine if it looks like that and its behaviour as well but i
-  also want to know what model/effort/account its on at that moment in a subtile minimalistic way colors and
-  graying things out helps not option in but just there always but good UI and good UX that is important".
-  In progress, one lane: always on (no option), opencode 1 first, model/effort/account shown muted.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
@@ -113,6 +102,12 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.54.0): the Subagents section in the TUI sidebar ("a very short reference to them
+  in the sidebar at the bottom ... what model/effort/account its on ... not option in but just there always").
+  Always on, `dist/tui.js` serves opencode 1 and 2; model/effort/account come from `session-spawns.json`, what
+  the plugin really spawned. A click opens the subagent's session (routes cannot target a message). opencode 1
+  needs the plugin entry in tui.json(c): added to the maintainer's `~/.config/opencode/tui.jsonc` (backup
+  beside it). PR #112, h #g234.
 - 2026-10-08: **done** (v0.53.5): "1 fix it now". A `task_batch` flagged `isError` because one child failed is
   now read section by section, so the background children it did start are recorded and counted; failed and
   missing sections are skipped, a failed single `task` still records nothing (h #g233).
