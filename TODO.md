@@ -84,13 +84,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: maintainer: "2 is maybe usefull wont take too much resources build it". In progress: a
-  background dispatch's reply to the model also says how many background subagents are running, cheap
-  and bounded (omitted rather than delayed when a lookup is slow). First lane got no tools: its claude
-  could not reach the in-process opencode_proxy (CONNECT_TIMEOUT); opencode logged nothing for 49 s after
-  the spawn, then the child's output arrived in one burst, so opencode itself stalled. Intermittent:
-  21 s, 20 s and 49 s today, none on a probed rerun (6.8 s). Next: relaunch opencode onto v0.53.3, retry
-  the lane; if the stall recurs, catch it with a long-running probe and sample of the opencode process.
+- 2026-10-08: found by the PR #111 lane, not yet decided: `noteBackgroundDispatchResult` skips any result
+  flagged as an error, so a `task_batch` where one child failed records none of the background children it did
+  start (not counted, no running-count line). Pre-existing. Fix now, later, or leave?
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
@@ -123,6 +119,11 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.53.4): "2 is maybe usefull wont take too much resources build it". An accepted
+  background dispatch's reply ends with `Background subagents running now: N (including this one).`, at most
+  4 lookups and 500 ms, omitted on overrun or an unreadable child (PR #111, h #g232). The stall that cost the
+  first attempt its tools did not recur after the relaunch onto v0.53.3 (proxy connected at once). Also
+  hardened two broker stall-warning tests that flaked on Windows timer resolution.
 - 2026-10-08: **done** (v0.53.3): "yes do that please because the startup confuses ... just need to know
   how many agents are working at a time to not overload". Cause measured: a new `claude` waits up to ~30 s
   for MCP servers, and `explore` got every server bridged directly (slack via `op`, obsidian via `zsh`
