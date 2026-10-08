@@ -84,6 +84,13 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "port these and lets see what is next" (notify.ts, moshi-hooks.ts for opencode 2).
+  Found: neither needs a hand port. Moshi 0.4.21 generates one hook that works on both majors (proven
+  in scratch opencode 1.18.35 and 2.0.22 against a fake Moshi socket); installed is 0.3.22, so it needs
+  `brew upgrade moshi-hook` + `moshi-hook install --target opencode`, which also restarts the daemon
+  that serves the Claude Code and Gemini hooks. kdco notify is retired upstream; opencode 2's built-in
+  `attention` settings cover the defaults in use (`~/opencode-v2-sandbox/migration-dryrun/cli.notify.json`).
+  Awaiting: go for the Moshi upgrade.
 - 2026-10-08: maintainer: "is it now ok to daily drive opencode 2?" Answered: this plugin yes (core
   verified on 2.0.22), but the maintainer's other plugins are V1-only (opencode-dcp, notify.ts,
   opentmux, opencode-local-ollama, herdr-agent-state, moshi-hooks) and V1 plugins do not run in V2;
