@@ -556,6 +556,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
 }
 
+/**
+ * The fake CLI is a `#!/usr/bin/env node` script made executable with `chmod`,
+ * and each account is reached through the generated bash wrapper, neither of
+ * which exists on Windows (`ensureAccountRuntime` deliberately generates no
+ * wrapper there, h #g221). Only the harness is POSIX-only: everything the
+ * end-to-end half covers is also covered above by the portable unit tests,
+ * which the Windows CI job runs.
+ */
+const E2E = {
+  timeout: 60_000,
+  skip: process.platform === "win32" ? "the fake-CLI and wrapper harness is POSIX-only" : false,
+} as const
+
 const MODEL = "claude-test-groups"
 
 const deltas = (parts: LanguageModelV3StreamPart[]) =>
@@ -564,9 +577,7 @@ const deltas = (parts: LanguageModelV3StreamPart[]) =>
     .map((part) => (part as { delta: string }).delta)
     .join("")
 
-test("a by-hand account switch carries the conversation instead of replaying it", {
-  timeout: 60_000,
-}, async () => {
+test("a by-hand account switch carries the conversation instead of replaying it", E2E, async () => {
   const fake = await createSwitchFixture()
   try {
     await fake.warm()
@@ -605,7 +616,7 @@ test("a by-hand account switch carries the conversation instead of replaying it"
   }
 })
 
-test("switching back carries the conversation home again", { timeout: 60_000 }, async () => {
+test("switching back carries the conversation home again", E2E, async () => {
   const fake = await createSwitchFixture()
   try {
     await fake.warm()
@@ -639,9 +650,7 @@ test("switching back carries the conversation home again", { timeout: 60_000 }, 
   }
 })
 
-test("accountGroups blocks the carry AND the replay, and says so once", {
-  timeout: 60_000,
-}, async () => {
+test("accountGroups blocks the carry AND the replay, and says so once", E2E, async () => {
   const fake = await createSwitchFixture({ beta: "work" })
   try {
     await fake.warm()
@@ -684,9 +693,7 @@ test("accountGroups blocks the carry AND the replay, and says so once", {
   }
 })
 
-test("crossAccountResume: false replays a by-hand switch, as before", {
-  timeout: 60_000,
-}, async () => {
+test("crossAccountResume: false replays a by-hand switch, as before", E2E, async () => {
   const fake = await createSwitchFixture(undefined, { crossAccountResume: false })
   try {
     await fake.warm()
@@ -705,9 +712,7 @@ test("crossAccountResume: false replays a by-hand switch, as before", {
   }
 })
 
-test("a same-group switch under accountGroups still carries, and says nothing", {
-  timeout: 60_000,
-}, async () => {
+test("a same-group switch under accountGroups still carries, and says nothing", E2E, async () => {
   // Both accounts named into ONE group: the guard is configured and the switch
   // is still an ordinary carry, which is what stops the option reading as an
   // on/off switch for the feature itself.
