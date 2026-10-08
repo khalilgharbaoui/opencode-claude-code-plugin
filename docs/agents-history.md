@@ -5034,3 +5034,100 @@ its measured sentence (h #g176), but neither was exercised on 2.0.22 here. The
 interactive transport's spawn was covered only by sharing `resolveProxyWiring`.
 A per-turn running count in the `task` tool's background reply was considered and
 not built.
+
+<a id="g232"></a>
+
+#### The running count in the model's background dispatch reply (2026-10-08)
+
+(h #g231) gave `/claude-code-doctor` `running now: N (of M started by this
+process)` and left "a per-turn running count in the `task` tool's background
+reply" as considered and not built. The maintainer wanted it built: the
+operator can read the doctor, but the model is the one deciding whether to
+start another subagent, and it had no number at all.
+
+**Where it goes.** The one place opencode's `task` / `task_batch` result is
+handed back to the CLI on both majors and both transports is the matched-results
+loop in `doStream`, where `noteBackgroundDispatchResult` already records the
+dispatch. `withBackgroundRunningCount` (`src/background-tasks.ts`) runs right
+after it, and the extended result is what both the completion map and
+`resolvePendingProxyCallById` get, so a late delivery (h #g119) carries the same
+text. `hostedToolResult` (h #g197) is not involved: it rewrites the results of
+tools the CLI ran itself on their way to opencode, and this result travels the
+other way. An abort that lands in the (bounded) wait returns as the forwarding
+wait above it already does, because the abort branch has rejected the parked
+calls.
+
+**What it says.** One line after opencode's text,
+`\n\nBackground subagents running now: N (including this one).`, or
+`(including the N just started)` for a `task_batch`, one line per batch. After,
+never before, so `backgroundTaskIdsIn` and both id patterns still match what
+Claude reads; a test asserts the ids parse off the extended text. Only an
+accepted background dispatch gets it (the same two envelopes and the same
+`kind`/`isError` gate `noteBackgroundDispatchResult` uses): every other result
+is returned as the same object, with no lookup.
+
+**Three decisions that differ from the obvious version, each for a reason:**
+
+- **The ids this result reported are added, never looked up.** The first design
+  was `max(count, ids in this reply)`. That is still wrong in one direction: with
+  three others running and this child not yet scheduled (reading `idle`), max
+  gives 3 where the truth is 4, and with this child already `busy` a plain count
+  plus the ids double-counts it. opencode has just said these ids are running, so
+  the count is "the OTHER started ids that read running" plus this reply's ids.
+  Both cases have a test, and each fails under its own mutation.
+- **An unreadable child omits the line**, it does not count as zero. The doctor
+  reports unreadable children on their own line; a one-line reply cannot, and a
+  count that is too LOW is the harmful direction here, because it tells the model
+  there is room it does not have. The cost: on opencode 2, a deleted background
+  child that stays in the 128-entry started ledger keeps the line off until it
+  ages out. (On 1.x a deleted child reads `idle` through the unscoped status
+  map, so it is simply not counted.)
+- **Bounded, never in the dispatch's way.** Four lookups at a time
+  (`BACKGROUND_COUNT_CONCURRENCY`), `BACKGROUND_COUNT_BUDGET_MS` (500) in all
+  through `Promise.race` against an `unref`'d timer, and a worker stops taking
+  entries once the deadline passed. Lookups already in flight are read-only and
+  finish unobserved. An overrun logs one INFO and omits the line.
+
+It consumes nothing: it shares `backgroundTaskState` with
+`countRunningBackgroundTasks` (factored out, the doctor's count is unchanged),
+never marks anything collected and skips cancelled ids. All four background
+texts (`TASK_BACKGROUND_NOTE`, `TASK_BACKGROUND_NOTE_V2`,
+`BACKGROUND_SUBAGENT_HINT`, `BACKGROUND_SUBAGENT_HINT_V2`) gained one sentence:
+the count is for information, never a reason to poll or wait. The task
+description stays under the 1,600-character truncation guard (h #g74).
+
+`test/background-running-count.test.ts`, its own file because
+`setOpencodeClient` is process-wide and cannot be unset: both majors'
+envelopes, a batch, the idle and busy cases above, every result it must leave
+alone, a hung lookup against a 100 ms budget, an unreadable child, the
+concurrency bound (12 entries, at most 4 in flight), collect-once after a
+count, the wording, the four texts, and a fake CLI through two real `doStream`
+turns (`task` and `task_batch`) that echoes the text the proxy handed it.
+Eleven mutations, each failing at least one test: the call site removed, the
+deadline never firing, concurrency 100, unreadable counted as zero, this
+reply's ids looked up, the line before the text, `isError` not skipped, this
+reply's ids not added, the V2 note sentence dropped, the count marking an id
+collected, and a foreground result getting the line.
+
+**Live on opencode 1.18.35 and 2.0.22**, each a private `serve` with its own
+scratch `HOME`, all four XDG dirs and `TMPDIR`, the worktree as the plugin
+(`file://` root on 1.x, `dist` on 2.x, password-protected on 2.x), and a
+scripted `claude` that, on `DISPATCH`, calls the real proxy `task` with
+`background: true` and records what came back, and as the child sleeps 20 s.
+1.18.35 with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`: opencode's
+`<task id="ses_..." state="running">` envelope unchanged, then
+`Background subagents running now: 1 (including this one).`; a second dispatch
+while the first child slept, `2 (including this one).`; a third after both
+finished, `1 (including this one).` 2.0.22: opencode's prose envelope
+unchanged, then `1 (including this one).` and `2 (including this one).`, the
+running child read off its transcript because V2 hands a plugin no run-state
+route (h #g176). Nothing was billed.
+
+##### Not covered
+
+No real `claude` was spawned, so whether a real model uses the number to hold
+back is not measured; the line is information and the texts say so. The
+interactive transport was not probed live; it resolves proxied calls through the
+same loop. Not probed: a `task_batch` through a live opencode (covered by the
+fake-CLI `doStream` test), and the overrun path against a live opencode, which
+answered every lookup well inside the budget.

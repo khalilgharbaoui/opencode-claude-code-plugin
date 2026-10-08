@@ -412,7 +412,9 @@ export const TASK_BACKGROUND_NOTE =
   " this conversation on its own as a new message. Do NOT poll, sleep or" +
   " loop waiting for it. The `id` in that envelope is the task_id: pass it" +
   " to task_status to read a result the notification did not deliver, or" +
-  " to task_cancel to stop a background subagent you no longer want."
+  " to task_cancel to stop a background subagent you no longer want. The" +
+  " dispatch result may end with how many background subagents are running" +
+  " now: that is for information, never a reason to poll or wait."
 
 /**
  * The same note for opencode 2, where both envelopes are different and the
@@ -434,7 +436,9 @@ export const TASK_BACKGROUND_NOTE_V2 =
   ' `<subagent sessionID="..." state="completed">` message. Do NOT poll,' +
   " sleep or loop waiting for it. That sessionID is the task_id: pass it to" +
   " task_status to read a result the notification did not deliver, or to" +
-  " task_cancel to stop a background subagent you no longer want."
+  " task_cancel to stop a background subagent you no longer want. The" +
+  " dispatch result may end with how many background subagents are running" +
+  " now: that is for information, never a reason to poll or wait."
 
 /**
  * `task_batch`: one MCP call that opencode runs as N parallel `task` calls.

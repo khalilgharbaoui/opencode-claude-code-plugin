@@ -212,30 +212,144 @@ export interface BackgroundRunningCount {
  */
 export async function countRunningBackgroundTasks(): Promise<BackgroundRunningCount> {
   const entries = [...started.entries()]
-  const cancelledIds = new Set<string>()
-  for (const ids of cancelled.values()) for (const id of ids) cancelledIds.add(id)
-
+  const cancelledIds = cancelledTaskIds()
   const states = await Promise.all(
-    entries.map(async ([taskId]): Promise<"running" | "stopped" | "unreadable"> => {
-      if (cancelledIds.has(taskId)) return "stopped"
-      try {
-        const runState = await fetchSessionRunState(taskId)
-        if (runState !== "unknown") {
-          return isBackgroundTaskRunning(runState, []) ? "running" : "stopped"
-        }
-        const replies = await fetchSessionReplies(taskId)
-        if (replies === undefined) return "unreadable"
-        return isBackgroundTaskRunning(runState, replies) ? "running" : "stopped"
-      } catch {
-        return "unreadable"
-      }
-    }),
+    entries.map(([taskId]) => backgroundTaskState(taskId, cancelledIds)),
   )
   return {
     running: states.filter((state) => state === "running").length,
     started: entries.length,
     unreadable: states.filter((state) => state === "unreadable").length,
   }
+}
+
+type BackgroundTaskState = "running" | "stopped" | "unreadable"
+
+function cancelledTaskIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const set of cancelled.values()) for (const id of set) ids.add(id)
+  return ids
+}
+
+/** One started task's state, by `task_status`'s own test. Never throws. */
+async function backgroundTaskState(
+  taskId: string,
+  cancelledIds: Set<string>,
+): Promise<BackgroundTaskState> {
+  if (cancelledIds.has(taskId)) return "stopped"
+  try {
+    const runState = await fetchSessionRunState(taskId)
+    if (runState !== "unknown") {
+      return isBackgroundTaskRunning(runState, []) ? "running" : "stopped"
+    }
+    const replies = await fetchSessionReplies(taskId)
+    if (replies === undefined) return "unreadable"
+    return isBackgroundTaskRunning(runState, replies) ? "running" : "stopped"
+  } catch {
+    return "unreadable"
+  }
+}
+
+/**
+ * How long a background dispatch's result may wait for the running count
+ * before it goes back to Claude without one. The dispatch itself already
+ * happened; the count is a courtesy, and a slow opencode must never make a
+ * background dispatch feel like a foreground one.
+ */
+export const BACKGROUND_COUNT_BUDGET_MS = 500
+/** Lookups in flight at once, so a long ledger cannot flood opencode. */
+const BACKGROUND_COUNT_CONCURRENCY = 4
+
+/**
+ * How many OTHER started background subagents are running, or undefined when
+ * the lookups did not all finish inside `budgetMs`, one of them could not be
+ * read, or anything threw. An unreadable child is a refusal rather than a
+ * zero because a count that is too LOW is the harmful direction: it tells the
+ * model there is room it does not have. The same read-only, non-consuming
+ * question `countRunningBackgroundTasks` asks, with bounded concurrency and a
+ * deadline. A worker stops picking up entries once the deadline passed;
+ * lookups already in flight are read-only and simply finish unobserved.
+ */
+async function countOtherRunningWithin(
+  exclude: ReadonlySet<string>,
+  budgetMs: number,
+): Promise<number | undefined> {
+  const taskIds = [...started.keys()].filter((taskId) => !exclude.has(taskId))
+  if (taskIds.length === 0) return 0
+  const cancelledIds = cancelledTaskIds()
+  let overBudget = false
+  let unreadable = false
+  let next = 0
+  let running = 0
+  const worker = async (): Promise<void> => {
+    while (!overBudget && !unreadable && next < taskIds.length) {
+      const taskId = taskIds[next++]!
+      const state = await backgroundTaskState(taskId, cancelledIds)
+      if (state === "running") running++
+      if (state === "unreadable") unreadable = true
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(BACKGROUND_COUNT_CONCURRENCY, taskIds.length) },
+    worker,
+  )
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<"over">((resolve) => {
+    timer = setTimeout(() => resolve("over"), budgetMs)
+    timer.unref?.()
+  })
+  try {
+    const outcome = await Promise.race([Promise.all(workers).then(() => "done" as const), deadline])
+    if (outcome === "over") {
+      overBudget = true
+      return undefined
+    }
+    return unreadable ? undefined : running
+  } catch {
+    overBudget = true
+    return undefined
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * opencode's answer to a background `task` / `task_batch` dispatch, with one
+ * line appended saying how many background subagents are running now, so the
+ * model can see the load it is adding to. Anything that is not an accepted
+ * background dispatch (a foreground answer, an error, every other tool) is
+ * returned untouched, and so is a dispatch whose count did not arrive inside
+ * the budget: the line is omitted rather than the dispatch delayed.
+ *
+ * The line goes AFTER opencode's text, so `backgroundTaskIdsIn` and both id
+ * patterns still match the result Claude receives. The ids this result just
+ * reported are not looked up: opencode has just said they are running, and a
+ * child that has not been scheduled yet can still read `idle`, which would
+ * make "including" untrue. They are added to the count of the others instead.
+ * Call `noteBackgroundDispatchResult` first; this never records anything.
+ */
+export async function withBackgroundRunningCount(
+  result: ProxyToolResult,
+  budgetMs = BACKGROUND_COUNT_BUDGET_MS,
+): Promise<ProxyToolResult> {
+  if (result.kind !== "text" || result.isError === true) return result
+  const dispatched = backgroundTaskIdsIn(result.text)
+  if (dispatched.length === 0) return result
+  const others = await countOtherRunningWithin(new Set(dispatched), budgetMs)
+  if (others === undefined) {
+    log.info("background running count omitted: a lookup was slow or unreadable", {
+      budgetMs,
+      dispatched: dispatched.length,
+    })
+    return result
+  }
+  return { ...result, text: result.text + formatBackgroundRunningLine(others, dispatched.length) }
+}
+
+export function formatBackgroundRunningLine(others: number, dispatched: number): string {
+  const total = others + dispatched
+  const including = dispatched === 1 ? "this one" : `the ${dispatched} just started`
+  return `\n\nBackground subagents running now: ${total} (including ${including}).`
 }
 
 /**

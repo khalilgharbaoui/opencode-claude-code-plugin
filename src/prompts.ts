@@ -87,6 +87,7 @@ This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` t
 - A background dispatch returns at once with \`<task id="ses_..." state="running">\` instead of the subagent's answer. That is success, not a truncated result.
 - After starting one, keep working on something that does not overlap it, then end your turn normally. When the subagent finishes, opencode delivers its result into this conversation as a new message on its own. Do not sleep, poll, or ask the operator to wait.
 - The \`id\` in that envelope is the task_id. \`mcp__opencode_proxy__task_status\` reads a result back if the automatic delivery did not arrive (an interrupted or errored turn); \`mcp__opencode_proxy__task_cancel\` stops a background subagent you no longer want. Neither is a progress poll.
+- A background dispatch's result may end with \`Background subagents running now: N\`. That number is for information, so you can avoid starting more than the work needs; it is never a reason to poll, sleep or wait.
 - Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
 
 /**
@@ -106,6 +107,7 @@ This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` t
 - A background dispatch returns at once with \`The subagent is working in the background (sessionID: ses_...)\` instead of the subagent's answer. That is success, not a truncated result.
 - After starting one, keep working on something that does not overlap it, then end your turn normally. When the subagent finishes, opencode delivers its result into this conversation on its own, as a \`<subagent sessionID="..." state="completed">\` message. Do not sleep, poll, or ask the operator to wait.
 - That \`sessionID\` is the task_id. \`mcp__opencode_proxy__task_status\` reads a result back if the automatic delivery did not arrive (an interrupted or errored turn); \`mcp__opencode_proxy__task_cancel\` stops a background subagent you no longer want. Neither is a progress poll.
+- A background dispatch's result may end with \`Background subagents running now: N\`. That number is for information, so you can avoid starting more than the work needs; it is never a reason to poll, sleep or wait.
 - Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
 
 /** The hint describing this host's own envelopes, picked like the tool note. */

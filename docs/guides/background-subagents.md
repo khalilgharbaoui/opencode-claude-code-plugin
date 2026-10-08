@@ -60,3 +60,15 @@ running now: 2 (of 5 started by this process)
 ```
 
 That is the number to watch if you dispatch several at once and do not want to overload the machine or the account's usage window. It counts the background dispatches Claude made through this opencode process (a subagent a native model or another opencode window started is not in it), and asks opencode about each one with the same test `task_status` uses: opencode's run state where it answers, the child's own transcript where it does not (opencode 2). It is read-only: it never collects a result, so a result is still handed over exactly once, and a task this process cancelled is not asked about. A child opencode could not tell it about is reported on its own line rather than counted as running. Verified live on opencode 1.18.35 with a scripted `claude`: `running now: 1 (of 1 started by this process)` while a 20-second background child ran, `running now: 0 (of 1 ...)` after it finished.
+
+**Claude sees the same number.** A background dispatch's result reaches Claude with one line appended after opencode's own text:
+
+```text
+<task id="ses_..." state="running">
+...
+</task>
+
+Background subagents running now: 3 (including this one).
+```
+
+A `task_batch` that started several gets one line for the whole batch, `(including the 2 just started)`. The count is the doctor's, with the same test and the same scope, so Claude knows the load before it starts more; the tool descriptions and the system prompt say it is for information and never a reason to poll or wait. It is added only to an accepted background dispatch, on both majors' envelopes: a foreground answer, an error and every other tool reach Claude unchanged, and the `id` or `sessionID` still parses because the line comes after it. It is cheap and never delays a dispatch: the other started subagents are asked about at most four at a time, the whole lookup has 500 ms, and when it runs over, or opencode cannot tell it about one of them, the line is left out rather than showing a number that may be too low. The subagents this result just started are not asked about (opencode has just said they are running), so a child that has not been scheduled yet still counts. Like the doctor's count, it never collects a result.

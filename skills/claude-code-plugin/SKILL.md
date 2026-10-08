@@ -858,6 +858,12 @@ It opens with `running now: N (of M started by this process)`: the answer to "ho
 subagents are working at once" when a user worries about overloading the machine or the
 usage window. It counts only background dispatches Claude made through this opencode
 process, uses `task_status`'s own running test, and never collects a result.
+Claude is told the same number: an accepted background dispatch's result gets one
+trailing line, `Background subagents running now: N (including this one).` (one line per
+`task_batch`, `(including the 2 just started)`). Foreground results and every other tool
+are unchanged. The lookup is bounded (four at a time, 500 ms in all) and the line is
+simply left out when it runs over or a child cannot be read, so a missing line is not a
+fault. There is no option for it.
 
 ### Let Claude load the user's opencode skills
 

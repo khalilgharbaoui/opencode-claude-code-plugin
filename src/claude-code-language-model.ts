@@ -161,6 +161,7 @@ import {
 } from "./stale-build.js"
 import {
   noteBackgroundDispatchResult,
+  withBackgroundRunningCount,
   recordBackgroundSubagentGate,
 } from "./background-tasks.js"
 import {
@@ -3693,8 +3694,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // Parallel tools may complete in separate opencode turns. Keep
           // unmatched siblings pending until their own result, an explicit
           // abort/new user turn, or the proxy deadline.
-          for (const { call, result } of previousPendingProxyMatches) {
-            if (result) {
+          for (const { call, result: opencodeResult } of previousPendingProxyMatches) {
+            if (opencodeResult) {
+              let result = opencodeResult
+              if (call.toolName === "task" || call.toolName === TASK_BATCH_TOOL_NAME) {
+                // A background dispatch opencode accepted, remembered so the
+                // doctor can say how many are still running. Read-only parse,
+                // and it runs before the text below is extended.
+                noteBackgroundDispatchResult(sk, result)
+                // The same number for the model, as one trailing line. Bounded:
+                // a lookup that overruns its budget omits the line instead.
+                result = await withBackgroundRunningCount(result)
+                // An abort can land in that wait; its branch has already
+                // rejected the parked calls, as for the forwarding wait above.
+                if (state.controllerClosed) return
+              }
               const channelClosed = isPendingProxyCallChannelClosed(call)
               log.info("resolving pending proxy call from tool result prompt", {
                 sessionKey: sk,
@@ -3709,11 +3723,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   result,
                   recoveryRequired: channelClosed || state.unattendedTurnEnded,
                 })
-              }
-              // A background dispatch opencode accepted, remembered so the
-              // doctor can say how many are still running. Read-only parse.
-              if (call.toolName === "task" || call.toolName === TASK_BATCH_TOOL_NAME) {
-                noteBackgroundDispatchResult(sk, result)
               }
               // With a closed channel this only clears the broker entry;
               // proxy-mcp drops the write and the result travels below.
