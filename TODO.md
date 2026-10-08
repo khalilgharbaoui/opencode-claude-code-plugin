@@ -102,6 +102,13 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done**: "ok all this stuff provides more controle right? is that said on the site? also
+  the site on mobile needs also to play those interactive parts". Landing: the "what it does" lead now
+  says you choose account, model, effort and subagent runs; the accounts and subagents cards describe
+  one conversation across accounts, `accountGroups` and `subagentDispatch`. The turn replay already
+  played on iPhone Safari and Android Chrome (measured, Playwright WebKit and Chromium); it stood still
+  only under Reduce Motion, by design. It now plays there too, line by line with no fade, rise or blink,
+  pause and replay visible. Site build and link check green.
 - 2026-10-08: **done** (v0.53.0): "make that also possible account choice per agent type ... same as
   last time should persist during that session ... restart or no restart should follow the session".
   `Per type…` on the dispatch's Account row, `@<account>` in a typed answer for one task, and the last

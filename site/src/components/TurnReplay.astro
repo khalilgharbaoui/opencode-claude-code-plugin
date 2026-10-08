@@ -36,7 +36,10 @@
   over the panel, or focus inside it, holds a finished turn so it can be read. A turn
   picked by hand plays and then stays. Without scripting the first turn plays once in
   CSS (animation-delay), exactly as the pass-2 panel did. Under prefers-reduced-motion
-  every line is simply visible and the tabs still switch turns.
+  the clock still reveals the turn line by line, because text appearing in place is not
+  movement, but nothing fades, rises or blinks, and pause and restart stay on screen.
+  Showing every line at once instead read as "the demo does not play" on a phone with
+  Reduce Motion on (2026-10-08), the setting's commonest home.
 */
 import { loadStats } from '../data/stats';
 
@@ -369,7 +372,6 @@ const turns: Turn[] = [
   // then moves to the next turn. Every pause and resume goes through the same clock,
   // so nothing can run on while the panel says it is paused.
   const root = document.querySelector<HTMLElement>('.occ-replay');
-  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   if (root) {
     root.dataset.mode = 'js';
@@ -449,12 +451,12 @@ const turns: Turn[] = [
         const selected = index === current;
         tab.setAttribute('aria-selected', String(selected));
         tab.tabIndex = selected ? 0 : -1;
-        const progress = reduce.matches ? 1 : Math.min(1, elapsed / totals[index]);
+        const progress = Math.min(1, elapsed / totals[index]);
         tab.style.setProperty('--p', selected ? String(progress) : '0');
       });
       panels.forEach((panel, index) => panel.classList.toggle('is-active', index === current));
       const blocked = paused || !visible || document.hidden;
-      root.dataset.playback = reduce.matches ? 'static' : blocked ? 'paused' : atEnd() ? 'holding' : 'playing';
+      root.dataset.playback = blocked ? 'paused' : atEnd() ? 'holding' : 'playing';
     };
 
     const clear = (index: number) => {
@@ -463,17 +465,11 @@ const turns: Turn[] = [
         step.part?.classList.remove('is-shown');
       });
     };
-    const showAll = (index: number) => {
-      scripts[index].forEach((step) => {
-        step.line.classList.add('is-shown', 'is-done', 'is-body');
-        step.part?.classList.add('is-shown');
-      });
-    };
 
     const syncClock = () => {
       stopClock();
       paint();
-      if (reduce.matches || paused || !visible || document.hidden) return;
+      if (paused || !visible || document.hidden) return;
       if (atEnd() && (manual || hovering || focused)) return;
       deadline = performance.now() + remaining;
       timer = window.setTimeout(tick, remaining);
@@ -510,10 +506,6 @@ const turns: Turn[] = [
       elapsed = 0;
       remaining = FIRST_MS;
       if (byHand) manual = true;
-      if (reduce.matches) {
-        showAll(current);
-        done = scripts[current].length;
-      }
       syncClock();
     };
 
@@ -574,11 +566,6 @@ const turns: Turn[] = [
       syncClock();
     });
     document.addEventListener('visibilitychange', syncClock);
-    reduce.addEventListener('change', () => {
-      if (pauseButton) pauseButton.hidden = reduce.matches;
-      if (restartButton) restartButton.hidden = reduce.matches;
-      select(current, false);
-    });
     if ('IntersectionObserver' in window) {
       new IntersectionObserver(
         ([entry]) => {
@@ -589,8 +576,9 @@ const turns: Turn[] = [
       ).observe(root);
     }
 
-    if (pauseButton) pauseButton.hidden = reduce.matches;
-    if (restartButton) restartButton.hidden = reduce.matches;
+    // Hidden in the markup, because without scripting there is no clock to pause.
+    if (pauseButton) pauseButton.hidden = false;
+    if (restartButton) restartButton.hidden = false;
     select(0, false);
   }
 </script>
@@ -857,9 +845,6 @@ const turns: Turn[] = [
   [data-playback='paused'] .is-cursor::after {
     animation: occ-blink 1.2s steps(1) infinite;
   }
-  [data-playback='static'] .is-cursor::after {
-    display: none;
-  }
 
   /* Without scripting: the staged reveal of the pass-2 panel, 320 ms between lines, a
      240 ms fade and rise each. The cursor arrives with the last line, blinks eight times
@@ -937,8 +922,11 @@ const turns: Turn[] = [
     .occ-replay__tab-bar::after {
       transition: none;
     }
-    .occ-replay__btn {
-      display: none;
+    [data-mode='js'] .occ-line {
+      translate: none;
+    }
+    .is-cursor::after {
+      animation: none !important;
     }
   }
 

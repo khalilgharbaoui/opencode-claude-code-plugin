@@ -44,7 +44,7 @@ import Support from '../../components/Support.astro';
   index={2}
   eyebrow="what it does"
   title="One claude process per conversation, with opencode in charge of the machine."
-  lead="The plugin streams the CLI's output into opencode as it arrives, routes the tools that touch your files and shell back to opencode, and keeps the conversation's own claude process alive between turns so the model keeps its context."
+  lead="The plugin streams the CLI's output into opencode as it arrives, routes the tools that touch your files and shell back to opencode, and keeps the conversation's own claude process alive between turns so the model keeps its context. You decide which account, model and effort answers, change any of them mid-conversation without losing the thread, and choose how each batch of subagents runs."
 >
   <FeatureGrid
     items={[
@@ -70,16 +70,16 @@ import Support from '../../components/Support.astro';
       },
       {
         eyebrow: 'accounts',
-        title: 'Several accounts, with failover',
-        body: "Declare accounts once and each becomes its own provider with its own CLAUDE_CONFIG_DIR. When one runs out of usage mid-task, opencode's question form offers the others. Nothing moves until you pick.",
-        code: '"accounts": ["personal", "work"]',
+        title: 'Several accounts, one conversation',
+        body: "Declare accounts once and each becomes its own provider with its own CLAUDE_CONFIG_DIR. Pick a model under another account and the same Claude conversation continues there, context intact. accountGroups keeps a work account apart: nothing crosses a group, not even a replay.",
+        code: '"accountGroups": { "work": "work" }',
         href: '/configuration/accounts/',
       },
       {
         eyebrow: 'subagents',
-        title: 'Your account, their model',
-        body: "An agent file can pin forceModel, reasoningEffort and cacheTtl while inheriting the caller's account. task_batch dispatches several subagents at once, because the CLI serialises MCP calls.",
-        code: 'forceModel: claude-haiku-4-5',
+        title: 'You choose how subagents run',
+        body: "Opt in and the plugin asks before subagents start: the defaults, the same as last time, or a model, effort and account per agent type or per task. Agent files can still pin forceModel and reasoningEffort, and task_batch runs several at once.",
+        code: '"subagentDispatch": "ask"',
         href: '/configuration/subagents/',
       },
       {
@@ -113,7 +113,7 @@ import Support from '../../components/Support.astro';
   />
 
   <p class="occ-also">
-    Also in the box: <a href="guides/btw/"><code>/btw</code></a> side questions on the live process, a <a href="configuration/permissions/">read-only permission preset</a>, 18 registered models with reasoning variants and fast mode, <a href="guides/background-subagents/">background subagents</a> with status and cancel, and a <a href="configuration/subagents/#fallback-model-chain">fallback model chain</a>.
+    Also in the box: <a href="guides/btw/"><code>/btw</code></a> side questions on the live process, a <a href="configuration/permissions/">read-only permission preset</a>, every current Claude model with reasoning variants and fast mode, <a href="guides/background-subagents/">background subagents</a> with status and cancel, and a <a href="configuration/subagents/#fallback-model-chain">fallback model chain</a>.
   </p>
 </LandingSection>
 
