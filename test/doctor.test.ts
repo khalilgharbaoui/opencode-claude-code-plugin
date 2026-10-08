@@ -258,6 +258,47 @@ test("collected and cancelled tasks are listed per opencode session", () => {
   assert.equal(text.includes("ses_empty"), false)
 })
 
+test("the running count leads the background section", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: { supported: true, hostApi: "v1", registryResolved: true, at: Date.now() },
+      ledgers: [],
+      running: { running: 2, started: 5, unreadable: 0 },
+    },
+  })
+  const section = text.slice(text.indexOf("**Background subagents**"))
+  const firstLine = section.split("\n").filter(Boolean)[1]
+  assert.equal(firstLine, "running now: 2 (of 5 started by this process)")
+  assert.equal(text.includes("could not be read"), false)
+})
+
+test("the running count says none, and names the ones it could not read", () => {
+  const none = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: undefined,
+      ledgers: [],
+      running: { running: 0, started: 0, unreadable: 0 },
+    },
+  })
+  assert.ok(none.includes("running now: 0 (none started by this process)"), none)
+
+  const partial = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: undefined,
+      ledgers: [],
+      running: { running: 1, started: 3, unreadable: 2 },
+    },
+  })
+  assert.ok(partial.includes("running now: 1 (of 3 started by this process)"), partial)
+  assert.ok(partial.includes("2 could not be read from opencode"), partial)
+
+  // Not counted (an older caller) prints no count rather than a zero.
+  assert.equal(formatDoctorReport(report).includes("running now"), false)
+})
+
 // The report is pasted into bug reports, so the whole-report secret check has
 // to hold with the new section populated too.
 test("the background section adds nothing secret", () => {

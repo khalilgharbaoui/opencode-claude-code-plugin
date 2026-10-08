@@ -87,9 +87,9 @@ function skipSpace(source: string, index: number): number {
  *
  * A chain of adjacent string literals joined by `+` is still a constant: the
  * codebase wraps long warnings that way and they are the most useful lines in
- * a bundle. A chain that reaches any non-literal is `concat` and is dropped,
- * which is why `proxyOpencodeMcpTools is on but no MCP tool was found...`
- * (spawn-planning.ts, one arm of a ternary) does not survive into a bundle.
+ * a bundle. A chain that reaches any non-literal (a ternary arm, a
+ * variable) is `concat` and is dropped, so its text does not survive into a
+ * bundle: keep the varying part in `data` instead.
  */
 function classify(
   source: string,

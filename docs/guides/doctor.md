@@ -25,6 +25,8 @@ A **Plugins Claude Code did not load** section works the same way for Claude plu
 
 A **Hooks Claude Code ran that failed** section covers your own Claude Code hooks, which are the third thing that fails without leaving a trace. Claude Code runs a `SessionStart` hook on every `claude` it starts for you, and when one exits non-zero it discards the hook's contribution and answers the turn normally: the context that hook was supposed to add is simply missing, on every turn of that session, with nothing on screen. The section names the hook, the event, its exit code and its outcome, and it is a warning in your terminal the first time it happens. Only the hook's **stderr** is shown, capped: a hook's stdout is what Claude Code splices into the model's context, so it has no business in a bug report. These are your hooks in your Claude Code settings, not opencode's, and the plugin never passes `--include-hook-events`, so only the `SessionStart` family is ever reported.
 
+A **Background subagents** section opens with `running now: N (of M started by this process)`, the number of background subagents Claude dispatched through this opencode process that are still working, read with the same test `task_status` uses and without collecting anything. The rest of it is the gate and the collect/cancel ledger; see [Background subagents](background-subagents.md).
+
 ```text
 /claude-code-doctor usage
 ```
@@ -50,7 +52,7 @@ The point is `plugin.log` itself. It is off by default, and when it is on it has
 The redaction is an **allowlist**, not a filter, because a filter fails silently the first time someone logs a new field. Per line, what survives is:
 
 - the timestamp and the level,
-- the message text **only** when it is one of the 112 `NOTICE`/`WARN`/`ERROR` message literals extracted from the plugin's own source. A message built at runtime, including every CLI error string the plugin re-logs, becomes `[redacted message, N chars]` and only its data fields remain,
+- the message text **only** when it is one of the 147 `NOTICE`/`WARN`/`ERROR` message literals extracted from the plugin's own source. A message built at runtime, including every CLI error string the plugin re-logs, becomes `[redacted message, N chars]` and only its data fields remain,
 - data fields whose key is on an explicit allowlist **and** whose value is then the kind that entry declares: versions, counts, booleans, enums, durations, exit codes, model and tool and server names, paths, and the loopback proxy URL with its query dropped. The allowlist applies at every nesting depth.
 
 Everything else, including every key the allowlist does not name, becomes `[redacted, N chars]`, which keeps the shape so you can see a field was there without seeing it. Session ids become a short hash salted per bundle, so two lines about one conversation still correlate in the paste and nowhere else, and your home directory becomes `~` across the whole report, the table included.

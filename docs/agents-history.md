@@ -4919,3 +4919,118 @@ model behaves given these descriptions, only about what it is given. The V1 half
 of the background triple was not re-run (it is unchanged and 1.18.33's
 measurement stands), and `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` does not
 exist on opencode 2, so the unsupported branch has no live case on this host.
+
+<a id="g231"></a>
+
+#### MCP servers withheld from a subagent, and how many background subagents are running (2026-10-08)
+
+**The problem, measured by the maintainer's session.** A background `explore`
+subagent took about 27 s to start. A fresh `claude` waits for every server in its
+`--mcp-config` before `system/init`. Timed on Claude Code 2.1.293: 2.1 s with
+`--strict-mcp-config` and no servers, 31.5 s with the plugin's bridged config,
+where `slack` (stdio, `op`) and `obsidian` (stdio, `zsh`) both ended `failed`
+inside the child. The maintainer runs `proxyOpencodeMcpTools: true`. For `build`,
+opencode's tool set holds those servers' tools, so they are proxied and opencode,
+which has them connected, runs them. For `explore` opencode hands the agent no MCP
+tools at all, and `resolvedProxyMcpTools` fell back with
+`proxyOpencodeMcpTools is on but no MCP tool was found in opencode's tool set;
+those servers stay on the direct bridge this spawn`, so every server was bridged
+straight into the subagent's own `claude`, which launched its own copies. That
+cost the startup and handed the subagent servers opencode had withheld from it.
+
+**The rule** (`decideMcpServerRoute`, `src/spawn-planning.ts`), per enabled
+server, only with the option on:
+
+- a tool in this turn's `doStream` tools (the existing prefix match): proxied,
+  unchanged;
+- none, and opencode's runtime status is exactly `connected`: withheld, so the
+  spawn's `--mcp-config` does not name it at all (it joins `excludeServers`);
+- anything else: the direct bridge, as before. That covers what the fallback was
+  for, a server opencode is not running: `pending` (h #g180), absent from the
+  status map, or no status map at all (no SDK client). `failed`, `needs_auth` and
+  `disabled` decide `bridge` too and are then dropped by the existing runtime
+  overlay before anything is written, exactly as before.
+
+Three refinements, each a way the simple rule would have been wrong:
+
+- **A granted server whose every tool collided** with a name another proxy tool
+  holds is bridged, not withheld: opencode did give it to the agent.
+  `resolveMcpProxyToolDefs` now also returns `matchedServers`, the servers with any
+  tool in the set before the collision check, which is what says "granted".
+- **V2 Code Mode withholds nothing.** There MCP tools reach the model through the
+  aggregate `execute`, so their absence as individual entries says nothing about
+  what opencode granted. Its existing advice survives as a WARN with a constant
+  text, so it now reaches a bundle (the old message was a ternary, `concat` in the
+  scan, and was dropped; `test/diagnostic-bundle.test.ts`'s pinned list lost its
+  `spawn-planning.ts:warn:concat` entry for that reason).
+- **No tools array, or an empty one, withholds nothing**, so a path that does not
+  pass the agent's tools can never strand a server.
+
+What did not need to change: the bridge `hash` is over the merged config and not
+over exclusions (h #g80's content-addressing note), and `ActiveProcess.mcpServers`
+is `allEnabledServerNames`, so a withheld server cannot make `decideMcpHotReload`
+respawn or flap; the bridged file is content-addressed over its body, so a
+withholding spawn and a bridging one never share a stale file; both transports go
+through `resolveProxyWiring`, so the interactive spawn gets the same exclusions;
+`bridgeMcpOauthTokens` only ever adds a header to a server that is bridged. The
+blanket WARN became one INFO naming `proxied`, `withheld` and `bridged`, because
+a subagent with no MCP tools is the ordinary case and inside a TUI a WARN is a
+toast (h #g193).
+
+`test/mcp-withhold.test.ts`: the decision for every status, the routing for an
+explore-shaped agent, the main agent, a subagent allowed one server, no status
+map, Code Mode, an absent or empty tool set, a collision, and the option off, plus
+a fake CLI driving real `doStream` turns and reading the `--mcp-config` files it
+was handed. Mutations: making `withhold` unreachable fails four tests including
+the spawn test; not passing `runtimeStatus` at the call site fails the spawn test
+alone.
+
+**Live on opencode 1.18.35**, scratch `HOME` and all four XDG dirs plus `TMPDIR`,
+the worktree as a `file://` plugin, a scripted `claude` that records its argv and
+the server names in every `--mcp-config` file, and a stdio MCP server `probe`
+(one tool, `ping`) beside `probebroken` (`/usr/bin/false`). `GET /mcp`:
+`probe` connected, `probebroken` failed. One session prompted as `build`, one as
+`explore`. Branch: `build` got the proxy config only and logged
+`routing opencode MCP tools through the proxy {"servers":["probe"],"tools":["probe_ping"]}`;
+`explore` got the proxy config only and logged
+`proxyOpencodeMcpTools: MCP servers outside this agent's tool set {"proxied":[],"withheld":["probe"],"bridged":[],"modelTools":5,"statusKnown":true}`.
+master (`git archive origin/master`, same config): `explore` got
+`mcp-<digest>.json: ["probe"]` beside the proxy config, and the old WARN. The
+startup saving itself was not re-measured, because that needs a real `claude`
+turn; what changed is that the server is no longer in the subagent's argv, which
+is the whole of what the 31.5 s was spent on.
+
+**How many background subagents are running.** The maintainer keeps
+`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` and wanted to know how many are
+working at once, to avoid overloading. The ledger knew only collected and
+cancelled ids, so `noteBackgroundDispatchResult` now records an id where a `task`
+or `task_batch` result is resolved, read only off opencode's two
+accepted-dispatch envelopes (`<task id="..." state="running">` on 1.x, `The
+subagent is working in the background (sessionID: ...)` on 2.x). The doctor's
+background section opens with `running now: N (of M started by this process)`,
+counted by `countRunningBackgroundTasks` with `task_status`'s own test and never
+marking anything collected. The started ledger is process-wide and bounded at 128,
+and `clearBackgroundTasks` does not touch it: opencode owns a background child, so
+it keeps working after its conversation moves to another key (an effort switch
+releases the old key's ledger) or is deleted. Mutations: answering `running` for a
+cancelled id, and marking an id collected while counting, each fail *the running
+count asks the same question task_status does and consumes nothing*.
+
+Live on 1.18.35 with the flag on and a scripted `claude` that, on a `DISPATCH`
+prompt, emits the `mcp__opencode_proxy__task` tool_use and calls the real proxy
+with `background: true` and `subagent_type: "explore"`: the call returned
+`<task id="ses_..." state="running">`, `/claude-code-doctor` printed
+`running now: 1 (of 1 started by this process)` while the child slept 20 s, and
+`running now: 0 (of 1 started by this process)` after it finished. (A first run
+with a 90 s child was respawned by the start watchdog at 90 s, which is the fake's
+silence, not this change.)
+
+##### Not covered
+
+No real `claude` was spawned, so the startup time after the change was not
+measured. opencode 2 was not probed live for either half: the decision reads the
+same status map through the V2 shim (h #g37) and the V2 envelope is matched by
+its measured sentence (h #g176), but neither was exercised on 2.0.22 here. The
+interactive transport's spawn was covered only by sharing `resolveProxyWiring`.
+A per-turn running count in the `task` tool's background reply was considered and
+not built.

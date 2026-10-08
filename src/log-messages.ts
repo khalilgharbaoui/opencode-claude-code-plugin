@@ -124,6 +124,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "proxy-mcp interceptor failed",
   "proxy-mcp rejected a request",
   "proxy-mcp tool call timed out",
+  "proxyOpencodeMcpTools cannot route V2 Code Mode's MCP tools, which reach the model through execute; for Code Mode, explicitly allowlist execute in proxyOpencodeTools and use bridgeOpencodeMcp: false with strictMcpConfig: true",
   "proxyOpencodeTools entry dropped: a proxy tool already holds that name, and it keeps it",
   "proxyOpencodeTools is set but opencode's tool registry did not answer; forwarding nothing this spawn",
   "refusing the pid-named scratch directory",

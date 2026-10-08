@@ -1,6 +1,8 @@
 import {
+  countRunningBackgroundTasks,
   snapshotBackgroundSubagentGate,
   snapshotBackgroundTasks,
+  type BackgroundRunningCount,
   type BackgroundSubagentGate,
   type BackgroundTaskLedger,
 } from "./background-tasks.js"
@@ -191,6 +193,8 @@ export interface DoctorReport {
   backgroundSubagents: {
     gate: BackgroundSubagentGate | undefined
     ledgers: BackgroundTaskLedger[]
+    /** How many this process started are still running; absent when not counted. */
+    running?: BackgroundRunningCount
   }
 }
 
@@ -474,8 +478,13 @@ export function formatDoctorReport(report: DoctorReport): string {
 function formatBackgroundSubagents(state: {
   gate: BackgroundSubagentGate | undefined
   ledgers: BackgroundTaskLedger[]
+  running?: BackgroundRunningCount
 }): string[] {
   const lines: string[] = []
+  if (state.running) {
+    lines.push(...formatRunningCount(state.running))
+    lines.push("")
+  }
   const gate = state.gate
   if (!gate) {
     lines.push(
@@ -524,6 +533,28 @@ function formatBackgroundSubagents(state: {
     lines.push(
       "A collected task is one this conversation read back with `task_status`, or was told " +
         "about by opencode's own completion notification; a result is handed over once.",
+    )
+  }
+  return lines
+}
+
+/**
+ * The count first, because it is the question an operator running several
+ * background subagents actually has: how many are working right now. Counted
+ * from the dispatches Claude made through this opencode process, by the same
+ * running test `task_status` applies, so a subagent a native model or another
+ * opencode window started is not in it, and nothing here consumes a result.
+ */
+function formatRunningCount(count: BackgroundRunningCount): string[] {
+  if (count.started === 0) {
+    return ["running now: 0 (none started by this process)"]
+  }
+  const lines = [`running now: ${count.running} (of ${count.started} started by this process)`]
+  if (count.unreadable > 0) {
+    lines.push("")
+    lines.push(
+      `${count.unreadable} could not be read from opencode (deleted, or no session route on ` +
+        "this build) and are not counted as running.",
     )
   }
   return lines
@@ -673,6 +704,7 @@ export async function gatherDoctorReport(
     backgroundSubagents: {
       gate: snapshotBackgroundSubagentGate(),
       ledgers: snapshotBackgroundTasks(),
+      running: await countRunningBackgroundTasks().catch(() => undefined),
     },
   }
 }

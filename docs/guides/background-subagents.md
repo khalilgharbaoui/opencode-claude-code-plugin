@@ -52,3 +52,11 @@ Both work on opencode 1.x and on opencode 2. On opencode 2 they run over the ses
 **Picking the model, the effort and the account.** With `subagentDispatch: "ask"` a background dispatch is held for the same form a foreground one is, and the answer reaches the background child's own spawn. Nothing else about the dispatch changes: the same immediate envelope, the same automatic completion. Verified live on opencode 2.0.22.
 
 **What `/claude-code-doctor` says about it.** The report has a **Background subagents** section: whether `background` was offered to Claude and the two tools registered, which opencode major, and what decided it (the live `task` schema, a registry that did not answer, or opencode 2 offering it unconditionally), plus the background tasks this process has collected or cancelled. The gate is read while a turn plans its proxy tools, so in a fresh process the section reads `Not read yet this process`: send one message and run it again.
+
+The section opens with how many are working right now:
+
+```text
+running now: 2 (of 5 started by this process)
+```
+
+That is the number to watch if you dispatch several at once and do not want to overload the machine or the account's usage window. It counts the background dispatches Claude made through this opencode process (a subagent a native model or another opencode window started is not in it), and asks opencode about each one with the same test `task_status` uses: opencode's run state where it answers, the child's own transcript where it does not (opencode 2). It is read-only: it never collects a result, so a result is still handed over exactly once, and a task this process cancelled is not asked about. A child opencode could not tell it about is reported on its own line rather than counted as running. Verified live on opencode 1.18.35 with a scripted `claude`: `running now: 1 (of 1 started by this process)` while a 20-second background child ran, `running now: 0 (of 1 ...)` after it finished.

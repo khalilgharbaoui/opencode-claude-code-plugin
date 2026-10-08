@@ -1760,6 +1760,13 @@ export interface McpProxyToolResolution {
   defs: ProxyToolDef[]
   /** Only the servers a def was actually built for. */
   coveredServers: Set<string>
+  /**
+   * Every server with at least one tool in the model's tool set, including a
+   * server whose tools all collided with a name another proxy tool holds.
+   * That is what says opencode granted the server to this agent at all, which
+   * `coveredServers` cannot: a collision leaves a granted server uncovered.
+   */
+  matchedServers: Set<string>
 }
 
 /**
@@ -1786,7 +1793,11 @@ export function resolveMcpProxyToolDefs(options: {
   tools?: readonly ModelToolEntry[]
   taken?: ReadonlySet<string>
 }): McpProxyToolResolution {
-  const empty: McpProxyToolResolution = { defs: [], coveredServers: new Set() }
+  const empty: McpProxyToolResolution = {
+    defs: [],
+    coveredServers: new Set(),
+    matchedServers: new Set(),
+  }
   const serverNames = options.serverNames ?? []
   if (serverNames.length === 0) return empty
 
@@ -1797,6 +1808,7 @@ export function resolveMcpProxyToolDefs(options: {
   const taken = options.taken ?? new Set<string>()
   const defs: ProxyToolDef[] = []
   const coveredServers = new Set<string>()
+  const matchedServers = new Set<string>()
   const seen = new Set<string>()
   const collided: string[] = []
 
@@ -1815,6 +1827,7 @@ export function resolveMcpProxyToolDefs(options: {
       (server) => name === server || name.startsWith(`${server}_`),
     )
     if (!matchedServer) continue
+    matchedServers.add(matchedServer)
     if (seen.has(name)) continue
     if (taken.has(name)) {
       collided.push(name)
@@ -1842,7 +1855,7 @@ export function resolveMcpProxyToolDefs(options: {
       { collided },
     )
   }
-  return { defs, coveredServers }
+  return { defs, coveredServers, matchedServers }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {

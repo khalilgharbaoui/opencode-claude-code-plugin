@@ -159,7 +159,10 @@ import {
   staleBuildWatch,
   type StaleBuild,
 } from "./stale-build.js"
-import { recordBackgroundSubagentGate } from "./background-tasks.js"
+import {
+  noteBackgroundDispatchResult,
+  recordBackgroundSubagentGate,
+} from "./background-tasks.js"
 import {
   resolveDisallowedTools,
   resolveProxyOpencodeToolDefs,
@@ -172,7 +175,6 @@ import {
   TASK_BATCH_TOOL_NAME,
   taskBatchChildToolCallId,
   taskBatchTasks,
-  type McpProxyToolResolution,
   type ModelToolEntry,
   type ProxyMcpServer,
   type ProxyToolDef,
@@ -227,6 +229,7 @@ import {
   skillBridgeSpawn,
   stripContextRemindersEnabled,
   type LiveToolInfo,
+  type McpServerRouting,
 } from "./spawn-planning.js"
 import {
   decideMcpHotReload,
@@ -413,17 +416,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return resolvedProxyTools(this.config)
   }
 
-  /** Resolve ProxyToolDef[] for opencode's MCP-backed tools. */
+  /** Resolve ProxyToolDef[] for opencode's MCP-backed tools, and route the rest. */
   private resolvedProxyMcpTools(
     allEnabledServerNames: string[],
     modelTools: readonly ModelToolEntry[] | undefined,
     taken?: ReadonlySet<string>,
-  ): McpProxyToolResolution | null {
+    runtimeStatus?: RuntimeMcpStatus,
+  ): McpServerRouting | null {
     return resolvedProxyMcpTools(
       this.config,
       allEnabledServerNames,
       modelTools,
       taken,
+      runtimeStatus,
     )
   }
 
@@ -2457,23 +2462,26 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             )
 
             // Fetch the proxy MCP tools (one ProxyToolDef per opencode
-            // MCP-bridged tool). If discovery returns nothing or the SDK
-            // is unreachable, this is null and we fall back to direct
-            // bridging.
-            const mcpResolution = self.resolvedProxyMcpTools(
+            // MCP-bridged tool) and decide every other enabled server. Null
+            // when the option is off, which bridges everything directly.
+            const mcpRouting = self.resolvedProxyMcpTools(
               discovery.allEnabledServerNames,
               options.tools as readonly ModelToolEntry[] | undefined,
               new Set((resolvedProxy ?? []).map((def) => def.name)),
+              runtimeStatus,
             )
-            const proxyMcpTools = mcpResolution?.defs ?? null
-            // Exclude only the servers a def was actually built for. Excluding
-            // every enabled server, as this did while the resolution was always
-            // null, would strand a server whose tools were not in the model's
-            // tool set: dropped from `--mcp-config` and absent from the proxy,
-            // so reachable by neither route.
-            const excludeServers: ReadonlySet<string> | undefined = mcpResolution
-              ? mcpResolution.coveredServers
-              : undefined
+            const proxyMcpTools =
+              mcpRouting && mcpRouting.resolution.defs.length > 0
+                ? mcpRouting.resolution.defs
+                : null
+            // Exclude the servers a def was built for and the ones opencode
+            // has connected but withheld from this agent, and nothing else.
+            // Excluding every enabled server, as this did while the resolution
+            // was always null, would strand a server opencode is not running:
+            // dropped from `--mcp-config` and absent from the proxy, so
+            // reachable by neither route.
+            const excludeServers: ReadonlySet<string> | undefined =
+              mcpRouting?.excludeServers
 
             // Overlay opencode's live tool info onto the static proxy defs.
             // Both the `task` description (with the "Available agent types"
@@ -3701,6 +3709,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   result,
                   recoveryRequired: channelClosed || state.unattendedTurnEnded,
                 })
+              }
+              // A background dispatch opencode accepted, remembered so the
+              // doctor can say how many are still running. Read-only parse.
+              if (call.toolName === "task" || call.toolName === TASK_BATCH_TOOL_NAME) {
+                noteBackgroundDispatchResult(sk, result)
               }
               // With a closed channel this only clears the broker entry;
               // proxy-mcp drops the write and the result travels below.

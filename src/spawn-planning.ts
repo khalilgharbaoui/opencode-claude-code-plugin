@@ -153,12 +153,71 @@ export function resolvedProxyTools(
   return picked.length > 0 ? picked : null
 }
 
+/** Where one opencode MCP server goes for this spawn. */
+export type McpServerRoute = "proxy" | "withhold" | "bridge"
+
+/**
+ * The per-server decision, with `proxyOpencodeMcpTools` on. Pure.
+ *
+ *  - `proxy`: a def was built for at least one of its tools, so opencode runs
+ *    it and the proxy serves it. Unchanged.
+ *  - `withhold`: none of its tools is in this agent's tool set, and opencode
+ *    reports it `connected`. opencode has the server and chose not to give it
+ *    to this agent (an `explore` subagent gets no MCP tools at all), so the
+ *    spawn leaves it out of `--mcp-config` entirely. Bridging it would hand the
+ *    agent a server opencode withheld, and make its `claude` start its own copy
+ *    of every such server before `system/init`: measured on 2.1.293, 31.5 s
+ *    against 2.1 s for a subagent whose bridged `slack` and `obsidian` both
+ *    ended `failed` in the child.
+ *  - `bridge`: everything else. A server with a tool in the set that is not
+ *    covered (every tool collided with a name another proxy tool holds) was
+ *    granted to the agent, and a server opencode is NOT running (`pending`,
+ *    absent from the status map, no status map at all) has nobody else to run
+ *    it. That is what the direct-bridge fallback was always for. A `failed`,
+ *    `needs_auth` or `disabled` server is also `bridge` here, and the runtime
+ *    overlay in `mergeOpencodeMcp` then drops it before anything is written,
+ *    exactly as before.
+ *
+ * `toolSetKnown` false means withholding is not decided from this tool set at
+ * all: no tools array, or V2 Code Mode, where MCP tools reach the agent
+ * through the aggregate `execute` runner rather than as individual entries, so
+ * their absence says nothing about what opencode granted.
+ */
+export function decideMcpServerRoute(input: {
+  covered: boolean
+  inToolSet: boolean
+  status: string | undefined
+  toolSetKnown: boolean
+}): McpServerRoute {
+  if (input.covered) return "proxy"
+  if (input.inToolSet) return "bridge"
+  if (input.toolSetKnown && input.status === "connected") return "withhold"
+  return "bridge"
+}
+
+/** What `resolvedProxyMcpTools` decided for every enabled server this spawn. */
+export interface McpServerRouting {
+  /** The proxy defs and the servers they cover. Empty when nothing matched. */
+  resolution: McpProxyToolResolution
+  /** Connected in opencode, granted no tools: left out of this spawn. */
+  withheld: string[]
+  /** Not covered and not withheld: on the direct bridge, as before. */
+  bridged: string[]
+  /**
+   * What `effectiveMcpConfig` must leave out of `--mcp-config`: the covered
+   * servers plus the withheld ones. Undefined when there is nothing to leave
+   * out, so the bridge is called exactly as it was without the option.
+   */
+  excludeServers: ReadonlySet<string> | undefined
+}
+
 /**
  * Resolve ProxyToolDef[] for opencode's MCP-backed tools so they go
  * through the in-process proxy instead of being bridged into Claude CLI's
- * `--mcp-config`. Routing through the proxy keeps a single execution site
- * (opencode), so the call is permission-prompted and rendered as an
- * opencode tool call.
+ * `--mcp-config`, and decide per server what happens to the rest
+ * (`decideMcpServerRoute`). Routing through the proxy keeps a single
+ * execution site (opencode), so the call is permission-prompted and rendered
+ * as an opencode tool call.
  *
  * Opt-in (`proxyOpencodeMcpTools: true`) and off by default. It used to
  * default to true while finding nothing, because it discovered tools via
@@ -169,16 +228,19 @@ export function resolvedProxyTools(
  * would have silently moved every existing user's MCP traffic off the
  * working direct bridge, so the default went to false instead: today's
  * behaviour is preserved exactly and crossing over is the operator's call.
+ * With it off nothing here runs and every enabled server is bridged, which
+ * is also why withholding is part of this option and not of the bridge.
  *
- * Returns null when the feature is off or nothing matched, which leaves
- * every server on the direct bridge.
+ * Returns null when the feature is off, which leaves every server on the
+ * direct bridge.
  */
 export function resolvedProxyMcpTools(
   config: ClaudeCodeConfig,
   allEnabledServerNames: string[],
   modelTools: readonly ModelToolEntry[] | undefined,
   taken?: ReadonlySet<string>,
-): McpProxyToolResolution | null {
+  runtimeStatus?: RuntimeMcpStatus,
+): McpServerRouting | null {
   if (config.proxyOpencodeMcpTools !== true) return null
   if (config.bridgeOpencodeMcp === false) return null
   if (allEnabledServerNames.length === 0) return null
@@ -188,27 +250,59 @@ export function resolvedProxyMcpTools(
     tools: modelTools,
     taken,
   })
-  if (resolution.defs.length === 0) {
-    // WARN, not NOTICE: only warn and error are alwaysStderr in
-    // src/logger.ts, so a NOTICE would be invisible to the very operator
-    // who opted in and is entitled to know their MCP calls are still
-    // going direct, and so still are not permission-prompted by opencode.
-    log.warn(
-      "proxyOpencodeMcpTools is on but no MCP tool was found in opencode's" +
-        " tool set; those servers stay on the direct bridge this spawn" +
-        (config.hostApi === "v2" && modelTools?.some((tool) => tool.name === "execute")
-          ? ". For V2 Code Mode, explicitly allowlist execute in proxyOpencodeTools" +
-            " and use bridgeOpencodeMcp: false with strictMcpConfig: true"
-          : ""),
-      { servers: allEnabledServerNames, modelTools: modelTools?.length ?? 0 },
-    )
-    return null
+  const codeMode =
+    config.hostApi === "v2" && (modelTools?.some((tool) => tool.name === "execute") ?? false)
+  const toolSetKnown = (modelTools?.length ?? 0) > 0 && !codeMode
+
+  const withheld: string[] = []
+  const bridged: string[] = []
+  for (const server of allEnabledServerNames) {
+    const route = decideMcpServerRoute({
+      covered: resolution.coveredServers.has(server),
+      inToolSet: resolution.matchedServers.has(server),
+      status: runtimeStatus?.[server],
+      toolSetKnown,
+    })
+    if (route === "withhold") withheld.push(server)
+    else if (route === "bridge") bridged.push(server)
   }
-  log.debug("routing opencode MCP tools through the proxy", {
-    servers: [...resolution.coveredServers],
-    tools: resolution.defs.map((def) => def.name),
-  })
-  return resolution
+
+  if (codeMode && resolution.defs.length === 0) {
+    // WARN: an operator who opted in on V2 Code Mode gets none of what the
+    // option is for, and the fix is a config change only they can make.
+    log.warn(
+      "proxyOpencodeMcpTools cannot route V2 Code Mode's MCP tools, which reach the" +
+        " model through execute; for Code Mode, explicitly allowlist execute in" +
+        " proxyOpencodeTools and use bridgeOpencodeMcp: false with strictMcpConfig: true",
+      { servers: allEnabledServerNames },
+    )
+  }
+  if (withheld.length > 0 || bridged.length > 0) {
+    // INFO, never WARN: a subagent opencode gives no MCP tools is the ordinary
+    // case and happens on every such spawn, and inside a TUI a WARN is a toast
+    // (h #g193). The line is still what tells the operator which servers this
+    // agent was not given and which ones still go direct.
+    log.info("proxyOpencodeMcpTools: MCP servers outside this agent's tool set", {
+      proxied: [...resolution.coveredServers],
+      withheld,
+      bridged,
+      modelTools: modelTools?.length ?? 0,
+      statusKnown: runtimeStatus !== undefined,
+    })
+  } else {
+    log.debug("routing opencode MCP tools through the proxy", {
+      servers: [...resolution.coveredServers],
+      tools: resolution.defs.map((def) => def.name),
+    })
+  }
+
+  const exclude = new Set<string>([...resolution.coveredServers, ...withheld])
+  return {
+    resolution,
+    withheld,
+    bridged,
+    excludeServers: exclude.size > 0 ? exclude : undefined,
+  }
 }
 
 /**

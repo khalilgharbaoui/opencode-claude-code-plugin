@@ -155,7 +155,6 @@ test("a log message built at runtime is a known, pinned exception", () => {
     "fast-mode.ts:warn:expression",
     "index.ts:notice:template",
     "index.ts:notice:template",
-    "spawn-planning.ts:warn:concat",
     "stream-parser.ts:warn:expression",
     "stream-parser.ts:warn:template",
   ])

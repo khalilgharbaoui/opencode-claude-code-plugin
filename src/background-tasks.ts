@@ -129,7 +129,113 @@ export function clearBackgroundTasks(sessionKey: string): void {
 export function _resetBackgroundTasks(): void {
   collected.clear()
   cancelled.clear()
+  started.clear()
   lastGate = undefined
+}
+
+/**
+ * Every background dispatch this process saw opencode accept, newest last,
+ * keyed by task id. Process-wide and deliberately NOT released with a
+ * conversation (`clearBackgroundTasks`): it answers "how many subagents are
+ * working right now" for `/claude-code-doctor`, and a background child keeps
+ * working after the conversation that started it moved to another key, lost
+ * its process or was deleted, because opencode owns it. Bounded, because the
+ * count is a gauge and never correctness: the oldest id is the one most likely
+ * to have finished long ago.
+ */
+const MAX_STARTED = 128
+const started = new Map<string, { sessionKey: string; at: number }>()
+
+/**
+ * The task ids a `task` or `task_batch` result reports as started in the
+ * background. Only the two envelopes opencode actually writes for an accepted
+ * background dispatch are read, so a foreground result, an error and anything
+ * a subagent itself wrote never count: on 1.x `<task id="ses_..."
+ * state="running">`, on 2.x the prose `The subagent is working in the
+ * background (sessionID: ses_...)` (h #g176). A `task_batch` result is the
+ * children's results joined, so it can report several.
+ */
+export function backgroundTaskIdsIn(text: string): string[] {
+  const ids = new Set<string>()
+  for (const match of text.matchAll(/<task id="([^"\s]+)" state="running">/g)) {
+    ids.add(match[1]!)
+  }
+  for (const match of text.matchAll(/in the background \(sessionID: ([^)\s]+)\)/g)) {
+    ids.add(match[1]!)
+  }
+  return [...ids]
+}
+
+/**
+ * Remember the background dispatches one proxied `task` or `task_batch` result
+ * reports. Called where opencode's result is handed back to the CLI, which is
+ * the one place both majors and both transports pass through. Never throws.
+ */
+export function noteBackgroundDispatchResult(
+  sessionKey: string,
+  result: ProxyToolResult,
+  now = Date.now(),
+): void {
+  if (result.kind !== "text" || result.isError === true) return
+  for (const taskId of backgroundTaskIdsIn(result.text)) {
+    // Re-inserting moves a re-dispatched id to the newest end.
+    started.delete(taskId)
+    started.set(taskId, { sessionKey, at: now })
+    while (started.size > MAX_STARTED) {
+      const oldest = started.keys().next()
+      if (oldest.done) break
+      started.delete(oldest.value)
+    }
+  }
+}
+
+/** How many of this process's background dispatches are still running. */
+export interface BackgroundRunningCount {
+  /** Still working, by the same test `task_status` applies. */
+  running: number
+  /** Every background dispatch this process saw opencode accept (bounded). */
+  started: number
+  /** Neither the run state nor the transcript answered, so not counted as running. */
+  unreadable: number
+}
+
+/**
+ * Count the background subagents still running, for `/claude-code-doctor`.
+ *
+ * Read-only and never consuming: it asks opencode the same two questions
+ * `task_status` does (`fetchSessionRunState`, then the transcript only when
+ * the run state cannot answer) and runs the same `isBackgroundTaskRunning`,
+ * but never marks anything collected, so the collect-once invariant is
+ * untouched. A task this process cancelled is not asked about at all. No
+ * inference, no model, no CLI. Never throws: a lookup that fails is counted as
+ * `unreadable` rather than guessed.
+ */
+export async function countRunningBackgroundTasks(): Promise<BackgroundRunningCount> {
+  const entries = [...started.entries()]
+  const cancelledIds = new Set<string>()
+  for (const ids of cancelled.values()) for (const id of ids) cancelledIds.add(id)
+
+  const states = await Promise.all(
+    entries.map(async ([taskId]): Promise<"running" | "stopped" | "unreadable"> => {
+      if (cancelledIds.has(taskId)) return "stopped"
+      try {
+        const runState = await fetchSessionRunState(taskId)
+        if (runState !== "unknown") {
+          return isBackgroundTaskRunning(runState, []) ? "running" : "stopped"
+        }
+        const replies = await fetchSessionReplies(taskId)
+        if (replies === undefined) return "unreadable"
+        return isBackgroundTaskRunning(runState, replies) ? "running" : "stopped"
+      } catch {
+        return "unreadable"
+      }
+    }),
+  )
+  return {
+    running: states.filter((state) => state === "running").length,
+    started: entries.length,
+    unreadable: states.filter((state) => state === "unreadable").length,
+  }
 }
 
 /**

@@ -74,9 +74,31 @@ What it does when it is on:
 
 **opencode 1 only.** opencode 1 keeps MCP OAuth tokens in `~/.local/share/opencode/mcp-auth.json` (`$XDG_DATA_HOME` is honoured), which is what this reads. opencode 2 keeps them in its database behind a typed plugin API instead, so the option finds nothing there and the server still reports `needs-auth`. The file's shape is not part of opencode's public API and has no route that returns a token, so it was read by inspection; if injection stops working after an opencode upgrade, check whether the file changed before assuming a plugin regression.
 
+## Servers an agent was not given
+
+With `proxyOpencodeMcpTools: true`, each opencode MCP server gets one of three treatments on every `claude` spawn, decided from the tools opencode handed **this agent** for this turn and from opencode's live MCP status:
+
+| The agent's tool set | opencode's status for the server | What the spawn gets |
+|---|---|---|
+| holds at least one of the server's tools | any | The tools, proxied: opencode runs them, with its permission prompt and tool row. |
+| holds none of them | `connected` | **Nothing.** The server is left out of `--mcp-config` entirely. |
+| holds none of them | anything else (`pending`, `failed`, `needs_auth`, `disabled`, or not in the status map) | The direct bridge, as before. A server opencode cannot run is still dropped by the status overlay, exactly as it always was. |
+
+The middle row is the subagent case. opencode gives an `explore` subagent no MCP tools at all, so before this every server was bridged straight into that subagent's own `claude`, which handed it servers (Slack, a database) that opencode had deliberately withheld from that agent, and made it start its own copy of each one before it could answer. Measured on Claude Code 2.1.293: 31.5 s to the first frame with two such servers bridged (both of which then failed inside the child), against 2.1 s with none. The main agent is unaffected: its tool set holds every server's tools, so every server is proxied as before. A subagent you allow some servers (through its `tools` or `permission` in opencode) gets exactly those, proxied.
+
+Each spawn that withheld or bridged anything logs one INFO line naming both lists:
+
+```
+INFO: proxyOpencodeMcpTools: MCP servers outside this agent's tool set {"proxied":[],"withheld":["slack","obsidian"],"bridged":[],"modelTools":5,"statusKnown":true}
+```
+
+`statusKnown: false` means opencode's MCP status could not be read (no SDK client), in which case nothing is withheld and every uncovered server is bridged directly. Nothing is withheld on V2 Code Mode either, where MCP tools reach the model through `execute` rather than as individual entries.
+
+With `proxyOpencodeMcpTools` off (the default) none of this applies: every server opencode has enabled is bridged into every spawn, subagents included, exactly as before.
+
 ## V2 Code Mode
 
-V2 normally exposes MCP tools through Code Mode's `execute` and its catalog, rather than as individual server-prefixed model tools. `proxyOpencodeMcpTools` matches individual tools only; on a Code Mode-only snapshot it warns and falls back to the direct Claude MCP bridge. This fallback does **not** execute tools under opencode's permission policy.
+V2 normally exposes MCP tools through Code Mode's `execute` and its catalog, rather than as individual server-prefixed model tools. `proxyOpencodeMcpTools` matches individual tools only; on a Code Mode-only snapshot it warns and falls back to the direct Claude MCP bridge, and withholds nothing. This fallback does **not** execute tools under opencode's permission policy.
 
 To explicitly opt into Code Mode through opencode instead, use these provider settings (headless transport):
 

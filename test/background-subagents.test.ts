@@ -43,10 +43,13 @@ import {
   backgroundSubagentHint,
 } from "../src/prompts.js"
 import {
+  backgroundTaskIdsIn,
   cancelBackgroundTask,
   clearBackgroundTasks,
   collectBackgroundTask,
+  countRunningBackgroundTasks,
   hasCollectedBackgroundTask,
+  noteBackgroundDispatchResult,
   isBackgroundTaskRunning,
   recordBackgroundSubagentGate,
   snapshotBackgroundSubagentGate,
@@ -678,6 +681,93 @@ test("the doctor's ledger snapshot names collected and cancelled tasks", async (
   // And a released conversation leaves neither behind.
   clearBackgroundTasks("k")
   assert.deepEqual(snapshotBackgroundTasks(), [])
+})
+
+// --- how many are running now --------------------------------------------
+
+test("a background dispatch is read off both majors' envelopes, and nothing else", () => {
+  assert.deepEqual(backgroundTaskIdsIn('<task id="ses_v1" state="running">\nqueued\n</task>'), [
+    "ses_v1",
+  ])
+  assert.deepEqual(
+    backgroundTaskIdsIn("The subagent is working in the background (sessionID: ses_v2)."),
+    ["ses_v2"],
+  )
+  // A task_batch result is its children's results joined.
+  assert.deepEqual(
+    backgroundTaskIdsIn(
+      '[1] <task id="ses_one" state="running"></task>\n[2] <task id="ses_two" state="running"></task>',
+    ),
+    ["ses_one", "ses_two"],
+  )
+  // A foreground answer, a completion push and prose that merely mentions an
+  // id are not dispatches.
+  assert.deepEqual(backgroundTaskIdsIn('<task id="ses_fg" state="completed">done</task>'), [])
+  assert.deepEqual(backgroundTaskIdsIn("see sessionID: ses_x for details"), [])
+})
+
+test("only an accepted dispatch is remembered", async () => {
+  _resetBackgroundTasks()
+  setOpencodeClient(fakeClient({ status: {} }).client)
+  const envelope = '<task id="ses_err" state="running"></task>'
+  noteBackgroundDispatchResult("k", { kind: "error", message: envelope })
+  noteBackgroundDispatchResult("k", { kind: "text", text: envelope, isError: true })
+  assert.deepEqual(await countRunningBackgroundTasks(), { running: 0, started: 0, unreadable: 0 })
+})
+
+test("the running count asks the same question task_status does and consumes nothing", async () => {
+  _resetBackgroundTasks()
+  const { client, calls } = fakeClient({
+    parentID: PARENT,
+    status: { ses_busy: { type: "busy" }, ses_busy2: { type: "busy" } },
+    messages: [assistantMessage("RESULT_TEXT")],
+  })
+  setOpencodeClient(client)
+  for (const id of ["ses_busy", "ses_busy2", "ses_done", "ses_cancelled"]) {
+    noteBackgroundDispatchResult("k", { kind: "text", text: `<task id="${id}" state="running">` })
+  }
+  await cancelBackgroundTask({ task_id: "ses_cancelled" }, { sessionKey: "k", callerSessionId: PARENT })
+  calls.length = 0
+
+  assert.deepEqual(await countRunningBackgroundTasks(), { running: 2, started: 4, unreadable: 0 })
+  // Read-only: no abort, nothing collected, and the cancelled one not asked about.
+  assert.equal(calls.some((call) => call.startsWith("abort:")), false)
+  assert.equal(calls.some((call) => call.endsWith(":ses_cancelled")), false)
+  assert.equal(hasCollectedBackgroundTask("k", "ses_done"), false)
+  // The run state answered, so no transcript was fetched for the count.
+  assert.equal(calls.some((call) => call.startsWith("messages:")), false)
+
+  // Collect-once still holds after a count: the first collect gets the result.
+  const first = await collectBackgroundTask(
+    { task_id: "ses_done" },
+    { sessionKey: "k", callerSessionId: PARENT },
+  )
+  assert.match((first as { text: string }).text, /RESULT_TEXT/)
+})
+
+test("with no run-state route the transcript decides, and an unreadable one is said so", async () => {
+  _resetBackgroundTasks()
+  setOpencodeClient(
+    fakeClient({ noStatusRoute: true, messages: [assistantMessage("half", false)] }).client,
+  )
+  noteBackgroundDispatchResult("k", {
+    kind: "text",
+    text: "The subagent is working in the background (sessionID: ses_v2run)",
+  })
+  assert.deepEqual(await countRunningBackgroundTasks(), { running: 1, started: 1, unreadable: 0 })
+
+  // Neither route answers: counted, never guessed as running.
+  setOpencodeClient({ session: { get: async () => ({ data: {} }) } })
+  assert.deepEqual(await countRunningBackgroundTasks(), { running: 0, started: 1, unreadable: 1 })
+})
+
+test("the count outlives the conversation that started the subagent", async () => {
+  _resetBackgroundTasks()
+  setOpencodeClient(fakeClient({ status: { ses_long: { type: "busy" } } }).client)
+  noteBackgroundDispatchResult("k", { kind: "text", text: '<task id="ses_long" state="running">' })
+  // opencode owns the child, so a released conversation does not stop it.
+  clearBackgroundTasks("k")
+  assert.deepEqual(await countRunningBackgroundTasks(), { running: 1, started: 1, unreadable: 0 })
 })
 
 // --- over a real proxy MCP server ---------------------------------------
