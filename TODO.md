@@ -92,11 +92,6 @@ raised, so they survive context compaction; removed when answered, done or dropp
   open: (3) optional: a Linux CI job for
   the whole suite, an MCP elicitation round trip into an opencode form. Needs the maintainer: a
   second non-work login, for a live two-account switch and an expired-login switch.
-- 2026-09-26: Windows spawns go through `cmd.exe` with no argument quoting (injection with
-  `& | > ^`, broken with spaces or quotes); needs a Windows CI job first, then a resolver and
-  escaper. 2026-09-27: left documented until a Windows user appears (none has ever filed an
-  issue). The other two follow-ups from that day shipped (v0.29.0 PR #55, v0.29.1 PR #58 and #59).
-
 ## Parked
 
 Nothing parked.
@@ -107,6 +102,9 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-07: **done** (v0.46.1): Windows spawns through `cmd.exe` with no argument quoting
+  (open since 2026-09-26). Fixed with a resolver and doubled-quote escaping, verified by the
+  Windows CI job (PR #95, h #g217); `accounts` on Windows followed in v0.48.0 (h #g221).
 - 2026-10-07: **done** (v0.46.1, v0.47.0, v0.48.0): "then carry on with the rest of the rest untill nothing is left use 2 lanes". Plan, two
   lanes per batch, each item built or closed with a measured reason:
   (1a) interactive transport reads only the appended transcript bytes; (1b) Windows spawn quoting,
