@@ -84,9 +84,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-10-08: found by the PR #111 lane, not yet decided: `noteBackgroundDispatchResult` skips any result
-  flagged as an error, so a `task_batch` where one child failed records none of the background children it did
-  start (not counted, no running-count line). Pre-existing. Fix now, later, or leave?
 - 2026-10-08: switching the daily driver to opencode 2. Nothing in the plugin or Moshi blocks it now;
   remaining: herdr-agent-state.js (no V2 version, cosmetic), notify becomes cli.json `attention`, plugin
   path must end in `/dist`, drop `compaction.prune`. Awaiting the maintainer's decision.
@@ -119,6 +116,9 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done** (v0.53.5): "1 fix it now". A `task_batch` flagged `isError` because one child failed is
+  now read section by section, so the background children it did start are recorded and counted; failed and
+  missing sections are skipped, a failed single `task` still records nothing (h #g233).
 - 2026-10-08: **done** (v0.53.4): "2 is maybe usefull wont take too much resources build it". An accepted
   background dispatch's reply ends with `Background subagents running now: N (including this one).`, at most
   4 lookups and 500 ms, omitted on overrun or an unreadable child (PR #111, h #g232). The stall that cost the
