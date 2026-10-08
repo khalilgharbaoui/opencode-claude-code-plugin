@@ -86,8 +86,12 @@ raised, so they survive context compaction; removed when answered, done or dropp
 
 - 2026-10-08: maintainer: "if agents/task are running forground or background i want a very short reference to
   them in the sidebar at the bottom like a list each with the loading indication as prefix when i click it it
-  takes me to the agent/task in the thread ... is this doable?" Investigating which opencode major lets a
-  plugin add to the sidebar.
+  takes me to the agent/task in the thread ... is this doable?" Answered: yes, as a TUI plugin. 1.18.35
+  (`@opencode-ai/plugin/tui`): `sidebar_footer` slot, `state.session.messages/part/status`,
+  `route.navigate("session", {sessionID})`, `event.on`; module must be TUI-only (`server?: never`), so a
+  second entry point. 2.0.22: `sidebar.footer` slot, `router.navigate`, session tabs. Limit on both: a
+  route targets a session, not a message, so a click opens the subagent's session directly (no scroll to
+  the task in the parent). Awaiting: build it (where: second `/tui` entry here, or its own package).
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
