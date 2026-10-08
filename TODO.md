@@ -116,6 +116,10 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done**: "let try it you set zshrc and ill restart". `export
+  OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` added to `~/.zshrc` (beside the plugin's log-file
+  line), so opencode 1 offers background subagents and the plugin registers task_status and task_cancel
+  after a restart from a new terminal. Remove the line to switch it off.
 - 2026-10-08: **done** (v0.53.2): "do we need a new release? what about the background agents etc?" then
   "ok go". Background subagents re-verified live on 2.0.22 (gate, background dispatch and push,
   task_status once, task_cancel and its parent guard, a background dispatch through subagentDispatch,
