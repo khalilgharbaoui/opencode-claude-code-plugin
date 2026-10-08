@@ -113,6 +113,9 @@ Nothing in progress.
 
 ## Done
 
+- 2026-10-08: **done**: "does this add any value now opentmux ?" then "remove it". tmux is not installed and
+  opencode runs in Ghostty under Herdr, so opentmux never had a session to open panes in; removed from
+  the `plugin` list in `~/.config/opencode/opencode.json` (takes effect on the next opencode start).
 - 2026-10-08: **done**: "maybe yes add the Linux CI Job now.. but also allow me to [skip-ci] to skip it
   ... and park the MCP thing for now". `ci-linux.yml` runs install, typecheck, `npm test` and build on
   every push to master and every PR (first run: 1,505 / 1,505); `[skip-ci]` in the commit message or PR
