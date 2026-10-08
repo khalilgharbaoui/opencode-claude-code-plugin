@@ -91,7 +91,10 @@ raised, so they survive context compaction; removed when answered, done or dropp
   `route.navigate("session", {sessionID})`, `event.on`; module must be TUI-only (`server?: never`), so a
   second entry point. 2.0.22: `sidebar.footer` slot, `router.navigate`, session tabs. Limit on both: a
   route targets a session, not a message, so a click opens the subagent's session directly (no scroll to
-  the task in the parent). Awaiting: build it (where: second `/tui` entry here, or its own package).
+  the task in the parent). Maintainer: "sure fine if it looks like that and its behaviour as well but i
+  also want to know what model/effort/account its on at that moment in a subtile minimalistic way colors and
+  graying things out helps not option in but just there always but good UI and good UX that is important".
+  In progress, one lane: always on (no option), opencode 1 first, model/effort/account shown muted.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
