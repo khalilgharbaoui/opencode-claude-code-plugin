@@ -86,8 +86,10 @@ raised, so they survive context compaction; removed when answered, done or dropp
 
 - 2026-10-08: "what is next?" (1) **done**, maintainer picked "1": Claude Code 2.1.293 installed,
   measured on both transports and majors, Haiku 5.5 added, golden transcripts recorded, v0.49.0
-  (PR #101, h #g222). Still open: (2) fork sweep, last full one 2026-09-19,
-  eight forks pushed since (rusagent's closed PR #92 among them); (3) optional: a Linux CI job for
+  (PR #101, h #g222). (2) **done**, maintainer: "1 now": fork sweep of all
+  27 forks, v0.50.0 (PR #102, #103; h #g223, #g224): @nic-lan's MCP OAuth bridge taken as opt-in
+  `bridgeMcpOauthTokens`, @bangnh1's replay clipping taken, the rest declined with reasons. Still
+  open: (3) optional: a Linux CI job for
   the whole suite, an MCP elicitation round trip into an opencode form. Needs the maintainer: a
   second non-work login, for a live two-account switch and an expired-login switch.
 - 2026-09-26: Windows spawns go through `cmd.exe` with no argument quoting (injection with
