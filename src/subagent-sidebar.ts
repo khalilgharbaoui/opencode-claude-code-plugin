@@ -85,6 +85,8 @@ export interface SubagentRow {
   state: SubagentState
   /** `sonnet-5.5 · high · alpha`, empty when nothing is known. */
   label: string
+  /** The effort piece of `label`, drawn in the theme's warning colour. */
+  effort?: string
   started: number
   finished?: number
 }
@@ -329,6 +331,7 @@ function rowFor(
     background,
     state,
     label: subagentLabel(input.record(child.id), part),
+    effort: text(input.record(child.id)?.effort),
     started,
     finished,
   }
@@ -337,7 +340,7 @@ function rowFor(
 /** A run of text with the role the TUI maps onto a theme colour. */
 export interface Segment {
   text: string
-  role: "spinner" | "done" | "error" | "agent" | "description" | "muted"
+  role: "spinner" | "done" | "error" | "agent" | "description" | "muted" | "effort" | "effort-faded"
 }
 
 /**
@@ -381,9 +384,19 @@ export function layoutRow(
     first.push({ text: " ".repeat(Math.max(1, width - used - marker.length)), role: "muted" })
     first.push({ text: marker, role: "muted" })
   }
-  const second: Segment[] = row.label
-    ? [{ text: `  ${truncate(row.label, width - 2)}`, role: "muted" }]
-    : []
+  // The effort is the one piece in colour: it is what changes from one
+  // subagent to the next and what costs the most, so it is the one to spot.
+  const second: Segment[] = []
+  if (row.label) {
+    const pieces = truncate(row.label, width - 2).split(" · ")
+    const effortAt = row.effort ? pieces.indexOf(row.effort) : -1
+    second.push({ text: "  ", role: "muted" })
+    pieces.forEach((piece, index) => {
+      if (index > 0) second.push({ text: " · ", role: "muted" })
+      const role = index !== effortAt ? "muted" : finished ? "effort-faded" : "effort"
+      second.push({ text: piece, role })
+    })
+  }
   return { first, second }
 }
 

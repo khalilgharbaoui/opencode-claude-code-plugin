@@ -188,6 +188,7 @@ test("a running foreground child is matched to its part by title, with no metada
       background: false,
       state: "running",
       label: "sonnet-5.5 · high",
+      effort: "high",
       started: NOW - 5100,
       finished: undefined,
     },
@@ -331,6 +332,7 @@ const row = (overrides: Partial<SubagentRow> = {}): SubagentRow => ({
   background: false,
   state: "running",
   label: "sonnet-5.5 · high · alpha",
+  effort: "high",
   started: NOW,
   ...overrides,
 })
@@ -346,7 +348,11 @@ test("layoutRow fits the sidebar, right-aligns bg, and puts the label on a muted
     foreground.first.map((segment) => segment.role),
     ["spinner", "muted", "agent", "muted", "description"],
   )
-  assert.deepEqual(foreground.second.map((segment) => segment.role), ["muted"])
+  // Only the effort is in colour; the separators, model and account stay muted.
+  assert.deepEqual(
+    foreground.second.map((segment) => [segment.text, segment.role]),
+    [["  ", "muted"], ["sonnet-5.5", "muted"], [" · ", "muted"], ["high", "effort"], [" · ", "muted"], ["alpha", "muted"]],
+  )
 
   const background = layoutRow(row({ agent: "explore", description: "Survey docs for stale links", background: true }))
   assert.equal(flat(background.first), "⠋ explore Survey docs for stale…  bg")
@@ -361,6 +367,30 @@ test("layoutRow draws a finished row muted apart from its glyph, and the spinner
   assert.equal(layoutRow(row({ state: "error" })).first[0].text, "✗")
   assert.equal(layoutRow(row(), SIDEBAR_ROW_WIDTH, 3).first[0].text, SPINNER_FRAMES[3])
   assert.deepEqual(layoutRow(row({ label: "" })).second, [])
+})
+
+test("layoutRow fades the effort on a finished row, and colours nothing when the effort is unknown", () => {
+  const roleOf = (laid: ReturnType<typeof layoutRow>, text: string) =>
+    laid.second.find((segment) => segment.text === text)?.role
+  assert.equal(roleOf(layoutRow(row({ state: "done" })), "high"), "effort-faded")
+  assert.equal(roleOf(layoutRow(row({ state: "error" })), "high"), "effort-faded")
+  const unknown = layoutRow(row({ label: "haiku-4.5 · alpha", effort: undefined }))
+  assert.ok(unknown.second.every((segment) => segment.role === "muted"))
+  // A label cut short past the effort leaves nothing to colour, never a wrong piece.
+  const cut = layoutRow(row({ label: "sonnet-5.5 · high · alpha" }), 12)
+  assert.ok(cut.second.every((segment) => segment.role === "muted" || segment.text === "high"))
+})
+
+test("a row's effort comes from the spawn record, the same source as its label", () => {
+  const rows = deriveSubagentRows(
+    input({
+      children: [child("ses_e", "Effort check", "explore", NOW - 100)],
+      statuses: { ses_e: "busy" },
+      records: { ses_e: { model: "claude-haiku-5-5", effort: "low", account: "alpha" } },
+    }),
+  )
+  assert.equal(rows[0]?.effort, "low")
+  assert.match(rows[0]?.label ?? "", / · low · /)
 })
 
 test("layoutRow keeps a very long agent name from pushing the description off the row", () => {

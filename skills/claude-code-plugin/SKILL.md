@@ -884,7 +884,8 @@ Always on, no option. While the viewed session has subagents, the sidebar ends w
 `Subagents` section: one row each, running first (spinner in the theme accent), then up
 to three finished ones (✓ or ✗, greyed out, gone after ten minutes), with the agent type,
 the task description, a dim `bg` for background dispatches, and a muted second line
-`model · effort · account` (account only on a multi-account install). That line is what
+`model · effort · account` (account only on a multi-account install; the effort alone in
+the theme's warning colour, faded on a finished row). That line is what
 the plugin really spawned, read from `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json`,
 so `forceModel`, an agent's `reasoningEffort`, a dispatch-form answer, the fallback chain
 and a failover all show there, while opencode's own footer shows the model it asked for.

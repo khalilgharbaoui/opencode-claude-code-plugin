@@ -63,6 +63,9 @@ export interface SidebarColors {
   spinner: Color
   done: Color
   error: Color
+  /** The effort on a row's second line: the theme's warning colour. */
+  effort: Color
+  effortFaded: Color
   hover: Color
 }
 
@@ -108,6 +111,10 @@ function roleColor(colors: SidebarColors, role: Segment["role"]): Color {
       return colors.done
     case "error":
       return colors.error
+    case "effort":
+      return colors.effort
+    case "effort-faded":
+      return colors.effortFaded
     case "agent":
     case "description":
       return colors.text
@@ -181,12 +188,17 @@ function createSidebar(host: SidebarHost) {
       insertNode(first, span)
     })
     insertNode(box, first)
-    for (const segment of layout.second) {
-      const line = createElement("text")
-      insertNode(line, createTextNode(segment.text))
-      setProp(line, "wrapMode", "none")
-      effect(() => setProp(line, "fg", roleColor(host.colors(), segment.role)))
-      insertNode(box, line)
+    if (layout.second.length > 0) {
+      // One line of spans, like the first, so the effort can take its own colour.
+      const second = createElement("text")
+      setProp(second, "wrapMode", "none")
+      for (const segment of layout.second) {
+        const span = createElement("span")
+        insertNode(span, createTextNode(segment.text))
+        effect(() => setProp(span, "style", { fg: roleColor(host.colors(), segment.role) }))
+        insertNode(second, span)
+      }
+      insertNode(box, second)
     }
     if (row.sessionID) {
       const sessionID = row.sessionID
@@ -313,7 +325,15 @@ interface V1Api {
     part(messageID: string): ReadonlyArray<V1Part> | undefined
   }
   theme: {
-    current: { text: Color; textMuted: Color; accent: Color; success: Color; error: Color; backgroundElement: Color }
+    current: {
+      text: Color
+      textMuted: Color
+      accent: Color
+      success: Color
+      warning: Color
+      error: Color
+      backgroundElement: Color
+    }
   }
   route: { navigate(name: string, params?: Record<string, unknown>): void }
   event: { on(type: string, handler: (event: { properties?: any }) => void): () => void }
@@ -399,6 +419,8 @@ export function registerV1(api: V1Api): void {
         spinner: theme.accent,
         done: mix(theme.success, theme.textMuted, 0.45),
         error: mix(theme.error, theme.textMuted, 0.35),
+        effort: theme.warning ?? theme.textMuted,
+        effortFaded: mix(theme.warning ?? theme.textMuted, theme.textMuted, 0.45),
         hover: theme.backgroundElement,
       }
     },
@@ -514,7 +536,7 @@ interface V2Context {
     }
   }
   theme: {
-    text: { base: Color; muted: Color; feedback: { success: V2Shade; error: V2Shade } }
+    text: { base: Color; muted: Color; feedback: { success: V2Shade; warning?: V2Shade; error: V2Shade } }
     background: { raised: { base: Color } }
     hue: { accent: V2Shade }
   }
@@ -538,6 +560,8 @@ export function setupV2(context: V2Context): () => void {
         spinner: accent,
         done: mix(theme.text.feedback.success.muted ?? theme.text.feedback.success.base, muted, 0.45),
         error: mix(theme.text.feedback.error.muted ?? theme.text.feedback.error.base, muted, 0.35),
+        effort: theme.text.feedback.warning?.base ?? muted,
+        effortFaded: mix(theme.text.feedback.warning?.base ?? muted, muted, 0.45),
         hover: theme.background.raised.base,
       }
     },
