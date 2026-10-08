@@ -84,6 +84,14 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: subagent startup on `appical` (~25 s), maintainer: "go" (measure it). Measured: not the
+  account and not Claude Code's startup (ready in 1.5 to 6.5 s on both accounts, three at once included).
+  Check A's own transcript: hooks done 3 s after spawn, then the first message waited 22 s for the
+  ACCOUNT's own MCP servers (the plugin passes no `--strict-mcp-config`); `slack` there is
+  `op run -- npx -y slack-mcp-server@latest`, 2.4 to 8.4 s alone or three at once today, slower at 19:00
+  (npm `@latest` resolution behind Aikido's filter, plus 1Password). Options offered: pin the slack
+  server version, drop `slack` from the two Claude accounts' own config (opencode already serves it),
+  or `strictMcpConfig: true` (also drops the claude.ai connectors). Awaiting the maintainer's pick.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
