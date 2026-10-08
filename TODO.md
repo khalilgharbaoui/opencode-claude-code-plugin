@@ -84,6 +84,10 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-10-08: maintainer: "if agents/task are running forground or background i want a very short reference to
+  them in the sidebar at the bottom like a list each with the loading indication as prefix when i click it it
+  takes me to the agent/task in the thread ... is this doable?" Investigating which opencode major lets a
+  plugin add to the sidebar.
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
