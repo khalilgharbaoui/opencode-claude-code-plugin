@@ -97,8 +97,8 @@ raised, so they survive context compaction; removed when answered, done or dropp
   plugin-side half is **done** (v0.54.2, h #g235): `MCP_TIMEOUT=120000` on every spawn unless set.
   Fresh-session comparison (ses_ee2d834cbffetpphLRGHNa8dpJ, 6 messages): dispatch 22:15:24, spawn
   +1 s, `claude` ready +3.2 s, first tool call +10 s; in the ~1,600-message session the same spawn took
-  35 s to get ready. So the stall scales with the parent session's size. Still open, optional: whether
-  opencode or dcp's message transform burns it (needs a large session with dcp disabled).
+  35 s to get ready. So the stall scales with the parent session's size. Whether opencode or dcp's
+  message transform burns it (needs a large session with dcp disabled): maintainer, 2026-10-09: "later".
 ## Parked
 
 - 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
