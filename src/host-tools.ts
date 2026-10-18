@@ -80,6 +80,7 @@ const V2_TOOLS: Record<string, HostTool | null> = {
     input: (input) =>
       defined({
         agent: input.subagent_type ?? input.agent,
+        model: input.model,
         description: input.description,
         prompt: input.prompt,
         sessionID: input.task_id ?? input.sessionID,

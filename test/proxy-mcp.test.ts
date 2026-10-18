@@ -14,6 +14,8 @@ import * as http from "node:http"
 import * as fs from "node:fs"
 import {
   createProxyMcpServer,
+  applyTaskModelSupport,
+  applyBackgroundSubagentSupport,
   buildProxyTimeoutError,
   resolveProxyCallTimeoutMs,
   resolveProxyClientCeilingMs,
@@ -100,6 +102,36 @@ async function withServer<T>(
   } finally {
     await srv.close()
   }
+}
+
+for (const background of [false, true]) {
+  test(`V1 omits model and refuses overrides before dispatch (background ${background})`, async () => {
+    const tools = applyTaskModelSupport(applyBackgroundSubagentSupport(DEFAULT_PROXY_TOOLS, background), "v1")
+    const srv = await createProxyMcpServer(tools)
+    let dispatched = false
+    srv.calls.on("call", (call: ProxyToolCall) => {
+      dispatched = true
+      call.resolve({ kind: "text", text: "unexpected" })
+    })
+    const task = { description: "Check", prompt: "Check it", subagent_type: "general" }
+    try {
+      const listed = await authedPost(srv, { jsonrpc: "2.0", id: 1, method: "tools/list" })
+      for (const name of ["task", "task_batch"]) {
+        const schema = listed.json.result.tools.find((tool: { name: string }) => tool.name === name).inputSchema
+        const properties = name === "task" ? schema.properties : schema.properties.tasks.items.properties
+        assert.equal("model" in properties, false)
+        const res = await authedPost(srv, {
+          jsonrpc: "2.0", id: 2, method: "tools/call",
+          params: { name, arguments: name === "task" ? { ...task, model: "openai/gpt-5#high" } : { tasks: [task, { ...task, model: "openai/gpt-5#high" }] } },
+        })
+        assert.equal(res.json.result.isError, true)
+        assert.match(res.json.result.content[0].text, /require OpenCode 2/)
+      }
+      assert.equal(dispatched, false)
+    } finally {
+      await srv.close()
+    }
+  })
 }
 
 // Regression for the 2026-07-04 "malformed result that failed schema

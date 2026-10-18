@@ -91,6 +91,8 @@ function createFakeTaskCli(
     | "bookkeeping"
     | "bookkeeping-respawn"
     | "task_batch",
+  taskModel?: string,
+  secondTaskModel?: string,
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-proxy-task-"))
   const cliPath = join(cwd, "fake-claude.cjs")
@@ -130,7 +132,9 @@ if (!proxyUrl) {
 
 const mode = ${JSON.stringify(mode)}
 const taskInput = ${JSON.stringify(TASK_INPUT)}
+if (${JSON.stringify(taskModel !== undefined)}) taskInput.model = ${JSON.stringify(taskModel) ?? "undefined"}
 const secondTaskInput = ${JSON.stringify(PARALLEL_TASK_INPUT)}
+if (${JSON.stringify(secondTaskModel !== undefined)}) secondTaskInput.model = ${JSON.stringify(secondTaskModel) ?? "undefined"}
 const assistant = {
   type: "assistant",
   session_id: "fake-session",
@@ -1045,7 +1049,7 @@ test("parent and child calls retain distinct opencode session affinity", async (
   )
 })
 
-test("Task proxy schema matches current opencode TaskTool fields", () => {
+test("Task proxy schema includes the optional V2 model override", () => {
   const task = DEFAULT_PROXY_TOOLS.find((tool) => tool.name === "task")
   assert.ok(task)
 
@@ -1057,11 +1061,14 @@ test("Task proxy schema matches current opencode TaskTool fields", () => {
     "background",
     "command",
     "description",
+    "model",
     "prompt",
     "subagent_type",
     "task_id",
   ])
   assert.equal(properties.background.type, "boolean")
+  assert.equal(properties.model.type, "string")
+  assert.match(String(properties.model.description), /only when the user explicitly/)
   assert.deepEqual(task.inputSchema.required, [
     "description",
     "prompt",
@@ -1391,6 +1398,54 @@ test("task_batch fans out into child task calls and gathers their results onto t
     rmSync(fake.cwd, { recursive: true, force: true })
   }
 })
+
+for (const mode of ["normal", "task_batch"] as const) {
+  for (const override of [undefined, "openai/gpt-5", "openai/gpt-5#high"]) {
+    test(`V2 ${mode} forwards model ${override ?? "omitted"} through the MCP broker and stream`, {
+      timeout: 15_000,
+    }, async () => {
+      const secondModel = override?.includes("#") ? "anthropic/claude-sonnet-4-6#low" : undefined
+      const fake = createFakeTaskCli(mode, override, secondModel)
+      const modelId = "claude-test-model-override"
+      const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+      try {
+        const model = createClaudeCode({
+          cliPath: fake.cliPath,
+          cwd: fake.cwd,
+          hostApi: "v2",
+          bridgeOpencodeMcp: false,
+          proxyOpencodeMcpTools: false,
+          proxyTools: ["Task"],
+        }).languageModel(modelId)
+        const response = await model.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "Delegate this check." }] }],
+          tools: [{ type: "function", name: "subagent", description: "Delegate", inputSchema: { type: "object", properties: {} } }],
+        })
+        const calls: LanguageModelV3StreamPart[] = []
+        for await (const part of response.stream) if (part.type === "tool-call") calls.push(part)
+        const inputs = calls.map((call) => {
+          assert.equal(call.type, "tool-call")
+          assert.equal(call.toolName, "subagent")
+          return JSON.parse(call.input)
+        })
+        const expected = {
+          agent: "general", description: TASK_INPUT.description, prompt: TASK_INPUT.prompt,
+          sessionID: "task-existing", background: true,
+          ...(override === undefined ? {} : { model: override }),
+        }
+        assert.deepEqual(inputs, mode === "normal" ? [expected] : [expected, {
+          agent: "general", description: PARALLEL_TASK_INPUT.description, prompt: TASK_INPUT.prompt,
+          sessionID: "task-parallel", background: false,
+          ...(secondModel === undefined ? {} : { model: secondModel }),
+        }])
+      } finally {
+        rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+        deleteActiveProcess(sk)
+        rmSync(fake.cwd, { recursive: true, force: true })
+      }
+    })
+  }
+}
 
 test("proxyTools Task brings task_batch along, once", () => {
   const names = (list: string[]) =>

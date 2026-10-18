@@ -875,6 +875,8 @@ rejects what the previous turn left pending and tells the CLI. The process exiti
 chat being deleted, or opencode exiting rejects the rest. That is why `task` and
 `task_batch` carry no default deadline and a subagent runs to completion.
 
+On OpenCode 2, `task` and each `task_batch.tasks` item accept optional `model` as an exact native `providerID/modelID#variant` reference (omit `#variant` when unused). Set it only when the user explicitly requests a particular model. The proxy forwards it unchanged to native `subagent`; omission keeps OpenCode's normal inheritance, and `task_id` and `background` keep their existing behavior. OpenCode 1's native task schema has no model override: the proxy hides `model` and refuses a call or entire batch that supplies it before dispatch.
+
 Three timers remain and are distinct from that: the optional per-tool deadlines
 (`proxyToolTimeoutMs`, a backstop the user chooses), the start and inactivity
 watchdogs (for a process that is alive but silent, which emits nothing to listen to; a

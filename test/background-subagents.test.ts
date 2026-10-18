@@ -186,7 +186,7 @@ test("an unsupported host never sees `background` in any task schema", () => {
   const props = taskProperties(taskDef(tools, "task"))
   assert.deepEqual(
     Object.keys(props).sort(),
-    ["command", "description", "prompt", "subagent_type", "task_id"],
+    ["command", "description", "model", "prompt", "subagent_type", "task_id"],
   )
   assert.deepEqual(taskDef(tools, "task").inputSchema.required, [
     "description",

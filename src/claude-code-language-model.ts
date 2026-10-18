@@ -223,6 +223,7 @@ import {
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
   applyBackgroundSubagentSupport,
+  applyTaskModelSupport,
   liveTaskSupportsBackground,
   setProxyDeadlineGuard,
   TASK_BATCH_TOOL_NAME,
@@ -3070,6 +3071,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 backgroundSubagentsSupported,
                 hostDialect,
               )
+              enrichedProxy = applyTaskModelSupport(enrichedProxy, hostDialect)
               // The doctor answers without a turn, so the gate has to be
               // remembered here rather than recomputed there.
               recordBackgroundSubagentGate({

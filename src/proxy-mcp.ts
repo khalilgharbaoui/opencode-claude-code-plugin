@@ -816,6 +816,13 @@ export function filterQuestionProxyByOpencodeSupport(
 
 /** Input fields of one `task`, shared with each `task_batch` item. */
 export const TASK_INPUT_PROPERTIES = {
+  model: {
+    type: "string",
+    description:
+      "Optional OpenCode 2 model override, exactly providerID/modelID#variant" +
+      " (omit #variant when not needed). Set only when the user explicitly" +
+      " requests a particular model. Omit to keep OpenCode's normal inheritance.",
+  },
   description: {
     type: "string",
     description: "A short (3-5 words) description of the task",
@@ -861,6 +868,35 @@ export const TASK_INPUT_PROPERTIES = {
 export const TASK_INPUT_PROPERTIES_NO_BACKGROUND = Object.fromEntries(
   Object.entries(TASK_INPUT_PROPERTIES).filter(([name]) => name !== "background"),
 )
+
+export function applyTaskModelSupport(
+  tools: ProxyToolDef[],
+  dialect: "v1" | "v2",
+): ProxyToolDef[] {
+  if (dialect === "v2") return tools
+  const withoutModel = (schema: Record<string, unknown>) => ({
+    ...schema,
+    properties: Object.fromEntries(Object.entries(
+      schema.properties as Record<string, unknown>,
+    ).filter(([name]) => name !== "model")),
+  })
+  return tools.map((tool) => {
+    if (tool.name === "task") return { ...tool, inputSchema: withoutModel(tool.inputSchema) }
+    if (tool.name !== TASK_BATCH_TOOL_NAME) return tool
+    const properties = tool.inputSchema.properties as Record<string, unknown>
+    const tasks = properties.tasks as Record<string, unknown>
+    return {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...properties,
+          tasks: { ...tasks, items: withoutModel(tasks.items as Record<string, unknown>) },
+        },
+      },
+    }
+  })
+}
 
 export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
   {
@@ -1288,7 +1324,8 @@ export async function createProxyMcpServer(
         const toolName = String(params.name ?? "")
         const input = (params.arguments ?? {}) as Record<string, unknown>
 
-        if (!tools.some((t) => t.name === toolName)) {
+        const tool = tools.find((t) => t.name === toolName)
+        if (!tool) {
           // tools/call failures MUST be MCP results with isError, never
           // JSON-RPC error envelopes: Claude CLI validates every tools/call
           // response against the MCP result schema and rejects JSON-RPC
@@ -1311,6 +1348,27 @@ export async function createProxyMcpServer(
             // never a JSON-RPC error envelope.
             writeToolCallResult(res, requestId, { kind: "error", message: problem })
             return
+          }
+        }
+
+        if (toolName === "task" || toolName === TASK_BATCH_TOOL_NAME) {
+          const tasks = toolName === "task" ? [input] : taskBatchTasks(input)
+          const properties = tool.inputSchema.properties as Record<string, unknown>
+          const schema = toolName === "task"
+            ? tool.inputSchema
+            : (properties.tasks as Record<string, unknown>).items as Record<string, unknown>
+          const supportsModel = "model" in (schema.properties as Record<string, unknown>)
+          for (const task of tasks) {
+            if (task.model === undefined) continue
+            const problem = !supportsModel
+              ? "Per-call model overrides require OpenCode 2; this host does not support them. No tasks were started."
+              : typeof task.model !== "string"
+                ? "Task model must be a string (providerID/modelID#variant). No tasks were started."
+                : null
+            if (problem) {
+              writeToolCallResult(res, requestId, { kind: "error", message: problem })
+              return
+            }
           }
         }
 
