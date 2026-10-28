@@ -8879,3 +8879,30 @@ the Publish step's tail against the version document's shasum (`9c82a05a`,
 visible about 120 s after), and the GitHub Release created after. A patch: a
 turn with no change in flight runs exactly as before. The main checkout's
 `dist` was rebuilt the same turn, and #140 got a follow-up comment.
+
+### Measured live (2026-10-28)
+
+A private `opencode serve` of 2.1.4 under scratch XDG dirs, the v0.63.2 build
+copied into a `file://` plugin directory (`plugin ready` once), Claude Code
+2.1.293 on the default account. Each probe started a turn that parked in a
+proxied `sleep 40`, switched the session's model with `POST
+/api/session/{id}/model`, and steered a message into the running turn with
+`delivery: "steer"`. opencode 2 then sends the next step under the NEW model or
+variant, which is the realistic way a change lands mid-turn.
+
+- Effort, `claude-haiku-5-5` `low` to `high`: the steered step logged
+  `finishing the turn in progress under its original settings` on the
+  `effort=low` key and resolved the parked call there; one `claude` for the
+  session throughout, no "pending work". The next message carried the
+  conversation from `effort=low` to `effort=high`, ended the old child (pid
+  52377) and spawned at `high` with `--resume` of the same session.
+- Model, `claude-haiku-5-5` to `claude-sonnet-5-5`: the same routing on the
+  haiku key, no sonnet spawn mid-turn. The next message took the model
+  carry-over (`continuing this conversation's claude session under the new
+  model or effort`), ended the haiku child and spawned sonnet with `--resume`;
+  the other session's child was untouched.
+
+Two probe traps: a copied `dist` needs the checkout's `node_modules` beside it
+(`Cannot find package 'jsonc-parser'`, the plugin fails to load), and
+`claude-haiku-4-5` has no variants on opencode 2.1.4, so a session asking for
+one fails with `VariantUnavailableError` before the plugin is reached.
