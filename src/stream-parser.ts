@@ -264,6 +264,7 @@ export function createLineHandler(
         reportFastModeState(msg, ctx.fastMode, "init")
         reportSystemInit(msg, {
           ignoreAnthropicApiKey: ctx.config.ignoreAnthropicApiKey,
+          configDir: ctx.accountConfigDir,
         })
       }
 

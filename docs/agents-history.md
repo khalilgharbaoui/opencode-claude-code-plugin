@@ -8906,3 +8906,44 @@ Two probe traps: a copied `dist` needs the checkout's `node_modules` beside it
 (`Cannot find package 'jsonc-parser'`, the plugin fails to load), and
 `claude-haiku-4-5` has no variants on opencode 2.1.4, so a session asking for
 one fails with `VariantUnavailableError` before the plugin is reached.
+
+## Unavailable MCP servers: one line per status, unchosen connectors quiet (2026-10-28)
+
+h #g272. From the 2026-10-25 backlog entry, built after the maintainer said
+"sure" to it.
+
+One `system`/`init` on the appical account lists 33 claude.ai connectors, 27 of
+them never connected, all provided by the organisation, plus
+`plugin:stripe:stripe`. The plugin WARNed once per server per process, and the
+TUI's toast burst guard (h #g193) turned that into 4 toasts per opencode
+process: 3 arbitrary names and a "24 more warnings" summary. Measured then:
+needs-auth connectors load no tools and cost no tokens.
+
+What separates noise from signal is the CLI's own `claudeAiMcpEverConnected`
+in the account's `.claude.json`: the connectors this login has ever
+connected. On this machine it holds 7 names for the default login and 9 for
+appical, in exactly the form `mcp_servers` reports them (`claude.ai Slack`).
+`claude.ai Slack` is in it and is `needs-auth` today, which is the case that
+must still warn: a connector the operator chose and that needs signing in
+again.
+
+`reportSystemInit` now:
+
+- keeps a `needs-auth` `claude.ai` connector that is not in that list out of
+  the WARNs: one INFO line names every such connector of the init, and
+  `/claude-code-doctor` lists them under "claude.ai connectors this account
+  never connected";
+- groups everything else by status into one WARN per status per init
+  (`N MCP servers are <status> in Claude Code; ...: a, b, c.`), with the old
+  sentence kept for a lone server;
+- quiets nothing when the list cannot be read (no file, no field, bad JSON).
+
+The file also holds account details, so only that one field is taken from it,
+and it is cached on mtime because it is read on every spawn's init. The config
+path follows the CLI: `$CLAUDE_CONFIG_DIR/.claude.json` for an account or a
+shell override, `~/.claude.json` for the default login.
+
+The new test fails with the quiet path turned off and passes with it.
+
+Checks: `npm run typecheck`, `npm test`, `npm run generate:log-messages` (no
+change: the INFO is not allowlisted, the WARNs are templates as before).

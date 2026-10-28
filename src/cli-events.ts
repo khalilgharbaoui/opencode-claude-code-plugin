@@ -1,3 +1,6 @@
+import { readFileSync, statSync } from "node:fs"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 import { log } from "./logger.js"
 import { PROXY_MCP_SERVER_NAME, SKILL_PLUGIN_NAME, type ClaudeStreamMessage } from "./types.js"
 
@@ -556,6 +559,81 @@ const warnedPluginDiagnostics = new Set<string>()
 /** Newest wins per plugin, like `lastMcpServerErrors`, for `/claude-code-doctor`. */
 const lastPluginLoadFailures = new Map<string, PluginLoadFailure>()
 
+/** A claude.ai connector the account never connected, as the CLI last reported it. */
+export interface UnconnectedConnector {
+  name: string
+  status: string
+}
+
+/**
+ * The claude.ai connectors reported `needs-auth` that this account has never
+ * connected, newest status wins per name, for `/claude-code-doctor` (h #g272).
+ * They come with the claude.ai organisation rather than from anybody's config,
+ * so they are kept out of the WARNs and shown here instead.
+ */
+const lastUnconnectedConnectors = new Map<string, string>()
+
+const CLAUDE_AI_CONNECTOR_PREFIX = "claude.ai "
+
+/**
+ * The CLI's global config for a config dir: `$CLAUDE_CONFIG_DIR/.claude.json`
+ * when one is set (an account, or the shell's own), `~/.claude.json` for the
+ * default login. The same precedence `resolveConfigDir` uses for the dir.
+ */
+function cliGlobalConfigPath(configDir: string | undefined): string {
+  const dir = configDir ?? process.env.CLAUDE_CONFIG_DIR
+  if (!dir) return join(homedir(), ".claude.json")
+  const expanded = dir === "~" ? homedir() : dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir
+  return join(resolve(expanded), ".claude.json")
+}
+
+const everConnectedCache = new Map<string, { mtimeMs: number; names: ReadonlySet<string> | undefined }>()
+
+/**
+ * The claude.ai connectors this account has ever connected, from the CLI's own
+ * `claudeAiMcpEverConnected`, or `undefined` when that cannot be read. Only
+ * that one field is taken from the file, which also holds account details.
+ * Cached on the file's mtime, because it is read on every `system`/`init`.
+ */
+export function claudeAiConnectorsEverConnected(
+  configDir: string | undefined,
+): ReadonlySet<string> | undefined {
+  const file = cliGlobalConfigPath(configDir)
+  try {
+    const { mtimeMs } = statSync(file)
+    const cached = everConnectedCache.get(file)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.names
+    const list: unknown = JSON.parse(readFileSync(file, "utf8")).claudeAiMcpEverConnected
+    const names = Array.isArray(list)
+      ? new Set(list.filter((name): name is string => typeof name === "string"))
+      : undefined
+    everConnectedCache.set(file, { mtimeMs, names })
+    return names
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * A `needs-auth` claude.ai connector this account never connected: one the
+ * organisation provides and nobody here chose. Measured on the appical account
+ * (2026-10-25): 27 of its 33 connectors were exactly that, they load no tools
+ * and cost no tokens, and their WARNs were 4 toasts per opencode process. A
+ * connector that WAS connected once and needs auth again is not this, and
+ * still warns. Unknown history (no readable list) quiets nothing.
+ */
+function isUnconnectedConnector(
+  server: { name: string; status: string },
+  everConnected: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    everConnected !== undefined &&
+    server.status === "needs-auth" &&
+    server.name.startsWith(CLAUDE_AI_CONNECTOR_PREFIX) &&
+    !everConnected.has(server.name)
+  )
+}
+
 /** Test-only. */
 export function _resetSystemInitReports(): void {
   warnedApiKeySources.clear()
@@ -564,6 +642,13 @@ export function _resetSystemInitReports(): void {
   lastMcpServerErrors.clear()
   warnedPluginDiagnostics.clear()
   lastPluginLoadFailures.clear()
+  lastUnconnectedConnectors.clear()
+  everConnectedCache.clear()
+}
+
+/** Read-only view for the doctor. Never touches the dedup sets. */
+export function snapshotUnconnectedConnectors(): UnconnectedConnector[] {
+  return [...lastUnconnectedConnectors].map(([name, status]) => ({ name, status }))
 }
 
 /** Read-only view for the doctor. Never touches the dedup sets. */
@@ -611,7 +696,7 @@ function reportPluginDiagnostics(info: SystemInitInfo): void {
  */
 export function reportSystemInit(
   msg: ClaudeStreamMessage,
-  options: { ignoreAnthropicApiKey?: boolean } = {},
+  options: { ignoreAnthropicApiKey?: boolean; configDir?: string } = {},
 ): void {
   const info = parseSystemInit(msg)
   if (!info) return
@@ -643,16 +728,38 @@ export function reportSystemInit(
     log.warn(message, { server: error.name, type: error.type })
   }
 
-  for (const server of info.mcpServers) {
-    if (server.status === "connected") continue
+  // One line per status per init rather than one per server: a single init
+  // listed 25 needs-auth servers in the same millisecond, and the TUI turns
+  // every WARN into a toast (h #g193, h #g272).
+  const unusable = info.mcpServers.filter((server) => server.status !== "connected")
+  const everConnected = unusable.some((server) => server.name.startsWith(CLAUDE_AI_CONNECTOR_PREFIX))
+    ? claudeAiConnectorsEverConnected(options.configDir)
+    : undefined
+  const newlyUnusable = new Map<string, string[]>()
+  const newlyUnconnected: string[] = []
+  for (const server of unusable) {
+    const unconnected = isUnconnectedConnector(server, everConnected)
+    if (unconnected) lastUnconnectedConnectors.set(server.name, server.status)
     const key = `${server.name}:${server.status}`
-    const message = `MCP server "${server.name}" is ${server.status} in Claude Code; its tools are not available to the model this session.`
     if (warnedMcpFailures.has(key)) {
-      log.debug(message, { server: server.name, status: server.status })
+      log.debug("MCP server still unavailable in Claude Code", { server: server.name, status: server.status })
       continue
     }
     warnedMcpFailures.add(key)
-    log.warn(message, { server: server.name, status: server.status })
+    if (unconnected) newlyUnconnected.push(server.name)
+    else newlyUnusable.set(server.status, [...(newlyUnusable.get(server.status) ?? []), server.name])
+  }
+  if (newlyUnconnected.length > 0) {
+    log.info("claude.ai connectors this account never connected need authentication; not warning about them", {
+      servers: newlyUnconnected,
+    })
+  }
+  for (const [status, names] of newlyUnusable) {
+    const message =
+      names.length === 1
+        ? `MCP server "${names[0]}" is ${status} in Claude Code; its tools are not available to the model this session.`
+        : `${names.length} MCP servers are ${status} in Claude Code; their tools are not available to the model this session: ${names.join(", ")}.`
+    log.warn(message, names.length === 1 ? { server: names[0], status } : { servers: names, status })
   }
 
   const apiKeyMessage = apiKeySourceWarning(info.apiKeySource, options.ignoreAnthropicApiKey)
