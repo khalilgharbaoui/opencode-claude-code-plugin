@@ -86,14 +86,6 @@ checks and suspected defects found in passing.
   Claude session, and the narrow signal to key on is the `b`-form reference dcp gives a
   compressed block (`<dcp-message-id>b3</dcp-message-id>`, `@b3@`), which
   `src/session-fork.ts` already recognises from h #g258 and h #g259.
-- 2026-10-25: the `MCP server "<name>" is needs-auth` WARN fires once per server, so one
-  `system`/`init` on the appical account (33 claude.ai connectors, 27 never connected, all
-  org-provided, plus `plugin:stripe:stripe`) raises 4 toasts per opencode process: 3 arbitrary
-  names and a "24 more warnings" summary. Measured: needs-auth connectors load no tools and cost
-  no tokens. Candidate fix: collapse one init's needs-auth servers into one line listing every
-  name, and report claude.ai connectors never in `claudeAiMcpEverConnected` at INFO and in the
-  doctor only, because nobody chose them. Maintainer said "do all the recommended"; parked here
-  as a plugin change rather than built unasked.
 
 ## Deferred decisions
 

@@ -10,6 +10,9 @@
  * Usage: npx tsx --test test/cli-events.test.ts
  */
 import assert from "node:assert/strict"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 import {
   API_KEY_SOURCES,
@@ -52,6 +55,7 @@ import {
   reportToolProgress,
   HOOK_STDERR_CAP,
   snapshotMcpServerErrors,
+  snapshotUnconnectedConnectors,
 } from "../src/cli-events.js"
 import { _resetLoggerForTests, configureLogger } from "../src/logger.js"
 import type { ClaudeStreamMessage } from "../src/types.js"
@@ -369,6 +373,59 @@ test("init warns once per failed MCP server and once per api key source", () => 
   const second = captureStderr(() => reportSystemInit(init, {}))
   assert.equal(second.lines.length, 0, "a respawn must not repeat either warning")
   _resetLoggerForTests()
+})
+
+test("one init's unavailable MCP servers warn as one line per status, and never-connected claude.ai connectors stay quiet (h #g272)", () => {
+  _resetLoggerForTests()
+  _resetSystemInitReports()
+  configureLogger({ file: false, mode: "silent", level: "info" })
+  const configDir = mkdtempSync(join(tmpdir(), "cli-events-connectors-"))
+  writeFileSync(
+    join(configDir, ".claude.json"),
+    JSON.stringify({ oauthAccount: { emailAddress: "not-read@example.com" }, claudeAiMcpEverConnected: ["claude.ai Slack"] }),
+  )
+  const burst: ClaudeStreamMessage = {
+    type: "system",
+    subtype: "init",
+    mcp_servers: [
+      { name: "github", status: "connected" },
+      { name: "claude.ai Slack", status: "needs-auth" },
+      { name: "claude.ai Asana", status: "needs-auth" },
+      { name: "claude.ai Box", status: "needs-auth" },
+      { name: "linear-local", status: "needs-auth" },
+      { name: "postgres", status: "failed" },
+    ],
+  }
+  try {
+    const first = captureStderr(() => reportSystemInit(burst, { configDir }))
+    assert.equal(first.lines.length, 2, "one line per status, not one per server")
+    const needsAuth = first.lines.find((line) => line.includes("2 MCP servers are needs-auth"))
+    assert.ok(needsAuth, "the needs-auth servers are grouped")
+    assert.ok(needsAuth.includes("claude.ai Slack, linear-local"), "a connector connected once still warns")
+    assert.ok(first.lines.some((line) => line.includes('MCP server "postgres" is failed')), "a lone server keeps its message")
+    assert.equal(
+      first.lines.some((line) => line.includes("Asana") || line.includes("Box")),
+      false,
+      "connectors this account never connected are not warnings",
+    )
+    assert.deepEqual(snapshotUnconnectedConnectors(), [
+      { name: "claude.ai Asana", status: "needs-auth" },
+      { name: "claude.ai Box", status: "needs-auth" },
+    ])
+
+    const second = captureStderr(() => reportSystemInit(burst, { configDir }))
+    assert.equal(second.lines.length, 0, "a respawn repeats nothing")
+
+    // No readable history quiets nothing: every connector warns.
+    _resetSystemInitReports()
+    const unknown = captureStderr(() => reportSystemInit(burst, { configDir: join(configDir, "missing") }))
+    const grouped = unknown.lines.find((line) => line.includes("4 MCP servers are needs-auth"))
+    assert.ok(grouped?.includes("claude.ai Asana"), "an unreadable config hides no warning")
+    assert.deepEqual(snapshotUnconnectedConnectors(), [])
+  } finally {
+    rmSync(configDir, { recursive: true, force: true })
+    _resetLoggerForTests()
+  }
 })
 
 test("compact_boundary is parsed from either spelling of its metadata", () => {

@@ -52,6 +52,8 @@ WARN: MCP server "linear" is needs-auth in Claude Code; its tools are not
 available to the model this session.
 ```
 
+Several servers in the same state at once arrive as one line per status (`3 MCP servers are needs-auth in Claude Code; ...: a, b, c.`), so a spawn raises one toast rather than one per server. A `claude.ai` connector the account has never connected (the CLI's own `claudeAiMcpEverConnected` list) is not warned about at all: those come with a claude.ai organisation, load no tools and cost nothing, and an org can provide dozens. They are logged at INFO and listed in [`/claude-code-doctor`](../guides/doctor.md). A connector you did connect once and that needs signing in again still warns.
+
 `bridgeMcpOauthTokens` fixes that by reading the token opencode already holds and writing `Authorization: Bearer <token>` into the bridged config:
 
 ```json

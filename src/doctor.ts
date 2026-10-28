@@ -24,10 +24,12 @@ import {
   formatResetsAtLocal,
   snapshotHookFailures,
   snapshotMcpServerErrors,
+  snapshotUnconnectedConnectors,
   snapshotPluginLoadFailures,
   type HookFailure,
   type McpServerError,
   type PluginLoadFailure,
+  type UnconnectedConnector,
 } from "./cli-events.js"
 import {
   describeReadPatternRefusal,
@@ -215,6 +217,12 @@ export interface DoctorReport {
   readRules: ReadRuleMapping | undefined
   /** `--mcp-config` entries Claude Code skipped this process. */
   mcpServerErrors: McpServerError[]
+  /**
+   * claude.ai connectors reported `needs-auth` that the account never
+   * connected, which the plugin does not warn about (h #g272). Optional so a
+   * report built by hand renders without it.
+   */
+  unconnectedConnectors?: UnconnectedConnector[]
   /** Claude plugins (the skill bridge's included) that did not load this process. */
   pluginLoadFailures: PluginLoadFailure[]
   /** Hooks the user configured that failed on a spawn this process made. */
@@ -446,6 +454,23 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
     lines.push("")
     lines.push("A skipped server is missing from the model's tools with no other sign of it.")
+  }
+
+  // The connectors kept out of the WARNs, so they are still findable.
+  const unconnected = report.unconnectedConnectors ?? []
+  if (unconnected.length > 0) {
+    lines.push("")
+    lines.push("**claude.ai connectors this account never connected**")
+    lines.push("")
+    lines.push("| connector | status |")
+    lines.push("|---|---|")
+    for (const connector of unconnected) {
+      lines.push(`| ${tableCell(connector.name)} | \`${connector.status}\` |`)
+    }
+    lines.push("")
+    lines.push(
+      "They come with the claude.ai organisation, not from your config, and load no tools. Connect one at claude.ai to give the model its tools; until then the plugin does not warn about it.",
+    )
   }
 
   // The same rule for plugins: a demoted one is absent from the CLI's
@@ -1035,6 +1060,7 @@ export async function gatherDoctorReport(
     proxyServers,
     readRules: snapshotReadRuleMapping(),
     mcpServerErrors: snapshotMcpServerErrors(),
+    unconnectedConnectors: snapshotUnconnectedConnectors(),
     pluginLoadFailures: snapshotPluginLoadFailures(),
     hookFailures: snapshotHookFailures(),
     planUsage,
@@ -1157,6 +1183,7 @@ export async function buildDoctorReport(options: GatherDoctorOptions): Promise<s
       pendingCalls: report.pendingCalls.length,
       proxyServers: report.proxyServers.map((server) => server.auth.status),
       mcpServerErrors: report.mcpServerErrors.length,
+      unconnectedConnectors: report.unconnectedConnectors?.length ?? 0,
       pluginLoadFailures: report.pluginLoadFailures.length,
       hookFailures: report.hookFailures.length,
       planUsage: report.planUsage.status,

@@ -351,6 +351,16 @@ test("skipped MCP entries get their own section, and only when there are some", 
   assert.ok(text.includes("| opencode_proxy | `invalid_config` | no detail |"), text)
 })
 
+test("never-connected claude.ai connectors are listed in the doctor, and only when there are some (h #g272)", () => {
+  assert.equal(formatDoctorReport(report).includes("never connected"), false)
+  const text = formatDoctorReport({
+    ...report,
+    unconnectedConnectors: [{ name: "claude.ai Asana", status: "needs-auth" }],
+  })
+  assert.ok(text.includes("**claude.ai connectors this account never connected**"), text)
+  assert.ok(text.includes("| claude.ai Asana | `needs-auth` |"), text)
+})
+
 test("plugins Claude Code did not load get their own section, and only when there are some", () => {
   assert.equal(formatDoctorReport(report).includes("did not load"), false)
   const text = formatDoctorReport({
