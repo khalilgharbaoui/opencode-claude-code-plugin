@@ -8947,3 +8947,9 @@ The new test fails with the quiet path turned off and passes with it.
 
 Checks: `npm run typecheck`, `npm test`, `npm run generate:log-messages` (no
 change: the INFO is not allowlisted, the WARNs are templates as before).
+
+Shipped as v0.63.3 on 2026-10-28 after the maintainer said "go": PR #145 green
+on Linux and Windows, CI and Docs green on the merge commit before the tag, the
+publish verified from the Publish step's tail against the version document's
+shasum (`0941a299`, visible about 180 s after), and the GitHub Release created
+after. The main checkout's `dist` was rebuilt the same turn.

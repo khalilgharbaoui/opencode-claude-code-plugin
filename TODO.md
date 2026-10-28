@@ -157,6 +157,8 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-10-28: **done** (v0.63.3, PR #145, h #g272): unavailable MCP servers warn as one line per status,
+  and a claude.ai connector the account never connected goes to INFO and the doctor instead of a toast.
 - 2026-10-26: **done** (v0.63.2, PR #144, h #g271): a model, effort, TTL or cap change mid-turn waits for the
   turn. It finishes on the busy child under its original settings and the change applies from the next idle
   turn; `resumeAcrossModelChanges: false` now also stops the effort/TTL/cap carry, as documented.
