@@ -11,6 +11,7 @@
  * `{action:"cancel"}` (measured with `{}` and with `{action:"bogus"}`), so the
  * old blind `{}` did not stall a turn; what it did was decide silently.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {

@@ -3,6 +3,7 @@
 // under a throwaway HOME with XDG_CACHE_HOME and XDG_CONFIG_HOME redirected,
 // so the real opencode cache is never a candidate root.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import {
   existsSync,

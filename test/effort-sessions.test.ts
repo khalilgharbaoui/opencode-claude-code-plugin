@@ -1,3 +1,4 @@
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"

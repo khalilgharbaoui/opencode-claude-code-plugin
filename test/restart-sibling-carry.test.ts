@@ -12,6 +12,7 @@
  * the effort, or an agent's prompt-cache TTL, `maxTurns` or `maxBudgetUsd` on
  * the second turn.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

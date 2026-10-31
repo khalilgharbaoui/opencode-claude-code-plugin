@@ -9842,3 +9842,129 @@ Linux and Windows, CI green on the merge commit `1b0d005` before the tag and on 
 release commit `32937a5`, a patch because no other feature PR had merged since v0.65.0,
 the publish confirmed by the Publish step's tail against the version document's
 shasum (`6c628db9`, visible about 90 s after), and the GitHub Release created after.
+
+## Test runs kept off the live data, and four flakes fixed (2026-11-01)
+
+h #g283. Lane `testhygiene`. Two problems, each measured before anything changed: focused
+test runs wrote into the maintainer's live log and stores, and four files failed under load.
+
+### Every way of running a test file is isolated
+
+Only the `test` script set `OPENCODE_CLAUDE_CODE_LOG_FILE=0`, `OPENCODE_CLAUDE_CODE_MODEL_PROBE=0`
+and a scratch `XDG_STATE_HOME`, so a focused `npx tsx --test test/<file>.test.ts` inherited the
+maintainer's exported `OPENCODE_CLAUDE_CODE_LOG_FILE=1` and an unset `XDG_STATE_HOME`. h #g274,
+h #g275 and h #g280 each found their own runs in the live files and left them there. What the
+live stores held on 2026-11-01, traced back to the suite:
+
+- `claude-sessions.json`: 40 of its 256 records, which is the store's cap, so they had pushed real
+  ones out. Every one ran a `fake-claude.cjs` from a test's scratch dir, 35 of them on a
+  `claude-test-*` model.
+- `turn-history.json`: 276 samples under 16 keys. 14 keys are `claude-test-*` or `claude-live-*`
+  models; the other two are real models whose every sample carries a fixture's session tag:
+  `build/claude-haiku-4-5` (4 samples, `todo-on`, `todo-default`, `todo-off`, `todo-shell` from
+  `test/spawn-env.test.ts`) and `worker/claude-haiku-4-5` (39, `conversation`). A tag is
+  `sessionTag`'s FNV-1a hash, so the ids were found by hashing every string literal in `test/`.
+  These samples were not inert: the progress estimate pools a key with the same agent's other
+  models, and `build/claude-test-budget` plus the four `todo-*` samples sat in the `build` pool.
+- `session-spawns.json`: 27 records keyed on fixture session ids (`ses_restart`, `todo-on`,
+  `conversation` and the rest).
+- The log held no test line by then: the 5 MB rotation had already pushed the day's runs out of
+  both `plugin.log` and `plugin.log.1`.
+
+**`test/isolate.ts` is the fix, imported first by every `.ts` file directly in `test/`** (the
+suite's 112 files plus `test/integration.ts` and `test/e2e-claude-session-bun.ts`). It points
+`OPENCODE_CLAUDE_CODE_LOG_FILE` (`0`), `OPENCODE_CLAUDE_CODE_LOG_DIR`,
+`OPENCODE_CLAUDE_CODE_MODEL_PROBE` (`0`), `XDG_STATE_HOME` and `XDG_CACHE_HOME` at a `mkdtemp`
+root of its own and removes the root at exit. No product code is involved.
+
+- **Not a guard in `src/` keyed on `NODE_TEST_CONTEXT`.** node sets that only in a child of its
+  test runner, so a direct `npx tsx test/<file>.ts` and `--test-isolation=none` would still leak,
+  and the stores import nothing that logs (the TUI bundle's rule), so the guard would have to be
+  repeated in eight path functions.
+- **First, and `node:` builtins only**, because `src/logger.ts` reads its env when it is imported
+  and static imports evaluate in order. A test that exercises file logging still opts in by
+  setting `OPENCODE_CLAUDE_CODE_LOG_FILE=1` itself.
+- **One root per process, not per suite run**, because a store's `save()` reads, merges, writes a
+  temp file and renames it, with no lock between processes; see `test/plugin-copies.test.ts`
+  below.
+- **`XDG_CACHE_HOME` is a guard, not a fix.** The account wrappers (`claude-<account>`) live
+  under it and the live opencode executes them; every account test already repoints it, and the
+  live cache holds only the real `claude-appical`. `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+  are left alone: the plugin only reads under them, and repointing `HOME` is h #g263's trap.
+- The `test` script's env and the Windows job's are unchanged. They are the outer layer for a file
+  that lost its import, which the suite then fails on.
+
+`test/isolation.test.ts` enforces the import (the first `import` line of every `.ts` file directly
+in `test/` but `isolate.ts`) and that `isolate.ts` imports only `node:` builtins, then measures a
+focused run. A fixture under `test/fixtures/isolation/` logs a WARN, writes one record to each of
+three stores and calls `refreshCliModelCatalog`, in a child process with the maintainer's env
+(`OPENCODE_CLAUDE_CODE_LOG_FILE=1`, no XDG override, no probe switch) and a fake `HOME`
+(`USERPROFILE` too, which `os.homedir()` reads on Windows). Behind `isolate.ts`, under `--test`
+and run directly, the fake home stays empty, every write lands under the run's own root, the
+probe answers `env-off` and the root is gone after exit. The control, the same fixture without
+the import, writes `plugin.log` and all three stores into the fake home, and the probe answers
+`cli-not-found`. Two mutations fail it: deleting the `XDG_STATE_HOME` line from `isolate.ts`, and
+deleting the import from `test/ids.test.ts`, which the failure names.
+
+### The four flakes
+
+Each was reproduced with N concurrent focused runs of one file, each with its own state dir
+unless shared on purpose, and load from 36 `yes` processes on 18 cores on top of the other
+lanes.
+
+| file | before | after |
+|---|---|---|
+| `test/plugin-copies.test.ts` | 16 of 40 failed sharing one `XDG_STATE_HOME`; 0 of 80 with one each | 0 of 40 sharing one, at load 64 |
+| `test/context-usage.test.ts` | 1 of 40 at load 19 | 0 of 80 at load 38 to 72 |
+| `test/background-running-count.test.ts` | 12 and 11 of 40 at load 11 | 0 of 80 at load 44 to 72 |
+| `test/process-lifecycle.test.ts` | 39 of 40 at load 8 | 0 of 80 at load 51 to 62 |
+
+- **`plugin-copies` was the shared state dir.** "releasing a session ... keeps the resume record"
+  writes a record and reads it straight back. Under `npm test` every file shares one
+  `XDG_STATE_HOME`, so another file's `save()` that read before this write and renamed after it
+  drops the record (`undefined` against the session id). `isolate.ts` fixed it with no change to
+  the test. Found, not changed: the same lost update can happen between two live opencode
+  processes. It costs one replay or one progress sample, and closing it means a cross-process
+  lock in eight stores.
+- **`context-usage` raced `PROXY_RESULT_BOUNDARY_GRACE_MS`.** The result-first fake wrote its
+  `result`, then sent the proxied call 25 ms later through a cold `fetch`; the provider waits 250
+  ms for a call that follows a `result`, so under load the turn finished `stop` (625 ms). The
+  fake now warms its HTTP client with an `initialize` before it answers and sends the call in the
+  same tick as the `result`.
+- **`background-running-count`'s fake did what no CLI does.** It wrote a `result` on a 100 ms
+  timer while its `task` call was parked (a real CLI blocks inside the MCP call, h #g69). Under
+  load that `result` arrived after turn one had drained, waited between the turns, and turn two
+  took it as its own end before the answer: `conversation result` 2 ms after `resolved pending
+  proxy call`, and the text Claude read was `''`. The timer is gone.
+- **`process-lifecycle` raced `DRAIN_QUIET_MS`.** "a CLI that dies mid-call ends the turn as an
+  error" needs the death to reach the parent while the turn is open, and a turn stays open only
+  100 ms after its call arrives. The fake died 30 ms after starting a cold `fetch`, which took 88
+  to 106 ms from queue to death with 30 copies running. Dying the moment the proxy flushes
+  the call's headers (it does so in the same tick it queues the call, so the call is always
+  queued first) brought that to 13 to 15 ms on a quiet machine, but at load 70 with 40 copies it
+  was 106 to 183 ms and all 40 still failed: no fixture-side death beats a fixed 100 ms there. So
+  `src/turn-controller.ts` gained `_setDrainQuietMs` and `currentDrainQuietMs`, after
+  `_setProxyDeadlineRecheckMs`, read at the three places the window is armed (the call listener
+  in `src/claude-code-language-model.ts`, `noteResultBoundaryCall`, and the result boundary in
+  `src/stream-parser.ts`); the default and every production path are unchanged, and the test
+  widens the window to 5 s. `exit-between-turns` died on a 300 ms timer that had to land after
+  the call, the drain and the test's first assertions; it now dies on `SIGUSR2`, which the test
+  sends once turn one has closed.
+
+None of the four was a product bug, and none touched the 5-second probe deadline (h #g181).
+
+### Cleanup of the live data
+
+Backed up first: `cp -p` of both log files and the whole state dir into
+`~/.local/share/opencode-claude-code/backup-20261101T003540/` (0700), byte-compared against the
+live files. Then each store was read, filtered, written to a temp file with its own mode and
+renamed, and the write was retried if the file changed underneath, because live opencode
+processes write these files. Removed only what is provably the suite's: a fake CLI path or a
+test's `mkdtemp` cwd, a `claude-test-*` or `claude-live-*` model, or a fixture session id or its
+tag. 40 records from `claude-sessions.json` (256 to 216), 276 samples and 16 keys from
+`turn-history.json` (33 keys to 17), 27 records from `session-spawns.json` (160 to 133), and no
+log line. Left as ambiguous: three sessions from `/private/tmp/oc2-probe-cwd` (an opencode 2
+probe on the real CLI), the liveswitch lane's `ses_liveprobe` on the real CLI (one resume record,
+one spawn record, and the three samples under `main/claude-haiku-5-5` and `main/claude-sonnet-5-5`
+whose tag `6e11e179` is its hash), `turn-progress.json` (no tag matched a fixture) and the other
+three stores. The real records the 40 had pushed out at the cap cannot be recovered from here.

@@ -4,6 +4,7 @@
  *
  * Usage: npx tsx --test test/turn-stats.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

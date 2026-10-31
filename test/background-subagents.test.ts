@@ -19,6 +19,7 @@
  * Usage:
  *   npx tsx --test test/background-subagents.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as http from "node:http"

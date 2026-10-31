@@ -1,3 +1,4 @@
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { SUBAGENT_DISPATCH_HINT, QUESTION_PROXY_HINT } from "../src/claude-code-language-model.js"

@@ -7,6 +7,7 @@
  * the model, the effort and the account the operator picked, and that with the
  * option off the argv is byte-identical to what it is today.
  */
+import "./isolate.js"
 import { test, after } from "node:test"
 import assert from "node:assert/strict"
 import {

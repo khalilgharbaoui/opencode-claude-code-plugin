@@ -12,6 +12,7 @@
  *
  * Usage: npx tsx --test test/verbatim-own-commands.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { afterEach, test } from "node:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

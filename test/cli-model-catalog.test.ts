@@ -9,6 +9,7 @@
  *
  * Usage: npx tsx --test test/cli-model-catalog.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { afterEach, beforeEach, test } from "node:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"

@@ -12,6 +12,7 @@
  *
  * Usage: npx tsx --test test/cli-events-stream.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"

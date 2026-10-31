@@ -7,6 +7,7 @@
  * session id dropped between them, which is exactly what a new opencode
  * process sees, and checks the second spawn's argv and envelope.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

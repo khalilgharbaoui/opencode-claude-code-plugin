@@ -9,6 +9,7 @@
  * `test/turn-model.test.ts`; here a view carries one and the line is laid out
  * from it.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

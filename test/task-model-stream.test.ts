@@ -10,6 +10,7 @@
  *
  * Usage: npx tsx --test test/task-model-stream.test.ts
  */
+import "./isolate.js"
 import { after, beforeEach, test } from "node:test"
 import assert from "node:assert/strict"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

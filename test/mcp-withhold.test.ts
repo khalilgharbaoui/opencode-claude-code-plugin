@@ -12,6 +12,7 @@
  *
  * Usage: npx tsx --test test/mcp-withhold.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as crypto from "node:crypto"

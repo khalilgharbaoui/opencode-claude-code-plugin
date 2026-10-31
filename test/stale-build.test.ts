@@ -15,6 +15,7 @@
  *
  * Usage: npx tsx --test test/stale-build.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { after, test } from "node:test"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"

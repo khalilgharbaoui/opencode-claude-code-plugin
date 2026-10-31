@@ -9,6 +9,7 @@
  *
  * Usage: npx tsx --test test/plugin-notice.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {

@@ -8,6 +8,7 @@
  * leave-one-out assessment. Turns are built from exact quantiles, never from
  * a random draw, so every expectation is the distribution's own number.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

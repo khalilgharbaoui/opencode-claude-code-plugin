@@ -8,6 +8,7 @@
  *
  * Usage: npx tsx --test test/account-usage.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { after, beforeEach, test } from "node:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"

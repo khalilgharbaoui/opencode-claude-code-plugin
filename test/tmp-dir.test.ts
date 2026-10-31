@@ -3,6 +3,7 @@
 // (proxy-mcp) and the staged skill plugin dirs (skill-bridge). Its name and
 // its exit cleanup are the contract, so both are pinned here.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import {
   existsSync,

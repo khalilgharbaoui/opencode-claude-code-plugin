@@ -4,6 +4,7 @@
  *
  * Usage: npx tsx --test test/ids.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

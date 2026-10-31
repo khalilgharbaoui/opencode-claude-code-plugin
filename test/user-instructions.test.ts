@@ -2,6 +2,7 @@
  * `interactiveUserInstructions` (h #g212): the parts of opencode's forwarded
  * system prompt the operator wrote, chosen by provenance and passed verbatim.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as os from "node:os"

@@ -1,3 +1,4 @@
+import "./isolate.js"
 import assert from "node:assert/strict"
 import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-sdk/provider"
 import type { ChildProcess } from "node:child_process"

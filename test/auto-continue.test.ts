@@ -2,6 +2,7 @@
  * Unit tests for smart auto-continuation policy in
  * src/claude-code-language-model.ts.
  */
+import "./isolate.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 

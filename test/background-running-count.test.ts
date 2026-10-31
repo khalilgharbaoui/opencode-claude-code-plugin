@@ -18,6 +18,7 @@
  * Usage:
  *   npx tsx --test test/background-running-count.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
@@ -317,6 +318,10 @@ const SECOND_TASK_INPUT = { ...TASK_INPUT, description: "Inspect parallel flow" 
  * real proxy MCP server. Turn two hands it opencode's background envelopes;
  * the CLI answers with exactly the text it got back, so the stream shows what
  * Claude would have read.
+ *
+ * Like the real CLI, it writes no `result` while its call is parked. It used
+ * to write one on a 100 ms timer; under load that landed after turn one had
+ * drained, and turn two took it as its own end before the answer (h #g283).
  */
 async function dispatchThroughDoStream(mode: "task" | "task_batch"): Promise<string> {
   const fsMod = await import("node:fs")
@@ -384,7 +389,6 @@ readline.createInterface({ input: process.stdin }).on("line", () => {
     ] } })
     emit({ ...result, num_turns: 2 })
   }).catch(() => {})
-  setTimeout(() => emit(result), 100)
 })
 `,
   )

@@ -1,3 +1,4 @@
+import "./isolate.js"
 import assert from "node:assert/strict"
 import {
   mkdtempSync,

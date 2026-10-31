@@ -10,6 +10,7 @@
  * approval), and must return what the live run returned. A parser change that
  * mis-reads a shape some release really writes fails here, offline.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as os from "node:os"

@@ -2,6 +2,7 @@
  * Integration test for opencode-claude-code plugin.
  * Tests the plugin against the real Claude CLI.
  */
+import "./isolate.js"
 import { createClaudeCode } from "../src/index.js"
 
 const provider = createClaudeCode({

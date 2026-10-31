@@ -8,6 +8,7 @@
  *
  * Usage: npx tsx --test test/account-sidebar.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

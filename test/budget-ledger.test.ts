@@ -8,6 +8,7 @@
  *
  * Usage: npx tsx --test test/budget-ledger.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { beforeEach, test } from "node:test"
 

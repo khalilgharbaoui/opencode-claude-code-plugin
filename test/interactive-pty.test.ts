@@ -12,6 +12,7 @@
  * Bun against a logged-in `claude` is still the proof that the TUI behaves
  * the way these scripts say it does.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import * as fs from "node:fs"

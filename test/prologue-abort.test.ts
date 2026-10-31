@@ -20,6 +20,7 @@
  *
  * Usage: npx tsx --test test/prologue-abort.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { after, test } from "node:test"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
