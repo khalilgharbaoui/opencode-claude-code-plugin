@@ -72,6 +72,12 @@
 
 ## Backlog
 
+- 2026-10-31, found by the v2host lane (PR #152, h #g277): a turn that ends on an overloaded API
+  (the CLI's `result` has `subtype: "success"` with `is_error: true`, text "API Error: 529 Overloaded")
+  finishes as `stop`, so opencode stores the error sentence as an ordinary reply. It should finish as
+  an error like the other failed results (h #g113, h #g214). opencode 2 no longer retries plugin
+  errors since PR #152, so an error finish shows once rather than respawning. Not scheduled.
+
 Feature ideas live in the vault note `opencode-claude-code-plugin/Future Features.md`; this list is
 checks and suspected defects found in passing.
 
