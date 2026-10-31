@@ -791,8 +791,8 @@ What happens, in order:
 
 1. The model calls `mcp__opencode_proxy__task` or `mcp__opencode_proxy__task_batch`.
 2. The plugin holds the call and ends the step on opencode's `question` form with ONE
-   question: `Same as last time` (when this conversation has one), `Default`, four
-   curated model/effort combos, and `Customise…`.
+   question: `Same as last time` (when this conversation has one), `Default`, five
+   curated model/effort combos (Haiku `low`, Sonnet `medium`, Opus `high`, `xhigh` and `max`), and `Customise…`.
 3. Answering anything but `Customise…` releases the subagents immediately, with that
    answer applied, on the next step of the SAME opencode turn.
 4. `Customise…` opens one row per agent type, plus an `Account` row when more than one

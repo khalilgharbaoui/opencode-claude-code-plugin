@@ -8953,3 +8953,14 @@ on Linux and Windows, CI and Docs green on the merge commit before the tag, the
 publish verified from the Publish step's tail against the version document's
 shasum (`0941a299`, visible about 180 s after), and the GitHub Release created
 after. The main checkout's `dist` was rebuilt the same turn.
+
+## The dispatch form offers Opus xhigh (2026-10-31)
+
+h #g273. The maintainer, recording the launch walkthrough with the dispatch form:
+"the tool never asks to use xhigh". The curated list was Haiku `low`, Sonnet
+`medium`, Opus `high` and Opus `max`, so `xhigh`, the effort between `high`
+and `max`, was reachable only by typing it into the custom answer. It is the
+fifth combo now, between `high` and `max`. Five is still far from the catalog
+times every effort (h #g227's reason for curating at all), and the form stays
+one screen.
+

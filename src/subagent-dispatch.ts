@@ -110,10 +110,10 @@ export const PER_TYPE_ANSWER = "Per type…"
 /**
  * The curated model and effort pairs the form offers.
  *
- * Deliberately four, and deliberately not generated from the catalog: a list of
+ * Deliberately five, and deliberately not generated from the catalog: a list of
  * every model times every effort is twenty-two times six options, which is a
  * form nobody reads. These are the three rungs an operator actually picks
- * between plus the deep-thinking one, and anything else is typed into the
+ * between plus the two deep-thinking ones, and anything else is typed into the
  * custom field, which is measured working (h #g227).
  *
  * An entry whose model is not in the catalog is dropped rather than offered,
@@ -139,6 +139,11 @@ export const DISPATCH_COMBOS: ReadonlyArray<{
     model: "claude-opus-5-5",
     effort: "high",
     description: "Most capable. Design work, tricky debugging, wide blast radius.",
+  },
+  {
+    model: "claude-opus-5-5",
+    effort: "xhigh",
+    description: "Most capable, thinks longer. For hard problems where high falls short.",
   },
   {
     model: "claude-opus-5-5",
@@ -908,7 +913,7 @@ function taskQuestion(
  * without a row of its own.
  *
  * A form's question takes exactly one answer, so a row cannot offer both the
- * four model/effort combos and the accounts as options without either a
+ * five model/effort combos and the accounts as options without either a
  * combo-times-account explosion or a second row per type. opencode's rows do
  * take free text, though, and a typed answer comes back verbatim (h #g227), so
  * `@name` rides along with whatever else was typed. Said only when there is

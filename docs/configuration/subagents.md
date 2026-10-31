@@ -156,6 +156,7 @@ About to dispatch 3 subagents (2 implementor, designer). How should they run?
   claude-haiku-5-5 / low Every subagent in this dispatch. Cheapest and fastest.
   claude-sonnet-5-5 / medium  Every subagent in this dispatch. Balanced.
   claude-opus-5-5 / high Every subagent in this dispatch. Most capable.
+  claude-opus-5-5 / xhigh  Every subagent in this dispatch. Thinks longer than high.
   claude-opus-5-5 / max  Every subagent in this dispatch. Deepest thinking.
   Customise…             Choose per agent type on the next screen, and per account or per task after that.
 ```

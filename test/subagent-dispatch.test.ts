@@ -237,6 +237,22 @@ test("a combo picked at the summary applies to every task", () => {
   assert.deepEqual(step.choices.get(1), { model: "claude-haiku-5-5", effort: "low" })
 })
 
+test("the summary offers Opus at xhigh between high and max, and it applies", () => {
+  _resetSubagentDispatchForTests()
+  const call = createSubagentDispatchQuestion(SK, ["call-1"], [task()], context())
+  const labels = call.input.questions[0].options.map((option) => option.label)
+  const opus = labels.filter((label) => label.startsWith("claude-opus-5-5 / "))
+  assert.deepEqual(opus, [
+    "claude-opus-5-5 / high",
+    "claude-opus-5-5 / xhigh",
+    "claude-opus-5-5 / max",
+  ])
+  const step = answerForm(call, ["claude-opus-5-5 / xhigh"])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), { model: "claude-opus-5-5", effort: "xhigh" })
+})
+
 test("Customise opens one row per agent type, and a multi-task row offers per task", () => {
   _resetSubagentDispatchForTests()
   const tasks = [
