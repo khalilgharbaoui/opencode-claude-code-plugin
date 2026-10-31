@@ -1,3 +1,4 @@
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { EventEmitter, once } from "node:events"
 import { setTimeout as delay } from "node:timers/promises"

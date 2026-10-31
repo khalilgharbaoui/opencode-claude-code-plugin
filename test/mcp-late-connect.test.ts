@@ -18,6 +18,7 @@
  *
  * Usage: npx tsx --test test/mcp-late-connect.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as fs from "node:fs"

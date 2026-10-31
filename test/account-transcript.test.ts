@@ -12,6 +12,7 @@
  *
  * Usage: npx tsx --test test/account-transcript.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {

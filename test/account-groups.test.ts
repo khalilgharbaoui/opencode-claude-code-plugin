@@ -15,6 +15,7 @@
  *
  * Usage: npx tsx --test test/account-groups.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

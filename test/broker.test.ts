@@ -7,6 +7,7 @@
  *   bun test/broker.test.ts
  *   node --experimental-strip-types --test test/broker.test.ts
  */
+import "./isolate.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 

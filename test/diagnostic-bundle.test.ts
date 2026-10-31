@@ -16,6 +16,7 @@
  *
  * Usage: npx tsx --test test/diagnostic-bundle.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { mkdtempSync, writeFileSync } from "node:fs"

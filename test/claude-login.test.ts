@@ -7,6 +7,7 @@
  *
  * Usage: npx tsx --test test/claude-login.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

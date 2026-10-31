@@ -8,6 +8,7 @@
  * Milestone proof: multiple messages in one live chat session, context retained
  * across turns (subscription interactive path), with prompt-cache reuse.
  */
+import "./isolate.js"
 import { ClaudeSession, askOnce } from "../src/claude-session-bun.js"
 
 const TERMINAL = new Set(["end_turn", "stop_sequence", "max_tokens"])

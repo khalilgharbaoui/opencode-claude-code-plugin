@@ -23,6 +23,7 @@
  * Usage:
  *   npx tsx --test test/process-lifecycle.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -57,6 +58,7 @@ import {
   snapshotActiveProcesses,
   type ActiveProcess,
 } from "../src/session-manager.js"
+import { _setDrainQuietMs } from "../src/turn-controller.js"
 
 test("extractDeletedSessionId reads the deleted session's own record and nothing else", () => {
   const deleted = { type: "session.deleted", properties: { info: { id: "ses_gone" } } }
@@ -233,6 +235,13 @@ test("a completed turn arms idle eviction only when idleProcessTimeoutMs is set"
  * records what happens to that HTTP call, answers an `interrupt` control
  * request with the CLI's own error result, answers a later user envelope
  * with a fresh reply, and in the `exit-*` modes dies while the call is open.
+ *
+ * Neither death is on a timer (h #g283). `exit-mid-turn` dies the moment its
+ * call is queued, and its test widens the drain window: the turn stays open
+ * only `DRAIN_QUIET_MS` (100 ms) after a call arrives, and at a load of 70 the
+ * death took 106 to 183 ms to reach this process, so the drain closed the
+ * turn first. `exit-between-turns` dies when the test signals it, after turn
+ * one has closed, instead of at 300 ms.
  */
 function parkedTaskCli(mode: "park" | "exit-mid-turn" | "exit-between-turns") {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-lifecycle-task-"))
@@ -298,12 +307,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     headers: { "content-type": "application/json", accept: "application/json", ...proxyHeaders },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "task", arguments: ${JSON.stringify(TASK_INPUT)} } }),
   })
-    .then((response) => response.json())
+    .then((response) => {
+      // The proxy flushes a broker-backed call's headers as it queues it.
+      if (mode === "exit-mid-turn") process.exit(0)
+      return response.json()
+    })
     .then((body) => record({ type: "http", body }))
     .catch((error) => record({ type: "http-error", message: error.message }))
-  if (mode === "exit-mid-turn") setTimeout(() => process.exit(0), 30)
-  if (mode === "exit-between-turns") setTimeout(() => process.exit(0), 300)
 })
+if (mode === "exit-between-turns") process.once("SIGUSR2", () => process.exit(0))
 `,
   )
   chmodSync(cliPath, 0o755)
@@ -669,20 +681,25 @@ test("a CLI that dies mid-call ends the turn as an error and releases the call o
   timeout: 15_000,
 }, () => withParkedTaskCli("exit-mid-turn", async (ctx) => {
   const { model, sk } = ctx
-  const queued = brokerCall(sk)
-  const response = await model.doStream(firstTurn())
-  const collecting = collect(response.stream)
-  await queued
-  const server = ctx.server()
-  assert.equal(server.pendingCallIds().length, 1)
-  const parts = await collecting
-  const errors = parts.filter((part) => part.type === "error")
-  assert.equal(errors.length, 1, JSON.stringify(parts.map((part) => part.type)))
-  assert.match(String((errors[0] as any).error?.message), /exited with code 0/)
-  assert.equal((parts.find((part) => part.type === "finish") as any)?.finishReason.unified, "error")
-  assert.equal(getPendingProxyCalls(sk).length, 0, "broker entry released")
-  await eventually("the HTTP entry to be released", () => server.pendingCallIds().length === 0)
-  await eventually("the dead child to be forgotten", () => getActiveProcess(sk) === undefined)
+  _setDrainQuietMs(5_000)
+  try {
+    const queued = brokerCall(sk)
+    const response = await model.doStream(firstTurn())
+    const collecting = collect(response.stream)
+    await queued
+    const server = ctx.server()
+    assert.equal(server.pendingCallIds().length, 1)
+    const parts = await collecting
+    const errors = parts.filter((part) => part.type === "error")
+    assert.equal(errors.length, 1, JSON.stringify(parts.map((part) => part.type)))
+    assert.match(String((errors[0] as any).error?.message), /exited with code 0/)
+    assert.equal((parts.find((part) => part.type === "finish") as any)?.finishReason.unified, "error")
+    assert.equal(getPendingProxyCalls(sk).length, 0, "broker entry released")
+    await eventually("the HTTP entry to be released", () => server.pendingCallIds().length === 0)
+    await eventually("the dead child to be forgotten", () => getActiveProcess(sk) === undefined)
+  } finally {
+    _setDrainQuietMs(null)
+  }
 }))
 
 test("a CLI that dies between turns releases the call it left pending on both sides, with no turn attached", {
@@ -696,6 +713,7 @@ test("a CLI that dies between turns releases the call it left pending on both si
   assert.equal(server.pendingCallIds().length, 1)
   const process = getActiveProcess(sk)!
   assert.equal(process.lineEmitter.listenerCount("line"), 0, "nobody is listening for this process now")
+  process.proc.kill("SIGUSR2")
   await eventually("the child to exit", () => process.proc.exitCode !== null)
   await eventually("its broker entry to be released", () => getPendingProxyCalls(sk).length === 0)
   await eventually("its HTTP entry to be released", () => server.pendingCallIds().length === 0)

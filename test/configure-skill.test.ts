@@ -11,6 +11,7 @@
  *
  * Usage: npx tsx --test test/configure-skill.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as fs from "node:fs"

@@ -20,6 +20,7 @@
  * The detection itself (`isMainThread === false`) is proven against a real
  * `node:worker_threads` worker at the end.
  */
+import "./isolate.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"

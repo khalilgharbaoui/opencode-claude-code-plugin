@@ -7,6 +7,7 @@
  *
  * Usage: npx tsx --test test/v2-connect.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { beforeEach, test } from "node:test"
 import type { ClaudeLoginState } from "../src/claude-login.js"

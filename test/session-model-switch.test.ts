@@ -13,6 +13,7 @@
  * two real `doStream` turns through a fake CLI, swapping the model between
  * them, and reads the second spawn's argv and envelope.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

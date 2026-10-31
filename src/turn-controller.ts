@@ -54,6 +54,23 @@ import { lastCallContextUsage } from "./usage.js"
  */
 export const DRAIN_QUIET_MS = 100
 
+let drainQuietMs = DRAIN_QUIET_MS
+
+/** The drain window in effect: `DRAIN_QUIET_MS` unless a test widened it. */
+export function currentDrainQuietMs(): number {
+  return drainQuietMs
+}
+
+/**
+ * Test seam: `null` restores the default. A test that has to act while a
+ * proxied call keeps its turn open widens the window instead of racing it,
+ * because under load a child's death took longer than 100 ms to reach the
+ * parent (h #g283).
+ */
+export function _setDrainQuietMs(ms: number | null): void {
+  drainQuietMs = ms ?? DRAIN_QUIET_MS
+}
+
 // ---- The wire-inactivity watchdog ----------------------------------------
 
 export function clearFallbackTimer(state: TurnState): void {
@@ -597,7 +614,7 @@ export function scheduleResultBoundary(
 export function noteResultBoundaryCall(state: TurnState): boolean {
   if (!state.pendingResultCompletion) return false
   if (state.drainTimer) clearTimeout(state.drainTimer)
-  state.drainTimer = setTimeout(() => settleResultBoundary(state), DRAIN_QUIET_MS)
+  state.drainTimer = setTimeout(() => settleResultBoundary(state), currentDrainQuietMs())
   return true
 }
 

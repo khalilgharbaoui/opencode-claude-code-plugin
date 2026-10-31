@@ -330,10 +330,10 @@ import { switchLiveProcess } from "./live-switch.js"
 import { watchTurnAbort } from "./turn-abort.js"
 import { createLineHandler } from "./stream-parser.js"
 import {
-  DRAIN_QUIET_MS,
   armStartWatchdog,
   clearFallbackTimer,
   clearStartWatchdog,
+  currentDrainQuietMs,
   deliverPendingCompletions,
   drainNow,
   enqueueProxyToolCall,
@@ -4652,7 +4652,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           state.drainBuffer.push(call)
           if (noteResultBoundaryCall(state)) return
           if (state.drainTimer) clearTimeout(state.drainTimer)
-          state.drainTimer = setTimeout(() => drainNow(state), DRAIN_QUIET_MS)
+          state.drainTimer = setTimeout(() => drainNow(state), currentDrainQuietMs())
         })
 
         state.proc.on("error", procErrorHandler)

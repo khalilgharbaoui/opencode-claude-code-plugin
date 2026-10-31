@@ -11,6 +11,7 @@
  * scripted PTY, so the poll loop, the submit confirmation and the fork's
  * own-prompt gate all run unmodified.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as os from "node:os"

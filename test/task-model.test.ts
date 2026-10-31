@@ -6,6 +6,7 @@
  *
  * Usage: npx tsx --test test/task-model.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { accountProviderMap } from "../src/account-groups.js"

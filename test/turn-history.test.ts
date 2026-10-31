@@ -9,6 +9,7 @@
  * `test/turn-model.test.ts`, the channel's store
  * `test/turn-progress-store.test.ts`.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

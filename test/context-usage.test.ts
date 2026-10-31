@@ -7,6 +7,7 @@
  *
  * Usage: npx tsx --test test/context-usage.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
@@ -57,6 +58,12 @@ const TASK_INPUT = {
  * `result`, which is the ordinary proxied-tool boundary: the CLI is parked
  * inside the MCP call. `result-first` sends the `result` and then the call,
  * so the tool-call finish is written after the result arrived.
+ *
+ * The provider waits only `PROXY_RESULT_BOUNDARY_GRACE_MS` (250 ms) for a call
+ * that follows a `result`, so the fake warms its HTTP client with an
+ * `initialize` before it answers and sends the call in the same tick as the
+ * `result`. A cold `fetch` after a timer took longer than the grace under load
+ * and the turn finished `stop` (h #g283).
  */
 function createFakeProxyCli(mode: "mid-turn" | "result-first") {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-context-usage-proxy-"))
@@ -84,22 +91,23 @@ for (let index = configIndex + 1; configIndex >= 0 && index < args.length; index
 }
 
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n")
-const callTask = () =>
+const post = (method, params) =>
   fetch(proxyUrl, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json", ...proxyHeaders },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: "task", arguments: ${JSON.stringify(TASK_INPUT)} },
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   })
+const callTask = () => post("tools/call", { name: "task", arguments: ${JSON.stringify(TASK_INPUT)} })
+const warm = post("initialize", {}).then((response) => response.text()).catch(() => {})
 
 let handled = false
 readline.createInterface({ input: process.stdin }).on("line", () => {
   if (handled) return
   handled = true
+  void warm.then(answer)
+})
+
+function answer() {
   emit({ type: "system", subtype: "init", session_id: "${SESSION}" })
   emit({
     type: "assistant",
@@ -137,11 +145,11 @@ readline.createInterface({ input: process.stdin }).on("line", () => {
         iterations: [],
       },
     })
-    setTimeout(() => void callTask().catch(() => {}), 25)
+    void callTask().catch(() => {})
     return
   }
   void callTask().catch(() => {})
-})
+}
 `
   writeFileSync(cliPath, source)
   chmodSync(cliPath, 0o755)

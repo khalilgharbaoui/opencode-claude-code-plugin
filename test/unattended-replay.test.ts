@@ -10,6 +10,7 @@
  * Usage:
  *   npx tsx --test test/unattended-replay.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

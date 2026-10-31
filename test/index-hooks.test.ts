@@ -4,6 +4,7 @@
 // shape it writes is easy to get subtly wrong: opencode nests the whole
 // options bag under the provider id afterwards.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"

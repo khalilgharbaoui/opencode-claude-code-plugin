@@ -3,6 +3,7 @@
 // (directory). All of them must degrade to "I don't know" rather than guess,
 // so the failure shapes are pinned as hard as the happy paths.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

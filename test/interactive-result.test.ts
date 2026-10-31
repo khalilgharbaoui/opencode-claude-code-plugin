@@ -15,6 +15,7 @@
  *    (where /tmp is a symlink to /private/tmp) the interactive transport
  *    tailed a directory the CLI never writes.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as os from "node:os"

@@ -1,6 +1,7 @@
 /**
  * Unit tests for hasNewUserContent in src/claude-code-language-model.ts.
  */
+import "./isolate.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 

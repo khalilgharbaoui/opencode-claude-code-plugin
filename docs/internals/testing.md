@@ -42,17 +42,21 @@ current in the same change as the code.
 - **Never pipe `npm test` into `grep` inside an `&&` chain.** The pipeline exits with grep's
   status, not the runner's, so a red suite reads as green and the chain continues. Redirect and
   check instead: `npm test > /tmp/run.log 2>&1; echo "EXIT=$?"`, then grep the file.
-- **The `test` script forces `OPENCODE_CLAUDE_CODE_LOG_FILE=0`.** Without it a run appends
-  fixture lines and fake `plugin ready` blocks to the live `plugin.log`, which the next person
-  to read that log will take for a broken install.
-- **It also gives every run a fresh `XDG_STATE_HOME` (`mktemp -d`).** Fake-CLI turns finish
-  successfully, and each one would otherwise record a resume point in the operator's real
-  `claude-sessions.json` (see `resumeAfterRestart`). Run a single file the same way:
-  `XDG_STATE_HOME=$(mktemp -d) npx tsx --test test/<name>.test.ts`.
+- **Every test file imports `test/isolate.ts` first, so no run can touch your live data.** It
+  turns file logging and the model-catalog probe off and points `XDG_STATE_HOME`,
+  `XDG_CACHE_HOME` and the log directory at a scratch directory of its own, one per test
+  process, removed when the process exits. Without it a run appends fixture lines to the live
+  `plugin.log`, which the next reader takes for a broken install, and records fake sessions in
+  the live stores, because fake-CLI turns finish successfully. It covers `npm test` and a single
+  file alike, so `npx tsx --test test/<name>.test.ts` needs nothing else. A new test file starts
+  its imports with `import "./isolate.js"`; `test/isolation.test.ts` fails the suite if one does
+  not.
 
-Two further traps are about load rather than correctness. A spec must never race the CLI
+Three further traps are about load rather than correctness. A spec must never race the CLI
 version probe's 5-second deadline, because on a loaded machine it loses and the feature under
-test is refused as "CLI too old"; resolve the probe up front instead. And the fake-CLI recovery
-tests in `test/proxy-task.test.ts` derive every wait from the start watchdog, so under load they
-fail identically on master and on a released tag: run the same file at the last known-green tag
-before suspecting your change.
+test is refused as "CLI too old"; resolve the probe up front instead. A fake CLI must not time
+what surrounds a proxied call on a clock: the provider keeps a turn open only 100 ms after a
+call arrives and waits only 250 ms for a call that follows a `result`, so tie the fake's events
+to the call itself. And the fake-CLI recovery tests in `test/proxy-task.test.ts` derive every
+wait from the start watchdog, so under load they fail identically on master and on a released
+tag: run the same file at the last known-green tag before suspecting your change.

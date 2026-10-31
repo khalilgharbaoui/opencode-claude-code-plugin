@@ -8,6 +8,7 @@
  *
  * Usage: npx tsx --test test/read-rules.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import * as fs from "node:fs"

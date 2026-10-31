@@ -9,6 +9,7 @@
  * state="completed">` push that ends a background child, and child sessions
  * titled `<description> (@<agent> subagent)`.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 

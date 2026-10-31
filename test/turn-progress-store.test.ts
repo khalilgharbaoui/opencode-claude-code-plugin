@@ -5,6 +5,7 @@
  * the file's modes, a second writer, and the changed-only reader the TUI
  * polls. The server half feeding it is `test/turn-history.test.ts`.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

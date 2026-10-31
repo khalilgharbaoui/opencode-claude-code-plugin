@@ -5,6 +5,7 @@
 // only a real execution can prove, so these tests run the generated script
 // against a fake `claude` that prints its argv and env.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import {

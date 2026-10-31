@@ -52,9 +52,9 @@ import {
   type ModelFallbackAttempt,
 } from "./model-fallback.js"
 import {
-  DRAIN_QUIET_MS,
   clearFallbackTimer,
   clearStartWatchdog,
+  currentDrainQuietMs,
   deliverPendingCompletions,
   finishWithQuestionCall,
   finishAwaitingPlanApproval,
@@ -1411,7 +1411,7 @@ export function createLineHandler(
           scheduleResultBoundary(
             state,
             () => ctx.completeResult(msg),
-            DRAIN_QUIET_MS,
+            currentDrainQuietMs(),
           )
           return
         }

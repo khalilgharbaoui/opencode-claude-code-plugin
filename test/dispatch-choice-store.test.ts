@@ -7,6 +7,7 @@
  * by another process, grown without bound) costs a turn anything worse than one
  * unremembered form.
  */
+import "./isolate.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"

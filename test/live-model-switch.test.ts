@@ -8,6 +8,7 @@
  * that answers (or refuses, or ignores) the control requests, and reads what
  * it was spawned with and what it was sent.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

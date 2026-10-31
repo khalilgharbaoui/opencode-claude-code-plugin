@@ -8,6 +8,7 @@
  *
  * Usage: npx tsx --test test/v2-session-events.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import type { ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"

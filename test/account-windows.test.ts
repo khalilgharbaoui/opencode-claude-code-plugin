@@ -13,6 +13,7 @@
 // only, spawning a real `.cmd` shim through the real `planClaudeSpawn` and
 // reading back what the child saw.
 
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"

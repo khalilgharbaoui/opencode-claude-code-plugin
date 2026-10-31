@@ -9,6 +9,7 @@
  *
  * Usage: npx tsx --test test/account-usage-stream.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { after, test } from "node:test"
 import {

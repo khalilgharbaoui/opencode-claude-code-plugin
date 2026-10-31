@@ -8,6 +8,7 @@
  * Usage:
  *   npx tsx --test test/respawn.test.ts
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

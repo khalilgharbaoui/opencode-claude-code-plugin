@@ -8,6 +8,7 @@
  * record the turn wrote: the model and effort the CLI was actually spawned
  * with, not the ones opencode asked for.
  */
+import "./isolate.js"
 import assert from "node:assert/strict"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
