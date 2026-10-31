@@ -1469,7 +1469,9 @@ test("error result does not wait for a missing proxy call", async () => {
   )
   const finishes = result.parts.filter((part) => part.type === "finish")
   assert.equal(finishes.length, 1)
-  assert.equal(finishes[0].finishReason.unified, "stop")
+  // A `success` result with `is_error` is a failed turn, so it finishes as an
+  // error (h #g281); it was `stop` before.
+  assert.equal(finishes[0].finishReason.unified, "error")
 })
 
 test("immediate abort rejects a buffered Task call", async () => {

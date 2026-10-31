@@ -63,7 +63,7 @@ Nothing in the picker? [Troubleshooting](./docs/troubleshooting/symptoms.md) is 
 | **Several accounts** | `"accounts": ["personal", "work"]` becomes one provider per account. Out of usage mid-task? One line says which account, which window and when it resets in your own time zone, and names the others to pick a model from. [Accounts](./docs/configuration/accounts.md) |
 | **Subagents: your account, their model** | `forceModel`, `reasoningEffort` and `cacheTtl` in an agent file, inheriting the caller's account. `task_batch` runs several subagents at once. [Subagents](./docs/configuration/subagents.md) |
 | **The whole model range, reasoning variants, fast mode** | Haiku 4.5 through Opus 5.5, Fable and Mythos, each with a `(N×)` list-price suffix, `low` to `max` effort variants, and a fallback chain for a model this account cannot run today. The badge above counts them. [Models](./docs/models.md) |
-| **`/btw` and `/claude-code-doctor`** | Side questions on the live process, and a health report whose `bundle` form is redacted by allowlist so it is safe to paste into a public issue. [`/btw`](./docs/guides/btw.md) · [Doctor](./docs/guides/doctor.md) |
+| **`/btw` and `/claude-code-doctor`** | Side questions answered by the running Claude session itself, through Claude Code's own side channel, and a health report whose `bundle` form is redacted by allowlist so it is safe to paste into a public issue. [`/btw`](./docs/guides/btw.md) · [Doctor](./docs/guides/doctor.md) |
 | **Ships its own setup skill** | Ask Claude to configure it. The bundled `claude-code-plugin` skill knows every option, env var, model id and troubleshooting rule, is staged into Claude Code on every spawn, and tests keep it in step with the code. [Skills](./docs/configuration/skills.md) |
 | **Read-only preset, plan mode** | `"permissionPreset": "read-only"` holds at the CLI, the proxy and the permission layer at once. [Permissions](./docs/configuration/permissions.md) |
 
@@ -78,7 +78,7 @@ Nothing in the picker? [Troubleshooting](./docs/troubleshooting/symptoms.md) is 
 
 The [full comparison](./docs/comparison.md) has nine rows, names the projects in the third column, and quotes their own READMEs.
 
-On opencode 2.2.3 or later with one Claude login, also look at opencode's own **Claude Agent** provider: it drives your own `claude` too, runs every tool in opencode, and leaves your `~/.claude` setup out. The comparison has [a section on it](./docs/comparison.md#opencodes-built-in-claude-agent-provider), including what this plugin still adds (opencode 1.x, several accounts, your Claude Code setup, fast mode, `/btw`, the sidebar).
+On opencode 2.2.3 or later with one Claude login, also look at opencode's own **Claude Agent** provider: it drives your own `claude` too, runs every tool in opencode, and leaves your `~/.claude` setup out. The comparison has [a section on it](./docs/comparison.md#opencodes-built-in-claude-agent-provider), including what this plugin still adds (opencode 1.x, several accounts, your Claude Code setup, fast mode, a subagent picker for model, effort and account, the sidebar). opencode 2's own `/btw` and per-call subagent `model` work with either.
 
 ## Built from measurements
 

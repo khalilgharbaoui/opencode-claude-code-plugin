@@ -58,11 +58,18 @@ Claude Code plugin you installed), goes out without the mark, so Claude Code run
 typed it. Measured: with the mark, a command marked `disable-model-invocation: true` did not
 run at all, and any other one ran only because the model chose to call its `Skill` tool,
 three API calls instead of one. Built-ins such as `/model` and `/cost` keep the mark. The
-plugin learns which names exist from the command list a `claude` in the same folder reports
-when it starts a turn, so the first message in a folder after opencode starts keeps the mark;
-from the next one on, your commands run as typed. A command file named like a built-in (`model.md`)
-replaces the built-in in Claude Code, so it runs too. A message that carries an attachment
-keeps the mark.
+plugin decides from the definition file itself, so your command runs as typed from the very
+first message. It looks where Claude Code looks: your Claude config dir, and `.claude` from
+the folder up to its git root (never the home dir's `.claude`, which is the config dir's
+job, and nothing above it), with a nested command `/ns:name` at `commands/ns/name.md`. A
+Claude Code plugin's command lives in Claude Code's plugin cache instead, so for it the
+plugin waits until a `claude` in the same folder has listed it when starting a turn: the
+first message in a folder after opencode starts keeps the mark for a plugin command, and
+from the next one on it runs as typed. A command file named like a built-in (`model.md`)
+replaces the built-in in Claude Code, so it runs too. Claude Code reads its commands when it
+starts, so a command file you add while a conversation's `claude` is running is not known to
+it: the model answers that the command is not installed, and it runs from the next process
+in that folder. A message that carries an attachment keeps the mark.
 
 ## The stream
 

@@ -41,7 +41,12 @@ reads the login. It is opencode 2 only, runs every tool in opencode, leaves the
 `~/.claude` setup (CLAUDE.md, hooks, skills, MCP servers, memory, auto-compaction)
 out, and serves one login. It is a fair choice for a user on 2.2.3+ with one account
 who wants exactly that; this plugin is the one for opencode 1.x, several accounts,
-the user's own Claude Code setup, fast mode, `/btw`, the sidebar and the doctor.
+the user's own Claude Code setup, fast mode, the subagent dispatch form (model, effort
+and account per subagent, remembered) with per-agent `maxTurns`/`maxBudgetUsd` caps, a
+`/btw` answered by the running Claude session itself, the sidebar and the doctor. Never
+present `/btw` or naming a subagent's model as unique to it: opencode 2 has its own
+`/btw` for every provider, and its subagent tool takes a `model` per call for any
+provider, the built-in included.
 
 Never recommend route 3, never help migrate a user onto it, and never enable
 `interactive: true` to dodge a billing or access restriction. If a user asks why this
@@ -161,7 +166,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `proxyOpencodeTools` | string[] | `[]` | Forward explicitly named opencode tools (case-insensitive): V1 resolves registry ids; V2 resolves the current model tool snapshot and its actual JSON Schema, including synthesized Code Mode `execute`, without re-exposing tools absent from that snapshot. Covers plugin-declared tools such as DCP's `compress` and V2 Code Mode. Same broker as other proxies; collisions and unknown names warn. Explicit allowlist only, because calls run in opencode with the agent's permissions. `execute` grants access to the session's whole Code Mode catalog, not just MCP, and is refused by the read-only preset. |
 | `stripContextReminders` | boolean | `false` | Strip opencode-dcp `<dcp-system-reminder>` blocks from user/assistant message text, including the fresh-session rebuild. Only when no `compress` is proxied via `proxyTools` or `proxyOpencodeTools`; reachable compress makes it inert. Resolved from config, so a configured-but-unregistered name still counts as reachable. Leaves opencode's own `<system-reminder>` blocks alone. |
 | `alwaysLoadProxyTools` | boolean or string[] | `["bash", "edit", "write"]` | Proxy tools served with `_meta["anthropic/alwaysLoad"]`, so Claude Code puts them in every request instead of behind `ToolSearch` and the first proxied call of a process skips one API request. Measured on 2.1.314 (h #g276): a proxied `echo` took 2 calls instead of 3, 32% fewer prompt tokens, 41% lower cost; a turn with no tool call carried 531 more prompt tokens. `true` loads every proxy tool, `proxyOpencodeMcpTools` tools included (warn the user: many schemas in every prompt is what `ENABLE_TOOL_SEARCH=0` cost, 2.5 to 4 times); `false` defers them all (the behaviour before h #g276); a list names proxy tools, case-insensitive. `task` and `task_batch` are left deferred together on purpose. An older CLI ignores the field. |
-| `verbatimPrompts` | boolean | `true` | Stamp `client_composed: true` on every text envelope the headless transport writes (user messages, forwarded messages, late proxy results, the auto-continue nudge; never a `tool_result` envelope), so Claude Code delivers the text as written: no slash-command dispatch and no `@path` expansion on the message's last text block. Measured on 2.1.314: without it `/model claude-sonnet-5-5` switched the process to Sonnet with no model call and `/cost` returned the CLI's usage screen. Hooks, `CLAUDE.md` and the skill listing still arrive; the `ultrathink` keyword reminder does not, so suggest an effort variant. `/btw` and `/claude-code-doctor` are unaffected. Exception: a message whose only text block starts with `/name` for the user's own command or skill (a `commands/<name>.md`, `commands/<name>/SKILL.md` or `skills/<name>/SKILL.md` under the Claude config dir or a `.claude` from the cwd up, or any reported colon name such as a plugin's `/plugin:cmd`) goes out unstamped and runs as typed, once a `claude` in that cwd has reported the name in its init frame; the first message in a cwd stays stamped (a model-invocable command still runs through the model's `Skill` call; a `disable-model-invocation: true` one does not). Built-ins stay stamped. Interactive transport not covered. Set `false` only when the user wants Claude Code's own `/` commands or `@` mentions typed through opencode. |
+| `verbatimPrompts` | boolean | `true` | Stamp `client_composed: true` on every text envelope the headless transport writes (user messages, forwarded messages, late proxy results, the auto-continue nudge; never a `tool_result` envelope), so Claude Code delivers the text as written: no slash-command dispatch and no `@path` expansion on the message's last text block. Measured on 2.1.314: without it `/model claude-sonnet-5-5` switched the process to Sonnet with no model call and `/cost` returned the CLI's usage screen. Hooks, `CLAUDE.md` and the skill listing still arrive; the `ultrathink` keyword reminder does not, so suggest an effort variant. `/btw` and `/claude-code-doctor` are unaffected. Exception: a message whose only text block starts with `/name` for the user's own command or skill goes out unstamped and runs as typed, from the first message in a cwd, decided by the definition file: a plain name needs `commands/<name>.md`, `commands/<name>/SKILL.md` or `skills/<name>/SKILL.md` under the Claude config dir or a `.claude` from the cwd up to its git root (never the home dir's, nothing above it), a nested `/ns:name` needs `commands/ns/name.md`. A plugin's `/plugin:cmd` has no file the plugin reads, so it goes out unstamped only once a `claude` in that cwd has reported the name in its init frame (the first message in a cwd keeps the mark for it). A command file added after a conversation's `claude` started is unknown to that process: the model answers that it is not installed, and it runs from the next process. Built-ins stay stamped. Interactive transport not covered. Set `false` only when the user wants Claude Code's own `/` commands or `@` mentions typed through opencode. |
 | `multiStepContinuation` | boolean | `true` | Append a system-prompt hint to chain tool calls in one turn instead of stopping between subtasks. |
 | `autoContinueIncompleteTurns` | boolean or `"smart"` | `"smart"` | `true`/`"smart"` continue a turn truncated at `max_tokens`, bounded by 8 attempts and 10 minutes, and otherwise run the keyword heuristic only when stop reason is missing. Every other stop reason, plus error, abort or latched question, stops it. Current measured CLIs always report a reason, so truncation is the only case that resumes in practice. Also gates the `▌ **no reply:**` note written when a turn finishes cleanly with no text and no tool call; `false` turns off the note as well as the continuation. |
 | `compactionModel` | string | `"claude-haiku-4-5"` | `/compact` uses a fresh short-lived process on the selected transport without the usual bridge/proxy/skill wiring. On the PTY it disables built-in tools, uses an empty strict MCP config, submits summary instructions with the transcript as text, and closes the TUI after its answer. Nonblank `CLAUDE_CODE_COMPACTION_MODEL` wins. This is inference and can be billed. |
@@ -1454,7 +1459,9 @@ built at runtime; its data fields still carry the diagnosis.
 
 Claude Code stream events the plugin now surfaces without debug logging: a rate-limit
 rejection, a context compaction the CLI did on its own, a `result` subtype other than
-`success` (which now finishes the turn as an error, not a clean stop), and a failed
+`success` (which now finishes the turn as an error, not a clean stop; so does a
+`success` result with `is_error`, an API error such as a 529 the CLI gave up on after
+its own retries, its sentence shown once), and a failed
 CLI-executed tool (forwarded with the error flag, so the row renders as failed). A
 failed MCP server at session start, an `--mcp-config` entry the CLI skipped, and an
 `apiKeySource` that means API-key billing each warn once per identity per process.
@@ -1467,7 +1474,10 @@ conversation answers it, a few seconds slower, the same cache-read cost).
 It asks through the side channel and keeps the answer in the conversation (inline
 when possible); it is excluded from Claude's normal turn history. It is still
 inference: zero reported usage for the aside does not mean free. User-defined `btw`
-commands are preserved. Do not use it as an automatic diagnostic probe.
+commands are preserved. Do not use it as an automatic diagnostic probe. opencode 2's TUI
+has a `/btw` of its own for every provider (a one-shot request from the session's
+context, shown in a dialog, not kept; opencode 1.x has none); which of the two a typed
+`/btw` reaches on opencode 2 has not been measured.
 
 ## Troubleshooting
 

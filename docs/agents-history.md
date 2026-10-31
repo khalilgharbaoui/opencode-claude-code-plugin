@@ -9666,3 +9666,117 @@ Checks: `npm run typecheck` (0), the focused files `test/always-load-verbatim`,
 bundle allowlist is untouched. `test/verbatim-own-commands.test.ts` uses the fake-CLI
 harness and is on `.github/windows-skipped-tests.txt` (h #g275); `test/user-commands.test.ts`
 is portable and runs on Windows.
+
+## Own commands from the first message, failed API results, and the comparison claims (2026-11-01)
+
+h #g281. Lane `patch` after v0.65.0, three fixes in one PR.
+
+### Own commands run as typed from the first message
+
+h #g280 sent the operator's own `/name` unstamped only once a `claude` in the same folder
+had reported the name in its `system`/`init` frame. No process reports before its first
+message, so the first message in a folder after opencode started kept the mark: a
+model-invocable command took 3 turns through `Skill`, and a `disable-model-invocation`
+one did not run. What made h #g280 safe was never the report but the file, because a user
+file beats a built-in of the same name. So the definition file now decides alone.
+
+That needed one more measurement first, because h #g280's walk for `.claude` went up to the
+filesystem root and was harmless only while the report gated it. Claude Code 2.1.314,
+`initialize` only (no message, no model call), a scratch tree with a command at each level:
+
+| cwd | commands listed |
+|---|---|
+| `above/repo/sub` (a git repository at `above/repo`) | the cwd's, the git root's, nested `ns:nested-x`, `ns:deep:deeper-x`, a skill; **not** the one in `above/.claude` |
+| `above/repo` | the git root's only |
+| `plain/a/b` (no repository) | the ancestor `plain/a`'s |
+
+Read in the binary as well: the walk (`getProjectDirsUpToHome`) stops before the home dir
+and after the first directory that is a repository root. `commandRoots` now makes that walk
+(the config dir, then `.claude` from the cwd up to the first directory holding `.git`,
+stopping before home), and a nested `/a:b:c` is checked at `commands/a/b/c.md`. A segment
+that is empty, `.`, `..` or holds a backslash is refused, so no name reads outside a root.
+
+**A plugin's colon command keeps h #g280's rule.** `/stripe:explain-error` lives in the
+CLI's plugin cache, which the plugin would have to resolve through `installed_plugins.json`
+scopes and every settings file's `enabledPlugins`; reading the cache without the enable
+state would send a disabled plugin's command unstamped. A colon name is never a built-in, so
+a `claude` in the folder listing it stays its evidence, which keeps `noteReportedCommands`
+for colon names only. Dropping the report outright would have stamped every plugin command
+again, a regression from v0.65.0.
+
+Live through the plugin (the worktree's `createClaudeCode` with the real `claude` 2.1.314,
+Haiku 5.5, scratch `XDG_STATE_HOME`), each the first message in a fresh git project:
+
+| message | answer |
+|---|---|
+| `/first-probe` (a plain command) | PELICAN-NXXQ, 1 turn, $0.0053 |
+| `/manual-probe` (`disable-model-invocation: true`) | HERON-NXXQ, 1 turn, $0.0049 |
+| `/late-probe`, its file created after that conversation's `claude` started | unstamped; "The `/late-probe` command is not installed in this session", 1 turn, $0.0071 |
+
+The third row is the one thing the report did that the file does not: Claude Code reads its
+commands when it starts, so a file added mid-conversation is unknown to the running process.
+A stamped message would not have run it either (the model answers that it has no such
+command), so nothing is lost, and the next process in the folder runs it. Recorded in the
+docs rather than gated.
+
+The probe ran with `OPENCODE_CLAUDE_CODE_LOG_FILE=1` and no `OPENCODE_CLAUDE_CODE_LOG_DIR`,
+so its 11 lines went to the live `~/.local/share/opencode-claude-code/plugin.log`; they were
+left in place (h #g274's reason). Cost: 4 Haiku 5.5 calls on the default login, $0.020.
+
+### A failed API result finishes as an error
+
+TODO.md's 2026-10-31 entry (found by h #g277): an overloaded API turn finished `stop`, so
+opencode stored the CLI's error sentence as an ordinary reply. Measured on 2.1.314,
+`--print --bare` stream-json against a local server answering every request 529 with an
+`overloaded_error` body, `ANTHROPIC_API_KEY` a fake and `CLAUDE_CODE_MAX_RETRIES=0`: one
+request, then a `<synthetic>` assistant frame (`error: "server_error"`,
+`is_api_error_message: true`, `api_error_status: 529`, `stop_reason: "stop_sequence"`) whose
+text begins "API Error: 529 Overloaded. This is a server-side issue, usually temporary",
+then a `result` with `subtype: "success"`, `is_error: true`, `terminal_reason: "api_error"`,
+`api_error_status: 529`, `total_cost_usd: 0` and the same sentence, and exit code 1.
+
+`completeResult` now sets `resultFailure ??= "error"` for every `is_error: true` result,
+placed after the usage-limit lines (so a limit keeps `usage_limit`) and after the failover
+form, `"auto"` and the fallback chain, which all return before it. The finish is
+`{unified:"error", raw:"error"}`, the compaction branch's generic cause; not the CLI's
+`terminal_reason`, because the interactive transport synthesizes `completed` for an
+API-error reply, so that field would name one failure two ways. The sentence was already
+rendered exactly once (the reply frame records `apiErrorTextShown`, h #g209), and no note
+is added beside it. `turnStats`, auto-continue and the turn-history sample were already off
+on `is_error`; the new tests pin all three. opencode 2 retries no error finish (h #g277). A
+refused model with no fallback chain (h #g161: `success` plus `is_error`) now finishes as an
+error too.
+
+### Comparison claims
+
+opencode 2's TUI has its own `/btw` (`packages/tui/src/feature-plugins/prompt/btw.tsx` in
+anomalyco/opencode, in the tree since at least September 2026): `session.generate` with the
+session's context and the question, instructions not to call tools, the answer in a dialog
+with a copy key, nothing added to the conversation. It works for every provider. The 2.2.5
+binary carries it (`session.aside`, "Ask a side question"); opencode 1.19.4's has none. And
+opencode 2's subagent tool takes a `model` per call for any provider, the built-in Claude
+Agent included. So `docs/comparison.md` no longer says the built-in has no `/btw` or lists a
+per-subagent model as something only the plugin adds; the differences it names are the
+plugin's `/btw` asking the running Claude session through Claude Code's own side question
+and writing the answer into the conversation (and existing on opencode 1.x), the dispatch
+form choosing model, effort and account per subagent and remembering them, and per-agent
+`maxTurns`/`maxBudgetUsd` caps. The README parenthetical, the landing page's `/btw` line,
+the `/btw` guide (a section on opencode 2's own) and SKILL.md were brought in line.
+
+Not measured: which of the two `/btw` commands opencode 2's TUI runs when both are
+registered. Logged in `TODO.md`.
+
+### Checks
+
+`npm run typecheck` (0). Ten focused files, `test/user-commands`, `verbatim-own-commands`,
+`cli-events-stream`, `turn-history`, `configure-skill`, `always-load-verbatim`,
+`get-claude-user-message`, `model-fallback`, `account-failover` and `interactive-pty` (263
+pass, 0); the new own-command cases fail 6 on master's module and the two 529 cases fail on
+master's `completeResult`. The first `npm test` failed 2 of 2048: `test/proxy-task.test.ts`'s
+"error result does not wait for a missing proxy call" pinned the old `stop` for a `success`
+result with `is_error` (its point, that such a result does not wait for a missing proxy
+call, holds; the finish assertion now reads `error`), and `test/plugin-copies.test.ts`'s
+resume-record case, the flake already in `TODO.md` (3 runs of the file alone, 0 each). The
+second `npm test`: 2048 pass, exit 0. `npm run build` (0, `dist/tui.js` free of log lines),
+`npm run generate:log-messages` (no change: no NOTICE, WARN or ERROR text changed), the site
+build (0, the new `#opencode-2s-own-btw` anchor resolves from the comparison page).

@@ -4185,6 +4185,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           if (state.accountLimitHit && msg.is_error === true) {
             state.resultFailure ??= "usage_limit"
           }
+          // Every other failed result nothing above named. The CLI labels an
+          // API error it gave up on `success` with `is_error: true` (measured
+          // on 2.1.314 for a 529 after its own retries: `terminal_reason:
+          // "api_error"`, the "API Error: 529 Overloaded" sentence as both the
+          // `<synthetic>` reply and the `result`), so as a `stop` opencode
+          // stored the sentence as an ordinary reply. The sentence is already
+          // on screen once (h #g209); this only makes the finish say it
+          // failed, as a failing subtype's does (h #g113, h #g281).
+          if (msg.is_error === true) {
+            state.resultFailure ??= "error"
+          }
 
           // The nudge and the one line that says the nudging stopped, both
           // in src/turn-controller.ts. True means the turn was put back to
