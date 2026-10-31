@@ -27,6 +27,7 @@ conversation-gap.test.ts
 deferred-cli-tool-result.test.ts
 do-generate.test.ts
 effort-sessions.test.ts
+live-model-switch.test.ts
 mcp-late-connect.test.ts
 mcp-tool-result-name.test.ts
 model-fallback.test.ts

@@ -152,6 +152,7 @@ import {
   takeUnattendedLines,
   describeChildCrash,
   isClaudeThinkingDisabled,
+  cliEffortLevel,
   sessionKey,
   effortSessionKey,
   findBusySpawnVariant,
@@ -178,6 +179,7 @@ import {
 import {
   cliSupportsDontAsk,
   cliSupportsInteractiveBypass,
+  cliSupportsLiveModelSwitch,
   cliSupportsRestricted,
   detectCliSupportsFlag,
   detectCliVersion,
@@ -324,6 +326,7 @@ import {
   type ExplicitTaskModel,
 } from "./task-model.js"
 import { createTurnState } from "./turn-state.js"
+import { switchLiveProcess } from "./live-switch.js"
 import { watchTurnAbort } from "./turn-abort.js"
 import { createLineHandler } from "./stream-parser.js"
 import {
@@ -1770,6 +1773,40 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       }
     }
 
+    // A model or effort change applied to this conversation's live child
+    // with the CLI's own control requests, which keeps the process, its MCP
+    // connections and its prompt cache, and saves the 4.6 to 6.6 s a respawn
+    // takes to `init` (h #g278). Only for a child that is idle: a change that
+    // lands mid-turn is served on the busy key above and arrives here on the
+    // first turn that finds it idle (h #g271). Anything it cannot do leaves the
+    // child where it was, and the lines below respawn it as they always have.
+    if (
+      !compactionMode &&
+      !busyVariant &&
+      !useInteractive &&
+      this.config.liveModelSwitch !== false &&
+      this.config.resumeAcrossModelChanges !== false
+    ) {
+      const forCli = parseModelId(stripAccountSuffix(failover.modelId))
+      await switchLiveProcess(
+        {
+          sessionKey: sk,
+          model: forCli.model,
+          fast: forCli.fast,
+          spawnModelArg: parseModelId(
+            this.config.accountInProcess ? stripAccountSuffix(failover.modelId) : failover.modelId,
+          ).model,
+          effort: reasoningEffort,
+          cliPath,
+          configDir: this.config.accountInProcess
+            ? this.skillBridgeSpawn(failover).configDir
+            : undefined,
+        },
+        options.abortSignal ? { abortSignal: options.abortSignal } : {},
+      )
+      if (turnAbort.aborted) return abortedBeforeWork("switching the live claude process")
+    }
+
     if (!compactionMode) {
       invalidateOtherSpawnVariants(sk, {
         carryConversation: this.config.resumeAcrossModelChanges !== false,
@@ -2685,6 +2722,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       useInteractive && !compactionMode && !doctor && isReadOnlyPermissionMode(this.config.permissionMode)
     const ptyReadOnlySupported = cliSupportsRestricted(cliVersion) && cliSupportsDontAsk(cliVersion)
     const ptyBypassSupported = cliSupportsInteractiveBypass(cliVersion)
+    // Whether a headless spawn on this turn can take a later model or effort
+    // change live (h #g278): it then carries its effort as `--effort` and
+    // records what it runs on `ActiveProcess.liveSwitch`.
+    const liveSwitchAtSpawn =
+      !useInteractive &&
+      !compactionMode &&
+      this.config.liveModelSwitch !== false &&
+      this.config.resumeAcrossModelChanges !== false &&
+      cliSupportsLiveModelSwitch(cliVersion)
     if (ptyReadOnly && !ptyReadOnlySupported) {
       throw new Error(
         "The read-only preset on the interactive transport needs Claude Code 2.1.263 or newer (--restricted and --permission-mode dontAsk). Update claude, or use the headless transport.",
@@ -3697,6 +3743,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               skipPermissions,
               forkFromClaudeSessionId,
               model: spawnModelId,
+              // `--effort` rather than CLAUDE_CODE_EFFORT_LEVEL where a later
+              // effort change may be applied live: the variable beats
+              // `apply_flag_settings`, the flag does not (h #g278).
+              ...(liveSwitchAtSpawn && reasoningEffort
+                ? { effort: cliEffortLevel(reasoningEffort) }
+                : {}),
               permissionMode: self.config.permissionMode,
               mcpConfig: mcp.paths,
               strictMcpConfig: self.config.strictMcpConfig,
@@ -3736,6 +3788,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               self.config.enableTodoTools === true && !compactionMode,
             )
             ap.mcpServers = spawnMcpServers
+            if (liveSwitchAtSpawn && !compactionMode) {
+              ap.liveSwitch = {
+                model: stripAccountSuffix(spawnModelId),
+                fast: fastMode,
+                effortFlag: state.cliArgs.includes("--effort"),
+              }
+            }
             state.proc = ap.proc
             state.lineEmitter = ap.lineEmitter
             state.activeProcess = ap

@@ -432,6 +432,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     proxyTools: [],
     interactive: false,
     autoContinueIncompleteTurns: false,
+    // These pin the respawn carry, which a live switch falls back to; this
+    // fake answers no control request (h #g278, test/live-model-switch.test.ts).
+    liveModelSwitch: false,
     ...(options.resumeAcrossModelChanges === undefined
       ? {}
       : { resumeAcrossModelChanges: options.resumeAcrossModelChanges }),

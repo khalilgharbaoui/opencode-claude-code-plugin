@@ -123,7 +123,8 @@ rl.on("line", async (line) => {
     ${JSON.stringify(record)},
     JSON.stringify({
       argv: args,
-      effort: process.env.CLAUDE_CODE_EFFORT_LEVEL ?? null,
+      // \`--effort\` where the spawn can switch live (h #g278), the env var otherwise.
+      effort: (args.includes("--effort") ? args[args.indexOf("--effort") + 1] : process.env.CLAUDE_CODE_EFFORT_LEVEL) ?? null,
       configDir: process.env.CLAUDE_CONFIG_DIR ?? null,
       stdin: line,
     }) + "\\n",

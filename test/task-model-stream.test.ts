@@ -103,7 +103,9 @@ rl.on("line", async (line) => {
   answered = true
   const write = (entry) => fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(entry) + "\\n")
   // Written at once, so a spawn's record never waits behind its own call.
-  write({ kind: "spawn", argv: args, effort: process.env.CLAUDE_CODE_EFFORT_LEVEL ?? null, stdin: line })
+  // \`--effort\` where the spawn can switch live (h #g278), the env var otherwise.
+  const effort = (args.includes("--effort") ? args[args.indexOf("--effort") + 1] : process.env.CLAUDE_CODE_EFFORT_LEVEL) ?? null
+  write({ kind: "spawn", argv: args, effort, stdin: line })
   emit({ type: "system", subtype: "init", session_id: "fake-session" })
   if (call && proxyUrl) {
     // Bounded: an accepted call stays parked in the broker until opencode

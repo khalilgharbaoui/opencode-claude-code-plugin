@@ -340,6 +340,7 @@ export function createClaudeCode(
       forkSessions: settings.forkSessions === true,
       resumeAfterRestart: settings.resumeAfterRestart !== false,
       resumeAcrossModelChanges: settings.resumeAcrossModelChanges !== false,
+      liveModelSwitch: settings.liveModelSwitch !== false,
       crossAccountResume: settings.crossAccountResume !== false,
       // Resolved once per model, not per turn, for the reason `accountGroups`
       // is: an invalid value WARNs at creation and a turn reads a checked one.

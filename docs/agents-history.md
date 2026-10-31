@@ -9439,3 +9439,122 @@ The fake overloaded turn (`subtype: "success"`, `is_error: true`,
 `api_error_status: 529`) finished `stop`, so opencode files the CLI's
 "API Error: 529 Overloaded" sentence as an ordinary reply. Out of this lane's
 files; worth a look beside h #g113's failing-subtype rule.
+
+## A model or effort change is applied to the live `claude` (2026-10-31)
+
+h #g278. Lane `liveswitch` of the push to stay ahead of opencode's built-in
+Claude Agent provider (anomalyco/opencode#58782, opencode 2.2.3), which changes
+a running Agent SDK session's model and effort with `set_model` and
+`apply_flag_settings` (its `sessions.test.ts`, "changes model and effort live").
+The plugin killed the child on every such change and carried the conversation to
+a new one with `--resume` (h #g215, h #g270). Built after measuring that the
+live path is no worse anywhere and faster.
+
+### What the CLI offers
+
+Read out of the 2.1.314 binary: `set_model {model}` (answers `{model}`; `null`
+or `default` resets to the session default) and `apply_flag_settings
+{settings}`, which takes `effortLevel` (string or null) among others. The
+`set_model` case and the `effortLevel` check are in the 2.1.288 and 2.1.293
+binaries too, and a live probe on 2.1.288 switched both (its `set_model`
+answers a bare `success`, no payload). `--effort <level>` is in `--help` on all
+three. The `system`/`init` field `per_turn_effort_active` documents that an
+effort change keeps the prompt cache when true, because the effort is sent
+inside the conversation; it was `true` for Haiku 5.5.
+
+### Measured
+
+All with `claude -p` stream-json and a logging reverse proxy in front of
+api.anthropic.com (`ANTHROPIC_BASE_URL`), Haiku 5.5 unless named, the
+second-turn question "What is the codename?" after "Remember MARLIN".
+
+- **Conversation and model.** Every live switch answered MARLIN on the new
+  model or effort. The next request carried the new model, its own thinking
+  config and `max_tokens` (Haiku 4.5: budget thinking, 32,000; Sonnet 5.5:
+  adaptive, 128,000), byte-identical in those fields to a `--resume` respawn.
+- **The env var beats the control request, silently.** With
+  `CLAUDE_CODE_EFFORT_LEVEL=low` in the child's environment (how the plugin
+  passed effort), `apply_flag_settings {effortLevel:"high"}` answered `success`
+  and the next request still went out at `low` (2.1.314). With `--effort low`
+  it went out at `high`. Precedence measured: shell env beats `--effort`;
+  `--effort` beats `settings.json` `effortLevel` and `modelSettings`;
+  `apply_flag_settings` beats `--effort`; `effortLevel: null` falls to the
+  model's default (`medium`), not to the flag or the settings.
+- **Cache, effort.** Turn 2 read 32,787 and wrote 109 live, against 32,622 and
+  101 respawned with `--resume`: the same.
+- **Cache, model.** The first comparison (respawn read 0 / wrote 34,061, live
+  read 13,461 / wrote 19,761 on Sonnet 5.5) was an order effect: whichever runs
+  first on a model pays its prefix. Rerun lean (`--strict-mcp-config
+  --setting-sources project`), live then respawn then live, Haiku 5.5 to 4.5:
+  live 0 / 13,874 (cold), respawn 10,125 / 3,623, live 10,125 / 3,750. A
+  `--resume`d child keeps its recorded tool set (non-MCP tool hash `2416e021`
+  for both, where a FRESH Haiku 4.5 spawn sends `58b12313`), so live and
+  respawn send the same prefix. A model change is cold for the conversation
+  either way, because the cache is per model.
+- **Latency.** `apply_flag_settings` answers in 20 to 27 ms (137 ms through the
+  plugin), `set_model` in 513 to 724 ms (711 ms through the plugin). A respawn
+  is the CLI's start: 250 to 350 ms to `init` lean, which is no slower than
+  `set_model`, but 4.6 to 6.6 s on this machine's real install (10 spawns in
+  the live `plugin.log`, the `--resume` one 6.55 s), where hooks, skills and
+  MCP servers start with every child.
+- **Mid-turn.** A `set_model` and an effort change written while a turn ran a
+  tool answered at once, and the turn's NEXT API call went out on the new
+  model. So a live switch must never touch a busy child: h #g271 already
+  serves that turn on its old key, and the switch runs only after it.
+
+### What shipped
+
+`liveModelSwitch`, default on, because it is never worse and saves the
+respawn. In the prologue, after `findBusySpawnVariant` and just before
+`invalidateOtherSpawnVariants`, `switchLiveProcess` (`src/live-switch.ts`) asks
+`findLiveSwitchSource` for this conversation's one other child whose key differs
+in nothing but the model name (the `@account` marker kept, so never across
+accounts, and the context blob whole, so a TTL or CLI-cap change still
+respawns) and the effort tail: idle, headless, with a session id and no
+pending `compress`, and only when this key holds no child or conversation of
+its own. `planLiveSwitch` refuses a fast-mode change (a `--settings` layer)
+and an effort change that is not between two explicit levels on a child whose
+effort is a flag. The requests go through `src/control-channel.ts`, matched by
+request id ahead of the normal stdout routing, like `/btw`'s. On success the
+child moves (`moveActiveProcess`; its exit and stderr handlers read
+`ActiveProcess.sessionKey` now, and the background-task ledger moves with it),
+`transferClaudeSession` moves the conversation, `rebindProxyServer` re-points
+its proxied calls (the server queued under the key it was created with), and
+its `cliArgs` and `effort` are rewritten so a watchdog respawn keeps the new
+settings. A request sent and not confirmed also stops the child, because a
+timed-out request can still land; the conversation then goes down today's
+path unchanged.
+
+So that an effort change can apply, a headless spawn on a CLI that passes
+`cliSupportsLiveModelSwitch` (2.1.288, a version gate because a CLI without
+`--effort` would refuse to start) carries its effort as `--effort` and deletes
+the inherited variable; `spawnClaudeProcess` decides from its own `cliArgs`.
+Same semantics as before: the plugin's level wins over a shell export and over
+`settings.json`. An unset effort is unchanged (the shell's value still passes
+through), which is why an effort change from or to unset respawns.
+
+The interactive transport is left on the respawn: the TUI has no stream-json
+control channel, and typing `/model` into it would be screen-driving for a
+path that is rarely used. Compaction never switches.
+
+Live through the plugin's own `doStream` on 2.1.314 (scratch log dir): Haiku
+5.5 low, then Sonnet 5.5 low, then Sonnet 5.5 high, one spawn, both switches
+logged, MARLIN on both later turns, the effort turn reading 33,690 and writing
+77.
+
+### Tests and checks
+
+`test/live-model-switch.test.ts` (14). Three fake-CLI files read the child's
+effort from the env var only and now read `--effort` first. The respawn-carry
+suites (`session-model-switch`, `restart-sibling-carry`) set
+`liveModelSwitch: false`: their fakes answer no control request, so each model
+change waited out the 10 s timeout before falling back (which is how the
+fallback was first seen working end to end). The new file is POSIX-only like
+every fake-CLI file and is listed in `.github/windows-skipped-tests.txt`.
+
+Focused runs started with `tsx --test` directly, outside the `test` script's
+scratch environment (the shell exports `OPENCODE_CLAUDE_CODE_LOG_FILE=1`,
+h #g116), appended 423 fixture lines to the live `plugin.log` (rotated to
+`plugin.log.1`) and wrote `ses_live` to `session-spawns.json` and four fake
+model keys to `turn-history.json`. No real turn reads them; they were left in
+place, as in h #g275, rather than rewriting files live processes write.
