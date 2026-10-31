@@ -134,7 +134,7 @@ import Support from '../../components/Support.astro';
       {
         claim: 'Is this allowed? How is it billed?',
         answer:
-          'The official client does the authenticating, and driving claude is what claude is for. Proxy and token-reuse plugins lift the OAuth session out of the client, which Anthropic disallowed for third-party use in February 2026; this plugin cannot do that, structurally. Headless --print usage on a subscription draws from the plan\'s ordinary limits, per Anthropic\'s own page, which the docs link and date rather than paraphrase.',
+          'The unmodified claude binary does the authenticating, with your own login, the same as running claude -p yourself, and Anthropic\'s legal page allows signing in to that binary with your own subscription. Anthropic has not approved or endorsed this plugin. Proxy and token-reuse plugins lift the OAuth session out of the client, which Anthropic disallowed for third-party use in February 2026; this plugin cannot do that, structurally. Headless --print usage on a subscription draws from the plan\'s ordinary limits, per Anthropic\'s own page, which the docs link and date rather than paraphrase.',
         source: { label: 'How this compares, with every claim sourced', href: '/comparison/' },
       },
       {
@@ -226,7 +226,7 @@ import Support from '../../components/Support.astro';
 |---|---|---|---|
 | **Authentication** | An Anthropic Platform API key in opencode's auth store. | Whatever the official `claude` CLI holds: a subscription login, an API key, Bedrock or Vertex. No token is read, stored or replayed. | The Claude OAuth session, lifted out of the official client and refreshed by the plugin itself. |
 | **What is billed** | Pay as you go on the key's Platform account. | Whatever the CLI's own login bills: plan usage limits on a subscription, pay as you go on a key. The CLI's `apiKeySource` says which, on every session. | The subscription the reused session belongs to. |
-| **Terms of service** | The ordinary API route. Nothing unusual about it. | Sanctioned: the official client does the authenticating, and driving `claude` is what `claude` is for. | Disallowed. Anthropic disallowed reusing subscription authentication for third-party Claude use in February 2026, and each of those projects carries its own disclaimer. |
+| **Terms of service** | The ordinary API route. Nothing unusual about it. | Uses the official client: Claude Code does the authenticating, the same as running `claude -p` yourself. Anthropic's [legal page](https://code.claude.com/docs/en/legal-and-compliance) allows signing in to the unmodified binary; it has not approved or endorsed this plugin. | Disallowed. Anthropic disallowed reusing subscription authentication for third-party Claude use in February 2026, and each of those projects carries its own disclaimer. |
 | **Who runs Bash, Edit, Write** | opencode, behind its permission prompts. | opencode, behind its permission prompts: those tools are proxied by default. Read, Grep and Glob run inside Claude Code. | opencode. |
 | **Claude Code's tools, MCP servers, skills** | Not involved: opencode's own tools only. | Claude's built-ins run in Claude Code, opencode's MCP servers are bridged in, opencode's skills can be staged for Claude's Skill tool. | Not involved: the model call is an ordinary API call. |
 | **What it costs you** | Baseline. | A `claude` child per conversation (about 250 MB idle) under a cap of 16, a local keyword title instead of a model-written one, and Claude Code's own compaction happening behind opencode's back. | One more moving part between you and Anthropic, plus the account risk in the terms row. |
@@ -235,6 +235,10 @@ import Support from '../../components/Support.astro';
 
   <p class="occ-also">
     <a href="comparison/">The full comparison</a> has nine rows, names the projects in the third column, and links the policy sources with the date they were last read.
+  </p>
+
+  <p class="occ-also">
+    On opencode 2.2.3 or later with one Claude login, also look at opencode's own Claude Agent provider: it drives your own <code>claude</code> too, runs every tool in opencode, and leaves your <code>~/.claude</code> setup out. The comparison has <a href="comparison/#opencodes-built-in-claude-agent-provider">a section on it</a>, including what this plugin still adds.
   </p>
 </LandingSection>
 
