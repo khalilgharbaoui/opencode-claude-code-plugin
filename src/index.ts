@@ -315,7 +315,9 @@ export function createClaudeCode(
       controlRequestDenyMessage: settings.controlRequestDenyMessage,
       proxyTools,
       proxyOpencodeTools: settings.proxyOpencodeTools,
+      alwaysLoadProxyTools: settings.alwaysLoadProxyTools,
       stripContextReminders: settings.stripContextReminders === true,
+      verbatimPrompts: settings.verbatimPrompts !== false,
       extraDisallowedTools:
         preset?.extraDisallowedTools ?? settings.extraDisallowedTools,
       mapReadRules: settings.mapReadRules,

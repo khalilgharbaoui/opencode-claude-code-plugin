@@ -52,6 +52,43 @@ export interface ProxyToolDef {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  /** MCP tool metadata, served verbatim in `tools/list` (see `applyAlwaysLoad`). */
+  _meta?: Record<string, unknown>
+}
+
+/** The MCP `_meta` key that keeps a tool out of Claude Code's `ToolSearch`. */
+export const ALWAYS_LOAD_META_KEY = "anthropic/alwaysLoad"
+
+/**
+ * The proxy tools Claude Code loads into every request when
+ * `alwaysLoadProxyTools` is unset (h #g276). The three a coding turn calls
+ * most: measured on 2.1.314 they add 531 prompt tokens per API call and save
+ * the `ToolSearch` request the first proxied call otherwise costs. `task` and
+ * `task_batch` stay deferred together, so the dispatch path the subagent hint
+ * describes is the one it always was.
+ */
+export const DEFAULT_ALWAYS_LOAD_PROXY_TOOLS: readonly string[] = ["bash", "edit", "write"]
+
+/**
+ * Marks the defs `alwaysLoadProxyTools` names with
+ * `_meta["anthropic/alwaysLoad"]: true`, so Claude Code puts them in every
+ * request instead of behind `ToolSearch`. `true` marks every def, `false`
+ * none, a list the defs it names (case-insensitive), unset
+ * `DEFAULT_ALWAYS_LOAD_PROXY_TOOLS`. Returns new objects and leaves the
+ * input untouched.
+ */
+export function applyAlwaysLoad(
+  tools: ProxyToolDef[],
+  setting: boolean | readonly string[] | undefined,
+): ProxyToolDef[] {
+  const names = setting ?? DEFAULT_ALWAYS_LOAD_PROXY_TOOLS
+  if (names === false) return tools
+  const wanted = names === true ? null : new Set(names.map((name) => name.toLowerCase()))
+  return tools.map((tool) =>
+    wanted && !wanted.has(tool.name.toLowerCase())
+      ? tool
+      : { ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD_META_KEY]: true } },
+  )
 }
 
 /**
@@ -1429,6 +1466,7 @@ export async function createProxyMcpServer(
               name: t.name,
               description: t.description,
               inputSchema: t.inputSchema,
+              ...(t._meta ? { _meta: t._meta } : {}),
             })),
           },
         })

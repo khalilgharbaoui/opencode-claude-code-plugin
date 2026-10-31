@@ -32,6 +32,25 @@ the proxy endpoint, `--append-system-prompt-file`, `--plugin-dir` for staged ski
 conversation already has one. If a process is already there it is reused and only the new
 user message is written to its stdin.
 
+## Your message reaches Claude as written
+
+A headless `claude` reads the last text block of each user message the way it reads typing:
+a leading `/` runs one of its own commands and an `@path` attaches that file. Measured on
+Claude Code 2.1.314, a message `/model claude-sonnet-5-5` switched the running process to
+Sonnet without a model call while opencode still showed the model it had picked, `/cost`
+answered with Claude Code's usage screen, and a message starting with a path such as
+`/etc/hosts is broken` reached the model without the environment, deferred-tool, agent and
+skill context of its turn (11,887 fewer prompt tokens).
+
+So every user message the plugin writes carries `client_composed: true`, the field the Agent
+SDK's `verbatimPrompts` sets. The text then reaches Claude unchanged. Measured: hooks
+(`UserPromptSubmit` context included), `CLAUDE.md` and the skill listing still arrive; the
+only per-turn note that does not is the `ultrathink` keyword's reminder, so use an effort
+variant instead. An envelope answering a tool call is left as it was. `/btw` and
+`/claude-code-doctor` are opencode commands the plugin answers before Claude Code sees
+anything, so they are unaffected. Turn it off with `verbatimPrompts: false`. The interactive
+transport types into Claude Code's own input instead and is not covered.
+
 ## The stream
 
 `src/stream-parser.ts` turns the CLI's stream-json lines into AI SDK parts: text,

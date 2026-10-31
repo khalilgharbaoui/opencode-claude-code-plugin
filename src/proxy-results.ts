@@ -17,6 +17,7 @@ import {
 } from "./proxy-mcp.js"
 import type { PendingProxyCall } from "./proxy-broker.js"
 import { log } from "./logger.js"
+import { userEnvelope } from "./user-envelope.js"
 
 /**
  * A proxy result whose HTTP reply channel Claude already abandoned cannot
@@ -25,6 +26,7 @@ import { log } from "./logger.js"
  */
 export function makeLateProxyResultMessage(
   entries: Array<{ call: PendingProxyCall; result: ProxyToolResult }>,
+  verbatim = false,
 ): string {
   const sections = entries.map(({ call, result }) => {
     const failed = result.kind === "error" || result.isError === true
@@ -36,13 +38,9 @@ export function makeLateProxyResultMessage(
       ` do not re-run it.\n\n${body}`
     )
   })
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content: [{ type: "text", text: sections.join("\n\n---\n\n") }],
-    },
-  })
+  // Stamped like a user message: the body is tool output, and an `@path` in
+  // it would otherwise attach that file (h #g276).
+  return userEnvelope([{ type: "text", text: sections.join("\n\n---\n\n") }], verbatim)
 }
 
 export function extractPendingProxyResult(

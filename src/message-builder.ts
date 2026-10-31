@@ -25,6 +25,7 @@ import {
 import { BUDGET_MARKER } from "./budget-ledger.js"
 import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
+import { userEnvelope } from "./user-envelope.js"
 import { MODEL_FALLBACK_MARKER } from "./model-fallback.js"
 import { parseSideQuestionContent } from "./side-question.js"
 import { STALE_BUILD_MARKER } from "./stale-build.js"
@@ -593,9 +594,16 @@ export function getClaudeUserMessage(
      * which carries everything already, and on a compaction turn.
      */
     missed?: Prompt
+    /**
+     * Stamp `client_composed` so the CLI delivers the text as written, with
+     * no slash-command dispatch and no `@path` expansion (h #g276). The
+     * caller resolves `verbatimPrompts`; omitted, the envelope is unchanged.
+     */
+    verbatimPrompts?: boolean
   } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
+  const verbatim = opts.verbatimPrompts === true
   const cliToolCallIds = opts.cliToolCallIds
   const content: any[] = []
 
@@ -774,22 +782,10 @@ Now continuing with the current message:
     // which the model reads as out-of-band metadata rather than a prompt to
     // continue its previous turn.
     log.warn("empty user content; sending sentinel to satisfy CLI")
-    return JSON.stringify({
-      type: "user",
-      message: {
-        role: "user",
-        content: [{ type: "text", text: "(empty)" }],
-      },
-    })
+    return userEnvelope([{ type: "text", text: "(empty)" }], verbatim)
   }
 
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content,
-    },
-  })
+  return userEnvelope(content, verbatim)
 }
 
 /**

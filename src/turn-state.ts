@@ -73,6 +73,8 @@ export interface TurnState {
   readonly cliPath: string
   /** Passed to a respawn so `claudeSpawnEnv` strips the key the same way. */
   readonly ignoreAnthropicApiKey?: boolean
+  /** `verbatimPrompts`, for the envelopes the controller writes itself (h #g276). */
+  readonly verbatimPrompts: boolean
   /** Bound `this.toUsage`, so a moved handler keeps the model's own conversion. */
   readonly toUsage: (raw?: ClaudeStreamMessage["usage"]) => LanguageModelV3Usage
   /** Bound `this.toFinishReason`, same reason. */
@@ -330,6 +332,8 @@ export interface TurnStateInit {
   cwd: string
   cliPath: string
   ignoreAnthropicApiKey?: boolean
+  /** Stamp the nudge and a late proxy result `client_composed`. Default false. */
+  verbatimPrompts?: boolean
   /** This turn's envelope, which is also what a respawn re-sends. */
   userMsg: string
   /** `autoContinueEnabledFor(compactionMode, configured)`, resolved by the caller. */
@@ -374,6 +378,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     cwd: init.cwd,
     cliPath: init.cliPath,
     ignoreAnthropicApiKey: init.ignoreAnthropicApiKey,
+    verbatimPrompts: init.verbatimPrompts === true,
     toUsage: init.toUsage,
     toFinishReason: init.toFinishReason,
     resultFallbackMs: resolveResultFallbackMs(),
