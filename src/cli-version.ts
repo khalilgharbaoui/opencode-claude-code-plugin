@@ -383,6 +383,18 @@ export function _resetUnmeasuredInteractiveWarnings(): void {
   warnedUnmeasuredInteractive.clear()
 }
 
+/**
+ * The live model and effort switch (h #g278): `--effort <level>` at spawn, and
+ * the `set_model` and `apply_flag_settings {effortLevel}` control requests.
+ * All three run on 2.1.288 and 2.1.314 and are in the 2.1.293 binary, so the
+ * gate sits at the oldest that was run. A CLI without `--effort` refuses to
+ * start with it, which is why this is a version gate and not a fallback.
+ */
+export function cliSupportsLiveModelSwitch(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 288 })
+}
+
 /** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
 export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
   if (!v) return false

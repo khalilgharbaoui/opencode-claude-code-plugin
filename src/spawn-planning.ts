@@ -472,12 +472,20 @@ export async function ensureProxyServer(
 ): Promise<ProxyMcpServer> {
   const timeoutOverrides = config.proxyToolTimeoutMs
   const interceptors = new Map<string, ProxyToolInterceptor>()
+  // Read at call time, not captured: a live model or effort switch moves the
+  // child, and this server with it, to another session key (h #g278).
+  const route = { sessionKey: sessionKeyForCalls }
   // Background collect/cancel act on opencode's session state, not on the
   // workspace, and opencode has no tools of these names to execute, so they
   // are answered in-process like `compress` rather than queued for the host.
   // Registered only when the def survived the capability gate.
   if (tools.some((t) => t.name === TASK_STATUS_TOOL_NAME)) {
-    const opts = { sessionKey: sessionKeyForCalls, callerSessionId }
+    const opts = {
+      get sessionKey() {
+        return route.sessionKey
+      },
+      callerSessionId,
+    }
     interceptors.set(TASK_STATUS_TOOL_NAME, (input) => collectBackgroundTask(input, opts))
     interceptors.set(TASK_CANCEL_TOOL_NAME, (input) => cancelBackgroundTask(input, opts))
   }
@@ -492,9 +500,9 @@ export async function ensureProxyServer(
             " prior context after the reset. Nothing was compressed.",
         }
       }
-      storeCompressionSummary(sessionKeyForCalls, summary)
+      storeCompressionSummary(route.sessionKey, summary)
       log.info("compress stored summary; session resets next turn", {
-        sessionKey: sessionKeyForCalls,
+        sessionKey: route.sessionKey,
         summaryLength: summary.length,
       })
       return {
@@ -569,9 +577,24 @@ export async function ensureProxyServer(
     else if (call.toolName === TASK_BATCH_TOOL_NAME) {
       noteExplicitTaskModels(callerSessionId, taskBatchTasks(call.input))
     }
-    queuePendingProxyCall(sessionKeyForCalls, call, timeoutOverrides)
+    queuePendingProxyCall(route.sessionKey, call, timeoutOverrides)
   })
+  proxyRoutes.set(srv, route)
   return srv
+}
+
+const proxyRoutes = new WeakMap<ProxyMcpServer, { sessionKey: string }>()
+
+/**
+ * Queue a proxy server's calls under another session key from now on, for a
+ * child moved there by a live model or effort switch (h #g278). False for a
+ * server this module did not create.
+ */
+export function rebindProxyServer(server: ProxyMcpServer, sessionKey: string): boolean {
+  const route = proxyRoutes.get(server)
+  if (!route) return false
+  route.sessionKey = sessionKey
+  return true
 }
 
 /**

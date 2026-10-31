@@ -89,7 +89,8 @@ record({
   type: "spawn",
   args,
   sessionId,
-  effort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null,
+  // \`--effort\` where the spawn can switch live (h #g278), the env var otherwise.
+  effort: (args.includes("--effort") ? args[args.indexOf("--effort") + 1] : process.env.CLAUDE_CODE_EFFORT_LEVEL) || null,
   ttl: process.env.CLAUDE_CODE_PROMPT_CACHE_TTL || null,
 })
 emit({ type: "system", subtype: "init", session_id: sessionId })
@@ -114,6 +115,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     proxyTools: [],
     interactive: false,
     autoContinueIncompleteTurns: false,
+    // These pin the respawn carry, which a live switch falls back to; this
+    // fake answers no control request (h #g278, test/live-model-switch.test.ts).
+    liveModelSwitch: false,
   } as any)
 
   const keys: string[] = []

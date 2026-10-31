@@ -126,6 +126,8 @@ export interface ClaudeCodeConfig {
   resumeAfterRestart?: boolean
   /** Carry a conversation's Claude session over when its model or effort changes. Default true. */
   resumeAcrossModelChanges?: boolean
+  /** Apply a model or effort change to the live `claude` process. Default true. */
+  liveModelSwitch?: boolean
   /** Carry a conversation's Claude transcript over on an account switch. Default true. */
   crossAccountResume?: boolean
   /** See `ClaudeCodeProviderSettings.maxBudgetUsd`. Resolved; unset is off. */
@@ -801,6 +803,30 @@ export interface ClaudeCodeProviderSettings {
    * false` turns this off too.
    */
   resumeAcrossModelChanges?: boolean
+
+  /**
+   * Apply a model or reasoning effort change to the conversation's running
+   * `claude` process, with the CLI's own `set_model` and `apply_flag_settings`
+   * control requests, instead of stopping it and starting another with
+   * `--resume`. Default `true`.
+   *
+   * Measured on Claude Code 2.1.288 and 2.1.314 (h #g278): the conversation is
+   * kept, the next request goes out under the new model or effort, and the
+   * prompt cache reads and writes are the same as the respawn's. What it saves
+   * is the respawn itself, 4.6 to 6.6 seconds to `system`/`init` per change on
+   * a real install, against about 25 ms for an effort change and 0.5 to 0.7 s
+   * for a model change. To make an effort change possible, a headless spawn
+   * carries its effort as `--effort` and drops CLAUDE_CODE_EFFORT_LEVEL: the
+   * variable beats a live change silently.
+   *
+   * Only between two models on the same account and in the same fast mode,
+   * between two explicit efforts, on an idle child (a change that lands
+   * mid-turn still finishes that turn on the old settings, h #g271), and on
+   * the headless transport: the interactive one has no control channel and
+   * keeps respawning. Any refusal or timeout falls back to the respawn. Needs
+   * `resumeAcrossModelChanges`; `false` here restores the respawn exactly.
+   */
+  liveModelSwitch?: boolean
 
   /**
    * Continue the same Claude conversation when it moves to another account,

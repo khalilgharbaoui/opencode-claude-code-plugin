@@ -125,6 +125,20 @@ export function clearBackgroundTasks(sessionKey: string): void {
   cancelled.delete(sessionKey)
 }
 
+/**
+ * Hand one key's ledger to another, for a live child that changed its model or
+ * effort in place (h #g278): the conversation and the task ids it was given
+ * are the same, so a result already collected must stay collected.
+ */
+export function moveBackgroundTasks(fromKey: string, toKey: string): void {
+  for (const ledger of [collected, cancelled]) {
+    const ids = ledger.get(fromKey)
+    if (!ids) continue
+    ledger.delete(fromKey)
+    ledger.set(toKey, ids)
+  }
+}
+
 /** Test seam: forget every ledger and the recorded gate. */
 export function _resetBackgroundTasks(): void {
   collected.clear()

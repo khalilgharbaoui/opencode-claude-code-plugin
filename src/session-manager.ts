@@ -22,8 +22,8 @@ import {
   hasPendingSubagentDispatch,
 } from "./subagent-dispatch.js"
 import { forgetExplicitTaskModel, hasUnclaimedExplicitTaskModels } from "./task-model.js"
-import { clearCompression } from "./compression-store.js"
-import { clearBackgroundTasks } from "./background-tasks.js"
+import { clearCompression, getCompressionSummary } from "./compression-store.js"
+import { clearBackgroundTasks, moveBackgroundTasks } from "./background-tasks.js"
 import { forgetForkFingerprint, moveForkFingerprint, withoutSpawnSettings } from "./session-fork.js"
 import { forgetServedConversation, moveServedConversation } from "./conversation-gap.js"
 import { forgetResumePoint, moveResumePoint } from "./session-resume-store.js"
@@ -41,6 +41,7 @@ import { isReadOnlyPermissionMode } from "./permission-presets.js"
 import { planClaudeSpawn } from "./windows-spawn.js"
 import type { ReasoningEffort } from "./types.js"
 import { dispatchSideQuestionResponse, isSideQuestionPending } from "./side-question.js"
+import { dispatchControlResponse } from "./control-channel.js"
 import { noteRelayMemberServing } from "./session-event-relay.js"
 
 export interface ActiveProcess {
@@ -66,6 +67,22 @@ export interface ActiveProcess {
   systemPromptFile?: string
   /** Effort the process was spawned with, so a respawn keeps it. */
   effort?: ReasoningEffort
+  /**
+   * The session key this child serves now. Set at spawn, and moved with the
+   * child by `moveActiveProcess` when a model or effort change is applied to
+   * it live (h #g278), so its exit and stderr handlers act on the key it
+   * belongs to rather than the one it was spawned under.
+   */
+  sessionKey?: string
+  /**
+   * Set only on a headless child that can take a model or effort change live
+   * (`liveModelSwitch`, a CLI that answers `set_model` and
+   * `apply_flag_settings`): the model the CLI is running, without the
+   * `@account` marker or the `-fast` suffix, whether it runs in fast mode, and
+   * whether its effort travels as `--effort`, which is the only spawn-time
+   * form `apply_flag_settings` beats (h #g278).
+   */
+  liveSwitch?: { model: string; fast: boolean; effortFlag: boolean }
   /** Prompt cache TTL the process was spawned with, so a respawn keeps it. */
   promptCacheTtl?: string
   /** Whether the child was spawned with `enableTodoTools`, so a respawn keeps it. */
@@ -335,6 +352,14 @@ export function claudeSpawnEnv(opts?: {
   configDir?: string
   /** The `enableTodoTools` provider option; see `todoToolsEnv`. */
   enableTodoTools?: boolean
+  /**
+   * The spawn carries its effort as `--effort` (h #g278). The inherited
+   * CLAUDE_CODE_EFFORT_LEVEL is then removed rather than set: the variable
+   * beats both the flag and a live `apply_flag_settings` (measured on 2.1.314,
+   * the request kept `low` after a `success` answer), so leaving a shell
+   * export in place would make every live effort change a silent no-op.
+   */
+  effortViaFlag?: boolean
 }): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -354,7 +379,9 @@ export function claudeSpawnEnv(opts?: {
   // instead of refusing to start. Unlike the thinking vars below, an explicit
   // effort from the request wins over the shell: the variant picker and an
   // agent's `reasoningEffort` are per-request choices, a shell export is not.
-  if (opts?.effort) {
+  if (opts?.effortViaFlag) {
+    delete env.CLAUDE_CODE_EFFORT_LEVEL
+  } else if (opts?.effort) {
     env.CLAUDE_CODE_EFFORT_LEVEL = cliEffortLevel(opts.effort)
   }
 
@@ -1230,6 +1257,79 @@ export function findBusySpawnVariant(requestedKey: string): string | undefined {
 }
 
 /**
+ * A key with its model name blanked (the `@account` marker kept) and its
+ * effort tail removed, and nothing else. Unlike `conversationIdentity` the
+ * spawn settings in the context blob stay in: a prompt cache TTL or a CLI cap
+ * is an env var or a flag the CLI read at start, and no control request
+ * changes it on a live child. Undefined for compaction keys, keys of another
+ * shape, and the shared `default` affinity.
+ */
+function liveSwitchIdentity(key: string): string | undefined {
+  const parts = key.split("::")
+  if (parts.length > 1 && parts[parts.length - 1].startsWith("effort=")) parts.pop()
+  if (parts.length !== 5 || parts[2] === "compaction" || parts[3] === "default") return undefined
+  parts[1] = parts[1].replace(/^[^@]*/, "*")
+  return parts.join("::")
+}
+
+export type LiveSwitchSource =
+  | { kind: "none" }
+  | { kind: "source"; fromKey: string; process: ActiveProcess }
+  | { kind: "refused"; fromKey: string; reason: string }
+
+/**
+ * The live child a model or effort change could be applied to in place
+ * (h #g278): this conversation's only other child, on the same account,
+ * agent, scope, cwd and spawn settings, differing in nothing but the model
+ * name and the effort. `none` when there is no such child or when this key
+ * already holds a child or a conversation of its own; `refused`, with a kebab
+ * reason, when there is one but it cannot take the change, and the caller
+ * keeps today's respawn. Reads the maps directly, never `getActiveProcess`,
+ * which would refresh LRU order and cancel idle timers on a lookup.
+ */
+export function findLiveSwitchSource(requestedKey: string): LiveSwitchSource {
+  const identity = liveSwitchIdentity(requestedKey)
+  if (!identity) return { kind: "none" }
+  if (activeProcesses.has(requestedKey) || claudeSessions.has(requestedKey)) return { kind: "none" }
+  const candidates = [...activeProcesses.keys()].filter(
+    (key) => key !== requestedKey && liveSwitchIdentity(key) === identity,
+  )
+  if (candidates.length === 0) return { kind: "none" }
+  const fromKey = candidates[0]
+  const refuse = (reason: string): LiveSwitchSource => ({ kind: "refused", fromKey, reason })
+  if (candidates.length > 1) return refuse("several-children")
+  const ap = activeProcesses.get(fromKey)!
+  if (ap.interactiveControl) return refuse("interactive-transport")
+  if (!ap.liveSwitch) return refuse("not-switchable")
+  if (hasProcessExited(ap.proc)) return refuse("child-exited")
+  if (!claudeSessions.has(fromKey)) return refuse("no-session")
+  if (isTurnInFlight(ap) || spawnHasPendingWork(fromKey)) return refuse("busy")
+  // A `compress` summary waits for the next turn to start a fresh session
+  // around it; a moved child would carry the old context past it.
+  if (getCompressionSummary(fromKey) !== undefined) return refuse("compression-pending")
+  return { kind: "source", fromKey, process: ap }
+}
+
+/**
+ * Move a live child from one session key to another, for a model or effort
+ * change applied to it in place (h #g278). The caller moves the Claude
+ * conversation with `transferClaudeSession` and re-points the child's proxy
+ * server; this moves the child itself, and its exit and stderr handlers follow
+ * through `ActiveProcess.sessionKey`. Refuses when the destination already has
+ * a child.
+ */
+export function moveActiveProcess(fromKey: string, toKey: string): boolean {
+  const ap = activeProcesses.get(fromKey)
+  if (!ap || fromKey === toKey || activeProcesses.has(toKey)) return false
+  cancelIdleProcessEviction(fromKey)
+  activeProcesses.delete(fromKey)
+  ap.sessionKey = toKey
+  setActiveProcess(toKey, ap)
+  moveBackgroundTasks(fromKey, toKey)
+  return true
+}
+
+/**
  * Retire every other spawn of this conversation before deciding whether to
  * replay history: the keys `spawnIdentity` reads as the same conversation,
  * model and agent under another effort, prompt cache TTL, `maxTurns` or
@@ -1339,7 +1439,15 @@ export function spawnClaudeProcess(
   const proc = spawn(plan.file, plan.args, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: claudeSpawnEnv({ ignoreAnthropicApiKey, effort, promptCacheTtl, configDir, enableTodoTools }),
+    env: claudeSpawnEnv({
+      ignoreAnthropicApiKey,
+      effort,
+      promptCacheTtl,
+      configDir,
+      enableTodoTools,
+      // A respawn reuses the args, so it keeps whichever form the spawn chose.
+      effortViaFlag: cliArgs.includes("--effort"),
+    }),
     windowsVerbatimArguments: plan.windowsVerbatimArguments,
   })
 
@@ -1352,6 +1460,7 @@ export function spawnClaudeProcess(
     mcpHash,
     systemPromptFile,
     effort,
+    sessionKey,
     promptCacheTtl,
     enableTodoTools,
     startedAt: Date.now(),
@@ -1362,9 +1471,11 @@ export function spawnClaudeProcess(
     unattendedDropped: 0,
   }
 
+  const spawnedKey = sessionKey
   const rl = createInterface({ input: proc.stdout! })
   rl.on("line", (line: string) => {
     if (dispatchSideQuestionResponse(ap, line)) return
+    if (dispatchControlResponse(ap, line)) return
     noteTurnLine(ap, line)
     noteInitLine(ap, line)
     if (lineEmitter.listenerCount("line") === 0) {
@@ -1403,6 +1514,9 @@ export function spawnClaudeProcess(
   })
 
   proc.on("exit", (code, signal) => {
+    // The key this child serves NOW: a live model or effort switch moves it
+    // (h #g278), and the key it was spawned under no longer names it.
+    const sessionKey = ap.sessionKey ?? spawnedKey
     log.info("claude process exited", { code, signal, sessionKey })
     void proxyServer?.close()
     if (systemPromptFile) {
@@ -1446,6 +1560,7 @@ export function spawnClaudeProcess(
   })
 
   proc.stderr?.on("data", (data: Buffer) => {
+    const sessionKey = ap.sessionKey ?? spawnedKey
     const stderr = data.toString()
     log.debug("stderr", { data: stderr.slice(0, 200) })
     retainStderr(ap, stderr)
@@ -1597,6 +1712,9 @@ export function respawnActiveProcess(
   // to ride with it, or the next turn's hot-reload diff reports every server
   // as newly joined.
   replacement.mcpServers = old.mcpServers
+  // Same args, so the same capability, including a model or effort an earlier
+  // live switch already applied to them (h #g278).
+  replacement.liveSwitch = old.liveSwitch
   replacement.pendingProxyCompletions = old.pendingProxyCompletions
   delete old.pendingProxyCompletions
   if (turnWasInFlight) noteTurnStarted(replacement)
@@ -1627,6 +1745,12 @@ export function buildCliArgs(opts: {
   thinking?: "enabled" | "disabled"
   thinkingDisplay?: "summarized" | "omitted"
   fastMode?: boolean
+  /**
+   * `--effort <level>`, the CLI's own spelling, already gated by the caller
+   * (`liveModelSwitch` on a CLI that answers `apply_flag_settings`). Set, the
+   * spawn drops CLAUDE_CODE_EFFORT_LEVEL instead of setting it (h #g278).
+   */
+  effort?: string
   cliVersion?: CliVersion | null
   /**
    * `--max-turns`: API round trips the CLI allows per user message (h #g245).
@@ -1654,6 +1778,7 @@ export function buildCliArgs(opts: {
     thinking,
     thinkingDisplay,
     fastMode,
+    effort,
     cliVersion,
     maxTurns,
     maxBudgetUsd,
@@ -1670,6 +1795,9 @@ export function buildCliArgs(opts: {
 
   if (model) {
     args.push("--model", model)
+  }
+  if (effort) {
+    args.push("--effort", effort)
   }
 
   // The read-only preset arrives as an internal `permissionMode` token rather
