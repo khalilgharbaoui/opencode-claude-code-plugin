@@ -13,6 +13,8 @@ The same package runs on opencode 1.x and 2.x, and nothing changes for 1.x. The 
 }
 ```
 
+`opencode plugin add @khalilgharbaoui/opencode-claude-code-plugin` writes that entry and installs the package for you. With no `accounts` the provider is named **Claude Code**, id `claude-code`, so a model's full id is `claude-code/claude-haiku-5-5`. On opencode 2.1.4, `opencode plugin list` prints `No plugins found` even while the plugin is loaded, and `opencode plugin check` and `opencode plugin update` do not see it; `/claude-code-doctor` or `opencode models | grep claude-code` is the check, and the package cache to clear after a release is `~/.cache/opencode/npm/@khalilgharbaoui/opencode-claude-code-plugin@latest` (see [Longer cases](troubleshooting/longer-cases.md#nothing-in-the-picker-or-a-version-you-just-upgraded-to-is-missing)).
+
 Your existing `provider.claude-code.options` block keeps working, because opencode 2 still reads 1.x config files. opencode 2's own spelling is `providers.claude-code.settings` (note the plural `providers`). All four places the plugin reads its settings from, lowest precedence first: `provider.claude-code.options`, `provider.claude-code.settings`, `providers.claude-code.settings`, and the plugin entry's own `options`, which wins over all of them. Plugin-level settings such as `accounts` usually go in that last one: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
 
 For a local checkout, point opencode 2 at the **`dist` directory**, not the repository root. It loads `<dir>/server` or `<dir>/index` from a directory and never reads `package.json#main`:

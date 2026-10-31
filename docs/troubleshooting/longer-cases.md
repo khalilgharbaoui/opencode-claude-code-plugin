@@ -18,11 +18,18 @@ One `NOTICE: claude-code plugin ready` entry per process reports the plugin vers
 
 **No line.** The plugin did not load. Confirm the package spec is in `plugin` (opencode 1.x) or `plugins` (2.x), that a local checkout points at the repository root on 1.x and at `dist/` on 2.x, and that you fully relaunched: plugins are loaded once, at process start.
 
-**A line naming an older version.** That is opencode's package cache. It resolves the `@latest` spec once and freezes the concrete version, so restarting never re-resolves the tag. Delete the entry and relaunch:
+**A line naming an older version.** That is opencode's package cache. It resolves the `@latest` spec once and freezes the concrete version, so restarting never re-resolves the tag. The two majors keep that cache in different directories; delete the entry for the one you run and relaunch:
 
 ```bash
+# opencode 1.x
 rm -rf ~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest
+# opencode 2.x
+rm -rf ~/.cache/opencode/npm/@khalilgharbaoui/opencode-claude-code-plugin@latest
 ```
+
+`$XDG_CACHE_HOME/opencode/` replaces `~/.cache/opencode/` when that variable is set. On opencode 2.1.4, `opencode plugin check` and `opencode plugin update` do not see this plugin, so they cannot refresh it; deleting the entry is the way. `opencode plugin list` does not see it either and prints `No plugins found` while it is loaded, so check with `/claude-code-doctor` or `opencode models | grep claude-code` instead.
+
+If the new version is on npm and opencode still resolves the old one, a registry proxy or security agent with a minimum package age can be hiding the release from your machine, sometimes for hours. opencode then caches the older version it was given, so delete the entry again once the new version is visible to `npm view @khalilgharbaoui/opencode-claude-code-plugin version`.
 
 A `file://` install is different: it runs the checkout's `dist/`, so rebuild with `npm run build` and restart rather than deleting anything.
 

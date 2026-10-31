@@ -171,7 +171,13 @@ import Support from '../../components/Support.astro';
      }
      ```
 
-  3. **Quit opencode fully and relaunch.** Plugins load once, at process start. The model picker now has a **Claude Code (Default)** provider with entries such as `Claude Sonnet 5.5 (2×)` and `Claude Opus 5 (5×)`; the suffix is each model's list price relative to Haiku.
+     opencode 1.x and 2.x both read it. opencode 2's native key is `plugins`, and `opencode plugin add @khalilgharbaoui/opencode-claude-code-plugin` writes that entry and installs the package for you.
+
+  3. **Quit opencode fully and relaunch.** Plugins load once, at process start. The model picker now has a **Claude Code** provider (opencode 1.x labels it with its id, `claude-code`) with entries such as `Claude Sonnet 5.5 (2×)` and `Claude Opus 5 (5×)`; the suffix is each model's list price relative to Haiku. A model's full id is `claude-code/<model>`, so one line checks it from a terminal:
+
+     ```bash
+     opencode run -m claude-code/claude-haiku-5-5 "reply with ok"
+     ```
 
   </Steps>
 

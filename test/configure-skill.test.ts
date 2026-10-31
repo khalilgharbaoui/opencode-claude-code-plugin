@@ -125,6 +125,7 @@ test("the skill states the two facts every configuration change depends on", () 
   assert.match(SKILL, /provider\.claude-code\.options/)
   assert.match(SKILL, /read once, at opencode startup/i)
   assert.ok(SKILL.includes("~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest/"))
+  assert.ok(SKILL.includes("~/.cache/opencode/npm/@khalilgharbaoui/opencode-claude-code-plugin@latest/"))
   assert.ok(SKILL.includes("get approval before removing"))
 })
 
