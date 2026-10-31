@@ -10,7 +10,7 @@
  * `test/turn-progress-store.test.ts`.
  */
 import assert from "node:assert/strict"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -382,6 +382,69 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", ()
     assert.equal(live.out, 150)
     assert.ok(live.turn >= started && live.turn <= entry.at, "the turn's start, as the server half marked it")
     assert.ok(!JSON.stringify(channel).includes(affinity), "never the session id itself")
+  } finally {
+    for (const active of snapshotActiveProcesses()) {
+      if (active.sessionKey.includes(affinity)) await deleteActiveProcessAndWait(active.sessionKey)
+    }
+    if (savedHome === undefined) delete process.env.HOME
+    else process.env.HOME = savedHome
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = savedState
+    _setTurnHistoryStorePathForTests(null)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a turn that ended on an API error the CLI gave up on records no sample", { skip: process.platform === "win32" }, async () => {
+  const dir = scratch()
+  const savedHome = process.env.HOME
+  const savedState = process.env.XDG_STATE_HOME
+  const { createClaudeCode } = await import("../src/index.js")
+  const { deleteActiveProcessAndWait, snapshotActiveProcesses } = await import("../src/session-manager.js")
+  const cwd = join(dir, "project")
+  mkdirSync(cwd, { recursive: true })
+  const cliPath = join(dir, "fake-claude.cjs")
+  // The 529 shape Claude Code 2.1.314 writes once its own retries are spent
+  // (h #g281): a `<synthetic>` reply, then `success` with `is_error: true`.
+  writeFileSync(
+    cliPath,
+    `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("2.1.314\\n"); process.exit(0) }
+if (process.argv.includes("--help")) { process.stdout.write("Usage: claude\\n"); process.exit(0) }
+const session_id = "fake-turn-history-529"
+const said = "API Error: 529 Overloaded."
+const emit = (m) => process.stdout.write(JSON.stringify(m) + "\\n")
+require("node:readline").createInterface({ input: process.stdin }).on("line", () => {
+  emit({ type: "system", subtype: "init", session_id })
+  emit({ type: "assistant", session_id, error: "server_error", is_api_error_message: true, api_error_status: 529, message: { model: "<synthetic>", role: "assistant", stop_reason: "stop_sequence", content: [{ type: "text", text: said }] } })
+  emit({ type: "result", subtype: "success", session_id, is_error: true, api_error_status: 529, terminal_reason: "api_error", result: said, usage: { input_tokens: 0, output_tokens: 0 } })
+})
+`,
+  )
+  chmodSync(cliPath, 0o755)
+  process.env.HOME = dir
+  process.env.XDG_STATE_HOME = join(dir, "xdg-state")
+  const affinity = "ses_turn_history_529"
+  try {
+    const model = createClaudeCode({
+      cliPath,
+      cwd,
+      bridgeOpencodeMcp: false,
+      bridgeOpencodeSkills: false,
+      proxyTools: [],
+    }).languageModel("claude-sonnet-5-5")
+    const result = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      tools: [{ type: "function", name: "read", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
+      headers: { "x-session-affinity": affinity },
+      providerOptions: { "claude-code": { opencodeAgent: "build" } },
+    } as never)
+    let finish: { finishReason?: { unified?: string } } | undefined
+    for await (const part of (result as { stream: AsyncIterable<{ type: string }> }).stream) {
+      if (part.type === "finish") finish = part as typeof finish
+    }
+    assert.equal(finish?.finishReason?.unified, "error")
+    assert.equal(existsSync(turnHistoryStorePath()), false, "a failed turn says nothing about a served one's length")
   } finally {
     for (const active of snapshotActiveProcesses()) {
       if (active.sessionKey.includes(affinity)) await deleteActiveProcessAndWait(active.sessionKey)

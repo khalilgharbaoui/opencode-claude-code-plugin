@@ -6,8 +6,9 @@
  * The unit tests in `test/cli-events.test.ts` and `test/turn-stats.test.ts` cover the
  * parsers and formatters; this file covers the wiring, which is the half a
  * pure test cannot see: whether a failed CLI tool reaches opencode with the
- * error flag, whether a failing result subtype still finishes as `stop`, and
- * whether the stats footer is gated on the option.
+ * error flag, whether a failed result (a failing subtype, or `success` with
+ * `is_error`) finishes as an error, and whether the stats footer is gated on
+ * the option.
  *
  * Usage: npx tsx --test test/cli-events-stream.test.ts
  */
@@ -345,6 +346,75 @@ test("a failing result subtype ends the turn as an error, naming the subtype", a
     .join("")
   assert.match(body, /error_max_turns/)
   assert.match(body, /`--max-turns` cap/)
+})
+
+/**
+ * Claude Code 2.1.314 against a local API that answered 529 every time, with
+ * `CLAUDE_CODE_MAX_RETRIES=0` (h #g281): a `<synthetic>` reply carrying the
+ * sentence, then a result the CLI labels `success` with `is_error: true`. The
+ * sentence is shortened here; the frames' fields are as measured.
+ */
+const OVERLOADED = "API Error: 529 Overloaded. This is a server-side issue, usually temporary."
+
+const overloadedReply = {
+  type: "assistant",
+  session_id: "fake-session",
+  error: "server_error",
+  is_api_error_message: true,
+  api_error_status: 529,
+  message: {
+    model: "<synthetic>",
+    role: "assistant",
+    stop_reason: "stop_sequence",
+    content: [{ type: "text", text: OVERLOADED }],
+  },
+}
+
+const overloadedResult = {
+  type: "result",
+  subtype: "success",
+  session_id: "fake-session",
+  is_error: true,
+  api_error_status: 529,
+  terminal_reason: "api_error",
+  stop_reason: "stop_sequence",
+  result: OVERLOADED,
+  total_cost_usd: 0,
+  duration_ms: 37,
+  num_turns: 1,
+}
+
+test("an API error the CLI gave up on ends the turn as an error, its sentence shown once", async () => {
+  // turnStats on, and auto-continue at its default: neither may act on a
+  // failed turn. A nudge would also never be answered by this fake.
+  const parts = await streamParts([init, overloadedReply, overloadedResult], { turnStats: true })
+
+  const finish = parts.find((part) => part.type === "finish")
+  // It finished `stop` until h #g281, so opencode stored the sentence as an
+  // ordinary reply.
+  assert.equal(finish.finishReason.unified, "error")
+  assert.equal(finish.finishReason.raw, "error")
+  assert.equal(finish.providerMetadata["claude-code"].resultSubtype, "error")
+
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.equal(body.split("API Error: 529 Overloaded").length - 1, 1, body)
+  // The CLI's sentence is the whole account of it: no note beside it, no bill.
+  assert.equal(body.includes("▌"), false, body)
+  assert.equal(parts.some((part) => part.type === "error"), false)
+})
+
+test("an API error that only the result carries is shown once and fails the turn too", async () => {
+  const parts = await streamParts([init, overloadedResult])
+  const finish = parts.find((part) => part.type === "finish")
+  assert.equal(finish.finishReason.unified, "error")
+  const body = parts
+    .filter((part) => part.type === "text-delta")
+    .map((part) => part.delta)
+    .join("")
+  assert.equal(body, OVERLOADED)
 })
 
 test("a successful turn still finishes as a clean stop", async () => {

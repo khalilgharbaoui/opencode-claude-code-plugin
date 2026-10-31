@@ -1,13 +1,14 @@
 /**
  * The operator's own Claude Code commands run as typed while `verbatimPrompts`
- * keeps every other message verbatim (h #g280), read where it lands: the
- * stdin line a fake `claude` receives from a real `doStream`.
+ * keeps every other message verbatim (h #g280, h #g281), read where it lands:
+ * the stdin line a fake `claude` receives from a real `doStream`.
  *
  * The fake answers every message with a `system`/`init` listing a project
- * command and the `model` built-in, the way a real `claude` lists both, then a
- * reply and a result. The first message in a workspace goes out before any
- * `claude` there has reported, so it keeps the mark (fail closed); a later one
- * naming the project command does not; `/model` always does.
+ * command, a plugin's command and the `model` built-in, the way a real
+ * `claude` lists them, then a reply and a result. The project command has its
+ * file, so it runs as typed from the very first message in the workspace; the
+ * plugin's has none, so it waits for a `claude` there to report it; `/model`
+ * and plain text always keep the mark.
  *
  * Usage: npx tsx --test test/verbatim-own-commands.test.ts
  */
@@ -29,7 +30,9 @@ afterEach(() => {
   _resetReportedCommandsForTests()
 })
 
-const COMMAND = `hello-probe-${Math.random().toString(36).slice(2, 8)}`
+const SUFFIX = Math.random().toString(36).slice(2, 8)
+const COMMAND = `hello-probe-${SUFFIX}`
+const PLUGIN_COMMAND = `probe-plugin-${SUFFIX}:explain`
 
 function createFakeCli() {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-own-commands-cli-"))
@@ -61,7 +64,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     subtype: "init",
     session_id: SESSION,
     tools: [],
-    slash_commands: [${JSON.stringify(COMMAND)}, "model", "cost"],
+    slash_commands: [${JSON.stringify(COMMAND)}, ${JSON.stringify(PLUGIN_COMMAND)}, "model", "cost"],
   })
   out({
     type: "assistant",
@@ -130,11 +133,14 @@ async function turn(
   return fake.envelopes().at(-1)
 }
 
-test("an own command runs as typed once the workspace has reported; built-ins and text keep the mark", async () => {
+test("an own command runs as typed from the first message in a folder; built-ins and text keep the mark", async () => {
   const fake = createFakeCli()
   try {
+    // Nothing has run in this workspace yet. h #g280 kept the mark here, so a
+    // `disable-model-invocation` command like this one did not run at all.
     const first = await turn(fake, "ses_own_a", [`/${COMMAND}`])
-    assert.equal(first.client_composed, true, "nothing reported yet: fail closed")
+    assert.equal("client_composed" in first, false, "the definition file alone decides (h #g281)")
+    assert.equal(first.message.content.at(-1).text, `/${COMMAND}`)
 
     const second = await turn(fake, "ses_own_a", [`/${COMMAND}`, `/${COMMAND} again`])
     assert.equal("client_composed" in second, false)
@@ -155,11 +161,25 @@ test("an own command runs as typed once the workspace has reported; built-ins an
     ])
     assert.equal(plain.client_composed, true)
 
-    // A new conversation in the same workspace: its process has not reported,
-    // but one in this workspace has, so its first message runs the command.
     const other = await turn(fake, "ses_own_b", [`/${COMMAND}`])
     assert.equal("client_composed" in other, false)
     assert.equal(fake.envelopes().length, 5)
+  } finally {
+    fake.cleanup()
+  }
+})
+
+test("a plugin's command, which has no file to check, runs as typed once a claude in the folder reported it", async () => {
+  const fake = createFakeCli()
+  try {
+    const first = await turn(fake, "ses_own_plugin", [`/${PLUGIN_COMMAND} card_declined`])
+    assert.equal(first.client_composed, true, "nothing reported yet: fail closed")
+
+    const second = await turn(fake, "ses_own_plugin", [
+      `/${PLUGIN_COMMAND} card_declined`,
+      `/${PLUGIN_COMMAND} again`,
+    ])
+    assert.equal("client_composed" in second, false)
   } finally {
     fake.cleanup()
   }

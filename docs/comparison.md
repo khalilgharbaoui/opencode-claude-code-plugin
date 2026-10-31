@@ -36,7 +36,7 @@ From there it makes different choices, on purpose, and its [design notes](https:
 
 - **opencode runs every tool.** Claude Code's built-in tools are off, and Claude gets opencode's tools through an in-process MCP server. One permission system covers everything, and the history reads the same whichever model wrote it, so switching between Claude and other models in one session works.
 - **Your `~/.claude` setup is deliberately not loaded**: settings files, `CLAUDE.md` files, hooks, MCP servers, skills, auto memory, and Claude Code's own auto-compaction. opencode's own versions of those apply instead, and only opencode decides when to compact.
-- **One `claude` login.** No several accounts or failover between them, no fast mode, no sidebar and no `/btw`.
+- **One `claude` login.** No several accounts or failover between them, no fast mode and no sidebar. opencode 2's own features work with it as with any provider: its `/btw`, and a `model` named per call on its subagent tool.
 - **opencode 2 only.** The `opencode-ai` package on npm, which is opencode 1.x, is at 1.19.5.
 
 **Use the built-in** if you are on opencode 2.2.3 or later, sign in to one Claude account, and want opencode to run every tool with your Claude Code setup kept out of it. It comes with opencode and needs no plugin.
@@ -48,9 +48,9 @@ From there it makes different choices, on purpose, and its [design notes](https:
 - Your own Claude Code setup: `CLAUDE.md`, hooks, skills and MCP servers load as they do for `claude` in your terminal, and Claude's own `Read`, `Grep` and `Glob` run inside Claude Code while opencode runs `Bash`, `Edit`, `Write`, `WebFetch` and `Task`. See [Tool proxy](./guides/tool-proxy.md).
 - Fast mode on the Opus models that offer it. See [Models](./models.md).
 - Every model's context window and effort levels read from your installed `claude` without a single API request, kept until `claude update`, with the plugin's prices and `(N×)` labels on top. The built-in reads windows for the picker's handful of models by switching to each one, and Claude Code checks a model switch by sending that model a one-token message (measured on 2.1.314). See [Learned from the Claude CLI](./models.md#learned-from-the-claude-cli).
-- A model, effort and account per subagent, from the agent file or chosen per dispatch. See [Subagents](./configuration/subagents.md).
+- A dispatch form that picks the model, effort and account for each subagent and remembers the choice for the conversation, and per-agent caps that Claude Code enforces itself (`maxTurns`, `maxBudgetUsd`). Naming a subagent's model is not the difference: opencode 2's subagent tool takes a `model` per call for any provider, the built-in included. See [Subagents](./configuration/subagents.md).
 - `task_status` and `task_cancel` for background subagents. See [Background subagents](./guides/background-subagents.md).
-- `/btw` side questions, answered inside the running turn. See [`/btw`](./guides/btw.md).
+- A `/btw` that asks the running Claude session itself, through Claude Code's own side-question request, and writes the answer into the conversation, on opencode 1.x as well. opencode 2 has a `/btw` of its own for every provider, the built-in included: a one-shot request from the session's context, shown in a dialog and not kept. See [`/btw`](./guides/btw.md#opencode-2s-own-btw).
 - A sidebar with a progress line, a row per subagent and each account's usage. See [Subagents in the sidebar](./guides/subagents-sidebar.md).
 - `/claude-code-doctor`, with a `bundle` form redacted for public bug reports. See [Doctor](./guides/doctor.md).
 

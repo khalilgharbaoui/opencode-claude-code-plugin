@@ -41,3 +41,9 @@ Notes:
 - On opencode 2 all of the above holds, because opencode 2 runs the command the moment you type it, busy or not. Two things differ, both in favour of the conversation: a bare `/btw` is answered with the usage text as its own message instead of a toast, and a turn still running after 30 minutes gets its `/btw` answered once it ends instead of dropping it.
 
 Fully restart opencode after upgrading to load the command and runtime changes. Other providers do not gain Claude's native side-question behavior from this command.
+
+## opencode 2's own /btw
+
+opencode 2's TUI has a `/btw` of its own ("Ask a side question" in 2.2.5; opencode 1.x has none), and it works with every provider, this plugin and opencode's built-in Claude Agent included. It sends the session's context and your question as a one-shot request, tells the model not to call tools, and shows the answer in a dialog you can copy from. Nothing is added to the conversation.
+
+This plugin's `/btw` asks the conversation's running `claude` process instead, through Claude Code's own side-question request, so the Claude session doing the work answers from what it holds at that moment, mid-turn included, and the answer stays in the conversation as described above. Both are registered under the name `/btw` on opencode 2; which one the TUI runs for a typed `/btw` has not been measured yet.

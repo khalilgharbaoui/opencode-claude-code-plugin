@@ -4,7 +4,7 @@ import path from "node:path"
 
 /**
  * Which messages run one of the operator's own Claude Code commands, so they
- * go out without `client_composed` and run as typed (h #g280).
+ * go out without `client_composed` and run as typed (h #g280, h #g281).
  *
  * `verbatimPrompts` stamps every user envelope `client_composed: true`, which
  * stops Claude Code dispatching a leading `/name` (h #g276). That keeps
@@ -15,19 +15,28 @@ import path from "node:path"
  * the text and called its `Skill` tool, three API turns where the command
  * itself takes one.
  *
- * A name is the operator's when both hold:
- *  - a `claude` started in this workspace listed it in its `system`/`init`
- *    `slash_commands` (`noteReportedCommands`). No process reports before it
- *    has read its first message, so a workspace nothing has reported for yet
- *    keeps the mark: fail closed.
- *  - it is not a built-in. The init frame cannot say that: it lists `model`
- *    and a project command alike. A name with a colon belongs to a plugin or
- *    a nested command and is never a built-in (none of the 51 built-ins
- *    2.1.314 reports through `initialize` has one). A plain name needs its
- *    definition where Claude Code looks for it, and a user file beats a
- *    built-in of the same name (measured: `.claude/commands/model.md`
- *    answered and the process stayed on its model), so a file found there is
- *    the command that runs.
+ * A name is the operator's when its definition is where Claude Code reads it,
+ * and that is also what keeps built-ins out:
+ *  - a plain name needs `commands/<name>.md`, `commands/<name>/SKILL.md` or
+ *    `skills/<name>/SKILL.md`, not marked `user-invocable: false`, under the
+ *    spawn's config dir or a `.claude` on the CLI's own walk: from the
+ *    workspace up to its git root, never the home dir's and nothing above it
+ *    (measured on 2.1.314 through `initialize`: a command above the git root
+ *    is not listed, one in an ancestor of a workspace outside any repository
+ *    is). A user file beats a built-in of the same name (measured:
+ *    `.claude/commands/model.md` answered and the process stayed on its
+ *    model), so a file found there is the command that runs, and a built-in
+ *    with no file keeps the mark.
+ *  - a colon name is never a built-in (none of the 47 to 51 built-ins has
+ *    one). `/a:b` is a nested command at `commands/a/b.md`, any depth. A
+ *    plugin's (`/stripe:explain-error`) lives in the CLI's plugin cache behind
+ *    enable state this module does not read, so for it a `claude` in this
+ *    workspace listing the name in its `system`/`init` `slash_commands` is
+ *    the evidence (`noteReportedCommands`), as in h #g280.
+ *
+ * The file decides alone wherever there is one, because no process reports
+ * before it has read its first message: keyed on a report, the first message
+ * in a folder after opencode started kept the mark (h #g281).
  *
  * Only a message whose whole content is one text block qualifies: that is the
  * shape measured, and an attachment or a replayed history keeps the mark.
@@ -39,7 +48,10 @@ const MAX_WORKSPACES = 64
 /** The newest `slash_commands` a `claude` reported, per resolved workspace. */
 const reportedByWorkspace = new Map<string, ReadonlySet<string>>()
 
-/** Feed every CLI stdout line here with the cwd that `claude` was spawned in. */
+/**
+ * Feed every CLI stdout line here with the cwd that `claude` was spawned in.
+ * Read only for a plugin's colon name, which has no file to check.
+ */
 export function noteReportedCommands(cwd: string, line: string): void {
   if (!line.includes('"slash_commands"')) return
   let parsed: unknown
@@ -90,27 +102,40 @@ export function ownCommandIn(
   if (block?.type !== "text" || typeof block.text !== "string") return null
   const name = leadingCommandName(block.text)
   if (!name) return null
-  if (!reportedByWorkspace.get(path.resolve(context.cwd))?.has(name)) return null
-  if (name.includes(":")) return name
-  return definedOnDisk(name, context) ? name : null
+  if (definedOnDisk(name, context)) return name
+  if (name.includes(":") && reportedByWorkspace.get(path.resolve(context.cwd))?.has(name)) {
+    return name
+  }
+  return null
 }
 
 function definedOnDisk(name: string, context: OwnCommandContext): boolean {
+  const segments = name.split(":")
+  // Each segment is one path component and never a way out of the root.
+  if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("\\"))) {
+    return false
+  }
+  const last = segments[segments.length - 1]!
   for (const root of commandRoots(context)) {
-    const files = [
-      path.join(root, "commands", `${name}.md`),
-      path.join(root, "commands", name, "SKILL.md"),
-      path.join(root, "skills", name, "SKILL.md"),
-    ]
+    const files =
+      segments.length === 1
+        ? [
+            path.join(root, "commands", `${name}.md`),
+            path.join(root, "commands", name, "SKILL.md"),
+            path.join(root, "skills", name, "SKILL.md"),
+          ]
+        : [path.join(root, "commands", ...segments.slice(0, -1), `${last}.md`)]
     if (files.some(userInvocableFile)) return true
   }
   return false
 }
 
 /**
- * The config dir, then every `.claude` from the workspace up. The home dir's
- * is skipped: it is the user scope, read above under whatever config dir this
- * spawn uses, which is the skill bridge's rule (`discoverNativeClaudeSkills`).
+ * The config dir, then every `.claude` from the workspace up to its git root,
+ * which is the CLI's own walk: it stops at the first directory holding `.git`
+ * and before the home dir, whose `.claude` is the user scope it reads under
+ * whatever config dir this spawn uses (the skill bridge's rule,
+ * `discoverNativeClaudeSkills`).
  */
 function commandRoots(context: OwnCommandContext): string[] {
   const roots: string[] = []
@@ -118,8 +143,9 @@ function commandRoots(context: OwnCommandContext): string[] {
   const home = os.homedir()
   const homeDir = home ? path.resolve(home) : null
   let current = path.resolve(context.cwd)
-  while (true) {
-    if (current !== homeDir) roots.push(path.join(current, ".claude"))
+  while (current !== homeDir) {
+    roots.push(path.join(current, ".claude"))
+    if (fs.existsSync(path.join(current, ".git"))) break
     const parent = path.dirname(current)
     if (parent === current) break
     current = parent

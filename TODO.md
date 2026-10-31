@@ -72,11 +72,20 @@
 
 ## Backlog
 
-- 2026-10-31, found by the v2host lane (PR #152, h #g277): a turn that ends on an overloaded API
+- 2026-10-31, found by the v2host lane (PR #152, h #g277), **resolved 2026-11-01 on branch
+  `fix/patch-after-0650`** (h #g281): a turn that ends on an overloaded API
   (the CLI's `result` has `subtype: "success"` with `is_error: true`, text "API Error: 529 Overloaded")
   finishes as `stop`, so opencode stores the error sentence as an ordinary reply. It should finish as
   an error like the other failed results (h #g113, h #g214). opencode 2 no longer retries plugin
-  errors since PR #152, so an error finish shows once rather than respawning. Not scheduled.
+  errors since PR #152, so an error finish shows once rather than respawning. Every `is_error`
+  result no earlier branch names now finishes `{unified:"error", raw:"error"}`, its sentence shown
+  once; measured on 2.1.314 against a local API answering 529.
+
+- 2026-11-01, found by the patch lane (h #g281): on opencode 2 both opencode's own `/btw`
+  (the TUI's "Ask a side question", any provider) and this plugin's server command are
+  registered as `/btw`. Which one a `/btw` typed in the TUI reaches has not been measured.
+  Check in a `--standalone` TUI under scratch XDG dirs with the plugin loaded, and say which
+  in `docs/guides/btw.md` (it currently says this is unmeasured).
 
 Feature ideas live in the vault note `opencode-claude-code-plugin/Future Features.md`; this list is
 checks and suspected defects found in passing.
