@@ -9108,3 +9108,10 @@ scratch environment was set (the shell exports
 `OPENCODE_CLAUDE_CODE_LOG_FILE=1`, h #g116); they added fixture lines and
 fake-model entries, which no real turn reads, and were left in place rather
 than rewriting files live processes write.
+
+The PR's first Windows run failed all 11 cases of `test/restart-sibling-carry.test.ts`
+("the fake CLI never answered --version"): the file, new in h #g274, spawns a
+shebang script made executable with `0755`, the same POSIX-only harness as
+`session-model-switch` and `session-resume`, and had never been added to
+`.github/windows-skipped-tests.txt`. It is listed there now; every other file
+passed on `windows-latest` (1233).

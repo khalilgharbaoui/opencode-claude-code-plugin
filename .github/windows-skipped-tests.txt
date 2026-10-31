@@ -32,6 +32,7 @@ prologue-abort.test.ts
 proxy-mcp.test.ts
 proxy-task.test.ts
 respawn.test.ts
+restart-sibling-carry.test.ts
 result-fallback.test.ts
 session-fork.test.ts
 session-model-switch.test.ts
