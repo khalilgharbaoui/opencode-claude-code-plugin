@@ -1125,15 +1125,23 @@ export async function releaseIdleForHandover(sessionID?: string): Promise<string
  * running, under a new key. This is exactly why the transfer cannot be written
  * as `deleteClaudeSessionId` plus `setClaudeSessionId`.
  *
+ * `recorded` is the id the source's resume record names, for a source this
+ * process never held in memory: after an opencode restart, or a handover to
+ * another copy of the plugin (h #g269), that record is the only thing that
+ * knows which Claude session answered it (h #g274). Only the sibling carry
+ * passes it, after `findSiblingResumePoint` has applied every refusal to that
+ * record. An id in memory still wins.
+ *
  * Refuses when the destination already has a conversation of its own, and
  * returns the id it moved, or `undefined` when nothing moved.
  */
 export function transferClaudeSession(
   fromKey: string,
   toKey: string,
+  recorded?: string,
 ): string | undefined {
   if (fromKey === toKey) return undefined
-  const claudeSessionId = claudeSessions.get(fromKey)
+  const claudeSessionId = claudeSessions.get(fromKey) ?? recorded
   if (!claudeSessionId) return undefined
   if (claudeSessions.has(toKey)) return undefined
   claudeSessions.delete(fromKey)
@@ -1292,7 +1300,14 @@ export function invalidateOtherSpawnVariants(
       clearBackgroundTasks(key)
       continue
     }
-    deleteClaudeSessionId(key)
+    // A key this process never held is known only from the resume record an
+    // earlier process wrote (an opencode restart, or a handover, h #g269).
+    // Nothing here abandoned it, so the record stays for the sibling carry in
+    // the prologue, which takes it only past every refusal of
+    // `findSiblingResumePoint`. Forgetting it here made the first effort change
+    // after a restart replay the thread (h #g274).
+    if (carry && !claudeSessions.has(key)) forgetClaudeSessionInMemory(key)
+    else deleteClaudeSessionId(key)
     clearCompression(key)
     clearBackgroundTasks(key)
   }

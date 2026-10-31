@@ -8973,3 +8973,66 @@ shasum (`aae3f158`, visible about 60 s after), and the GitHub Release created
 after. The launch walkthrough was re-recorded on this build so the form shows
 `xhigh`.
 
+
+## The first model or effort change after a restart carries the conversation (2026-10-31)
+
+h #g274. From the 2026-10-31 TODO entry, a suspected defect an explore subagent
+found while the launch walkthrough was recorded, confirmed with a test before
+anything changed.
+
+The carry-over of h #g215 worked inside one process and failed on the first
+change after an opencode restart, because what it moved lived in memory and a
+new process has only the resume record on disk. The two switches failed in two
+different ways:
+
+- **Model.** `findSiblingResumePoint` found the old model's record on disk and
+  accepted it, and the carry called `transferClaudeSession(sibling.siblingKey,
+  sk)`, which reads only the in-memory `claudeSessions` map. It returned
+  nothing, and the turn replayed with `sibling-carry-over-failed`.
+- **Effort.** Worse. `invalidateOtherSpawnVariants` names the effort siblings
+  outright, its transfer found nothing in memory, and it then called
+  `deleteClaudeSessionId` on the old effort's key, which also forgets the
+  resume record. So the record was gone before the sibling lookup ran, the turn
+  replayed with `no-sibling-recorded`, and switching back replayed again.
+
+A handover to another copy of the plugin (h #g269) leaves exactly a restart's
+state, so a rebuild followed by a model or effort change failed the same way.
+
+`test/restart-sibling-carry.test.ts` drives two real `doStream` turns through a
+fake CLI with `releaseIdleForHandover()` between them (no child, nothing in
+memory, the records on disk). On master the model change, the effort change and
+both at once each spawned with no `--resume` and replayed the thread; a scratch
+log named the two reasons above.
+
+The fix, in two places:
+
+- `transferClaudeSession` takes an optional `recorded` id, used only when memory
+  holds none for the source. Only the sibling carry passes it, with the id the
+  record it just accepted names, so every refusal of `findSiblingResumePoint`
+  (binary, account group, shape chain, still writing, transcript gone) has
+  already been applied. The move is unchanged: `moveResumePoint` takes the
+  record off the sibling, so the conversation has one owner on disk afterwards.
+- `invalidateOtherSpawnVariants`, with the carry on, forgets only the in-memory
+  state of a stale key this process never held (`forgetClaudeSessionInMemory`),
+  and leaves its resume record for the lookup. Nothing in this process
+  abandoned that conversation, which is the case `deleteClaudeSessionId`'s
+  forget exists for.
+
+What stays as it was: inside one process nothing changes (a stale key with an
+id in memory is transferred or released exactly as before, and memory wins over
+the record); `carryConversation: false` still releases the records; a sibling
+the lookup refuses keeps its record under its own key, as a refused model
+sibling always did, and every later lookup checks its chain again. **Not
+covered:** a prompt-cache TTL or CLI-cap change after a restart still replays,
+because `modelSiblingSignature` keeps the context blob whole, so no record is a
+sibling across those settings. Recorded in `TODO.md`, not changed here.
+
+The new file asserts the `--resume` argv and the effort, no replayed history,
+one owner on disk, a switch back in the same process, and that a missing
+transcript and an edited conversation still replay. Its three switch cases fail
+on master and pass with the fix.
+
+Checks: `npm run typecheck`, the focused files (`test/restart-sibling-carry`,
+`session-model-switch`, `session-resume`, `effort-sessions`: 51 pass), `npm
+test` (1942 pass, EXIT 0). No log message changed, so the bundle allowlist is
+untouched. On a local branch, not released.

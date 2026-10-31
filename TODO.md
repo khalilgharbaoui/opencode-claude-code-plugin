@@ -96,18 +96,22 @@ checks and suspected defects found in passing.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
 
-- 2026-10-31: suspected defect, unverified: the first model or effort switch after an
-  opencode RESTART may replay the thread instead of carrying the Claude session. Found by an
-  explore subagent during the launch demo recording, then read in the code: after a restart
-  `findSiblingResumePoint` finds the sibling in the resume record on disk, but the carry
-  calls `transferClaudeSession(sibling.siblingKey, sk)` (`src/claude-code-language-model.ts`
-  ~2400), which reads only the in-memory `claudeSessions` map (`src/session-manager.ts`
-  1136-1137), returns `undefined`, and the turn replays with `sibling-carry-over-failed`.
-  `test/session-model-switch.test.ts` swaps the model inside one process, so it would not
-  see this. Check first: a fake-CLI test with a simulated restart between the two turns
-  (as `test/session-resume.test.ts` does), then, if it fails, fall back to
-  `setClaudeSessionId(sk, sibling.claudeSessionId)` plus the resume record when the transfer
-  finds nothing in memory.
+- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g274): the
+  first model or effort switch after an opencode restart replayed the thread. Confirmed by
+  `test/restart-sibling-carry.test.ts` on master: the model switch replayed as
+  `sibling-carry-over-failed` (the transfer read only memory), and the effort switch as
+  `no-sibling-recorded` (`invalidateOtherSpawnVariants` deleted the old effort's resume record
+  before the lookup ran). `transferClaudeSession` now takes the recorded id the sibling lookup
+  accepted, and a stale key known only from disk keeps its record for that lookup.
+
+- 2026-10-31: known gap, not fixed (found while fixing h #g274): a prompt-cache TTL or
+  CLI-cap (`maxTurns`, `maxBudgetUsd`) change after an opencode restart still replays the
+  thread. In one process `invalidateOtherSpawnVariants` finds those siblings by scanning
+  memory; after a restart only the disk record knows them, and `modelSiblingSignature` keeps
+  the context blob whole, so `findSiblingResumePoint` never treats them as siblings. A fix
+  would let the signature drop the blob's spawn settings the way `spawnIdentity` does; check
+  what that does to the `accountGroups` guard (`findForeignAccountSibling` reads the same
+  signature) first.
 
 ## Deferred decisions
 
