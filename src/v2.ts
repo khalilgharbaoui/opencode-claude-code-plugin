@@ -40,6 +40,7 @@ import {
   NOTICE_RPC_DEFINITION,
   pluginNotice,
   type PluginNotice,
+  type PluginNoticeLevel,
 } from "./plugin-notice.js"
 import {
   busySessionsFromEvents,
@@ -79,6 +80,13 @@ import { staleBuildWatch } from "./stale-build.js"
 import { readBundledSkillInfos } from "./skill-bridge.js"
 import { logStartupDiagnostics } from "./startup-diagnostics.js"
 import type { ClaudeCodeProviderSettings } from "./types.js"
+import {
+  applyConnectEntries,
+  followConnectEvents,
+  refreshConnection,
+  type ConnectTarget,
+  type ConnectWiring,
+} from "./v2-connect.js"
 
 /**
  * opencode 2.x entrypoint. V1 calls the default export's `server()`, V2 calls
@@ -588,8 +596,13 @@ let noticeCounter = 0
  */
 function emitNotice(entry: LogSinkEntry): void {
   if (entry.level !== "warn" && entry.level !== "error") return
+  announce(entry.level, entry.message)
+}
+
+/** One toast in the TUI, past the logger: the answer to something the operator just did. */
+function announce(level: PluginNoticeLevel, message: string): void {
   noticeCounter += 1
-  const notice = pluginNotice(`${NOTICE_PROCESS_TAG}-${noticeCounter}`, entry.level, entry.message)
+  const notice = pluginNotice(`${NOTICE_PROCESS_TAG}-${noticeCounter}`, level, message)
   for (const emit of noticeEmitters) emit(notice)
 }
 
@@ -802,6 +815,60 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
       }),
     )
 
+    // opencode 2 runs a turn that ended on an error part again, ten more times
+    // (measured on 2.2.5, h #g277). For this provider every such retry is a
+    // fresh `claude` spawn that resumes the session and sends the prompt
+    // again: a killed CLI left the prompt in Claude's transcript 12 times and
+    // made 11 API requests, and a CLI that crashes at once took 84 s to
+    // report it. The CLI already retries API errors itself, and the failures
+    // that reach this hook (a crash, a watchdog giving up, a spawn that cannot
+    // start, a budget or account stop) do not get better by asking again.
+    // Usage limits, max turns and refused models finish without an error
+    // part, so opencode never retried them. Older opencode 2 releases have no
+    // such hook; registering it there must not cost the rest of setup.
+    try {
+      registrations.push(
+        await ctx.session.hook("retry", (event) => {
+          if (!isClaudeCodeProviderId(event.model?.providerID)) return
+          event.decision = { retry: false }
+          log.info("declined opencode's retry of a failed turn", {
+            attempt: event.attempt,
+            error: event.error?.type,
+          })
+        }),
+      )
+    } catch (err) {
+      log.debug("opencode 2 has no retry hook here; failed turns may be retried", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // `/connect`: each provider's entry, and the login check behind it
+    // (src/v2-connect.ts, h #g277). Planned from the operator's config on
+    // every rebuild, so it never depends on which transform opencode applies
+    // first.
+    const connectTargets = (): ConnectTarget[] =>
+      planV2Providers(
+        configuredSeedSettings(deps.loadConfig(directory ?? process.cwd()), plainObject(ctx.options)),
+        deps.defaultProxyTools,
+      ).map((plan) => ({ id: plan.info.id, name: plan.info.name, settings: plan.info.settings ?? {} }))
+    let connectWiring: ConnectWiring | undefined
+    const integration = ctx.integration
+    if (typeof integration?.transform === "function" && typeof integration.connection?.active === "function") {
+      try {
+        registrations.push(
+          await integration.transform((editor) => {
+            applyConnectEntries(editor, connectTargets())
+          }),
+        )
+        connectWiring = { integration, targets: connectTargets, notify: announce }
+      } catch (err) {
+        log.debug("opencode 2 refused the /connect entry", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
     // `/btw` and `/claude-code-doctor`. V1 injects templates into the user's
     // config and has to guard against clobbering a command of the same name;
     // here they are real commands, and the config's own commands are applied
@@ -878,6 +945,16 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
     const events = new AbortController()
     if (typeof ctx.event?.subscribe === "function") {
       void followSessionEvents(ctx.event.subscribe.bind(ctx.event), events.signal)
+      if (connectWiring) {
+        void followConnectEvents(ctx.event.subscribe.bind(ctx.event), events.signal, connectWiring)
+      }
+    }
+    // A provider connected earlier gets its sign-in state at startup; one that
+    // never was costs nothing (`refreshConnection` spawns only for a connection).
+    if (connectWiring) {
+      for (const target of connectTargets()) {
+        void refreshConnection(connectWiring, target).catch(() => undefined)
+      }
     }
 
     log.info("claude-code plugin set up for opencode 2", {

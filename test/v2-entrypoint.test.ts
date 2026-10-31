@@ -264,6 +264,7 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
       "aisdk.sdk",
       "provider.transform",
       "session.model.request",
+      "session.retry",
     ])
   }
 })

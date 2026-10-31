@@ -46,7 +46,7 @@ export const NOTICE_RPC_DEFINITION = {
         type: "object",
         properties: {
           id: { type: "string" },
-          level: { type: "string", enum: ["warn", "error"] },
+          level: { type: "string", enum: ["warn", "error", "success"] },
           message: { type: "string" },
         },
         required: ["id", "level", "message"],
@@ -59,9 +59,12 @@ export const NOTICE_RPC_DEFINITION = {
 /** What one notice carries: a message only, never the log line's `data`. */
 export interface PluginNotice {
   id: string
-  level: "warn" | "error"
+  /** `success` is not a log level: it answers an action the operator took (`/connect`, h #g277). */
+  level: PluginNoticeLevel
   message: string
 }
+
+export type PluginNoticeLevel = "warn" | "error" | "success"
 
 /** What a toast is titled, so the operator knows who is talking. */
 export const TOAST_TITLE = "claude-code"
@@ -83,7 +86,7 @@ export function toastMessage(message: string): string {
 }
 
 /** The notice for one warn/error line. `id` must be unique across processes. */
-export function pluginNotice(id: string, level: "warn" | "error", message: string): PluginNotice {
+export function pluginNotice(id: string, level: PluginNoticeLevel, message: string): PluginNotice {
   return { id, level, message: toastMessage(message) }
 }
 
@@ -93,7 +96,7 @@ export function readPluginNotice(type: unknown, data: unknown): PluginNotice | u
   if (!data || typeof data !== "object") return undefined
   const { id, level, message } = data as Record<string, unknown>
   if (typeof id !== "string" || id.length === 0) return undefined
-  if (level !== "warn" && level !== "error") return undefined
+  if (level !== "warn" && level !== "error" && level !== "success") return undefined
   if (typeof message !== "string" || message.trim().length === 0) return undefined
   return { id, level, message: toastMessage(message) }
 }

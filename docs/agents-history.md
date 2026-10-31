@@ -9327,3 +9327,115 @@ interactive transport types into the TUI instead and is not covered.
 Probe cost: about 40 Haiku 5.5 calls across two accounts (the `default` window ran out
 mid-lane and the lane was restarted on `appical`; the earlier measurements were reused, not
 repeated, and the shipped tool set was measured afresh).
+
+## opencode 2: a `/connect` entry with a login check, and no turn retries (2026-10-31)
+
+h #g277. Two items from the vault note's "From opencode's built-in Claude Agent"
+list (ideas 7 and 8), measured on opencode 2.2.5 with Claude Code 2.1.314 before
+anything was built. The built-in (anomalyco/opencode#58782) does both: an
+`external` `/connect` method whose login belongs to `claude`, and a
+`session.hook("retry")` that sets `{retry: false}`.
+
+### What a third-party plugin is handed
+
+`ctx.integration` on 2.2.5 has `list`, `get`, `connect`, `oauth`, `command`,
+`transform`, `reload` and `connection` (`active`, `resolve`, `status`), read off
+`@opencode/plugin` 2.2.2's declarations and confirmed by a probe plugin. The
+credential domain is `activate` only, so a plugin cannot rename or remove a
+connection.
+
+Before this change `GET /api/integration` listed our provider as
+`{"id":"claude-code","name":"claude-code","methods":[{"type":"key","label":"Manually enter API Key"}]}`:
+opencode derives an integration per provider and gives one that declares
+nothing a key method. The plugin never reads `apiKey` (`resolveSdkSettings`
+passes it through and nothing consumes it), so that entry stored a key that did
+nothing.
+
+The integration editor's state holds only what plugins declared: `get(id)`
+answered undefined for the derived entry (the first build checked `get` first
+and changed nothing), and `update(id)` creates a record. Once a record declares
+a method, the derived key method disappears from the list. With `accounts`, the
+seed id `claude-code` still had a derived integration (from the config's
+`provider.claude-code` block, after the provider itself was removed), so it gets
+a record with no method, which the TUI lists as disabled.
+
+What the TUI does with a connection's status, read out of the 2.2.5 binary: the
+`/connect` list shows "Sign in required" in the warning colour when the first
+connection has one, and picking that connection runs connect again; the
+message itself is not drawn there (`opencode auth list --format json` prints
+it). So the answer to a connect also goes out as a toast, over the notice
+channel of h #g253, with a new `success` level beside `warn` and `error`.
+
+### `claude auth status`
+
+Prints JSON by default, exits 0 logged in and 1 logged out, about 0.13 s
+(three runs). Measured shapes: a subscription
+(`authMethod: "claude.ai"`, `subscriptionType: "max"`), an empty config dir
+(`loggedIn: false`, `authMethod: "none"`), `ANTHROPIC_API_KEY` set (`api_key`,
+`apiKeySource`), `CLAUDE_CODE_USE_BEDROCK=1` (`third_party`, `apiProvider:
+"bedrock"`). The CLI's own code gives `authMethod` one of `none`,
+`third_party`, `claude.ai`, `api_key_helper`, `oauth_token`, `api_key`, and
+`apiProvider` one of `firstParty`, `bedrock`, `vertex`, `foundry`,
+`anthropicAws`, `anthropicGoogleCloud`, `mantle`, `gateway`. 2.1.288 and 2.1.293
+answer the same, which is where `cliSupportsAuthStatus` sits. The same JSON
+carries the email, organization id and organization name, so only the five
+login fields are read.
+
+The check runs the binary or account wrapper a turn would run, with the turn's
+environment (`claudeSpawnEnv`, so `ignoreAnthropicApiKey` applies): with two
+accounts the fake CLI saw no `CLAUDE_CONFIG_DIR` for `default` and
+`~/.claude-work` for `work`, and the toast for a logged-out `work` named
+`CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`.
+
+### Measured live on 2.2.5
+
+Through a private `serve` and a fake `claude` whose `auth status` answer was
+switched between runs: connect while logged in (one `auth status` spawn,
+toast `Claude Code: logged in with a Claude subscription (Max).`, no status),
+connect while logged out (status `needs_auth` "Claude Code is not logged in. Run
+`claude auth login` in a terminal.", warn toast), connect after logging in again
+(a fresh check, success toast). Each connect makes a new credential ("Claude
+Code", "Claude Code 2", "Claude Code 3"), which is opencode's model and the
+built-in's too, and the first build's 5-second time window had reused the
+logged-in answer for the logged-out connect, so checks and announcements are
+keyed on the credential id now. A restart with the CLI logged out marked the
+active connection at setup, with one `auth status` spawn; statuses are not
+persisted, so an older connection's mark was gone. Against the real CLI: one
+connect, toast `Claude Code: logged in with a Claude subscription (Max).`. The
+toast was seen on the event stream as `rpc.opencode-claude-code-plugin.notice`
+with `level: "success"`; how the TUI draws a success toast was not looked at.
+
+### Retries: what opencode 2 does with a failed turn of this provider
+
+The previous attempt at this lane measured, through a private `serve` and a
+fake `claude` failing the ways the real one fails:
+
+| Failure | How the plugin ends the turn | 2.2.5 without the hook |
+| --- | --- | --- |
+| Usage limit (`rate_limit_event` rejected, synthetic reply) | note, finish `error`/`usage_limit` | not retried, 1 spawn |
+| `error_max_turns` | finish `error` | not retried, 1 spawn |
+| API overloaded (the CLI's own `api_retry`, then a failed result) | finish | not retried, 1 spawn |
+| CLI exits 3 before a result | `error` part (`provider.unknown`) | 10 retries, 11 spawns, 84 s |
+| real CLI SIGKILLed 6 s into a resumed turn | `error` part | 10 retries, 11 spawns with `--resume`, 11 API requests, the prompt 12 times in Claude's transcript, 250 s |
+
+Against a fake Anthropic API the real CLI retried 529, 500 and 429 itself
+(`api_retry`, "attempt 1 of 10"). Every other way the plugin ends a turn on an
+error part (a watchdog that already respawned once, a spawn that cannot start,
+a budget stop in a child, an exhausted `"auto"` failover, a failed compaction)
+goes the same route and is deterministic or already retried. No failure kind
+that reaches the hook was found where running the turn again is right, so
+`session.hook("retry")` declines for every `claude-code*` provider, with no
+option. With the hook, the same crash: 1 spawn, `session.execution.failed` at
+once, no `session.retry.scheduled`, and one INFO line `declined opencode's
+retry of a failed turn {"attempt":2,"error":"provider.unknown"}`.
+
+opencode 1.19.4 (`opencode run`, sandboxed) never retried the same crash: 1
+spawn, the error printed once. It has no retry hook, and the V1 entry is
+untouched.
+
+### Found, not changed
+
+The fake overloaded turn (`subtype: "success"`, `is_error: true`,
+`api_error_status: 529`) finished `stop`, so opencode files the CLI's
+"API Error: 529 Overloaded" sentence as an ordinary reply. Out of this lane's
+files; worth a look beside h #g113's failing-subtype rule.
