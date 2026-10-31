@@ -24,7 +24,7 @@ import {
 import { forgetExplicitTaskModel, hasUnclaimedExplicitTaskModels } from "./task-model.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
-import { forgetForkFingerprint, moveForkFingerprint } from "./session-fork.js"
+import { forgetForkFingerprint, moveForkFingerprint, withoutSpawnSettings } from "./session-fork.js"
 import { forgetServedConversation, moveServedConversation } from "./conversation-gap.js"
 import { forgetResumePoint, moveResumePoint } from "./session-resume-store.js"
 import {
@@ -1178,15 +1178,7 @@ export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): str
 export function spawnIdentity(key: string): string {
   const parts = key.split("::")
   if (parts.length > 1 && parts[parts.length - 1].startsWith("effort=")) parts.pop()
-  const last = parts.length - 1
-  if (parts[last].startsWith("context=")) {
-    try {
-      const context: unknown = JSON.parse(parts[last].slice("context=".length))
-      if (Array.isArray(context)) parts[last] = `context=${JSON.stringify(context.slice(0, 2))}`
-    } catch {
-      // Not a blob this plugin wrote, so it stays whole and only matches itself.
-    }
-  }
+  parts[parts.length - 1] = withoutSpawnSettings(parts[parts.length - 1])
   return parts.join("::")
 }
 

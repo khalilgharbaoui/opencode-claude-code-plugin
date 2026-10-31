@@ -104,14 +104,15 @@ checks and suspected defects found in passing.
   before the lookup ran). `transferClaudeSession` now takes the recorded id the sibling lookup
   accepted, and a stale key known only from disk keeps its record for that lookup.
 
-- 2026-10-31: known gap, not fixed (found while fixing h #g274): a prompt-cache TTL or
-  CLI-cap (`maxTurns`, `maxBudgetUsd`) change after an opencode restart still replays the
-  thread. In one process `invalidateOtherSpawnVariants` finds those siblings by scanning
-  memory; after a restart only the disk record knows them, and `modelSiblingSignature` keeps
-  the context blob whole, so `findSiblingResumePoint` never treats them as siblings. A fix
-  would let the signature drop the blob's spawn settings the way `spawnIdentity` does; check
-  what that does to the `accountGroups` guard (`findForeignAccountSibling` reads the same
-  signature) first.
+- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g275): a
+  prompt-cache TTL or CLI-cap (`maxTurns`, `maxBudgetUsd`) change after an opencode restart
+  replayed the thread, because `modelSiblingSignature` kept the context blob whole.
+  Confirmed by `test/restart-sibling-carry.test.ts` on the branch head first (four cases, no
+  `--resume`). The signature now cuts the blob to `[provider, agent]` with
+  `withoutSpawnSettings`, the same function `spawnIdentity` uses. The `accountGroups` guard
+  (`findForeignAccountSibling`) reads the same signature, and only gets broader, which is
+  the safe direction. A `maxBudgetUsd` change carries too: the cap is per process and starts
+  again on any `--resume` (h #g245), as it already did in one process (h #g270).
 
 ## Deferred decisions
 

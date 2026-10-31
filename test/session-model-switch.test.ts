@@ -76,6 +76,21 @@ test("modelSiblingSignature blanks the model and drops the effort tail, and noth
   assert.equal(modelSiblingSignature(haiku), modelSiblingSignature(haikuHigh))
   assert.ok(modelSiblingSignature(haiku)!.includes("*"), "the model segment is blanked")
 
+  // The blob's spawn settings are what `spawnIdentity` drops too (h #g275):
+  // a TTL, `maxTurns` or `maxBudgetUsd` change is the same conversation.
+  for (const settings of [["1h"], ["5m"], ["maxTurns=4"], ["1h", "maxTurns=4", "maxBudgetUsd=0.5"]]) {
+    const withSettings = sessionKey(
+      "/work",
+      `claude-sonnet-4-5::tools::ses_switch::context=${JSON.stringify(["claude-code", null, ...settings])}`,
+    )
+    assert.equal(modelSiblingSignature(withSettings), modelSiblingSignature(haiku), withSettings)
+    assert.equal(
+      modelSiblingSignature(`${withSettings}::effort=low`),
+      modelSiblingSignature(haiku),
+      `${withSettings}::effort=low`,
+    )
+  }
+
   // Everything else still has to match, which is what keeps an unrelated
   // conversation out however well its content lines up.
   for (const other of [
@@ -83,6 +98,8 @@ test("modelSiblingSignature blanks the model and drops the effort tail, and noth
     sessionKey("/elsewhere", `claude-haiku-4-5::tools::ses_switch::${CONTEXT}`),
     sessionKey("/work", `claude-haiku-4-5::no-tools::ses_switch::${CONTEXT}`),
     sessionKey("/work", `claude-haiku-4-5::tools::ses_switch::context=["claude-code","worker"]`),
+    // The agent is not a spawn setting, with or without one beside it.
+    sessionKey("/work", `claude-haiku-4-5::tools::ses_switch::context=["claude-code","worker","1h"]`),
   ]) {
     assert.notEqual(modelSiblingSignature(other), modelSiblingSignature(haiku), other)
   }

@@ -1,5 +1,6 @@
 /**
- * The first model or effort change after an opencode RESTART (h #g274).
+ * The first model, effort or spawn-setting change after an opencode RESTART
+ * (h #g274, h #g275).
  *
  * `test/session-model-switch.test.ts` and `test/effort-sessions.test.ts` swap
  * the model or the effort inside one process, where the sibling's Claude
@@ -7,8 +8,9 @@
  * that knows which Claude session answered the conversation is the resume
  * record on disk. These drive two real `doStream` turns through a fake CLI
  * with everything in memory dropped between them (what a new opencode process,
- * or a handover to another copy of the plugin, sees) and change the model or
- * the effort on the second turn.
+ * or a handover to another copy of the plugin, sees) and change the model,
+ * the effort, or an agent's prompt-cache TTL, `maxTurns` or `maxBudgetUsd` on
+ * the second turn.
  */
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -18,6 +20,11 @@ import { test } from "node:test"
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
 
 import { _setResumeStorePath, resumeStorePath } from "../src/session-resume-store.js"
+import {
+  _resetAgentRegistryForTests,
+  setAgentRegistry,
+  type AgentRecord,
+} from "../src/agent-models.js"
 import { encodeCwd } from "../src/claude-session-bun.js"
 import {
   deleteActiveProcessAndWait,
@@ -73,11 +80,18 @@ if (args.includes("--version")) {
   process.exit(0)
 }
 if (args.includes("--help")) {
+  process.stdout.write("  --max-budget-usd <amount>\\n")
   process.exit(0)
 }
 const at = args.indexOf("--resume")
 const sessionId = at >= 0 ? args[at + 1] : ${JSON.stringify(SESSION)}
-record({ type: "spawn", args, sessionId, effort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null })
+record({
+  type: "spawn",
+  args,
+  sessionId,
+  effort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null,
+  ttl: process.env.CLAUDE_CODE_PROMPT_CACHE_TTL || null,
+})
 emit({ type: "system", subtype: "init", session_id: sessionId })
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const envelope = JSON.parse(line)
@@ -103,8 +117,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } as any)
 
   const keys: string[] = []
-  const key = (modelId: string, effort?: Effort) => {
-    const k = effortSessionKey(sessionKey(cwd, `${modelId}::tools::ses_restart::${CONTEXT}`), effort)
+  /** `context` is the key's blob, `[provider, agent, ...spawn settings]`. */
+  const key = (modelId: string, effort?: Effort, context?: (string | null)[]) => {
+    const blob = context ? `context=${JSON.stringify(context)}` : CONTEXT
+    const k = effortSessionKey(sessionKey(cwd, `${modelId}::tools::ses_restart::${blob}`), effort)
     if (!keys.includes(k)) keys.push(k)
     return k
   }
@@ -134,14 +150,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       mkdirSync(dir, { recursive: true })
       writeFileSync(join(dir, `${id}.jsonl`), "")
     },
-    async turn(modelId: string, prompt: any[], effort?: Effort) {
-      key(modelId, effort)
+    /** `agent` is the opencode agent the turn runs as; its key is the caller's to name. */
+    async turn(modelId: string, prompt: any[], effort?: Effort, agent?: string) {
+      if (!agent) key(modelId, effort)
+      const options = {
+        ...(effort ? { reasoningEffort: effort } : {}),
+        ...(agent ? { opencodeAgent: agent } : {}),
+      }
       const call: LanguageModelV3CallOptions = {
         prompt,
         headers: { "x-session-affinity": "ses_restart" },
         tools: [{ type: "function", name: "read", inputSchema: { type: "object", properties: {} } }],
         abortSignal: AbortSignal.timeout(30_000),
-        ...(effort ? { providerOptions: { "claude-code": { reasoningEffort: effort } } } : {}),
+        ...(Object.keys(options).length ? { providerOptions: { "claude-code": options } } : {}),
       } as any
       const response = await provider.languageModel(modelId).doStream(call)
       for await (const part of response.stream) {
@@ -172,6 +193,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         await deleteActiveProcessAndWait(k)
         deleteClaudeSessionId(k)
       }
+      _resetAgentRegistryForTests()
       _setResumeStorePath(null)
       rmSync(cwd, { recursive: true, force: true })
     },
@@ -325,6 +347,135 @@ test("after a restart an edited conversation still replays instead of taking the
       userText("What is the codename?"),
     ]
     await fake.turn(FIRST, edited, "low")
+
+    const spawn = fake.spawns()[1]
+    assert.equal(resumedId(spawn.args), undefined, JSON.stringify(spawn.args))
+    assert.ok(fake.lastInput().includes("conversation_history"), "the thread is replayed")
+  } finally {
+    await fake.cleanup()
+  }
+})
+
+/**
+ * The spawn settings an agent puts in the key's context blob after its provider
+ * and agent (h #g275). In one process `invalidateOtherSpawnVariants` finds the
+ * old key by scanning memory; after a restart only the resume record knows it,
+ * so the sibling lookup has to read those elements as spawn settings too.
+ */
+const AGENT = "explorer"
+const SETTING_CHANGES: Array<{
+  name: string
+  before: AgentRecord
+  after: AgentRecord
+  contextBefore: (string | null)[]
+  contextAfter: (string | null)[]
+  check: (spawn: { args: string[]; ttl: string | null }) => void
+}> = [
+  {
+    name: "a prompt-cache TTL change",
+    before: { mode: "subagent", cacheTtl: "1h" },
+    after: { mode: "subagent", cacheTtl: "5m" },
+    contextBefore: ["claude-code", AGENT, "1h"],
+    contextAfter: ["claude-code", AGENT, "5m"],
+    check: (spawn) => assert.equal(spawn.ttl, "5m", "at the new TTL"),
+  },
+  {
+    name: "dropping the prompt-cache TTL",
+    before: { mode: "subagent", cacheTtl: "1h" },
+    after: { mode: "subagent" },
+    contextBefore: ["claude-code", AGENT, "1h"],
+    contextAfter: ["claude-code", AGENT],
+    check: (spawn) =>
+      assert.equal(spawn.ttl, process.env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null, "with no TTL of its own"),
+  },
+  {
+    name: "a maxTurns change",
+    before: { mode: "subagent", maxTurns: 4 },
+    after: { mode: "subagent", maxTurns: 8 },
+    contextBefore: ["claude-code", AGENT, "maxTurns=4"],
+    contextAfter: ["claude-code", AGENT, "maxTurns=8"],
+    check: (spawn) =>
+      assert.deepEqual(
+        spawn.args.slice(spawn.args.indexOf("--max-turns"), spawn.args.indexOf("--max-turns") + 2),
+        ["--max-turns", "8"],
+      ),
+  },
+  {
+    // `--max-budget-usd` counts over the process's life and starts again on
+    // every `--resume` (h #g245), so the new process gets the new cap from
+    // zero: the same as the in-process carry (h #g270), and the same a replay
+    // into a fresh session would get, at a replay's cost.
+    name: "a maxBudgetUsd change",
+    before: { mode: "subagent", maxBudgetUsd: 0.5 },
+    after: { mode: "subagent", maxBudgetUsd: 1 },
+    contextBefore: ["claude-code", AGENT, "maxBudgetUsd=0.5"],
+    contextAfter: ["claude-code", AGENT, "maxBudgetUsd=1"],
+    check: (spawn) =>
+      assert.deepEqual(
+        spawn.args.slice(
+          spawn.args.indexOf("--max-budget-usd"),
+          spawn.args.indexOf("--max-budget-usd") + 2,
+        ),
+        ["--max-budget-usd", "1"],
+      ),
+  },
+]
+
+for (const change of SETTING_CHANGES) {
+  test(`${change.name} after a restart continues the claude session instead of replaying`, {
+    timeout: 60_000,
+  }, async () => {
+    const fake = createRestartCli()
+    try {
+      await fake.warm()
+      const before = fake.key(FIRST, undefined, change.contextBefore)
+      const after = fake.key(FIRST, undefined, change.contextAfter)
+      setAgentRegistry({ [AGENT]: change.before })
+      await fake.turn(FIRST, [...BEFORE], undefined, AGENT)
+      fake.writeTranscript(SESSION)
+      assert.deepEqual(owners(fake.records()), [before], "the first turn ran under the old setting")
+
+      await fake.restart()
+      setAgentRegistry({ [AGENT]: change.after })
+      await fake.turn(FIRST, [...AFTER], undefined, AGENT)
+
+      const spawns = fake.spawns()
+      assert.equal(spawns.length, 2)
+      assert.equal(resumedId(spawns[1].args), SESSION, `the new setting resumes: ${JSON.stringify(spawns[1].args)}`)
+      change.check(spawns[1])
+      const sent = fake.lastInput()
+      assert.ok(!sent.includes("conversation_history"), sent.slice(0, 400))
+      assert.ok(sent.includes("What is the codename?"))
+
+      // One owner on disk and in memory, as for a model or effort change.
+      assert.equal(getClaudeSessionId(before), undefined)
+      assert.equal(getClaudeSessionId(after), SESSION)
+      assert.deepEqual(owners(fake.records()), [after])
+    } finally {
+      await fake.cleanup()
+    }
+  })
+}
+
+test("after a restart a different agent still replays rather than taking the other agent's session", {
+  timeout: 60_000,
+}, async () => {
+  // The agent is the one blob element that is NOT a spawn setting: plan and
+  // build in one chat are two conversations on purpose (h #g223).
+  const fake = createRestartCli()
+  try {
+    await fake.warm()
+    fake.key(FIRST, undefined, ["claude-code", AGENT, "1h"])
+    fake.key(FIRST, undefined, ["claude-code", "worker", "5m"])
+    setAgentRegistry({
+      [AGENT]: { mode: "subagent", cacheTtl: "1h" },
+      worker: { mode: "subagent", cacheTtl: "5m" },
+    })
+    await fake.turn(FIRST, [...BEFORE], undefined, AGENT)
+    fake.writeTranscript(SESSION)
+
+    await fake.restart()
+    await fake.turn(FIRST, [...AFTER], undefined, "worker")
 
     const spawn = fake.spawns()[1]
     assert.equal(resumedId(spawn.args), undefined, JSON.stringify(spawn.args))

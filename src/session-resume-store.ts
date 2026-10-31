@@ -301,7 +301,9 @@ export function findResumePoint(opts: {
  * Neither is a reason to start a new Claude conversation: `--model` and
  * `CLAUDE_CODE_EFFORT_LEVEL` are both spawn-time, and the CLI applies either
  * to a transcript it resumes, so the sibling's transcript can simply be
- * continued under the new one.
+ * continued under the new one. An agent's prompt-cache TTL, `maxTurns` and
+ * `maxBudgetUsd` are in the key too and are spawn-time as well, so a record
+ * that differs only in them is a sibling the same way (h #g275).
  *
  * `findResumePoint`'s refusals all hold here and are the whole safety of it:
  * the same binary (`--resume` cannot cross accounts, h #g98), a transcript
@@ -467,8 +469,11 @@ export function findSiblingResumePoint(opts: {
  * and the replay happens exactly when the carry does not. So nothing about
  * content, transcripts, binaries or busy-ness is consulted. The one test is
  * the sibling signature, which already pins cwd, request scope, opencode
- * session, agent and prompt-cache TTL, and leaves only the model, the effort
- * and the account free.
+ * session and agent, and leaves only the model, the effort, the spawn settings
+ * (prompt-cache TTL, `maxTurns`, `maxBudgetUsd`) and the account free. Leaving
+ * the spawn settings free (h #g275) only widens what this sees, which is the
+ * safe direction for a guard: an account in another group that answered this
+ * conversation under another TTL is still that group's exchange.
  *
  * `extraKeys` is the in-memory session-key set (`listClaudeSessionKeys`), so
  * the guard still works with `resumeAfterRestart: false`, where nothing is

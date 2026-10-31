@@ -9025,7 +9025,8 @@ the lookup refuses keeps its record under its own key, as a refused model
 sibling always did, and every later lookup checks its chain again. **Not
 covered:** a prompt-cache TTL or CLI-cap change after a restart still replays,
 because `modelSiblingSignature` keeps the context blob whole, so no record is a
-sibling across those settings. Recorded in `TODO.md`, not changed here.
+sibling across those settings. Recorded in `TODO.md`, not changed here, and
+closed on the same branch by h #g275.
 
 The new file asserts the `--resume` argv and the effort, no replayed history,
 one owner on disk, a switch back in the same process, and that a missing
@@ -9036,3 +9037,74 @@ Checks: `npm run typecheck`, the focused files (`test/restart-sibling-carry`,
 `session-model-switch`, `session-resume`, `effort-sessions`: 51 pass), `npm
 test` (1942 pass, EXIT 0). No log message changed, so the bundle allowlist is
 untouched. On a local branch, not released.
+
+## A TTL or CLI-cap change after a restart carries the conversation too (2026-10-31)
+
+h #g275. The gap h #g274 left open, fixed on the same branch with the
+maintainer's go ("yes" to fixing the TTL/cap gap).
+
+An agent's prompt-cache TTL, `maxTurns` and `maxBudgetUsd` ride in the session
+key's context blob after its provider and agent (h #g168, h #g245). Inside one
+process `invalidateOtherSpawnVariants` already treats a key that differs only in
+them as the same conversation, because `spawnIdentity` cuts the blob to
+`[provider, agent]` and the scan over memory finds the old key (h #g270). After
+an opencode restart memory is empty, so that scan finds nothing, and the only
+other way to the old key is `findSiblingResumePoint` over the resume records.
+That lookup matched on `modelSiblingSignature`, which blanked the model and
+dropped the effort tail but kept the blob whole. So a record written under
+`["claude-code","explorer","1h"]` was never a sibling of a key under
+`["claude-code","explorer","5m"]`, and the first such change after a restart
+replayed the thread with `no-sibling-recorded`.
+
+Measured first: four new cases in `test/restart-sibling-carry.test.ts` (a TTL
+change, a TTL dropped, a `maxTurns` change, a `maxBudgetUsd` change, each across
+a simulated restart through a real `doStream` and a fake CLI) all spawned with
+no `--resume` on the branch head (`6b0288c`) and replayed. A fifth case, a
+different AGENT after the restart, replayed both before and after, as it must.
+
+The fix is one function. `withoutSpawnSettings` (`src/session-fork.ts`) takes a
+`context=` segment and keeps its first two elements, and leaves any other
+segment, or a blob this plugin did not write, whole. `spawnIdentity` now calls
+it instead of its own copy of the same code, and `modelSiblingSignature` calls
+it on the blob after blanking the model, so "what is a spawn setting" has one
+definition for both the in-process scan and the restart lookup. On a default
+install the blob is `["claude-code",null]` and the signature is byte-identical.
+Every other refusal of the lookup holds: binary, account group, shape chain,
+still writing, transcript gone, and the agent, cwd, scope and affinity.
+
+Two consequences were checked rather than assumed:
+
+- **The `accountGroups` guard.** `findForeignAccountSibling` matches on the same
+  signature, so it now also sees an account in another group that answered this
+  conversation under another TTL or cap. That only widens what the guard
+  catches, which is its safe direction (a wider match withholds a replay or a
+  catch-up, never sends one). It also closes a real hole: TTL defaults can be
+  set per provider (`defaultSubagentCacheTtl`), and every account is its own
+  provider, so one account's TTL used to hide a cross-group sibling from the
+  guard. Pinned in `test/account-groups.test.ts`.
+- **`maxBudgetUsd`.** `--max-budget-usd` counts over the process's life and
+  starts again on every `--resume` (measured on 2.1.293, h #g245), so carrying
+  a conversation across a budget change hands the new process the new cap,
+  counted from zero. That is exactly what the in-process carry already did since
+  h #g270, what any restart resume of the same key does, and what a replay into
+  a fresh session would do, the replay at a replay's cost. Refusing it would buy
+  no honesty and cost a replay, so it carries, and the test asserts
+  `--max-budget-usd 1` on the carried spawn. The cap stays a per-process guard
+  for a subagent's own `claude`; the conversation-wide cap is the provider's
+  `maxBudgetUsd` (the ledger), which is keyed on the opencode session and is
+  untouched.
+
+The carry's NOTICE (`continuing this conversation's claude session under the new
+model or effort instead of replaying it`) is unchanged, because
+`docs/configuration/accounts.md` and the bundled skill quote it. No log message
+changed, so the bundle allowlist is untouched.
+
+Checks: `npm run typecheck` (EXIT 0), `test/restart-sibling-carry.test.ts` (11
+pass), the focused files (`session-model-switch`, `effort-sessions`,
+`session-resume`, `budget`, `agent-models`, `account-groups`, `session-fork`:
+131 pass), and `npm test`. Two focused runs went to the live
+`~/.local/share/opencode-claude-code/plugin.log` and state stores before the
+scratch environment was set (the shell exports
+`OPENCODE_CLAUDE_CODE_LOG_FILE=1`, h #g116); they added fixture lines and
+fake-model entries, which no real turn reads, and were left in place rather
+than rewriting files live processes write.
