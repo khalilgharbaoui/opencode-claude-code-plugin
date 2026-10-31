@@ -389,21 +389,51 @@ export function forkSiblingSignature(sessionKey: string): string | null {
 }
 
 /**
+ * A key's `context=` segment with every element past the provider and the
+ * opencode agent taken out: the prompt cache TTL, `maxTurns=` and
+ * `maxBudgetUsd=`, the blob's spawn settings. Any other segment, and a blob
+ * this plugin did not write, comes back unchanged and so only matches itself.
+ *
+ * The one definition of "spawn setting" both `spawnIdentity` (which retires a
+ * stale spawn in one process, h #g270) and `modelSiblingSignature` (which
+ * finds it on disk after a restart, h #g275) read, so the two cannot drift.
+ */
+export function withoutSpawnSettings(segment: string): string {
+  if (!segment.startsWith("context=")) return segment
+  try {
+    const context: unknown = JSON.parse(segment.slice("context=".length))
+    if (Array.isArray(context)) return `context=${JSON.stringify(context.slice(0, 2))}`
+  } catch {
+    // Not a blob this plugin wrote, so it stays whole and only matches itself.
+  }
+  return segment
+}
+
+/**
  * The part of a session key shared by every variant of ONE opencode
- * conversation that differs only in which model, reasoning effort or ACCOUNT
- * answers it: the key with its model segment blanked, its `effort=` tail
- * dropped, and (with `accountProviders` given) the provider element of its
- * context blob blanked too.
+ * conversation that differs only in which model, reasoning effort, spawn
+ * setting or ACCOUNT answers it: the key with its model segment blanked, its
+ * `effort=` tail dropped, its context blob cut to provider and agent
+ * (`withoutSpawnSettings`), and (with `accountProviders` given) the provider
+ * element of that blob blanked too.
  *
  * The opposite selection to `forkSiblingSignature`, and for the opposite
  * reason. A fork is a DIFFERENT opencode session continuing the same content,
  * so the affinity is what varies and the model must not. This is the SAME
  * opencode session continuing its own conversation after the operator moved
  * it to another model or another effort level, so cwd, request scope, session
- * affinity and the context blob (provider, opencode agent, prompt cache TTL)
- * all have to match and the model and effort are exactly what may differ.
- * Both are spawn-time choices (`--model`, `CLAUDE_CODE_EFFORT_LEVEL`) and the
- * CLI applies either to a transcript it resumes, measured on 2.1.288.
+ * affinity, provider and opencode agent all have to match and the model and
+ * effort are exactly what may differ. Both are spawn-time choices (`--model`,
+ * `CLAUDE_CODE_EFFORT_LEVEL`) and the CLI applies either to a transcript it
+ * resumes, measured on 2.1.288.
+ *
+ * The prompt cache TTL, `maxTurns` and `maxBudgetUsd` may differ for the same
+ * reason (h #g275): each is an env var or a flag on the spawn, and
+ * `spawnIdentity` already treats a key that differs only in them as the same
+ * conversation inside one process (h #g270). After an opencode restart that
+ * process is gone and the resume record is all that is left, so this has to
+ * read them the same way or the first such change after a restart replays.
+ * The agent stays: plan and build in one chat are two conversations on purpose.
  *
  * The ACCOUNT is the third thing that may differ, and for the same reason
  * (h #g226). An account is a `CLAUDE_CONFIG_DIR` behind its own opencode
@@ -440,6 +470,7 @@ export function modelSiblingSignature(
   if (withoutEffort.length < 5) return null
   const blanked = [...withoutEffort]
   blanked[1] = "*"
+  blanked[blanked.length - 1] = withoutSpawnSettings(blanked[blanked.length - 1])
   const signature = blanked.join("::")
   return accountProviders && accountProviders.size > 0
     ? blankAccountProvider(signature, accountProviders)

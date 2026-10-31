@@ -2395,9 +2395,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // transcript this turn is about to resume. It goes first, so one
             // `claude` owns one conversation; the transfer then moves the id,
             // the resume record and the fork fingerprint across, leaving the
-            // sibling key with no claim on it at all.
+            // sibling key with no claim on it at all. After an opencode
+            // restart the sibling's id is on disk only, so the record this
+            // lookup just accepted names it (h #g274).
             deleteActiveProcess(sibling.siblingKey)
-            const carried = transferClaudeSession(sibling.siblingKey, sk)
+            const carried = transferClaudeSession(sibling.siblingKey, sk, sibling.claudeSessionId)
             if (carried) {
               // A renamed copy is the same conversation under a new id, because
               // the CLI resolves a session by filename and the target path was

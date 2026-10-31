@@ -392,6 +392,27 @@ test("the group guard's detector ignores content, binaries and transcripts", () 
       }),
       undefined,
     )
+    // A spawn setting is no hiding place either (h #g275): another account
+    // that answered this conversation under another prompt-cache TTL or cap
+    // is still that account's exchange. Before, a TTL set on one account's
+    // provider and not the other's made the guard miss it.
+    const alphaWithSettings = sessionKey(
+      "/work",
+      `claude-haiku-4-5::tools::ses_groups::context=${JSON.stringify([
+        "claude-code-alpha",
+        null,
+        "1h",
+        "maxTurns=4",
+      ])}`,
+    )
+    assert.deepEqual(
+      findForeignAccountSibling({
+        sessionKey: keyFor("beta"),
+        accountProviders: providers,
+        extraKeys: [alphaWithSettings],
+      }),
+      { siblingKey: alphaWithSettings, account: "alpha" },
+    )
   } finally {
     _setResumeStorePath(null)
     rmSync(dir, { recursive: true, force: true })

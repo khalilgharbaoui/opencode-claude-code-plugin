@@ -24,7 +24,7 @@ import {
 import { forgetExplicitTaskModel, hasUnclaimedExplicitTaskModels } from "./task-model.js"
 import { clearCompression } from "./compression-store.js"
 import { clearBackgroundTasks } from "./background-tasks.js"
-import { forgetForkFingerprint, moveForkFingerprint } from "./session-fork.js"
+import { forgetForkFingerprint, moveForkFingerprint, withoutSpawnSettings } from "./session-fork.js"
 import { forgetServedConversation, moveServedConversation } from "./conversation-gap.js"
 import { forgetResumePoint, moveResumePoint } from "./session-resume-store.js"
 import {
@@ -1125,15 +1125,23 @@ export async function releaseIdleForHandover(sessionID?: string): Promise<string
  * running, under a new key. This is exactly why the transfer cannot be written
  * as `deleteClaudeSessionId` plus `setClaudeSessionId`.
  *
+ * `recorded` is the id the source's resume record names, for a source this
+ * process never held in memory: after an opencode restart, or a handover to
+ * another copy of the plugin (h #g269), that record is the only thing that
+ * knows which Claude session answered it (h #g274). Only the sibling carry
+ * passes it, after `findSiblingResumePoint` has applied every refusal to that
+ * record. An id in memory still wins.
+ *
  * Refuses when the destination already has a conversation of its own, and
  * returns the id it moved, or `undefined` when nothing moved.
  */
 export function transferClaudeSession(
   fromKey: string,
   toKey: string,
+  recorded?: string,
 ): string | undefined {
   if (fromKey === toKey) return undefined
-  const claudeSessionId = claudeSessions.get(fromKey)
+  const claudeSessionId = claudeSessions.get(fromKey) ?? recorded
   if (!claudeSessionId) return undefined
   if (claudeSessions.has(toKey)) return undefined
   claudeSessions.delete(fromKey)
@@ -1170,15 +1178,7 @@ export function effortSessionKey(baseKey: string, effort?: ReasoningEffort): str
 export function spawnIdentity(key: string): string {
   const parts = key.split("::")
   if (parts.length > 1 && parts[parts.length - 1].startsWith("effort=")) parts.pop()
-  const last = parts.length - 1
-  if (parts[last].startsWith("context=")) {
-    try {
-      const context: unknown = JSON.parse(parts[last].slice("context=".length))
-      if (Array.isArray(context)) parts[last] = `context=${JSON.stringify(context.slice(0, 2))}`
-    } catch {
-      // Not a blob this plugin wrote, so it stays whole and only matches itself.
-    }
-  }
+  parts[parts.length - 1] = withoutSpawnSettings(parts[parts.length - 1])
   return parts.join("::")
 }
 
@@ -1292,7 +1292,14 @@ export function invalidateOtherSpawnVariants(
       clearBackgroundTasks(key)
       continue
     }
-    deleteClaudeSessionId(key)
+    // A key this process never held is known only from the resume record an
+    // earlier process wrote (an opencode restart, or a handover, h #g269).
+    // Nothing here abandoned it, so the record stays for the sibling carry in
+    // the prologue, which takes it only past every refusal of
+    // `findSiblingResumePoint`. Forgetting it here made the first effort change
+    // after a restart replay the thread (h #g274).
+    if (carry && !claudeSessions.has(key)) forgetClaudeSessionInMemory(key)
+    else deleteClaudeSessionId(key)
     clearCompression(key)
     clearBackgroundTasks(key)
   }

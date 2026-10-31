@@ -96,18 +96,32 @@ checks and suspected defects found in passing.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
 
-- 2026-10-31: suspected defect, unverified: the first model or effort switch after an
-  opencode RESTART may replay the thread instead of carrying the Claude session. Found by an
-  explore subagent during the launch demo recording, then read in the code: after a restart
-  `findSiblingResumePoint` finds the sibling in the resume record on disk, but the carry
-  calls `transferClaudeSession(sibling.siblingKey, sk)` (`src/claude-code-language-model.ts`
-  ~2400), which reads only the in-memory `claudeSessions` map (`src/session-manager.ts`
-  1136-1137), returns `undefined`, and the turn replays with `sibling-carry-over-failed`.
-  `test/session-model-switch.test.ts` swaps the model inside one process, so it would not
-  see this. Check first: a fake-CLI test with a simulated restart between the two turns
-  (as `test/session-resume.test.ts` does), then, if it fails, fall back to
-  `setClaudeSessionId(sk, sibling.claudeSessionId)` plus the resume record when the transfer
-  finds nothing in memory.
+- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g274): the
+  first model or effort switch after an opencode restart replayed the thread. Confirmed by
+  `test/restart-sibling-carry.test.ts` on master: the model switch replayed as
+  `sibling-carry-over-failed` (the transfer read only memory), and the effort switch as
+  `no-sibling-recorded` (`invalidateOtherSpawnVariants` deleted the old effort's resume record
+  before the lookup ran). `transferClaudeSession` now takes the recorded id the sibling lookup
+  accepted, and a stale key known only from disk keeps its record for that lookup.
+
+- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g275): a
+  prompt-cache TTL or CLI-cap (`maxTurns`, `maxBudgetUsd`) change after an opencode restart
+  replayed the thread, because `modelSiblingSignature` kept the context blob whole.
+  Confirmed by `test/restart-sibling-carry.test.ts` on the branch head first (four cases, no
+  `--resume`). The signature now cuts the blob to `[provider, agent]` with
+  `withoutSpawnSettings`, the same function `spawnIdentity` uses. The `accountGroups` guard
+  (`findForeignAccountSibling`) reads the same signature, and only gets broader, which is
+  the safe direction. A `maxBudgetUsd` change carries too: the cap is per process and starts
+  again on any `--resume` (h #g245), as it already did in one process (h #g270).
+
+- 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
+  "releasing a session stops its idle child and forgets it in memory, but keeps the resume
+  record" failed once in a full `npm test` (the record was missing from disk at line 394),
+  then passed in the next full run and in three runs of the file alone. It writes the resume
+  store that every test process shares under the suite's one scratch `XDG_STATE_HOME`
+  without a `_setResumeStorePath` of its own. My guess is a lost update between two
+  processes' merge-on-write, but that is unconfirmed. If it recurs, give the file a scratch
+  store path as `test/session-resume.test.ts` does.
 
 ## Deferred decisions
 
