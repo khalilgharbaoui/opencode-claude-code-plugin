@@ -12,6 +12,7 @@ import {
   DOCTOR_MARKER,
   checkProxyAuth,
   formatDoctorReport,
+  formatModelCatalog,
   parseDoctorCommand,
   parseDoctorCommandContent,
   withholdFreeText,
@@ -1022,4 +1023,58 @@ test("a set budget prints the cap, the thresholds, each conversation's spend and
   })
   const section = withCount.slice(withCount.indexOf("**Background subagents**"))
   assert.ok(section.indexOf("running now: 1") < section.indexOf("maxBackgroundSubagents: 3"))
+})
+
+// --- the model catalog from the CLI (h #g279) ------------------------------
+
+test("the model catalog section says what the probe changed, added and found unknown", () => {
+  assert.equal(formatDoctorReport(report).includes("Model catalog from the Claude CLI"), false)
+  const off = formatModelCatalog({ enabled: false, cliPath: "claude", changed: [], added: [], unknown: [] })
+  assert.match(off.join("\n"), /Off \(`cliModelCatalog: false`\)/)
+  const none = formatModelCatalog({
+    enabled: true,
+    cliPath: "claude",
+    changed: [],
+    added: [],
+    unknown: [],
+    refresh: { status: "learned", spawns: 16, ms: 2983, changed: false },
+  }).join("\n")
+  assert.match(none, /No answer stored for the installed `claude` yet/)
+  assert.match(none, /Probed in this process \(16 spawns, 3\.0s\)/)
+  const refused = formatModelCatalog({
+    enabled: true,
+    cliPath: "claude",
+    entry: { cliVersion: "2.1.100", probedAt: Date.now(), refused: "request-refused" },
+    changed: [],
+    added: [],
+    unknown: [],
+  }).join("\n")
+  assert.match(refused, /Claude Code 2\.1\.100 refused the probe \(`request-refused`\)/)
+  const agreeing = formatModelCatalog({
+    enabled: true,
+    cliPath: "claude",
+    entry: { cliVersion: "2.1.314", probedAt: Date.now() - 90_000 },
+    changed: [],
+    added: [],
+    unknown: [],
+  }).join("\n")
+  assert.match(agreeing, /Registered as Claude Code 2\.1\.314 describes it \(probed 1m ago\)/)
+  assert.match(agreeing, /agrees with the built-in catalog/)
+
+  const modelCatalog = {
+    enabled: true,
+    cliPath: "claude",
+    entry: { cliVersion: "2.1.288", probedAt: Date.now() },
+    changed: [{ id: "claude-opus-4-7", field: "context" as const, catalog: "1000000", cli: "300000" }],
+    added: ["claude-opus-6"],
+    unknown: ["claude-haiku-5-5"],
+  }
+  const text = formatDoctorReport({ ...report, modelCatalog })
+  assert.match(text, /\*\*Model catalog from the Claude CLI\*\*/)
+  assert.match(text, /\| `claude-opus-4-7` \| context \| 1000000 \| 300000 \|/)
+  assert.match(text, /Added from the CLI's own picker, with no price \(cost 0 means unknown\): `claude-opus-6`\./)
+  assert.match(text, /`claude-haiku-5-5` \(needs 2\.1\.293\)/)
+  // Ids, versions, numbers and reason tokens only, so a bundle keeps it whole.
+  const bundled = formatDoctorReport(withholdFreeText({ ...report, modelCatalog }))
+  assert.match(bundled, /`claude-haiku-5-5` \(needs 2\.1\.293\)/)
 })

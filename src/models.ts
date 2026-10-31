@@ -3,12 +3,32 @@ import type { OpenCodeModel } from "./opencode-types.js"
 const PROVIDER_ID = "claude-code"
 const NPM = "@khalilgharbaoui/opencode-claude-code-plugin"
 
+/** Every effort level Claude Code knows, in its own order (`low` to `max`). */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const
+export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
 const reasoningVariants: Record<string, Record<string, unknown>> = {
   low: { reasoningEffort: "low" },
   medium: { reasoningEffort: "medium" },
   high: { reasoningEffort: "high" },
   xhigh: { reasoningEffort: "xhigh" },
   max: { reasoningEffort: "max" },
+}
+
+/**
+ * The picker variants for exactly these effort levels, or undefined for none.
+ *
+ * Claude Code clamps a level a model lacks rather than refusing it (read out of
+ * 2.1.314: `if(r==="max"&&!tae(n))r="high";if(r==="xhigh"&&!C$e(n))r="high"`),
+ * so a variant the model does not support is a picker choice that silently
+ * runs as `high`. Only offer the ones that change something (h #g279).
+ */
+export function effortVariants(
+  levels: readonly string[],
+): Record<string, Record<string, unknown>> | undefined {
+  const picked = EFFORT_LEVELS.filter((level) => levels.includes(level))
+  if (picked.length === 0) return undefined
+  return Object.fromEntries(picked.map((level) => [level, reasoningVariants[level]]))
 }
 
 const baseCapabilities = {
@@ -38,6 +58,12 @@ function defineModel(opts: {
   // Display-only: model resolution keys off `id`.
   multiplier: number
   status?: OpenCodeModel["status"]
+  /**
+   * The effort levels Claude Code accepts for this model, when it is not all
+   * five. Measured per model with the probe in `src/cli-model-catalog.ts`
+   * (h #g279); omitted means every level.
+   */
+  efforts?: readonly EffortLevel[]
 }): OpenCodeModel {
   return {
     id: opts.id,
@@ -56,7 +82,7 @@ function defineModel(opts: {
     options: {},
     headers: {},
     release_date: opts.releaseDate,
-    variants: opts.reasoning ? reasoningVariants : undefined,
+    variants: opts.reasoning ? effortVariants(opts.efforts ?? EFFORT_LEVELS) : undefined,
   }
 }
 
@@ -257,6 +283,9 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 0.1,
     releaseDate: "2026-10-07",
   }),
+  // Sonnet 4.5 thinks but takes no effort level: Claude Code reports no
+  // `supportedEffortLevels` for it and drops any it is given (2.1.288 to
+  // 2.1.314, h #g279), so it carries no variants.
   "claude-sonnet-4-5": defineModel({
     id: "claude-sonnet-4-5",
     name: "Claude Sonnet 4.5",
@@ -267,17 +296,24 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     cost: sonnetCost,
     multiplier: 3,
     releaseDate: "2025-09-29",
+    efforts: [],
   }),
+  // Claude Code runs the 4.6 generation in a 200k window: its catalog says
+  // `context:{window:200000,maximum_window:1e6,supports_1m_suffix:true}`, and
+  // `--model claude-sonnet-4-6` reports `rawMaxTokens` 200,000 (2.1.288 to
+  // 2.1.314, h #g279). The 1M window is the `claude-sonnet-4-6[1m]` id. No
+  // `xhigh`: the CLI clamps it to `high`.
   "claude-sonnet-4-6": defineModel({
     id: "claude-sonnet-4-6",
     name: "Claude Sonnet 4.6",
     family: "sonnet",
     reasoning: true,
-    context: 1_000_000,
+    context: 200_000,
     output: 128_000,
     cost: sonnetCost,
     multiplier: 3,
     releaseDate: "2025-06-19",
+    efforts: ["low", "medium", "high", "max"],
   }),
   "claude-sonnet-5": defineModel({
     id: "claude-sonnet-5",
@@ -306,6 +342,8 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 2,
     releaseDate: "2026-09-28",
   }),
+  // Opus 4.5 takes `low` to `high` only; the CLI clamps `xhigh` and `max`
+  // to `high` (h #g279).
   "claude-opus-4-5": defineModel({
     id: "claude-opus-4-5",
     name: "Claude Opus 4.5",
@@ -316,17 +354,21 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     cost: opusCost,
     multiplier: 5,
     releaseDate: "2025-11-01",
+    efforts: ["low", "medium", "high"],
   }),
+  // A 200k window and no `xhigh`, as Sonnet 4.6 above; `claude-opus-4-6[1m]`
+  // is the 1M id.
   "claude-opus-4-6": defineModel({
     id: "claude-opus-4-6",
     name: "Claude Opus 4.6",
     family: "opus",
     reasoning: true,
-    context: 1_000_000,
+    context: 200_000,
     output: 128_000,
     cost: opusCost,
     multiplier: 5,
     releaseDate: "2025-06-19",
+    efforts: ["low", "medium", "high", "max"],
   }),
   "claude-opus-4-7": defineModel({
     id: "claude-opus-4-7",

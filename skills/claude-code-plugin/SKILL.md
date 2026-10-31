@@ -121,6 +121,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | Option | Type | Default | What it does |
 |---|---|---|---|
 | `cliPath` | string | `"claude"` | Executable, not a shell command with flags. Use an absolute path for a non-PATH install. The opencode config hook supplies this default; only direct `createClaudeCode()` use falls back to `CLAUDE_CLI_PATH`. Account providers wrap it; never select a generated wrapper yourself. |
+| `cliModelCatalog` | boolean | `true` | Register the models as the installed `claude` describes them. Once per CLI version a background probe (one `claude --print --bare --model <id>` per catalog id, about 16 spawns and 3 s on 2.1.314, sent `initialize` and `get_context_usage` and never a message, with no credential in its env: measured no API request) records which models the CLI knows, the context window it runs each in and the effort levels it accepts, in `$XDG_STATE_HOME/opencode-claude-code-plugin/cli-models.json` (`0600`, atomic, keyed on the real binary and its version). Registration reads that file and never waits for the probe: a fresh answer applies at once on opencode 2 (it reloads the providers) and from the next start on opencode 1. What changes: windows and effort variants follow the CLI, and a model the CLI's own picker offers that the catalog lacks is added at an unknown (zero) price, usable by `forceModel`/`defaultSubagentModel`. Costs and `(N×)` stay the catalog's. A deadline kill writes nothing; a refusal is remembered for a day. `false` registers the built-in catalog and runs no probe. Doctor section: **Model catalog from the Claude CLI**. Log: `read the model catalog from the claude cli` (INFO). |
 | `accounts` | string[] | unset | Unset keeps provider `claude-code`. Any array, including `[]`, expands to `claude-code-default` plus normalized, deduplicated names. Non-default accounts use `~/.claude-<name>`; default uses the CLI's normal environment/auth. |
 | `accountFailover` | `"ask"` / `"auto"` / `"off"` | `"off"` | **Opt-in: only an explicit `"ask"` opens the switch form**, so unset and `"off"` behave identically. `"auto"`, also opt-in, makes the same switch without a form, moving the same request to the next eligible account in configured order inside the same turn (see "Automatic failover" below). `"ask"` ends a usage-limited turn on opencode's native `question` form listing the other configured accounts, and continues the task on the pick inside the same opencode turn. Only ever fires with more than one account configured. The pick is sticky for the LIMITED account until the limit's reset time (or until opencode restarts when the CLI reported none), so it covers every session on that account and subagents follow their parent; child sessions are never shown the form. Leaving it unanswered waits and costs nothing. `stop`, a dismissal, or text that is not one of the offered accounts ends the turn the way a limited turn ends without the form. Triggered only by a rejected `rate_limit_event`, one of the two known account-limit error texts, or one of the five account-level failure kinds the CLI names on its own error reply (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `verification_required`, `billing_error`); never by a generic failure. Never on compaction turns; both transports (the TUI's limit reply carries the same `error: "rate_limit"` kind). A switch carries the Claude conversation to the target account's config dir and resumes it there (`crossAccountResume`, default on) and only replays the thread as text when that copy is refused; either way, MCP servers configured only in the limited account's Claude profile are gone. With the default `"off"`, a limited turn ends on one `▌ **usage limit:**` note instead (see "When an account runs out of usage"). |
 | `accountGroups` | object | – | **Off unless set**, and unset means every account behaves as one group, so nothing changes on an install that does not set it. A map from an account name in `accounts` to a group name, e.g. `{"work": "work"}`; every account not named, `default` included, is in one implicit group. With it set the plugin only moves a conversation between accounts in the SAME group, which covers every way one can move: the by-hand switch (picking a model under another account's provider in the same opencode session), the `accountFailover` form, the `"auto"` switch, the override either one sets, and `crossAccountResume`. A switch ACROSS groups sends the other account nothing at all, neither the Claude transcript nor a text replay of the thread (the replay is the same history by another route), starts fresh with only the current user message, and writes one `▌ **account group:**` note naming both accounts and both groups. The source account keeps the conversation and its transcript, so switching back continues it. The way BACK is guarded on the same lookup: that account still has its own Claude session, so the turn is an ordinary one, and the catch-up that would tell that session what it missed while the conversation ran elsewhere (`<missed_conversation>`) is withheld, with nothing else about the turn changed; a thread that was edited or undone in between still drops its session but is not replayed either, and writes the same note. The switch form offers only same-group accounts, the `"auto"` switch moves only to one, and with none left either behaves as a single-account install; `describeOtherAccounts` in the usage-limit and account-block notes is filtered the same way. An account name that is not configured is ignored with one WARN, as is a non-object value or a non-string group. Compaction is exempt and a child session follows its parent (under `"auto"` a child can move itself, which moves the parent with it, within the group). Shown resolved (never echoed) in the startup block and `/claude-code-doctor` as `accountGroups`, names only. Log: `starting fresh on this account: it is in another account group` (NOTICE, reason `another-account-group`), or `not replaying what this claude session missed: the conversation continued on an account in another group` for a withheld catch-up (NOTICE, same reason). It guards what the plugin moves on its own; it is not a permission system. |
@@ -243,6 +244,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `CLAUDE_CODE_RESULT_FALLBACK_MS` | Positive integer ms of stdout silence, after the CLI has produced output, before the turn is closed with no `result`; default 60000 for missing/invalid/nonpositive values. The close is announced in the reply as a `▌ **stream timeout:**` note, which is stripped from any rebuilt transcript. An aborted turn gets no note. |
 | `OPENCODE_CLAUDE_CODE_LOG_FILE` | Overrides `logging.file`: trimmed `0/false/no/off` are false; any other nonempty value is true; empty falls back to config. Prefer `1` or `0`. |
 | `OPENCODE_CLAUDE_CODE_LOG_DIR` | Overrides `logging.dir`. |
+| `OPENCODE_CLAUDE_CODE_MODEL_PROBE` | `0` or `false` stops the background model probe for this environment (the `npm test` script sets it); the stored answer is still registered. `cliModelCatalog: false` is the config switch and also ignores the stored answer. |
 | `OPENCODE_CLAUDE_CODE_LOG_LEVEL` | Overrides `logging.level`. Invalid values fall through to config. |
 | `DEBUG` | A value containing `opencode-claude-code` promotes `logging.mode` to debug, not `logging.level`. Preserve other debug namespaces. |
 | `OPENCODE_CLAUDE_CODE_PLUGIN_NO_CLEANUP=1` | Skip the removal of a stale unscoped `opencode-claude-code-plugin` install from opencode's package cache. |
@@ -1217,7 +1219,9 @@ Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `cl
 `claude-sonnet-5`, `claude-sonnet-5-5`, `claude-opus-4-5`, `claude-opus-4-6`,
 `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-8-fast`, `claude-opus-5`,
 `claude-opus-5-fast`, `claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`,
-`claude-fable-5-1`, `claude-mythos-5`, `claude-mythos-5-1`.
+`claude-fable-5-1`, `claude-mythos-5`, `claude-mythos-5-1`. With `cliModelCatalog` on
+(the default), a model the installed CLI's own picker offers that this list lacks is
+registered too, named from the CLI, at an unknown (zero) price.
 
 ### Variants and costs
 
@@ -1225,8 +1229,12 @@ Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `cl
   1× haiku 4.5,
   2× sonnet 5 and 5.5, 3× sonnet 4.5/4.6, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5, 10× fable, mythos
   and fast-mode opus 5 / 4.8. It is display only.
-- Every model except Haiku 4.5 has reasoning variants `low`, `medium`, `high`, `xhigh`,
-  `max`, picked in opencode's model selector. A variant becomes
+- Reasoning variants are the effort levels Claude Code accepts for that model, because the
+  CLI silently runs a level a model lacks as `high` (read out of 2.1.314): none for Haiku
+  4.5 and Sonnet 4.5, `low`/`medium`/`high` for Opus 4.5, `low`/`medium`/`high`/`max` for
+  Sonnet 4.6 and Opus 4.6, and all five (`low`, `medium`, `high`, `xhigh`, `max`) for
+  everything newer. With `cliModelCatalog` on they follow the installed CLI's own list.
+  They are picked in opencode's model selector. A variant becomes
   `CLAUDE_CODE_EFFORT_LEVEL` on the spawned CLI unless an agent effort wins. For direct
   AI-SDK calls, `ClaudeCodeCallOptions.reasoningEffort` supports the same levels plus
   `minimal` (mapped to `low`); it is not a provider startup option.
@@ -1258,8 +1266,10 @@ Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `cl
 - Registry costs are USD per million tokens, not subscription quota or a billing
   guarantee. Fast entries have fast pricing; other entries use standard rates. There
   is no above-200K tier in this registry; do not invent `cost.tiers` or
-  `cost.experimentalOver200K`. 4.5 models have 200K context/64K output, later registered
-  models have 1M/128K. Recheck vendor pricing/access separately when changing models.
+  `cost.experimentalOver200K`. 4.5 models have 200K context/64K output; Sonnet 4.6 and
+  Opus 4.6 have 200K/128K, because Claude Code runs them in a 200K window (their 1M
+  window is the `[1m]` id, which is not registered); later models have 1M/128K. With
+  `cliModelCatalog` on the window is the one the installed CLI reports. Recheck vendor pricing/access separately when changing models.
 
 ## Verify and diagnose
 

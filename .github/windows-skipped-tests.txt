@@ -18,6 +18,7 @@ account-usage-stream.test.ts
 btw-command.test.ts
 budget.test.ts
 cli-events-stream.test.ts
+cli-model-probe.test.ts
 cli-probe-cache.test.ts
 context-usage.test.ts
 conversation-gap.test.ts

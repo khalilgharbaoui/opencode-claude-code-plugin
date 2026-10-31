@@ -5,18 +5,18 @@ sidebar:
   order: 4
 ---
 
-The plugin auto-registers the following, and they appear in the model picker with no extra config: Haiku 4.5/5.5, Sonnet 4.5/4.6/5/5.5, Opus 4.5/4.6/4.7/4.8/5/5.5 (plus three fast-mode Opus entries), Fable 5/5.1 and Mythos 5/5.1, each except Haiku 4.5 carrying `low` / `medium` / `high` / `xhigh` / `max` reasoning variants.
+The plugin auto-registers the following, and they appear in the model picker with no extra config: Haiku 4.5/5.5, Sonnet 4.5/4.6/5/5.5, Opus 4.5/4.6/4.7/4.8/5/5.5 (plus three fast-mode Opus entries), Fable 5/5.1 and Mythos 5/5.1. Each carries the reasoning variants Claude Code accepts for it: none on Haiku 4.5 and Sonnet 4.5, fewer on Opus 4.5 and the 4.6 models, and all five (`low` / `medium` / `high` / `xhigh` / `max`) on everything newer. By default the list, the windows and the variants follow what your installed `claude` reports; see [Learned from the Claude CLI](#learned-from-the-claude-cli).
 
 | ID | Display name | Context | Output | Reasoning variants | Price × |
 |---|---|---|---|---|---|
 | `claude-haiku-4-5` | Claude Haiku 4.5 | 200k | 64,000 | – | 1× |
 | `claude-haiku-5-5` | Claude Haiku 5.5 | 1M | 128,000 | low/medium/high/xhigh/max | 0.1× |
-| `claude-sonnet-4-5` | Claude Sonnet 4.5 | 200k | 64,000 | low/medium/high/xhigh/max | 3× |
-| `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1M | 128,000 | low/medium/high/xhigh/max | 3× |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 | 200k | 64,000 | – | 3× |
+| `claude-sonnet-4-6` | Claude Sonnet 4.6 | 200k | 128,000 | low/medium/high/max | 3× |
 | `claude-sonnet-5` | Claude Sonnet 5 | 1M | 128,000 | low/medium/high/xhigh/max | 2× |
 | `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1M | 128,000 | low/medium/high/xhigh/max | 2× |
-| `claude-opus-4-5` | Claude Opus 4.5 | 200k | 64,000 | low/medium/high/xhigh/max | 5× |
-| `claude-opus-4-6` | Claude Opus 4.6 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
+| `claude-opus-4-5` | Claude Opus 4.5 | 200k | 64,000 | low/medium/high | 5× |
+| `claude-opus-4-6` | Claude Opus 4.6 | 200k | 128,000 | low/medium/high/max | 5× |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1M | 128,000 | low/medium/high/xhigh/max | 5× |
 | `claude-opus-4-8-fast` | Claude Opus 4.8 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
@@ -65,6 +65,20 @@ Because a downgrade is otherwise invisible, and because the picker shows these I
 
 The warning is read off the **end** of the turn, not the start. Claude Code answers the question twice and the two can disagree: measured on 2.1.288, an account with usage credits off is told `fast_mode_state: "on"` when the session opens and `"off"` with `extra_usage_disabled` on the terminal result, after the turn has already run and billed at standard Opus rates. Until v0.48 the plugin read only the first one, so for that account it logged "fast mode active" and never warned at all.
 
+## Learned from the Claude CLI
+
+The table above is the plugin's own list. With `cliModelCatalog` on (the default), what opencode registers follows your installed Claude Code instead, wherever the two disagree:
+
+- **Context window**: the window the CLI actually runs the model in. Sonnet 4.6 and Opus 4.6 are the measured case: Anthropic's API offers them a 1M window, but `claude --model claude-opus-4-6` runs in 200k (Claude Code 2.1.288 to 2.1.314), and the 1M window is the separate `claude-opus-4-6[1m]` id. Telling opencode 1M meant its context gauge and its own compaction never saw the limit the CLI was working to.
+- **Reasoning variants**: only the effort levels the CLI accepts for that model. Claude Code quietly runs a level a model lacks as `high`, so a variant it does not accept is a choice in the picker that changes nothing.
+- **New models**: a model the CLI's own picker offers that this plugin does not list yet is added, named the way the CLI names it. Its price is unknown, so it is registered at zero, like any model you add yourself; `forceModel` and `defaultSubagentModel` accept it.
+
+Prices and the `(N×)` labels always stay the plugin's, because the CLI carries none. A model the installed CLI does not know at all (an old Claude Code and a new model) keeps the plugin's numbers, and `/claude-code-doctor` names it with the release that fixes it.
+
+**How it is read, and what it costs.** Once per Claude Code version, in the background, the plugin starts one short `claude --print --bare --model <id>` per model (16 on Claude Code 2.1.314, about 3 seconds in all) and asks each two read-only questions over the control channel (`initialize` and `get_context_usage`), never a message. `--bare` reads no login, and the plugin removes `ANTHROPIC_API_KEY` from the probe's environment, so there is nothing a request could be billed to; measured against a local server standing in for the API, the probe made no request at all. The answer is kept in `$XDG_STATE_HOME/opencode-claude-code-plugin/cli-models.json` (`0600`), keyed on the real `claude` binary and its version, so it is read again only after `claude update`.
+
+Startup never waits for it. On opencode 2 a new answer reloads the providers in the same session; on opencode 1 it applies from the next start. If the probe is killed by its own deadline (a very busy machine) nothing is stored and the next start asks again; if the CLI refuses it (too old for these requests), that is remembered for a day. Either way the plugin's own list is registered. `/claude-code-doctor` has a **Model catalog from the Claude CLI** section that says which version answered and what it changed. `"cliModelCatalog": false` turns all of it off.
+
 ## Picking a variant
 
 Variants set the underlying reasoning effort. They're regular opencode model variants, so pick them in the model selector. If you'd previously declared variants in your project's `opencode.json`, they're merged on top of the defaults so nothing gets lost.
@@ -81,7 +95,7 @@ To rename a model, change a limit, or add a custom one:
       "models": {
         "claude-sonnet-4-6": {
           "name": "Sonnet (custom)",
-          "limit": { "context": 1000000, "output": 32768 }
+          "limit": { "context": 200000, "output": 32768 }
         }
       }
     }

@@ -22,6 +22,7 @@ import {
 } from "./diagnostic-bundle.js"
 import {
   formatResetsAtLocal,
+  modelCliFloor,
   snapshotHookFailures,
   snapshotMcpServerErrors,
   snapshotUnconnectedConnectors,
@@ -37,6 +38,7 @@ import {
   type ReadRuleMapping,
 } from "./read-rules.js"
 import { describeLogFile, log } from "./logger.js"
+import { snapshotCliModelCatalog, type CliModelCatalogSnapshot } from "./cli-model-catalog.js"
 import {
   isReadingCurrent,
   snapshotAccountUsage,
@@ -240,6 +242,12 @@ export interface DoctorReport {
    * when the store could not be read.
    */
   turnEstimate?: TurnEstimateAssessment
+  /**
+   * The model catalog as the installed Claude Code describes it (h #g279), or
+   * undefined when no provider has been registered in this process. Optional
+   * so a report built by hand renders without it.
+   */
+  modelCatalog?: CliModelCatalogSnapshot
   /** Background subagents: the gate as last read, and what this process did. */
   backgroundSubagents: {
     gate: BackgroundSubagentGate | undefined
@@ -518,6 +526,13 @@ export function formatDoctorReport(report: DoctorReport): string {
   lines.push("")
   lines.push(...formatReadRules(report.readRules))
 
+  if (report.modelCatalog) {
+    lines.push("")
+    lines.push("**Model catalog from the Claude CLI**")
+    lines.push("")
+    lines.push(...formatModelCatalog(report.modelCatalog))
+  }
+
   if (report.accountUsage) {
     lines.push("")
     lines.push("**Account usage**")
@@ -592,6 +607,73 @@ export function formatDoctorReport(report: DoctorReport): string {
  * anything the plugin wrote, so a bundle withholds them through
  * `withholdFreeText` and only the counts survive.
  */
+/**
+ * What the model probe (h #g279) changed about the registered catalog. Every
+ * value here is a model id, a version, a number or a kebab reason token, so a
+ * bundle keeps the section as it is.
+ */
+export function formatModelCatalog(snapshot: CliModelCatalogSnapshot): string[] {
+  if (!snapshot.enabled) {
+    return ["Off (`cliModelCatalog: false`): the built-in catalog is registered as it ships."]
+  }
+  const refresh = snapshot.refresh
+  const probe =
+    refresh?.status === "learned"
+      ? `Probed in this process (${refresh.spawns} spawns, ${formatAge(refresh.ms)}); it applies from the next start on opencode 1.`
+      : refresh?.status === "failed"
+        ? `The probe in this process failed (\`${refresh.reason}\`) after ${refresh.spawns} spawns.`
+        : refresh?.status === "skipped"
+          ? `No probe in this process (\`${refresh.reason}\`).`
+          : undefined
+  const entry = snapshot.entry
+  if (!entry) {
+    return [
+      "No answer stored for the installed `claude` yet, so the built-in catalog is registered.",
+      ...(probe ? ["", probe] : []),
+    ]
+  }
+  const version = entry.cliVersion ? `Claude Code ${entry.cliVersion}` : "the installed `claude`"
+  if (entry.refused) {
+    return [
+      `${version} refused the probe (\`${entry.refused}\`), so the built-in catalog is ` +
+        "registered. It is asked again a day later, or as soon as `claude` is updated.",
+    ]
+  }
+  const lines = [`Registered as ${version} describes it (probed ${formatAge(Date.now() - entry.probedAt)} ago).`]
+  lines.push("")
+  if (snapshot.changed.length === 0 && snapshot.added.length === 0) {
+    lines.push("It agrees with the built-in catalog on every window and effort level.")
+  }
+  if (snapshot.changed.length > 0) {
+    lines.push("| Model | Field | Built-in | CLI |")
+    lines.push("|---|---|---|---|")
+    for (const change of snapshot.changed) {
+      lines.push(`| \`${change.id}\` | ${change.field} | ${change.catalog} | ${change.cli} |`)
+    }
+  }
+  if (snapshot.added.length > 0) {
+    lines.push("")
+    lines.push(
+      `Added from the CLI's own picker, with no price (cost 0 means unknown): ${list(snapshot.added.map((id) => `\`${id}\``))}.`,
+    )
+  }
+  if (snapshot.unknown.length > 0) {
+    lines.push("")
+    lines.push(
+      "Not known to this `claude`, so it runs them on fallback limits: " +
+        list(
+          snapshot.unknown.map((id) => {
+            const floor = modelCliFloor(id)
+            return floor ? `\`${id}\` (needs ${floor})` : `\`${id}\``
+          }),
+        ) +
+        ". Run `claude update`.",
+    )
+  }
+  if (probe) lines.push("", probe)
+  return lines
+}
+
 function formatReadRules(mapping: ReadRuleMapping | undefined): string[] {
   const lines: string[] = []
   if (!mapping) {
@@ -1066,6 +1148,7 @@ export async function gatherDoctorReport(
     planUsage,
     accountUsage: snapshotAccountUsage(),
     turnEstimate: assessTurnEstimate(),
+    modelCatalog: snapshotCliModelCatalog(),
     backgroundSubagents: {
       gate: snapshotBackgroundSubagentGate(),
       ledgers: snapshotBackgroundTasks(),

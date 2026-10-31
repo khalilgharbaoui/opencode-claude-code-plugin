@@ -148,6 +148,8 @@ export interface V2Context {
   readonly options: Record<string, unknown>
   readonly provider: {
     transform(callback: (editor: V2ProviderEditor) => void): Promise<V2Registration>
+    /** Re-runs the transforms. In `@opencode/plugin` 2.2.5; optional because older hosts may lack it. */
+    reload?(): Promise<void>
   }
   readonly aisdk: {
     hook(

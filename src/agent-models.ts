@@ -38,6 +38,7 @@
 import { readFile, readdir } from "node:fs/promises"
 import path from "node:path"
 import { log } from "./logger.js"
+import { isCliAddedModel } from "./cli-model-catalog.js"
 import { defaultModels } from "./models.js"
 
 /** Directory names opencode reads agent markdown from, current form first. */
@@ -218,7 +219,7 @@ export function qualifyModelName(
  * completed from (h #g255) can never disagree.
  */
 export function isRegisteredModelName(name: string): boolean {
-  return name.length > 0 && Object.hasOwn(defaultModels, name)
+  return name.length > 0 && (Object.hasOwn(defaultModels, name) || isCliAddedModel(name))
 }
 
 /**

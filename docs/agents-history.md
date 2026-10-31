@@ -9115,3 +9115,105 @@ shebang script made executable with `0755`, the same POSIX-only harness as
 `session-model-switch` and `session-resume`, and had never been added to
 `.github/windows-skipped-tests.txt`. It is listed there now; every other file
 passed on `windows-latest` (1233).
+
+## The model catalog read from the Claude CLI, free (2026-10-31)
+
+h #g279. Idea 5 of the pass that set the plugin against opencode's built-in
+Claude Agent provider (anomalyco/opencode#58782, opencode 2.2.3): learn the
+model list, each model's effort levels and its context window from the CLI
+itself instead of only the hand-kept catalog in `src/models.ts`. The work ran
+in two attempts: the first stopped on the account's usage limit with the code
+written and 33 tests green, the second reviewed it, fixed two defects, finished
+it and shipped it.
+
+**How the CLI answers.** There is no `claude models` command. A fresh
+`claude --print --input-format stream-json` answers two control requests with
+no user message: `initialize` (its `models` rows: `value`, `resolvedModel`,
+`displayName`, `supportsEffort`, `supportedEffortLevels`, `supportsFastMode`,
+plus a row for the `--model` itself when no picker alias resolves to it) and
+`get_context_usage` with `detail: "summary"` (`rawMaxTokens`, the window the
+CLI runs that model in; the schema says `summary` answers "without the
+per-category token-count calls"). Both answer under `--bare`, which reads no
+OAuth and no keychain and runs no hooks, in about 250 ms each on 2.1.314.
+2.1.314 also has a `list_models` request with the same row shape, not used
+because `initialize` exists on every version on hand.
+
+**Free, measured.** A local HTTP server set as `ANTHROPIC_BASE_URL` logged
+every request. Three probe spawns (the module's own `probeCliCatalog`, with an
+`ANTHROPIC_API_KEY` in the parent that `probeEnv` strips) made zero requests; a
+control `claude -p hi --bare` against the same server made seven (`HEAD
+/api/hello`, then `POST /v1/messages`). The built-in instead calls
+`setModel` + `getContextUsage` per picker model in one process (read out of
+its `claude/probe.ts`), and `set_model` validates a model by sending it a
+message: the same server saw `POST /v1/messages` with `"model":
+"claude-opus-4-6","max_tokens":1` for one `set_model`, read in the binary as
+`messages:[{content:"Hi"}]` under `querySource:"model_validation"`. So the
+plugin's design is one spawn per model, never `set_model`.
+
+**What 2.1.314 says** (the module's probe, 16 spawns, 2,983 ms): Haiku 4.5 and
+Sonnet 4.5 200k with no effort levels; Sonnet 4.6 and Opus 4.6 200k with
+`low/medium/high/max`; Opus 4.5 200k with `low/medium/high`; everything newer
+1M with all five; fast mode on Opus 4.8, 5 and 5.5. 2.1.293 (2,716 ms) said
+the same. 2.1.288 (17 spawns, 2,888 ms) said the same except `claude-haiku-5-5`
+UNKNOWN (display name = the id, 200k fallback window), which matches
+`MODEL_CLI_FLOORS`'s 2.1.293, and its picker resolved `haiku` to the dated
+`claude-haiku-4-5-20251001`. The non-bare probe with the real login gave the
+same 200k for the 4.6 models, so it is not a `--bare` artefact. The CLI's
+catalog entry for Opus 4.6 is `context:{window:200000,maximum_window:1e6,
+supports_1m_suffix:true}`, and the effort clamp is in the binary:
+`if(r==="max"&&!tae(n))r="high";if(r==="xhigh"&&!C$e(n))r="high"`.
+
+**So the hand-kept catalog was wrong in four places, fixed statically**: Sonnet
+4.6 and Opus 4.6 registered 1M (now 200k / 128k), Sonnet 4.5 offered five
+effort variants the CLI drops (now none), Opus 4.5 offered `xhigh` and `max`
+(now `low/medium/high`), and both 4.6 models offered `xhigh` (now gone). With
+those fixed, the overlay on 2.1.314 and 2.1.293 changes nothing, which is what
+the static catalog should look like on a current CLI.
+
+**What shipped** (`src/cli-model-catalog.ts`, option `cliModelCatalog`,
+default on): the probe, the `cli-models.json` store (merge-on-write, atomic,
+`0600`, at most four binaries, an unreadable file is empty, keyed on the real
+binary's path, size and mtime plus its version), and an overlay that every
+registration reads through `effectiveModels()`. It applies a KNOWN model's
+window and effort list (a `-fast` entry follows its base), adds a known model
+the CLI's picker offers that the catalog lacks on `passthroughModel`'s zero
+price, and leaves prices and `(N×)` labels alone. Default on because it is
+free, never blocks registration, never removes a model, and on a current CLI
+changes nothing; `false` and the env seam `OPENCODE_CLAUDE_CODE_MODEL_PROBE=0`
+turn it off.
+
+Two defects in the first attempt, found by running its probe against the three
+real binaries: `initialize` carries no `claude_code_version` on 2.1.288 or
+2.1.293, so entries were stored with no version (now `detectCliVersion`'s); and
+2.1.288's dated `claude-haiku-4-5-20251001` would have been ADDED as a second,
+zero-priced Haiku 4.5 (dated ids are now never added). The second attempt also
+made a refusal (`no-answer`, `request-refused`, `no-model-list`) a stored entry
+asked again after a day, because it describes the binary, while a deadline kill
+still stores nothing (h #g181).
+
+**Live, both majors**, plugin from the worktree `dist`, scratch XDG dirs, a
+store seeded with a stale entry (version 2.1.1, an added `claude-opus-9`):
+
+- opencode 2.2.5: `opencode models` listed `claude-code/claude-opus-9`. Under
+  `opencode serve`, the setup registered the stale entry at 20:41:37.376, the
+  probe finished at 20:41:42.123 (16 spawns, 4,206 ms), and at 20:41:42.128 the
+  transform ran again with the 2.1.314 entry: `ctx.provider.reload()` (in
+  `@opencode/plugin` 2.2.5's `ProviderDomain`) re-runs it in the same process.
+  `GET /api/model` then held 19 `claude-code` models, `claude-opus-9` gone, Opus
+  4.6 at 200k with `low/medium/high/max`. (That route answers for a plugin
+  provider on 2.2.5, which h #g229 measured empty on 2.0.22.)
+- opencode 1.19.4: `opencode models claude-code` listed 20 with
+  `claude-opus-9`; a `serve` let the probe finish (16 spawns, 2,414 ms); the
+  next `models` listed 19, without it.
+- No orphaned probe process after `models` exited mid-probe.
+
+**`MODEL_CLI_FLOORS`: validated, not retired.** The probe knows only the
+installed binary, so it can say a model is unknown here but never which release
+fixes it. The haiku floor matches the probe (2.1.288 unknown, 2.1.293 known);
+the sonnet-5-5 floor (2.1.284) is below every binary on hand. The doctor's new
+**Model catalog from the Claude CLI** section lists unknown models with their
+floor through `modelCliFloor`.
+
+Checks: `npm run typecheck`, the focused files (`cli-model-catalog`,
+`cli-model-probe`, `doctor`, `config-models`, `configure-skill`), `npm test`,
+`npm run build`, and the docs site build.

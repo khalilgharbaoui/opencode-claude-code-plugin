@@ -294,13 +294,17 @@ test("configModelsForProvider reports the published context and output limits", 
   assert.deepEqual(limitOf("claude-sonnet-4-5"), { context: 200_000, output: 64_000 })
   assert.deepEqual(limitOf("claude-opus-4-5"), { context: 200_000, output: 64_000 })
 
-  // 4.6 and later: full 1M context, 128k output.
+  // The 4.6 generation: 128k output, but Claude Code runs the bare id in a 200k
+  // window (`rawMaxTokens` 200,000 on 2.1.288 to 2.1.314; the 1M window is the
+  // unregistered `[1m]` id), so that is the window opencode is told (h #g279).
+  assert.deepEqual(limitOf("claude-sonnet-4-6"), { context: 200_000, output: 128_000 })
+  assert.deepEqual(limitOf("claude-opus-4-6"), { context: 200_000, output: 128_000 })
+
+  // Later: full 1M context, 128k output.
   for (const id of [
     "claude-haiku-5-5",
-    "claude-sonnet-4-6",
     "claude-sonnet-5",
     "claude-sonnet-5-5",
-    "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-opus-5",
