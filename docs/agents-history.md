@@ -9968,3 +9968,174 @@ probe on the real CLI), the liveswitch lane's `ses_liveprobe` on the real CLI (o
 one spawn record, and the three samples under `main/claude-haiku-5-5` and `main/claude-sonnet-5-5`
 whose tag `6e11e179` is its hash), `turn-progress.json` (no tag matched a fixture) and the other
 three stores. The real records the 40 had pushed out at the cap cannot be recovered from here.
+
+## An undo or an edit forks the Claude session at the last shared turn (2026-11-01)
+
+h #g282. Lane `forkundo`, idea 3 of the vault note's "From opencode's built-in
+Claude Agent" list. The built-in (anomalyco/opencode#58782) keeps a checkpoint
+per prompt group with the Claude message id it ended on, and after an edit or
+undo copies the session up to the last group both histories share
+(`forkSession(sessionID, { upToMessageId })`, `sync/decide.ts`'s `boundary`).
+The plugin ended the session and replayed the shorter thread as text instead
+(h #g242), because h #g187 had measured a `--resume-session-at` cut costing
+replay money and the plugin had no Claude uuids to aim one with.
+
+### Measured
+
+Claude Code 2.1.314, then 2.1.293 and 2.1.288, `claude -p` stream-json with the
+plugin's own flags (`--include-partial-messages`, `--thinking enabled
+--thinking-display summarized`, `--append-system-prompt-file`,
+`--strict-mcp-config` with no servers), `DISABLE_AUTOUPDATER=1`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, scratch cwds. A four-turn parent
+in one process: a 220-line document (about 17k tokens) with "Reply with only:
+OK"; a first codeword (in three runs read from `notes.txt` with the CLI's own
+Read, so the kept turn holds a tool round trip and three `assistant` frames);
+two more codewords. Then the edit of turn 3, two ways: a fork cut at turn 2's
+last entry, and the replay the plugin builds today (its own
+`getClaudeUserMessage` over `[u1, a1, u2, a2]` plus the edited message). Each
+row is that one turn; every cache write was a 1-hour one.
+
+| run | CLI, model, order | arm | written | read | cost | wall |
+| --- | --- | --- | --- | --- | --- | --- |
+| r1 | 2.1.314, Haiku 5.5, fork first | fork | 38 | 39,595 | $0.000496 | 3.7 s |
+| | | replay | 19,924 | 13,494 | $0.004253 | 5.4 s |
+| r2 | 2.1.314, Haiku 5.5, replay first, tool turn | fork | 38 | 39,803 | $0.000513 | 4.5 s |
+| | | replay | 20,484 | 46,897 | $0.004967 | 10.8 s |
+| r3 | 2.1.293, Haiku 5.5, tool turn | fork | 121 | 39,010 | $0.000535 | 5.1 s |
+| | | replay | 20,659 | 45,287 | $0.005053 | 9.9 s |
+| r4 | 2.1.288, Haiku 4.5, replay first, tool turn | fork | 99 | 33,211 | $0.004549 | 3.8 s |
+| | | replay | 11,152 | 45,516 | $0.031259 | 12.2 s |
+
+The fork was 6.9 to 9.7 times cheaper and faster in every run, with either
+order. Asked "list every codeword I have given you, then quote item 37 of the
+document", every fork named only the first codeword and quoted item 37 exactly;
+every replay said it could not quote item 37 (its clipping kept the document
+message's two ends, `…[13535 chars omitted]…`), and in the three tool runs
+re-ran the Read, because the replay had dropped the tool result ("The earlier
+OK didn't come from an actual read"). A plain fork at the tail (`--resume
+--fork-session`, no cut) wrote 38 to 73, the same as the cut, so the cut lands
+on cache the parent's own turns wrote, and the next turn on the fork wrote 200
+to 256 and still knew the first codeword. The parent's transcript sha1 was the
+same before and after every fork. So h #g187's 19,625-write mid cut, measured
+on 2.1.280, does not reproduce on any release since 2.1.288. 2.1.280 is no
+longer installed here, so the gate sits at 2.1.288, the oldest measured.
+
+Read out of the binaries and measured:
+
+- `--resume-session-at <message id>` is hidden from `--help` in 2.1.288, 2.1.293
+  and 2.1.314 with one text: "only messages up to and including the chain entry
+  with <message.id>, any chain-entry UUID, typically the kept turn's last entry
+  (use with --resume in print mode)", and it is ignored outside print mode.
+  `--resume-drops-turn` (refuse a cut whose discarded range holds anything not
+  from one named turn) needs the dropped prompt's uuid and covers one turn, so
+  it is not used.
+- Every `assistant` stream frame is one transcript record and carries that
+  record's `uuid`; all of them were in the transcript.
+- The fork keeps the parent's uuids for the chain it copies (21 of a fork's 48
+  records were the parent's chain up to the cut under their own uuids), rewrites
+  `sessionId`, and copies nothing past the cut.
+- A cut the transcript does not hold: exit 1, stderr `No message found with
+  message.uuid of: <uuid>`, a `result` with `error_during_execution`,
+  `num_turns: 0` and $0 carrying the id the fork would have had, nothing
+  written under it.
+- The fork's first `total_cost_usd` is the parent's whole running total plus its
+  own turn ($0.00935163 before, $0.00984758 after a $0.000496 turn), the cut
+  turns included.
+- No `uuid` on the inbound envelope is needed: the cut is the kept turn's last
+  entry, read off the output, so the `command_lifecycle` frames of h #g184 never
+  start.
+
+### What shipped
+
+`forkOnRewind`, default on: cheaper, faster and more faithful in every run, and
+everything it cannot match exactly falls back to the replay unchanged.
+
+- **Checkpoints.** `recordServedConversation(sk, prompt, checkpoint?)` keeps,
+  beside the shape chain, one checkpoint per served turn: the Claude session,
+  the uuid of the newest `assistant` frame Claude wrote (`TurnState.
+  lastReplyEntry`, never the CLI's own error reply), an anchor and a sha256 of
+  the chain up to it. Recorded only on a `result` with `is_error` false, no
+  `resultFailure`, the same session id, and a last frame that is not a tool
+  call. 64 per key, oldest dropped; a second result for the same question (the
+  auto-continue nudge) replaces the first. The CLI's own `compact_boundary`
+  drops the key's checkpoints, because a cut before it would bring back the
+  long conversation the CLI had just summarised.
+- **The anchor is the turn's last user message, not the chain length the turn
+  was asked with.** A turn that made proxied calls is recorded with its
+  in-flight step rendered as a call and its result, and opencode may render the
+  finished turn as one message (h #g242's second refusal is that shape).
+  Everything up to the user message was already rendered the way it stays.
+- **Matching.** In `classifyConversationChange`'s `rewound` branch: the
+  history's last user message is the only place a turn's checkpoint can sit, so
+  the newest checkpoint with that anchor and the same digest of the history up
+  to it, with at least the reply after it, is the cut. A thread ending on a
+  message another agent or model answered matches none and replays, as it did.
+- **The prologue.** The child and the id go as before; then, outside the
+  cross-group branch, `planRewindFork` (`src/rewind-fork.ts`) answers `fork` or a
+  kebab token, cheapest first: `option-off`, `interactive-transport`,
+  `no-checkpoint`, `cli-too-old` (the version is awaited only past those, and is
+  cached since the key served a turn), `transcript-gone`, `entry-gone`. The
+  entry is checked in the spawn's own account directory BEFORE spawning, since
+  the CLI's refusal costs a failed turn where the replay would have served. A
+  fork sets `--resume <id> --fork-session --resume-session-at <uuid>`, restores
+  the checkpoints at and before the cut (with an empty chain, so the next turn
+  reads no verdict until the fork's own `result`), logs `forking the claude
+  session at the last turn the edited thread still has` and writes the
+  rewound note with its own wording. A refusal replays exactly as before, with
+  `forkRefused` added to the NOTICE (`BUNDLE_DATA_ALLOWLIST`: `forkRefused` an
+  enum, `keptMessages` a count).
+- **Respawn.** `appendResumeIfNeeded` drops `--resume-session-at` with
+  `--fork-session` once the key has the fork's id; before `init` it re-forks.
+- **A fork the CLI refuses anyway** (a race the check cannot see): the parser
+  does not map the never-started id, drops the key's checkpoints, and the stderr
+  matcher now also clears on `No message found with message.uuid`, so the retry
+  replays instead of aiming at the same cut. The fake CLI's first version of
+  that test showed the retry re-forking when it raced the dying child's exit.
+- **Cost.** `takeResultCost(..., forkedFrom)` takes the parent's last total as a
+  fork's baseline (`rewindForkSource`, off the child's own args), so
+  `maxBudgetUsd` does not count the parent's spend twice and the `turnStats`
+  footer prices the fork's turn instead of leaving it out.
+
+Kept, each unchanged: a shared prefix of zero (compaction) and a removed
+stretch with no user message are never `rewound`; the cross-group guard
+(h #g261) runs before the plan, so a cross-group rewind keeps its fresh start
+and never forks, even where a checkpoint matches (a same-group control with the
+identical sequence forks); compaction is never classified; `doGenerate` forks
+and gets no note; one owner per conversation (the old id, its resume record and
+fingerprint go with `deleteClaudeSessionId`, and the fork's id is mapped at
+`init` and recorded at its `result`); the interactive transport replays.
+
+Live through the plugin's own `doStream` on 2.1.314 (Haiku 5.5, a scratch log
+dir): three turns on one process, then the third edited. The spawn carried
+`--resume 5f5d8631… --fork-session --resume-session-at 2d905030…`, read 39,127
+and wrote 737, answered "HERON, OTTER" without the removed "LYNX", and its
+`turnStats` footer said $0.0005 where the CLI's own total read $0.00722. The
+next turn reused the fork's process and answered "HERON".
+
+### Not done
+
+- After an opencode restart the chain and the checkpoints are gone (memory
+  only), so an edit after a restart still replays: the resume store refuses a
+  changed conversation. The resume record could carry checkpoints; not built.
+- A cross-group rewind could fork the account's own session safely (a
+  checkpoint holds only what that account answered); the guard's fresh start
+  was kept as briefed.
+- `forkSessions` (a NEW opencode session cut mid-conversation) still replays:
+  no checkpoint maps a fork's boundary to an entry.
+- The interactive transport: the CLI takes the cut in print mode only.
+- Not run through a live opencode undo; the verdict itself is h #g242's,
+  measured live on 1.19.0.
+
+Tests: `test/rewind-fork.test.ts` (22; its fake-CLI half skips itself on
+Windows, its unit half is portable), plus two in `test/account-groups.test.ts`
+(the cross-group refusal and its same-group control, whose fake now puts a
+`uuid` on its frames). With the plan's `enabled` forced off, the four fork
+cases fail; with the fork's cost baseline removed, the footer case fails.
+
+Checks, after rebasing onto h #g281 and h #g283: `npm run typecheck` (0),
+`npm run generate:log-messages` (one message added), `npm test` (2076 pass,
+EXIT 0), `npm run build` (0), the site build (0).
+
+Probe cost: about 30 Haiku calls and one Haiku 4.5 run, about $0.07. Scratch
+cwds, their transcripts under `~/.claude/projects/` and the probe scripts were
+deleted afterwards.

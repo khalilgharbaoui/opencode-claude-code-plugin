@@ -395,6 +395,19 @@ export function cliSupportsLiveModelSwitch(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 1, patch: 288 })
 }
 
+/**
+ * `--resume-session-at <uuid>`, the cut a rewound thread forks at (h #g282).
+ * Hidden from `--help`, so the help probe would always say no: a version gate,
+ * like `--max-turns`. It is in 2.1.280 (h #g187), but there a cut measured at
+ * replay cost (19,625 cache writes); on 2.1.288, 2.1.293 and 2.1.314 it reads
+ * the kept turns from the prompt cache (99, 121 and 38 tokens written), so the
+ * gate sits at the oldest version measured that way.
+ */
+export function cliSupportsResumeSessionAt(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 288 })
+}
+
 /** 2.1.258 is the oldest verified side_question control protocol, not its introduction date. */
 export function cliSupportsSideQuestion(v: CliVersion | null): boolean {
   if (!v) return false

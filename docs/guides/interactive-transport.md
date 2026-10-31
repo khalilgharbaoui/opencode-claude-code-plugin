@@ -45,6 +45,7 @@ What still differs is listed below. Everything else a headless turn does, this o
 
 - **opencode's own system prompt is not forwarded.** On the interactive transport Claude Code treats a request carrying opencode's prompt as a third-party app's and bills it from extra usage ("Third-party apps now draw from your extra usage"), while the headless transport sends the same prompt without that effect. Measured on 2.1.288 (h #g211). The plugin's own prompt, your `AGENTS.md` files and the proxy hints still reach the TUI; the parts opencode adds itself (its agent prompt, environment block and tool guidance) do not.
 - **Text arrives a block at a time.** The TUI writes a finished record to its transcript, never a partial one, so a reply cannot stream token by token.
+- **An undo or an edit replays the thread.** Headless continues a copy of the Claude session cut at the last turn the thread still has ([`forkOnRewind`](../configuration/options.md)); Claude Code takes that cut (`--resume-session-at`) in print mode only, so the TUI starts a fresh session and the thread as it stands is replayed into it, as every rewind did before.
 
 ### What else is different
 

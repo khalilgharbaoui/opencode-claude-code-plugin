@@ -205,6 +205,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   sharedMessages: "count",
   removedMessages: "count",
   removedUserMessages: "count",
+  // How much of the thread a rewound fork kept (h #g282).
+  keptMessages: "count",
   // The three counts of a released subagent dispatch: how many subagents, how
   // many of them carried a choice, and which task a refused answer was for.
   claims: "count",
@@ -237,6 +239,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   // enums: a fixed vocabulary this package or the CLI defines
   apiKeySource: "enum",
   delivery: "enum",
+  // Why a rewound thread replayed instead of forking: one of
+  // `RewindForkRefusal`'s kebab tokens (h #g282).
+  forkRefused: "enum",
   effort: "enum",
   finishReason: "enum",
   hash: "enum",

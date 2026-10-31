@@ -150,16 +150,24 @@ export interface ResultCost {
  * `costDelta` with its baseline answer kept. Moves the session's baseline, so
  * call it ONCE per `result` frame: the budget ledger and the `turnStats`
  * footer share one call (h #g257).
+ *
+ * `forkedFrom` names the session a rewound thread's fork was cut from
+ * (h #g282). The fork's first total carries that session's whole running
+ * total (measured on 2.1.314: $0.00935 before the cut, $0.00985 after the
+ * fork's one turn of $0.000496), all of it spent and counted already, so the
+ * parent's last total is the fork's baseline.
  */
 export function takeResultCost(
   claudeSessionId: string | undefined,
   totalCostUsd: number,
   cumulative: boolean,
+  forkedFrom?: string,
 ): ResultCost {
   if (!Number.isFinite(totalCostUsd) || totalCostUsd <= 0) return { deltaUsd: 0, noBaseline: false }
   if (!cumulative) return { deltaUsd: totalCostUsd, noBaseline: false }
   if (!claudeSessionId) return { deltaUsd: totalCostUsd, noBaseline: true }
-  const previous = lastTotals.get(claudeSessionId)
+  const previous =
+    lastTotals.get(claudeSessionId) ?? (forkedFrom ? lastTotals.get(forkedFrom) : undefined)
   lastTotals.delete(claudeSessionId)
   lastTotals.set(claudeSessionId, totalCostUsd)
   while (lastTotals.size > MAX_CLAUDE_SESSIONS) {
@@ -306,9 +314,10 @@ export function recordResultCost(
   budget: TurnBudget,
   claudeSessionId: string | undefined,
   totalCostUsd: unknown,
+  forkedFrom?: string,
 ): ResultCost | undefined {
   if (typeof totalCostUsd !== "number") return undefined
-  const cost = takeResultCost(claudeSessionId, totalCostUsd, budget.cumulative)
+  const cost = takeResultCost(claudeSessionId, totalCostUsd, budget.cumulative, forkedFrom)
   recordSessionCost(budget.session, cost.deltaUsd)
   return cost
 }
