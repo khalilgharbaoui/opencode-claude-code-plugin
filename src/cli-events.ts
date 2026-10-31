@@ -1049,6 +1049,15 @@ const MODEL_CLI_FLOORS: Record<string, string> = {
 }
 
 /**
+ * The first Claude Code release that knows `model`, when the CHANGELOG says
+ * so. The model probe (h #g279) tells the doctor which catalog models the
+ * installed CLI does not know; this names the release that fixes it.
+ */
+export function modelCliFloor(model: string): string | undefined {
+  return Object.hasOwn(MODEL_CLI_FLOORS, model) ? MODEL_CLI_FLOORS[model] : undefined
+}
+
+/**
  * The model named by an `unrecognized_model` line anywhere in a stderr chunk,
  * `{ model: undefined }` when the marker is there but its payload does not
  * parse, and null when the chunk carries no such line.

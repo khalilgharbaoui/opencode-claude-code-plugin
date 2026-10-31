@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         env:
           OPENCODE_CLAUDE_CODE_LOG_FILE: '0'
+          OPENCODE_CLAUDE_CODE_MODEL_PROBE: '0'
         run: |
           $ErrorActionPreference = 'Stop'
           $env:XDG_STATE_HOME = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())

@@ -1,6 +1,11 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { ClaudeCodeLanguageModel } from "./claude-code-language-model.js"
-import { defaultModels, passthroughModel, toConfigModel } from "./models.js"
+import { passthroughModel, toConfigModel } from "./models.js"
+import {
+  activateCliModelCatalog,
+  effectiveModels,
+  refreshCliModelCatalog,
+} from "./cli-model-catalog.js"
 import type {
   OpenCodeConfig,
   OpenCodeEvent,
@@ -387,7 +392,7 @@ function defaultModelsForProvider(
   modelSuffix?: string,
 ) {
   const models = Object.fromEntries(
-    Object.entries(defaultModels).map(([id, model]) => {
+    Object.entries(effectiveModels()).map(([id, model]) => {
       const modelId = modelSuffix ? `${id}@${modelSuffix}` : id
       const existing = providerModels[id] ?? providerModels[modelId]
       return [
@@ -431,7 +436,7 @@ export function configModelsForProvider(
 ): Record<string, Record<string, unknown>> {
   const models: Record<string, Record<string, unknown>> = {}
 
-  for (const [id, model] of Object.entries(defaultModels)) {
+  for (const [id, model] of Object.entries(effectiveModels())) {
     const modelId = modelSuffix ? `${id}@${modelSuffix}` : id
     const existing = providerModels[id] ?? providerModels[modelId]
     const existingVariants =
@@ -776,6 +781,13 @@ const server: OpenCodePlugin = async (input) => {
       config.provider ??= {}
 
       await buildAgentRegistry(config)
+
+      // The catalog as the installed `claude` describes it, from the store,
+      // before any model is registered; the probe that fills the store runs in
+      // the background and applies from the next start (h #g279).
+      const seedOptions = config.provider[PROVIDER_ID]?.options
+      activateCliModelCatalog(seedOptions)
+      void refreshCliModelCatalog(seedOptions)
 
       // Every configured account into the usage store before any turn, so the
       // sidebar's `Accounts` section lists them all from its first draw

@@ -182,6 +182,26 @@ export type SubagentDispatchMode = "ask" | "off"
 
 export interface ClaudeCodeProviderSettings {
   cliPath?: string
+  /**
+   * Register the model catalog as the installed Claude Code describes it.
+   * Default `true`.
+   *
+   * A background probe asks the CLI, once per CLI version, which models it
+   * knows, the context window it runs each in and the effort levels it
+   * accepts, and keeps the answer in `cli-models.json` under
+   * `$XDG_STATE_HOME`. Providers are registered from that file: windows and
+   * effort variants follow the CLI, and a model the CLI's own picker offers
+   * that the catalog lacks is added at an unknown (zero) price. Costs and the
+   * `(N×)` labels stay the catalog's, because the CLI carries no prices.
+   *
+   * Free: each probe is a `--bare` process with no credential, sent
+   * `initialize` and `get_context_usage` and never a message (measured: no
+   * API request, h #g279). Registration never waits for it, so a fresh answer
+   * applies at once on opencode 2 (a provider reload) and from the next
+   * start on opencode 1. `false` registers the built-in catalog as it ships
+   * and runs no probe.
+   */
+  cliModelCatalog?: boolean
   /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostApi`. */
   hostApi?: "v1" | "v2"
   /** Wins over the legacy interactive option and its environment fallback. */

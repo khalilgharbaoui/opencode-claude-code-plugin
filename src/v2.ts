@@ -10,7 +10,11 @@ import {
 } from "./accounts.js"
 import { readAccountTier, registerSidebarAccounts } from "./account-tier.js"
 import { log, setToastNotifier, type LogSinkEntry } from "./logger.js"
-import { defaultModels } from "./models.js"
+import {
+  activateCliModelCatalog,
+  effectiveModels,
+  refreshCliModelCatalog,
+} from "./cli-model-catalog.js"
 import type { OpenCodeModel } from "./opencode-types.js"
 import {
   BTW_COMMAND_DESCRIPTION,
@@ -173,7 +177,7 @@ export function toV2Model(
 }
 
 export function v2ModelsForProvider(providerID: string, modelSuffix?: string): V2ModelInfo[] {
-  return Object.entries(defaultModels).map(([id, model]) =>
+  return Object.entries(effectiveModels()).map(([id, model]) =>
     toV2Model(model, providerID, modelSuffix ? `${id}@${modelSuffix}` : id),
   )
 }
@@ -734,6 +738,13 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
             plainObject(ctx.options),
           ),
         }
+        // The catalog as the installed `claude` describes it (h #g279). A probe
+        // that learns something new reloads the providers, which runs this
+        // transform again and picks the new entry up.
+        activateCliModelCatalog(seedSettings)
+        void refreshCliModelCatalog(seedSettings, {
+          onLearned: () => ctx.provider.reload?.(),
+        })
         const plans = planV2Providers(seedSettings, deps.defaultProxyTools)
         // Every configured account into the usage store, so the sidebar's
         // `Accounts` section lists them all from its first draw (h #g248).
