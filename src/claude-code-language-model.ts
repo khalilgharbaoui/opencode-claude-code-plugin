@@ -107,7 +107,7 @@ import {
   buildDoctorReport,
   parseDoctorCommand,
 } from "./doctor.js"
-import { resolveSkillPluginDirs } from "./skill-bridge.js"
+import { claudeConfigDir, resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
 import {
   consumeExitPlanModeQuestionResult,
@@ -2636,6 +2636,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         stripContextReminders: this.stripContextRemindersEnabled(),
         missed: missed?.messages,
         verbatimPrompts: this.config.verbatimPrompts !== false,
+        ownCommands: compactionMode
+          ? undefined
+          : { cwd, configDir: claudeConfigDir(this.skillBridgeSpawn(failover).configDir) },
       })
     // Plan mode on the TUI writes its plan to `~/.claude/plans/` with Claude's
     // own Write, which proxying `write` disables, and before approval it asks

@@ -50,6 +50,7 @@ startup-diagnostics.test.ts
 task-model-stream.test.ts
 tool-block-index.test.ts
 unattended-replay.test.ts
+verbatim-own-commands.test.ts
 
 # --- Asserts the generated per-account wrapper, which is a bash script ---
 # The wrapper itself is POSIX-only on every platform today; see AGENTS.md.

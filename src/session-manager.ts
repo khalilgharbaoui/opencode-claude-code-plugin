@@ -23,6 +23,7 @@ import {
 } from "./subagent-dispatch.js"
 import { forgetExplicitTaskModel, hasUnclaimedExplicitTaskModels } from "./task-model.js"
 import { clearCompression, getCompressionSummary } from "./compression-store.js"
+import { noteReportedCommands } from "./user-commands.js"
 import { clearBackgroundTasks, moveBackgroundTasks } from "./background-tasks.js"
 import { forgetForkFingerprint, moveForkFingerprint, withoutSpawnSettings } from "./session-fork.js"
 import { forgetServedConversation, moveServedConversation } from "./conversation-gap.js"
@@ -1478,6 +1479,7 @@ export function spawnClaudeProcess(
     if (dispatchControlResponse(ap, line)) return
     noteTurnLine(ap, line)
     noteInitLine(ap, line)
+    noteReportedCommands(cwd, line)
     if (lineEmitter.listenerCount("line") === 0) {
       bufferUnattendedLine(ap, line)
       return

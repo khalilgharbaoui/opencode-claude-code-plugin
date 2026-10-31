@@ -51,6 +51,19 @@ variant instead. An envelope answering a tool call is left as it was. `/btw` and
 anything, so they are unaffected. Turn it off with `verbatimPrompts: false`. The interactive
 transport types into Claude Code's own input instead and is not covered.
 
+Your own Claude Code commands and skills are the exception. A message that starts with
+`/name`, where `name` is a command or skill you defined (in `.claude/commands` or
+`.claude/skills` of the project or a folder above it, in your Claude config dir, or in a
+Claude Code plugin you installed), goes out without the mark, so Claude Code runs it as you
+typed it. Measured: with the mark, a command marked `disable-model-invocation: true` did not
+run at all, and any other one ran only because the model chose to call its `Skill` tool,
+three API calls instead of one. Built-ins such as `/model` and `/cost` keep the mark. The
+plugin learns which names exist from the command list a `claude` in the same folder reports
+when it starts a turn, so the first message in a folder after opencode starts keeps the mark;
+from the next one on, your commands run as typed. A command file named like a built-in (`model.md`)
+replaces the built-in in Claude Code, so it runs too. A message that carries an attachment
+keeps the mark.
+
 ## The stream
 
 `src/stream-parser.ts` turns the CLI's stream-json lines into AI SDK parts: text,
