@@ -9217,3 +9217,113 @@ floor through `modelCliFloor`.
 Checks: `npm run typecheck`, the focused files (`cli-model-catalog`,
 `cli-model-probe`, `doctor`, `config-models`, `configure-skill`), `npm test`,
 `npm run build`, and the docs site build.
+
+
+## Hot proxy tools always loaded, and messages delivered as written (2026-10-31)
+
+h #g276. Two ideas from opencode's built-in Claude Agent provider (anomalyco/opencode#58782),
+each measured on Claude Code 2.1.314 with `claude-haiku-5-5` before anything was built.
+
+### Always-loaded proxy tools
+
+The built-in serves its tools with `_meta: {"anthropic/alwaysLoad": true,
+"anthropic/maxResultSizeChars": 500000}`. Read out of 2.1.314: a tool is kept out of
+`ToolSearch` when its server's config says `alwaysLoad: true` (unless the tool's own
+`_meta` says `false`) or when its own `_meta["anthropic/alwaysLoad"]` is `true`; the
+per-tool string is also in 2.1.288 and 2.1.293, and an older CLI ignores MCP `_meta`.
+The server-level config field also blocks startup until the server connects, so the
+per-tool form was taken.
+
+The probe was the plugin's real `createProxyMcpServer` with the eight default proxy defs
+(`question` and `compress` aside), calls answered in-process, `claude -p` stream-json with
+`--strict-mcp-config`. Baseline reproduced h #g166: `ToolSearch` then the call, 3 API calls.
+Warm rounds, prompt tokens = input plus cache read plus cache write:
+
+| arm | tool turn (one proxied `echo`) | text-only turn |
+|---|---|---|
+| none (deferred) | 3 calls, 75,030 tokens, $0.00097, 3.9 to 5.2 s | 24,689 tokens, $0.00025 |
+| bash, edit, write | 2 calls, 50,640 tokens, $0.00056 to $0.00059, 2.4 to 2.9 s | 25,220 tokens, $0.00025 |
+| bash, edit, write, task | 2 calls, about 52,200 tokens, $0.00058 to $0.00061 | +1,345 tokens over none |
+| all eight | 2 calls, about 55,200 tokens, $0.00061 to $0.00063 | +2,818 tokens over none |
+| server `alwaysLoad: true` | same as all eight | |
+
+Without `--strict-mcp-config` (151 CLI tools) the shape held: $0.00115 against $0.00068 to
+$0.00074 on the tool turn, +1,345 tokens on the text turn for the four-tool set. The first
+(cold) run of a new tool set writes its prefix to the cache once, as any spawn does.
+
+Shipped: `alwaysLoadProxyTools`, default `["bash", "edit", "write"]`, applied in
+`ensureProxyServer` through `applyAlwaysLoad` (`src/proxy-mcp.ts`). The arithmetic behind
+the default: the saved request costs the whole prompt at cache-read price plus about 135
+output tokens and one round trip, once per process; the price is 531 cache-read tokens per
+request, and only until the deferred arm discovers the same tools, after which it carries
+their schemas too. So a process that ever calls bash, edit or write is cheaper, and one that
+never does pays 2.2% more prompt, which priced equal to four decimals. `task` and
+`task_batch` were left deferred together: loading `task` alone would make the visible tool
+the serial one while the subagent hint asks for `task_batch`, and loading both costs every
+request roughly twice `task`'s measured 814 tokens for a tool most turns never call. `true` loads every proxy tool,
+including `proxyOpencodeMcpTools` tools, and is documented with h #g166's 2.5 to 4 times
+`ENABLE_TOOL_SEARCH=0` measurement as the warning.
+
+Not built: `anthropic/maxResultSizeChars`. Claude Code's MCP default is 100,000 characters
+(`maxResultSizeChars:1e5` on the MCP tool; the `_meta` raises it, capped at 500,000). A
+149,618-character proxied result was saved to a file with a 1,436-character preview and the
+model read the end with its own `Read`, 3 calls, correct answer ($0.0065 cold); with the
+`_meta` raised it went inline, 2 calls. The built-in raises it because its Claude has no
+tools of its own; here `Read` is native, and opencode 2 truncates every tool's output at
+2,000 lines or 51,200 bytes before it reaches the proxy (`xa=2000, Wa=51200,
+"tool-output"` in the binary), so the threshold is not met in practice and raising it
+would only put the rare large result inline. Also measured and left alone: a 2,920-character
+tool description reached the model whole both loaded and deferred, so the description cap
+h #g74 worked around did not bite at that length on 2.1.314.
+
+### Messages delivered as written
+
+The built-in's `verbatimPrompts` is not a CLI flag: the Agent SDK stamps
+`client_composed: true` on each user envelope (`verbatimPrompts?{...r,client_composed:!0}`).
+The CLI's own schema: "the CLI delivers its text as written, with no `@path` file-mention
+expansion and no slash-command dispatch". Present in 2.1.288, 2.1.293 and 2.1.314; the
+built-in names 2.1.248 as its floor. 2.1.314 also has an `@internal` `text_not_typed`,
+which keeps the turn-start pass; not used, because it is internal and on one release only.
+
+What headless stream-json does today with the plugin's envelope shape:
+
+- `/model claude-sonnet-5-5`: 0 turns, $0, "Set model to `Sonnet 5.5` for this session
+  only". The process switched model with no model call while opencode, the session key and
+  the cost table still said Haiku.
+- `/cost`: 0 turns, the CLI's usage screen as the reply.
+- `@notes.txt What is the codeword?`: the file attached (a `file` attachment), answered with
+  no tool call; an 18 KB file added 6,712 prompt tokens.
+- `/etc/hosts is broken, what is that file for?`: reached the model, but its turn lost the
+  `environment`, `model`, `deferred_tools_delta`, `agent_listing_delta` and `skill_listing`
+  attachments (15,735 prompt tokens against 27,622 with the mark).
+- **Only the LAST text block is parsed**: `/cost` in the last of two blocks was dispatched,
+  in the first it reached the model; `@notes-big.txt` in the first of two was not expanded.
+  The plugin's ordinary envelope puts the typed text last, and opencode's own file parts
+  (`Called the Read tool ...` plus the content) come after the typed text, so opencode's
+  attached files are never expanded twice.
+
+With `client_composed: true`: `/model` and `/cost` reached the model (1 turn, Haiku only);
+`@notes.txt` was not expanded; a `UserPromptSubmit` hook's `additionalContext` still reached
+the model (KESTREL-5 both ways); the transcript's first-turn attachments were identical
+except `total_tokens_reminder` (about 23 tokens), so environment, deferred tools, agents,
+skills, hooks and `CLAUDE.md` all still arrive. Read out of the binary, the other things the
+skipped turn-start pass carries are keyword or mention driven (`ultrathink_effort`,
+`unknown_command_fallback`, file and agent mentions, IDE selections). The `ultrathink`
+reminder is the one a user could miss, and the plugin's effort variants are the real knob
+(h #g41). A two-turn probe (a file changed between turns) answered the same in all arms.
+An unknown envelope key (`zzz_bogus_key`) was accepted, so a CLI without the field ignores it.
+
+Shipped: `verbatimPrompts`, default true, because it measured better on every axis and
+lost only the keyword reminder. `userEnvelope` (`src/user-envelope.ts`, no imports) builds
+every text envelope the headless transport writes: the turn's user message
+(`getClaudeUserMessage`), user messages forwarded beside tool results, a late proxy result
+(its body is tool output, where an `@path` would attach a file) and the auto-continue nudge.
+An envelope holding a `tool_result` is never stamped, since the field is about a turn's start
+and the pass between tool calls is a different one. With the option off the envelope is
+byte-identical to before. `/btw` and `/claude-code-doctor` are answered before the CLI, and
+`plan-usage.ts`'s `/cost` is a positional `-p` prompt, so none of them changed. The
+interactive transport types into the TUI instead and is not covered.
+
+Probe cost: about 40 Haiku 5.5 calls across two accounts (the `default` window ran out
+mid-lane and the lane was restarted on `appical`; the earlier measurements were reused, not
+repeated, and the shipped tool set was measured afresh).

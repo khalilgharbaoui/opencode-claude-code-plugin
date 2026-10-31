@@ -33,6 +33,7 @@ import {
   TASK_STATUS_TOOL_NAME,
 } from "./background-tasks.js"
 import {
+  applyAlwaysLoad,
   createProxyMcpServer,
   resolveMcpProxyToolDefs,
   DEFAULT_PROXY_TOOLS,
@@ -553,7 +554,10 @@ export async function ensureProxyServer(
     }
     return completed
   }
-  const srv = await createProxyMcpServer(tools, timeoutOverrides, interceptors, {
+  // Served with `_meta["anthropic/alwaysLoad"]` on the tools the option names,
+  // so the first proxied call skips the `ToolSearch` request (h #g276).
+  const served = applyAlwaysLoad(tools, config.alwaysLoadProxyTools)
+  const srv = await createProxyMcpServer(served, timeoutOverrides, interceptors, {
     admit,
     taskModelGuard,
     completeTaskModel,

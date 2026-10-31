@@ -20,6 +20,7 @@ import {
   getClaudeUserMessage,
   getTrailingUserMessages,
 } from "./message-builder.js"
+import { userEnvelope } from "./user-envelope.js"
 import {
   classifyConversationChange,
   formatConversationRewoundNote,
@@ -2597,6 +2598,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliToolCallIds: new Set(previousPendingProxyCalls.map((c) => c.toolCallId)),
         stripContextReminders: this.stripContextRemindersEnabled(),
         missed: missed?.messages,
+        verbatimPrompts: this.config.verbatimPrompts !== false,
       })
     // Plan mode on the TUI writes its plan to `~/.claude/plans/` with Claude's
     // own Write, which proxying `write` disables, and before approval it asks
@@ -2922,6 +2924,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           cwd,
           cliPath,
           ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
+          verbatimPrompts: self.config.verbatimPrompts !== false,
           userMsg,
           autoContinueEnabled: autoContinueEnabledFor(
             compactionMode,
@@ -4637,9 +4640,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               return queued
             }
             for (const content of fresh) {
-              state.proc.stdin?.write(
-                JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n",
-              )
+              state.proc.stdin?.write(userEnvelope(content, state.verbatimPrompts) + "\n")
             }
             log.info("forwarded user messages that arrived beside tool results", {
               sessionKey: sk,

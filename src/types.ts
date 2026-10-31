@@ -85,7 +85,11 @@ export interface ClaudeCodeConfig {
   controlRequestDenyMessage?: string
   proxyTools?: string[]
   proxyOpencodeTools?: string[]
+  /** See `ClaudeCodeProviderSettings.alwaysLoadProxyTools`. Default bash, edit, write. */
+  alwaysLoadProxyTools?: boolean | string[]
   stripContextReminders?: boolean
+  /** See `ClaudeCodeProviderSettings.verbatimPrompts`. Default true. */
+  verbatimPrompts?: boolean
   extraDisallowedTools?: string[]
   /** See `ClaudeCodeProviderSettings.mapReadRules`. Default true. */
   mapReadRules?: boolean
@@ -510,6 +514,41 @@ export interface ClaudeCodeProviderSettings {
    * reminder is then something the model can actually act on.
    */
   stripContextReminders?: boolean
+
+  /**
+   * Which proxy tools Claude Code loads into every request instead of
+   * deferring them behind its `ToolSearch` tool. Default `["bash", "edit",
+   * "write"]`.
+   *
+   * Claude Code defers every MCP tool, the proxy's included, so the first
+   * proxied call in a `claude` process costs one extra API request to find
+   * the tool. A listed tool is served with `_meta["anthropic/alwaysLoad"]`,
+   * which skips that request: measured on Claude Code 2.1.314, a turn that
+   * ran a proxied `bash` took 2 API calls instead of 3, with 32% fewer prompt
+   * tokens and 41% lower cost, while a turn that called no tool carried 531
+   * more prompt tokens. `true` loads every tool the proxy serves (the MCP
+   * tools `proxyOpencodeMcpTools` adds included), `false` defers them all as
+   * before. Names are the proxy's lowercase tool names. An older Claude Code
+   * ignores the field.
+   */
+  alwaysLoadProxyTools?: boolean | string[]
+
+  /**
+   * Deliver the text of every message as written. Default true.
+   *
+   * Claude Code reads the last text block of a headless user message the way
+   * it reads typing: a leading `/` runs one of its commands and an `@path`
+   * attaches that file. Measured on Claude Code 2.1.314, a message `/model
+   * claude-sonnet-5-5` switched the running process to Sonnet without a
+   * model call, and a message starting with a path such as `/etc/hosts` lost
+   * the environment, deferred-tool, agent and skill context of its turn. On,
+   * each envelope carries `client_composed: true`, the field the Agent SDK's
+   * `verbatimPrompts` sets, and the text reaches Claude unchanged; hooks,
+   * CLAUDE.md and the skill listing still arrive. The one thing lost is the
+   * `ultrathink` keyword's reminder: use an effort variant instead. Headless
+   * transport only; an older Claude Code ignores the field.
+   */
+  verbatimPrompts?: boolean
 
   /**
    * Extra Claude Code built-ins to switch off with `--disallowedTools`,

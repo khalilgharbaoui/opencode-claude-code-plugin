@@ -8,6 +8,8 @@
  * by `test/auto-continue.test.ts` and by the corpus runner under `sim/`.
  */
 
+import { userEnvelope } from "./user-envelope.js"
+
 const AUTO_CONTINUE_MAX_ATTEMPTS = 8
 const AUTO_CONTINUE_MAX_ELAPSED_MS = 10 * 60 * 1000
 const AUTO_CONTINUE_NO_PROGRESS_LIMIT = 2
@@ -292,12 +294,6 @@ export function isSilentTurn(snapshot: SilentTurnSnapshot): boolean {
   )
 }
 
-export function makeAutoContinueMessage(): string {
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content: [{ type: "text", text: AUTO_CONTINUE_PROMPT }],
-    },
-  })
+export function makeAutoContinueMessage(verbatim = false): string {
+  return userEnvelope([{ type: "text", text: AUTO_CONTINUE_PROMPT }], verbatim)
 }

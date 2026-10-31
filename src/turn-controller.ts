@@ -285,7 +285,7 @@ export function deliverPendingCompletions(
   )
   if (entries.length === 0) return false
   state.endTextBlock()
-  state.watchdogMessage = makeLateProxyResultMessage(entries)
+  state.watchdogMessage = makeLateProxyResultMessage(entries, state.verbatimPrompts)
   // This write asks the CLI for work like any fresh envelope, so
   // abort, LRU eviction and the idle timer must see it as busy.
   if (state.activeProcess) noteTurnStarted(state.activeProcess)
@@ -691,7 +691,7 @@ export function runAutoContinue(
     resetAutoContinueWindow(state)
     // The `result` just consumed marked the CLI idle; this puts it back to work.
     if (state.activeProcess) noteTurnStarted(state.activeProcess)
-    state.proc.stdin?.write(makeAutoContinueMessage() + "\n")
+    state.proc.stdin?.write(makeAutoContinueMessage(state.verbatimPrompts) + "\n")
     return true
   }
   log.notice("auto-continuation stopped", {
