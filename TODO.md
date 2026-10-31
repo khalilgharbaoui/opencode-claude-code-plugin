@@ -114,6 +114,15 @@ checks and suspected defects found in passing.
   the safe direction. A `maxBudgetUsd` change carries too: the cap is per process and starts
   again on any `--resume` (h #g245), as it already did in one process (h #g270).
 
+- 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
+  "releasing a session stops its idle child and forgets it in memory, but keeps the resume
+  record" failed once in a full `npm test` (the record was missing from disk at line 394),
+  then passed in the next full run and in three runs of the file alone. It writes the resume
+  store that every test process shares under the suite's one scratch `XDG_STATE_HOME`
+  without a `_setResumeStorePath` of its own. My guess is a lost update between two
+  processes' merge-on-write, but that is unconfirmed. If it recurs, give the file a scratch
+  store path as `test/session-resume.test.ts` does.
+
 ## Deferred decisions
 
 Only decisions about this plugin belong here. Items about the global opencode config
