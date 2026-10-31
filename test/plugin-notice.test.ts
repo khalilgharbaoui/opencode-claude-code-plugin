@@ -78,6 +78,12 @@ test("readPluginNotice accepts exactly one well-formed notice of this plugin's t
   assert.deepEqual(readPluginNotice(NOTICE_EVENT_TYPE, data), data)
   assert.equal(readPluginNotice("rpc.someone-else.notice", data), undefined)
   assert.equal(readPluginNotice(NOTICE_EVENT_TYPE, { ...data, level: "info" }), undefined)
+  // `success` answers `/connect` (h #g277); it is the one level that is not a log level.
+  assert.deepEqual(readPluginNotice(NOTICE_EVENT_TYPE, { ...data, level: "success" }), { ...data, level: "success" })
+  assert.deepEqual(
+    [...NOTICE_RPC_DEFINITION.events[NOTICE_EVENT].schema.properties.level.enum].sort(),
+    ["error", "success", "warn"],
+  )
   assert.equal(readPluginNotice(NOTICE_EVENT_TYPE, { ...data, id: "" }), undefined)
   assert.equal(readPluginNotice(NOTICE_EVENT_TYPE, { ...data, message: "   " }), undefined)
   assert.equal(readPluginNotice(NOTICE_EVENT_TYPE, null), undefined)

@@ -25,7 +25,7 @@ For a local checkout, point opencode 2 at the **`dist` directory**, not the repo
 }
 ```
 
-Last checked on opencode **2.1.3** (2026-10-23): a chat turn, a proxied `shell` call, one of Claude's own tools, a session opened in a subdirectory of a project, and a second prompt reusing the same `claude` process. First verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxied tools running through opencode 2's own `shell`, `edit`, `write`, `webfetch` and `subagent` tools and their permission rules, Claude's own tools rendered in the transcript, subagent dispatch with the agent list, reasoning variants, compaction, account providers, `/claude-code-doctor`, `/btw`, and the bundled configuration skill.
+`/connect` and the retry opt-out were measured on opencode **2.2.5** (2026-10-31) with Claude Code 2.1.314. Last checked on opencode **2.1.3** (2026-10-23): a chat turn, a proxied `shell` call, one of Claude's own tools, a session opened in a subdirectory of a project, and a second prompt reusing the same `claude` process. First verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxied tools running through opencode 2's own `shell`, `edit`, `write`, `webfetch` and `subagent` tools and their permission rules, Claude's own tools rendered in the transcript, subagent dispatch with the agent list, reasoning variants, compaction, account providers, `/claude-code-doctor`, `/btw`, and the bundled configuration skill.
 
 opencode 2 gives a plugin no way to ask whether a session is busy and no toast of its own, so the plugin reads opencode 2's event stream for the first and uses the channel opencode 2 gives a plugin between its two halves for the second. With those, these work as they do on 1.x (measured on 2.0.22 and 2.0.31):
 
@@ -33,6 +33,11 @@ opencode 2 gives a plugin no way to ask whether a session is busy and no toast o
 - **A permission prompt does not count against a proxied call's deadline.** While opencode is still running the turn, because it is waiting on you or the tool is still working, a proxied call that passes its deadline is kept.
 - **Stopping a turn releases the proxied calls it was waiting on**, and interrupts Claude's own turn, instead of leaving them until your next message.
 - **The plugin's warnings appear as toasts** titled `claude-code`, raised by the sidebar half. See [Logging](configuration/logging.md).
+
+opencode 2 also has two things 1.x has no counterpart for:
+
+- **`/connect` checks the Claude Code login.** Each provider (**Claude Code**, or one per account) is listed under its own name with one method, *Claude Code login*. Connecting stores nothing, not even a token: the plugin runs `claude auth status` the way a turn would run `claude`, and a toast says how Claude Code is logged in (a Claude subscription, an API key, Amazon Bedrock, Google Vertex AI, ...) or gives the one command that fixes it, `claude auth login`, or `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login` for an account named `work`. A missing or logged-out CLI also marks the connection *Sign in required*; log in in a terminal, then connect again. Connecting is optional, the models work without it, and every connect adds one entry to that provider's list of connections, which you can delete from the same dialog. A connection made earlier is checked again when opencode starts.
+- **A failed turn is not retried.** opencode 2 runs a turn that failed again, up to ten more times. For this provider each retry started a new `claude`, resumed the conversation and sent your message again: one CLI killed mid-turn cost eleven API requests and left the message in the conversation twelve times. The plugin declines those retries, so the error shows once and you resend when you are ready. The Claude CLI already retries API errors (overloaded, server errors, rate limits) itself, and a usage limit was never retried.
 
 Differences from 1.x:
 

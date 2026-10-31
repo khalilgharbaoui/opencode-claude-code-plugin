@@ -400,6 +400,17 @@ export function cliSupportsThinking(v: CliVersion | null): boolean {
   return gte(v, { major: 2, minor: 0, patch: 0 })
 }
 
+/**
+ * `claude auth status`, which prints JSON by default and exits 1 when logged
+ * out. 2.1.288 is the oldest binary on hand it was run against (2.1.288,
+ * 2.1.293 and 2.1.314 all answer it). Below the gate nothing is spawned: a CLI
+ * without the `auth` command could read `auth status` as a prompt.
+ */
+export function cliSupportsAuthStatus(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 288 })
+}
+
 /** For tests. */
 const flagSupport = new Map<string, Promise<boolean>>()
 

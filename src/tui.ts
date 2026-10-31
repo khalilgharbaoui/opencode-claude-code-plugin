@@ -1041,14 +1041,14 @@ export function setupV2(context: V2Context): () => void {
       }),
     undefined,
   )
-  // The server half's warnings, which opencode 2 gives no other way to the
-  // screen (`src/plugin-notice.ts`). Once each, however many of the plugin's
+  // The server half's warnings, and its answer to `/connect`, which opencode 2
+  // gives no other way to the screen (`src/plugin-notice.ts`). Once each, however many of the plugin's
   // locations emitted them.
   const toastNotice = createNoticeToaster((notice) =>
     context.ui.toast?.show({
       title: TOAST_TITLE,
       message: notice.message,
-      variant: notice.level === "error" ? "error" : "warning",
+      variant: notice.level === "error" ? "error" : notice.level === "success" ? "success" : "warning",
       duration: TOAST_DURATION_MS,
     }),
   )

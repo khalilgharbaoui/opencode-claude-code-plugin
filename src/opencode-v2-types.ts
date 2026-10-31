@@ -105,6 +105,66 @@ export interface V2ModelHookOptions {
   readonly providerID?: string
 }
 
+/**
+ * `@opencode/plugin` 2.2.2 `SessionRetry`, the `session.hook("retry")` event:
+ * opencode asks before it runs a failed turn again (h #g277).
+ */
+export interface V2SessionRetryEvent {
+  readonly sessionID: string
+  readonly model: { readonly id: string; readonly providerID: string }
+  readonly error: { readonly type?: string; readonly message?: string }
+  readonly attempt: number
+  decision: { retry: false } | { retry: true; delay: number }
+}
+
+/** One way to connect an integration (`IntegrationMethod`); only `type` is always there. */
+export interface V2IntegrationMethod {
+  readonly type: string
+  readonly id?: string
+  readonly label?: string
+}
+
+/** `@opencode/plugin` 2.2.2 `IntegrationEditor`, the calls we make. */
+export interface V2IntegrationEditor {
+  get(id: string): { id: string; name: string } | undefined
+  update(id: string, update: (integration: { id: string; name: string }) => void): void
+  readonly method: {
+    list(integrationID: string): readonly V2IntegrationMethod[]
+    update(input: {
+      integrationID: string
+      method: { id: string; type: "external"; label: string }
+    }): void
+    remove(integrationID: string, method: V2IntegrationMethod): void
+  }
+}
+
+/** `@opencode/client` `ConnectionInfo`, passed back to opencode untouched. */
+export interface V2ConnectionInfo {
+  readonly type: string
+  readonly id?: string
+  readonly label?: string
+}
+
+/** `@opencode/schema/connection` `Connection.Status`. */
+export interface V2ConnectionStatus {
+  status: "needs_auth"
+  message: string
+  url?: string
+}
+
+/** `@opencode/plugin` 2.2.2 `IntegrationDomain`, the slice `/connect` needs. */
+export interface V2IntegrationDomain {
+  transform(callback: (editor: V2IntegrationEditor) => void): Promise<V2Registration>
+  readonly connection: {
+    active(integrationID: string): Promise<V2ConnectionInfo | undefined>
+    status(input: {
+      integrationID: string
+      connection: V2ConnectionInfo
+      status: V2ConnectionStatus | undefined
+    }): Promise<void>
+  }
+}
+
 /** `@opencode/schema/prompt-input` `Prompt`: we only rewrite `text`. */
 export type V2Prompt = { text?: string } & Record<string, unknown>
 
@@ -169,6 +229,11 @@ export interface V2Context {
       callback: (event: V2ModelRequestEvent) => Promise<void> | void,
       options?: V2ModelHookOptions,
     ): Promise<V2Registration>
+    hook(
+      name: "retry",
+      callback: (event: V2SessionRetryEvent) => Promise<void> | void,
+      options?: V2ModelHookOptions,
+    ): Promise<V2Registration>
     prompt?(input: V2Prompt & { sessionID: string; delivery?: V2Delivery }): Promise<unknown>
   }
   readonly command?: {
@@ -179,6 +244,8 @@ export interface V2Context {
   readonly event?: {
     subscribe(options?: { signal?: AbortSignal }): AsyncIterable<V2Event>
   }
+  /** `/connect`'s entry for each provider (h #g277). Optional: early 2.0 releases lack parts of it. */
+  readonly integration?: V2IntegrationDomain
   /**
    * Absent before 2.0.31's measured shape: the definition is plain JSON
    * Schema, which `Rpc.PortableDefinition` accepts, and the handlers object is

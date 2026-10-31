@@ -18,6 +18,7 @@ account-usage-stream.test.ts
 always-load-verbatim.test.ts
 btw-command.test.ts
 budget.test.ts
+claude-login.test.ts
 cli-events-stream.test.ts
 cli-model-probe.test.ts
 cli-probe-cache.test.ts
