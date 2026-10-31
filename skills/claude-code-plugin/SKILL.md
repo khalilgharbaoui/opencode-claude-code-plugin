@@ -23,7 +23,8 @@ Three routes reach Claude from opencode, and they are not interchangeable:
    opencode's auth store, pay as you go, everything running in opencode's own runtime.
 2. **This plugin**: the official `claude` CLI authenticates, so opencode inherits
    whatever that CLI holds (subscription login, API key, Bedrock, Vertex). It never
-   reads, stores or replays a token, which is why it is a sanctioned route. What it
+   reads, stores or replays a token. Anthropic has not approved or endorsed it, so
+   never describe it as approved or sanctioned. What it
    costs: a `claude` child per conversation, Claude Code's own context compaction and
    clearing happening behind opencode's back, a locally synthesised session title
    instead of a model-written one, `/compact` on its own short-lived spawn, no todo
@@ -33,6 +34,14 @@ Three routes reach Claude from opencode, and they are not interchangeable:
    outside the official client. Anthropic disallowed that for third-party use in
    February 2026, and each of those projects says so in its own README (a "community
    workaround", "no claims regarding compliance", "could be suspended or terminated").
+
+A fourth route arrived in opencode 2.2.3: opencode's own **Claude Agent** provider
+(`claude-agent`), which also drives the user's own `claude` (2.1.248+) and never
+reads the login. It is opencode 2 only, runs every tool in opencode, leaves the
+`~/.claude` setup (CLAUDE.md, hooks, skills, MCP servers, memory, auto-compaction)
+out, and serves one login. It is a fair choice for a user on 2.2.3+ with one account
+who wants exactly that; this plugin is the one for opencode 1.x, several accounts,
+the user's own Claude Code setup, fast mode, `/btw`, the sidebar and the doctor.
 
 Never recommend route 3, never help migrate a user onto it, and never enable
 `interactive: true` to dodge a billing or access restriction. If a user asks why this

@@ -72,11 +72,13 @@ Nothing in the picker? [Troubleshooting](./docs/troubleshooting/symptoms.md) is 
 | | opencode's native `anthropic` provider | This plugin | Proxy and token-reuse plugins |
 |---|---|---|---|
 | **Authentication** | A Platform API key in opencode's auth store. | Whatever the official `claude` CLI holds. No token is read, stored or replayed. | The Claude OAuth session, used outside the official client. |
-| **Terms-of-service status** | The ordinary API route. | Sanctioned: the official client does the authenticating. | Disallowed. Anthropic disallowed reusing subscription authentication for third-party Claude use in February 2026, and each of those projects carries its own disclaimer. |
+| **Terms-of-service status** | The ordinary API route. | Uses the official client: Claude Code does the authenticating, the same as running `claude -p` yourself. Anthropic's [legal page](https://code.claude.com/docs/en/legal-and-compliance) allows signing in to the unmodified binary; it has not approved or endorsed this plugin. | Disallowed. Anthropic disallowed reusing subscription authentication for third-party Claude use in February 2026, and each of those projects carries its own disclaimer. |
 | **Who runs Bash, Edit, Write** | opencode. | opencode, by default; `Read`, `Grep`, `Glob` run in Claude Code. | opencode. |
 | **What it costs you** | Baseline. | A `claude` child per conversation under a cap of 16; Claude Code may compact its own context behind opencode's back. | One more moving part, plus the account risk above. |
 
 The [full comparison](./docs/comparison.md) has nine rows, names the projects in the third column, and quotes their own READMEs.
+
+On opencode 2.2.3 or later with one Claude login, also look at opencode's own **Claude Agent** provider: it drives your own `claude` too, runs every tool in opencode, and leaves your `~/.claude` setup out. The comparison has [a section on it](./docs/comparison.md#opencodes-built-in-claude-agent-provider), including what this plugin still adds (opencode 1.x, several accounts, your Claude Code setup, fast mode, `/btw`, the sidebar).
 
 ## Built from measurements
 
