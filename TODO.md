@@ -179,6 +179,8 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-10-31: **done** (v0.64.0, PR #146, h #g273): the subagent dispatch form offers Opus `xhigh` as its own
+  combo, between `high` and `max`, on every screen. Asked for while recording the launch walkthrough.
 - 2026-10-28: **done** (v0.63.3, PR #145, h #g272): unavailable MCP servers warn as one line per status,
   and a claude.ai connector the account never connected goes to INFO and the doctor instead of a toast.
 - 2026-10-26: **done** (v0.63.2, PR #144, h #g271): a model, effort, TTL or cap change mid-turn waits for the

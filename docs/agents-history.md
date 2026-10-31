@@ -8964,3 +8964,11 @@ fifth combo now, between `high` and `max`. Five is still far from the catalog
 times every effort (h #g227's reason for curating at all), and the form stays
 one screen.
 
+Shipped as v0.64.0 on 2026-10-31 after the maintainer picked "Release v0.64.0":
+PR #146 green on Linux and Windows, CI and Docs green on the merge commit before
+the tag, typecheck, `npm test` (1936 pass) and the build run again on master, the
+publish verified from the Publish step's tail against the version document's
+shasum (`aae3f158`, visible about 60 s after), and the GitHub Release created
+after. The launch walkthrough was re-recorded on this build so the form shows
+`xhigh`.
+
