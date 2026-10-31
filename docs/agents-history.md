@@ -9558,3 +9558,111 @@ h #g116), appended 423 fixture lines to the live `plugin.log` (rotated to
 `plugin.log.1`) and wrote `ses_live` to `session-spawns.json` and four fake
 model keys to `turn-history.json`. No real turn reads them; they were left in
 place, as in h #g275, rather than rewriting files live processes write.
+
+## The operator's own commands run as typed under `verbatimPrompts` (2026-10-31)
+
+h #g280. Follow-up to h #g276, from the question it left open: the plugin promises that
+the operator's Claude Code setup comes along (custom commands, skills), and
+`client_composed: true` turns off slash-command dispatch.
+
+### Measured
+
+Claude Code 2.1.314, Haiku 5.5, `--print` stream-json with the plugin's envelope, a
+scratch project holding a command (`.claude/commands/hello-probe.md`), a skill
+(`.claude/skills/skill-probe/SKILL.md`), one of each with
+`disable-model-invocation: true`, and a command taking `$ARGUMENTS`. Each answers with its
+own codeword.
+
+| message | without the field | with the field |
+|---|---|---|
+| `/hello-probe` | PELICAN-7, 1 turn, $0.00345 | the model called `Skill`, PELICAN-7, 3 turns, $0.00377 |
+| `/skill-probe` | OSPREY-3, 1 turn, $0.00351 | via `Skill`, OSPREY-3, 3 turns, $0.00377 |
+| `/arg-probe FALCON` | FALCON-9, 1 turn | via `Skill` with `args`, FALCON-9, 3 turns |
+| `/manual-probe` | HERON-4 | lost: "I don't have a skill called `manual-probe`" |
+| `/manual-skill-probe` | EGRET-8 | lost, same answer |
+
+So the gap is real, and it is two gaps: a `disable-model-invocation` command or skill never
+runs, and every other one runs only if the model chooses to call `Skill`, at three API
+turns instead of one.
+
+opencode 2.2.5 does not catch it upstream: `opencode run "/hello-probe"` and
+`"/skill-probe"` reached the provider as plain text (a recording fake `claude`), `GET
+/api/command` lists only opencode's own `init`, `review` and `goal`, and `GET /api/skill`
+listed none of the project's `.claude/skills`. (`opencode run` wraps a message holding a
+space in literal quotes, `"\"/arg-probe FALCON\""`; the TUI and the prompt route do not.)
+
+Telling a user command from a built-in:
+
+- The `system`/`init` frame lists every name flat. `slash_commands` holds `model`, `cost`,
+  `clear`, `compact`, `context` beside `hello-probe` and `stripe:explain-error`; `skills`
+  holds user, plugin and bundled skills and some commands (`manual-probe` was there,
+  `hello-probe` was not). Neither field says which is which.
+- The `initialize` control response does: `commands[]` carries `builtin: true` (and
+  `aliases`, `cost` and `stats` under `usage`) on 51 entries, none on user, project or plugin
+  ones. The CLI's own classifier (`fJ` in the binary) sorts every command into builtin,
+  plugin, mcp and user. Not used: the turn process sends no `initialize` (h #g220 depends
+  on that), and the fake CLIs across the suite read their first stdin line as the user
+  message.
+- None of the 51 built-ins, nor any alias, has a colon. A colon name is a plugin's
+  (`stripe:explain-error`) or a nested command's (`commands/ns/nested-probe.md` is
+  `/ns:nested-probe`; the bare `/nested-probe` is unknown).
+- **A user file beats a built-in of the same name**: `.claude/commands/cost.md` answered
+  `/cost` (GANNET-2) and `.claude/commands/model.md` answered `/model claude-sonnet-5-5`
+  (PUFFIN-1) with the process still on Haiku (`modelUsage` only `claude-haiku-5-5`).
+- Where the CLI looks: the config dir, and `.claude/commands` / `.claude/skills` in the
+  workspace and every directory above it (an ancestor's command and skill were both
+  listed). A skill is named by its directory, not its frontmatter `name`;
+  `commands/<name>/SKILL.md` is `<name>`; a skill with `user-invocable: false` is left out
+  of `slash_commands`.
+- An unknown `/nonexistent-zz` without the field reached the model as text (1 turn: "isn't
+  available in this session").
+- **No init frame before the first message**: a process sent only `initialize` wrote its
+  hooks and the control response and no `system`/`init`. So a per-process list never
+  exists for the message that starts a process.
+
+### Shipped
+
+`ownCommandIn` (`src/user-commands.ts`, imports nothing that logs): a message goes out
+without `client_composed` when its content is one text block opening with `/name` (no `/`
+inside the name, so `/etc/hosts` is none), a `claude` spawned in the same resolved cwd
+reported `name` in `slash_commands` (`noteReportedCommands`, fed every stdout line by the
+session manager's reader, newest report per workspace, 64 workspaces), and `name` is not a
+built-in: it has a colon, or a readable `commands/<name>.md`, `commands/<name>/SKILL.md` or
+`skills/<name>/SKILL.md` not marked `user-invocable: false` under the spawn's config dir
+(`claudeConfigDir` of the account's) or a `.claude` from the cwd up, the home dir's skipped
+as the skill bridge does. `getClaudeUserMessage` takes the context as `ownCommands`; the
+call site passes it on every turn but compaction. Everything else is as h #g276 left it:
+built-ins, unknown names, `@` mentions, plain text, attachments and replayed history keep
+the mark, and forwarded messages, the nudge and late proxy results always carry it.
+`verbatimPrompts: false` writes the envelope it always did.
+
+Why per workspace rather than per process: the brief asked for a process's own report, but
+no process reports before its first message, which is where a typed command usually is.
+Keyed on the workspace, the first message of a second session in a folder already runs the
+command; the first message after opencode starts in a folder still keeps the mark, where a
+model-invocable command runs through `Skill` and a `disable-model-invocation` one does not.
+The report is also not what makes this safe: the file is, because a loaded user file is the
+command that runs even when a built-in has its name. What the report adds is that the name
+resolved for a real `claude` here, so a renamed or newly added file waits for the next
+report, and a deleted one fails the file check.
+
+### Live
+
+opencode 2.2.5 `serve` with scratch XDG dirs, the plugin from the worktree `dist`, the real
+CLI on the `appical` login, one session on `claude-code/claude-haiku-5-5`: `/manual-probe`
+first (stamped, the model said the skill was not available), `/manual-probe` again
+(unstamped, HERON-4), `/hello-probe` (unstamped, PELICAN-7). One spawn, three results, each
+`numTurns: 1`; the session's cumulative cost read $0.01121, $0.01186, $0.01243. The
+plugin's log ignores the XDG dirs and the sandbox set `OPENCODE_CLAUDE_CODE_LOG_FILE=1`, so
+this run's lines went to the live `~/.local/share/opencode-claude-code/plugin.log`; they
+were left in place (h #g274's reason).
+
+Probe cost: about 20 Haiku 5.5 calls on the `appical` login (the `default` login's
+five-hour window was spent; its four probes billed nothing).
+
+Checks: `npm run typecheck` (0), the focused files `test/always-load-verbatim`,
+`get-claude-user-message`, `user-commands`, `verbatim-own-commands` (50 pass, 0), `npm test`
+(2042 pass, 0, after rebasing onto h #g278's merge), `npm run build` (0). No NOTICE, WARN or ERROR message changed, so the
+bundle allowlist is untouched. `test/verbatim-own-commands.test.ts` uses the fake-CLI
+harness and is on `.github/windows-skipped-tests.txt` (h #g275); `test/user-commands.test.ts`
+is portable and runs on Windows.

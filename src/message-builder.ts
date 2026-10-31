@@ -26,6 +26,7 @@ import { BUDGET_MARKER } from "./budget-ledger.js"
 import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
 import { userEnvelope } from "./user-envelope.js"
+import { ownCommandIn, type OwnCommandContext } from "./user-commands.js"
 import { MODEL_FALLBACK_MARKER } from "./model-fallback.js"
 import { parseSideQuestionContent } from "./side-question.js"
 import { STALE_BUILD_MARKER } from "./stale-build.js"
@@ -600,6 +601,12 @@ export function getClaudeUserMessage(
      * caller resolves `verbatimPrompts`; omitted, the envelope is unchanged.
      */
     verbatimPrompts?: boolean
+    /**
+     * Where the turn's `claude` finds the operator's own commands. Given, a
+     * message that runs one of them goes out unstamped (`ownCommandIn`,
+     * h #g280); omitted, `verbatimPrompts` alone decides.
+     */
+    ownCommands?: OwnCommandContext
   } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
@@ -785,7 +792,11 @@ Now continuing with the current message:
     return userEnvelope([{ type: "text", text: "(empty)" }], verbatim)
   }
 
-  return userEnvelope(content, verbatim)
+  const ownCommand = verbatim && opts.ownCommands ? ownCommandIn(content, opts.ownCommands) : null
+  if (ownCommand) {
+    log.info("sending the operator's own claude code command as typed", { command: ownCommand })
+  }
+  return userEnvelope(content, verbatim && !ownCommand)
 }
 
 /**
