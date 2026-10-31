@@ -72,6 +72,14 @@
 
 ## Backlog
 
+- 2026-11-01, found by the testhygiene lane (PR #156, h #g283), not scheduled:
+  1. Two opencode processes can overwrite each other's store writes: every store under
+     `$XDG_STATE_HOME/opencode-claude-code-plugin/` saves by read, merge and rename with no lock
+     between processes. Measured in tests (16/40 lost writes with one shared state dir). A lost
+     write costs one resume record or one progress sample. A fix means a lock in eight stores.
+  2. `test/proxy-task.test.ts` uses the same early-`result` fake-CLI timer pattern that made
+     `background-running-count` flaky under load (12/40). Not yet tested under load.
+
 - 2026-11-01, found by the patch lane (h #g281): on opencode 2 both opencode's own `/btw`
   (the TUI's "Ask a side question", any provider) and this plugin's server command are
   registered as `/btw`. Which one a `/btw` typed in the TUI reaches has not been measured.
