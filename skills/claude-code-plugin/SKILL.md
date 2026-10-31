@@ -295,7 +295,9 @@ Same package, same config. 2.x's native key is `plugins` (plural), but it still 
 { "plugins": ["@khalilgharbaoui/opencode-claude-code-plugin"] }
 ```
 
-- Check the major first with `opencode --version`. `plugin` is read by both majors (recorded in `docs/agents-history.md` #g39); `plugins` is read by 2.x only.
+- Check the major first with `opencode --version`. `plugin` is read by both majors (recorded in `docs/agents-history.md` #g39); `plugins` is read by 2.x only. On 2.x, `opencode plugin add @khalilgharbaoui/opencode-claude-code-plugin` writes the `plugins` entry and installs the package.
+- With no `accounts`, 2.x names the provider `Claude Code` (id `claude-code`); 1.x gives it no name and shows the id. Either way a model's full id is `claude-code/<model>`, and `opencode run -m claude-code/claude-haiku-5-5 "reply with ok"` is a one-line check from a terminal.
+- On 2.1.4, `opencode plugin list` prints `No plugins found` even while this plugin is loaded. Never read that as "not installed": check with `/claude-code-doctor` or `opencode models | grep claude-code`.
 - Provider settings, lowest precedence first: `provider.claude-code.options` (1.x's spelling, still read on 2.x), `provider.claude-code.settings`, `providers.claude-code.settings` (2.x's own), and the plugin entry's own `options`, which wins over all three. Any option of this plugin can sit in any of them; the plugin entry is the usual home for `accounts`: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
 - A local checkout is loaded by pointing `plugins` at its **`dist`** directory, never the repository root: 2.x resolves a configured plugin path as `<dir>/server` or `<dir>/index`.
 - Known 2.x differences: a `task` call can carry its own `model` (2.x's `subagent` tool takes one; 1.x's `task` does not), there is no todo panel (2.x has no `todowrite` tool, so the sidebar's progress bar is always the time estimate), `bridgeMcpOauthTokens` finds nothing (2.x's plugin API can activate a stored credential but not read one), and Claude's `EnterPlanMode`, `ExitPlanMode` and `NotebookEdit` calls get no tool row (2.x rejects an unknown tool name). Everything else behaves as on 1.x, including `/btw` answered inside the running turn, a permission prompt not counting against a proxied call's deadline, a stopped turn releasing its parked proxied calls, and warnings shown as toasts: the plugin reads busy and idle off opencode 2's event stream (`session.execution.*`) and sends warnings over its plugin RPC channel (measured on 2.0.22 and 2.0.31). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
@@ -1177,12 +1179,17 @@ which is redacted by allowlist (see "Filing an issue" below).
 
 A published version does not reach a running opencode. First distinguish an npm pin,
 npm latest resolution, and a local `file://` install. Preserve a pin unless the user
-requested changing it. An `@latest` install is frozen in opencode's package cache at
-`~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest/`, and a
+requested changing it. An `@latest` install is frozen in opencode's package cache, and a
 plain restart never re-resolves it: removing that one directory and then fully
-relaunching is what picks a new version up. Inspect the actual cache location and
-package identity and get approval before removing only that stale package directory,
-never the whole cache or auth/session directories. Respect platform/XDG paths
+relaunching is what picks a new version up. The directory differs per major:
+`~/.cache/opencode/packages/@khalilgharbaoui/opencode-claude-code-plugin@latest/` on
+opencode 1.x, `~/.cache/opencode/npm/@khalilgharbaoui/opencode-claude-code-plugin@latest/`
+on opencode 2.x. On opencode 2.1.4 `opencode plugin check` and `opencode plugin update`
+do not see this plugin, so they cannot refresh it. A registry proxy or security agent
+with a minimum package age can hide a new release for hours; opencode then caches the
+older version it resolved, so remove the entry again once the release is visible.
+Inspect the actual cache location and package identity and get approval before removing
+only that stale package directory, never the whole cache or auth/session directories. Respect platform/XDG paths
 (`XDG_CACHE_HOME` moves it). Then fully relaunch every opencode window, including serve
 and GUI processes. A `file://` install uses the checkout's
 `dist/`: rebuild with `npm run build`, not cache deletion. On opencode 2, from plugin
@@ -1451,7 +1458,8 @@ Prefer the doctor: it needs no logging change and no restart.
 | A config change did nothing | Options are read at startup; another opencode window is still running the old process | Fully quit every opencode window and relaunch |
 | A `▌ **restart opencode:**` note at the top of a reply | Correct and acted on by the user, not by you: this opencode process loaded an older plugin build than the one now on disk, so a fix they installed is not running here. opencode reads a plugin once, at process start | Quit every opencode window (serve and GUI processes included) and relaunch. The note appears once per conversation, names the loaded version, the on-disk version and when the build was loaded, and is stripped from any transcript rebuilt for the CLI |
 | A bug the user is sure was fixed is back | Same cause as the row above, before they have seen the note: the window answering them predates the fix | The `plugin build` row of `/claude-code-doctor`, which reads the disk unthrottled: `current`, `on disk <version>`, `rebuilt on disk` or `could not be read`. Compare its loaded version with the version they installed before investigating the bug at all |
-| New plugin version or model not in the picker after upgrading | Frozen `@latest` in opencode's package cache | Remove the cache dir (recipe "Upgrade the plugin") and relaunch |
+| New plugin version or model not in the picker after upgrading | Frozen `@latest` in opencode's package cache (`packages/` on 1.x, `npm/` on 2.x), or a minimum-package-age proxy hiding the release so opencode cached an older one | Remove the cache dir for the major in use (recipe "Upgrade the plugin") and relaunch |
+| `opencode plugin list` prints `No plugins found` on opencode 2 | Expected on 2.1.4: that command, `plugin check` and `plugin update` do not see this plugin | Check with `/claude-code-doctor` or `opencode models \| grep claude-code`; if either answers, the plugin is loaded |
 | No `claude-code` provider or model in the picker at all | The plugin never loaded, or it loaded and the CLI was not usable | Check for a `plugin ready` line first: absent means not loaded (wrong `plugin`/`plugins` key, a 2.x local install not pointing at `dist/`, or no full relaunch), present with `claudeCli.version: not detected` means the binary did not answer `--version`, which also disables every version-gated flag |
 | `Model unavailable` for a model id the user typed | The provider id is not what they assumed | Use the id the ready block's `providers` field lists. With no `accounts` configured on opencode 2 the id is `claude-code`, so `claude-code-default/<model>` fails while the plugin is healthy (measured on opencode 2.0.16, 2026-09-27). Declaring `accounts` is what creates `claude-code-default`; on 1.x with accounts the ids are `claude-code-default` / `claude-code-<name>` and never a bare `claude-code` |
 | `Tool result name changed`, turn aborts, on opencode 2 | Before 0.28.1 a CLI-executed tool's result reached opencode under a different name than its call, and 2.0.16 aborts the turn on the mismatch, breaking every Claude-side MCP server call | Upgrade to 0.28.1+ **and fully relaunch every opencode window**; plugin code is read once at process start, so upgrading the package under a running window changes nothing |

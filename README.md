@@ -18,8 +18,6 @@
 [![License](https://img.shields.io/github/license/khalilgharbaoui/opencode-claude-code-plugin?style=flat-square&label=license&labelColor=15181E&color=FFC46B)](./LICENSE)
 [![Buy me a coffee](https://img.shields.io/badge/support-buy%20me%20a%20coffee-FFC46B?style=flat-square&labelColor=15181E&logo=buymeacoffee&logoColor=FFC46B)](https://www.buymeacoffee.com/khalilgharbaoui)
 
-<a href="https://www.buymeacoffee.com/khalilgharbaoui"><img src="site/public/buy-me-a-coffee.png" alt="Buy me a coffee" width="214" height="60"></a>
-
 **Claude Code is the provider.** This opencode plugin runs Anthropic's Claude models through the official **Claude Code CLI** (`claude`) as a subprocess instead of calling the HTTP API. opencode inherits whatever that CLI is logged in as (a Claude subscription, an API key, Bedrock or Vertex), gets Claude's own tools, MCP servers and skills, and keeps running the tools that touch your machine itself, behind its own permission prompts. One package serves opencode 1.x and 2.x.
 
 - **Your CLI's login, untouched.** The plugin never reads, stores or replays a token. Lifting the OAuth session out of the official client is what proxy-style plugins do, and Anthropic disallowed that for third-party Claude use in February 2026. This plugin structurally cannot do it.
@@ -46,9 +44,13 @@
    }
    ```
 
-   `~/.config/opencode/opencode.json` on opencode 1.x. opencode 2 reads the same key; its native spelling is `plugins`.
+   `~/.config/opencode/opencode.json`, on opencode 1.x and 2.x alike. opencode 2's native key is `plugins`, and `opencode plugin add @khalilgharbaoui/opencode-claude-code-plugin` writes that entry and installs the package for you.
 
-3. **Quit opencode fully and relaunch.** Plugins load once, at process start. The model picker now has a **Claude Code (Default)** provider with entries such as `Claude Sonnet 5.5 (2×)` and `Claude Opus 5 (5×)`; the suffix is each model's list price relative to Haiku.
+3. **Quit opencode fully and relaunch.** Plugins load once, at process start. The model picker now has a **Claude Code** provider (opencode 1.x labels it with its id, `claude-code`) with entries such as `Claude Sonnet 5.5 (2×)` and `Claude Opus 5 (5×)`; the suffix is each model's list price relative to Haiku. A model's full id is `claude-code/<model>`, so one line checks it from a terminal:
+
+   ```bash
+   opencode run -m claude-code/claude-haiku-5-5 "reply with ok"
+   ```
 
 Nothing in the picker? [Troubleshooting](./docs/troubleshooting/symptoms.md) is keyed on the first thing you see. `/claude-code-doctor` in any session prints what the plugin thinks is happening, without calling a model.
 
