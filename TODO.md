@@ -87,6 +87,28 @@ checks and suspected defects found in passing.
   compressed block (`<dcp-message-id>b3</dcp-message-id>`, `@b3@`), which
   `src/session-fork.ts` already recognises from h #g258 and h #g259.
 
+- 2026-10-30: suspected defect, session titles on opencode 2.1.4. A fresh demo session
+  (scratch XDG dirs, plugin 0.63.3 from `dist`, model `claude-code/claude-opus-5-5`, first
+  prompt "look at this repo and tell me two things at once...") was titled
+  "Here First Message Conversation Message Look" in the TUI sidebar. Those words look picked
+  from opencode's title-request instructions rather than from the user's message, so the
+  title stub (`src/title.ts`, h #g36) may be reading the wrong part of a V2 title request.
+  Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
+  that clip. Check what a V2 title request carries before changing anything.
+
+- 2026-10-31: suspected defect, unverified: the first model or effort switch after an
+  opencode RESTART may replay the thread instead of carrying the Claude session. Found by an
+  explore subagent during the launch demo recording, then read in the code: after a restart
+  `findSiblingResumePoint` finds the sibling in the resume record on disk, but the carry
+  calls `transferClaudeSession(sibling.siblingKey, sk)` (`src/claude-code-language-model.ts`
+  ~2400), which reads only the in-memory `claudeSessions` map (`src/session-manager.ts`
+  1136-1137), returns `undefined`, and the turn replays with `sibling-carry-over-failed`.
+  `test/session-model-switch.test.ts` swaps the model inside one process, so it would not
+  see this. Check first: a fake-CLI test with a simulated restart between the two turns
+  (as `test/session-resume.test.ts` does), then, if it fails, fall back to
+  `setClaudeSessionId(sk, sibling.claudeSessionId)` plus the resume record when the transfer
+  finds nothing in memory.
+
 ## Deferred decisions
 
 Only decisions about this plugin belong here. Items about the global opencode config
