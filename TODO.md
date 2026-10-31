@@ -72,15 +72,6 @@
 
 ## Backlog
 
-- 2026-10-31, found by the v2host lane (PR #152, h #g277), **resolved 2026-11-01 on branch
-  `fix/patch-after-0650`** (h #g281): a turn that ends on an overloaded API
-  (the CLI's `result` has `subtype: "success"` with `is_error: true`, text "API Error: 529 Overloaded")
-  finishes as `stop`, so opencode stores the error sentence as an ordinary reply. It should finish as
-  an error like the other failed results (h #g113, h #g214). opencode 2 no longer retries plugin
-  errors since PR #152, so an error finish shows once rather than respawning. Every `is_error`
-  result no earlier branch names now finishes `{unified:"error", raw:"error"}`, its sentence shown
-  once; measured on 2.1.314 against a local API answering 529.
-
 - 2026-11-01, found by the patch lane (h #g281): on opencode 2 both opencode's own `/btw`
   (the TUI's "Ask a side question", any provider) and this plugin's server command are
   registered as `/btw`. Which one a `/btw` typed in the TUI reaches has not been measured.
@@ -111,23 +102,12 @@ checks and suspected defects found in passing.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
 
-- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g274): the
-  first model or effort switch after an opencode restart replayed the thread. Confirmed by
-  `test/restart-sibling-carry.test.ts` on master: the model switch replayed as
-  `sibling-carry-over-failed` (the transfer read only memory), and the effort switch as
-  `no-sibling-recorded` (`invalidateOtherSpawnVariants` deleted the old effort's resume record
-  before the lookup ran). `transferClaudeSession` now takes the recorded id the sibling lookup
-  accepted, and a stale key known only from disk keeps its record for that lookup.
-
-- 2026-10-31: **fixed on branch `fix/restart-sibling-carry`, not released** (h #g275): a
-  prompt-cache TTL or CLI-cap (`maxTurns`, `maxBudgetUsd`) change after an opencode restart
-  replayed the thread, because `modelSiblingSignature` kept the context blob whole.
-  Confirmed by `test/restart-sibling-carry.test.ts` on the branch head first (four cases, no
-  `--resume`). The signature now cuts the blob to `[provider, agent]` with
-  `withoutSpawnSettings`, the same function `spawnIdentity` uses. The `accountGroups` guard
-  (`findForeignAccountSibling`) reads the same signature, and only gets broader, which is
-  the safe direction. A `maxBudgetUsd` change carries too: the cap is per process and starts
-  again on any `--resume` (h #g245), as it already did in one process (h #g270).
+- 2026-11-01, found while recording the releases (h #g281): CI (Windows) failed on v0.65.0's own
+  release commit `4c2b1de` (run 41243712269, not rerun) in `test/turn-progress-store.test.ts`,
+  "the reader re-parses only a changed file, drops an old record, and treats a broken file as
+  empty": `every write is seen`, 42 against 43. The merge commit before it (`b40a5cc`) passed
+  on Windows and the release commit changes only `package.json`'s version, so it reads as a
+  timing flake in the reader's change detection on Windows. Not investigated.
 
 - 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
   "releasing a session stops its idle child and forgets it in memory, but keeps the resume
@@ -137,6 +117,8 @@ checks and suspected defects found in passing.
   without a `_setResumeStorePath` of its own. My guess is a lost update between two
   processes' merge-on-write, but that is unconfirmed. If it recurs, give the file a scratch
   store path as `test/session-resume.test.ts` does.
+  It failed again on 2026-11-01 in the patch lane's first full `npm test` (h #g281) and
+  passed in three runs of the file alone and in the next full run.
 
 ## Deferred decisions
 
@@ -208,6 +190,19 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-01: **done** (v0.65.1, PR #155, h #g281): the operator's own Claude Code commands run as typed
+  from the first message in a folder, decided by the definition file on the CLI's own walk (a plugin's
+  `/plugin:cmd` still from the second); a failed API result, such as a 529 after the CLI's own retries,
+  finishes as an error with its sentence shown once; the comparison no longer presents `/btw` or naming a
+  subagent's model as unique to the plugin.
+- 2026-10-31: **done** (v0.65.0, PR #150 to PR #154, h #g276 to h #g280): the model catalog read from the
+  Claude CLI for free; `bash`, `edit` and `write` always loaded and messages delivered as written; opencode
+  2's `/connect` login check and no turn retries; a model or effort change applied to the live `claude`;
+  the operator's own commands run as typed under `verbatimPrompts`.
+- 2026-10-31: **done** (v0.64.1, PR #147, PR #148, PR #149, h #g274, h #g275): the first model or effort
+  switch after an opencode restart, and a prompt-cache TTL or CLI-cap change after one, carry the Claude
+  session instead of replaying the thread; the install docs corrected for opencode 2; the comparison
+  stops calling the plugin sanctioned and covers opencode's built-in Claude Agent provider.
 - 2026-10-31: **done** (v0.64.0, PR #146, h #g273): the subagent dispatch form offers Opus `xhigh` as its own
   combo, between `high` and `max`, on every screen. Asked for while recording the launch walkthrough.
 - 2026-10-28: **done** (v0.63.3, PR #145, h #g272): unavailable MCP servers warn as one line per status,

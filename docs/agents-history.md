@@ -9038,6 +9038,12 @@ Checks: `npm run typecheck`, the focused files (`test/restart-sibling-carry`,
 test` (1942 pass, EXIT 0). No log message changed, so the bundle allowlist is
 untouched. On a local branch, not released.
 
+Shipped as v0.64.1 on 2026-10-31 (PR #147, PR #148 and PR #149 together), a patch: CI
+green on Linux and Windows on the merge commit `3d2fd14` before the tag and on the
+release commit, the publish confirmed by the Publish step's tail and the version
+document's shasum (`c45c8e41`, checked again on 2026-11-01 for this record), and a
+GitHub Release.
+
 ## A TTL or CLI-cap change after a restart carries the conversation too (2026-10-31)
 
 h #g275. The gap h #g274 left open, fixed on the same branch with the
@@ -9115,6 +9121,12 @@ shebang script made executable with `0755`, the same POSIX-only harness as
 `session-model-switch` and `session-resume`, and had never been added to
 `.github/windows-skipped-tests.txt`. It is listed there now; every other file
 passed on `windows-latest` (1233).
+
+Shipped as v0.64.1 on 2026-10-31 (PR #147, PR #148 and PR #149 together), a patch: CI
+green on Linux and Windows on the merge commit `3d2fd14` before the tag and on the
+release commit, the publish confirmed by the Publish step's tail and the version
+document's shasum (`c45c8e41`, checked again on 2026-11-01 for this record), and a
+GitHub Release.
 
 ## The model catalog read from the Claude CLI, free (2026-10-31)
 
@@ -9218,6 +9230,14 @@ Checks: `npm run typecheck`, the focused files (`cli-model-catalog`,
 `cli-model-probe`, `doctor`, `config-models`, `configure-skill`), `npm test`,
 `npm run build`, and the docs site build.
 
+Shipped as v0.65.0 on 2026-10-31 (PR #150, PR #151, PR #152, PR #153 and PR #154
+together), a minor: CI green on Linux and Windows on the merge commit `b40a5cc` before
+the tag. On the release commit `4c2b1de` Linux passed and Windows failed once, in
+`test/turn-progress-store.test.ts` (`every write is seen`, 42 against 43), a timing
+assertion the same commit's parent passed, the release commit changing only
+`package.json`'s version; it was not rerun and is logged in `TODO.md`. The publish was
+confirmed by the Publish step's tail and the version document's shasum (`b6356e28`,
+checked again on 2026-11-01 for this record), with a GitHub Release.
 
 ## Hot proxy tools always loaded, and messages delivered as written (2026-10-31)
 
@@ -9327,6 +9347,15 @@ interactive transport types into the TUI instead and is not covered.
 Probe cost: about 40 Haiku 5.5 calls across two accounts (the `default` window ran out
 mid-lane and the lane was restarted on `appical`; the earlier measurements were reused, not
 repeated, and the shipped tool set was measured afresh).
+
+Shipped as v0.65.0 on 2026-10-31 (PR #150, PR #151, PR #152, PR #153 and PR #154
+together), a minor: CI green on Linux and Windows on the merge commit `b40a5cc` before
+the tag. On the release commit `4c2b1de` Linux passed and Windows failed once, in
+`test/turn-progress-store.test.ts` (`every write is seen`, 42 against 43), a timing
+assertion the same commit's parent passed, the release commit changing only
+`package.json`'s version; it was not rerun and is logged in `TODO.md`. The publish was
+confirmed by the Publish step's tail and the version document's shasum (`b6356e28`,
+checked again on 2026-11-01 for this record), with a GitHub Release.
 
 ## opencode 2: a `/connect` entry with a login check, and no turn retries (2026-10-31)
 
@@ -9439,6 +9468,15 @@ The fake overloaded turn (`subtype: "success"`, `is_error: true`,
 `api_error_status: 529`) finished `stop`, so opencode files the CLI's
 "API Error: 529 Overloaded" sentence as an ordinary reply. Out of this lane's
 files; worth a look beside h #g113's failing-subtype rule.
+
+Shipped as v0.65.0 on 2026-10-31 (PR #150, PR #151, PR #152, PR #153 and PR #154
+together), a minor: CI green on Linux and Windows on the merge commit `b40a5cc` before
+the tag. On the release commit `4c2b1de` Linux passed and Windows failed once, in
+`test/turn-progress-store.test.ts` (`every write is seen`, 42 against 43), a timing
+assertion the same commit's parent passed, the release commit changing only
+`package.json`'s version; it was not rerun and is logged in `TODO.md`. The publish was
+confirmed by the Publish step's tail and the version document's shasum (`b6356e28`,
+checked again on 2026-11-01 for this record), with a GitHub Release.
 
 ## A model or effort change is applied to the live `claude` (2026-10-31)
 
@@ -9559,6 +9597,15 @@ h #g116), appended 423 fixture lines to the live `plugin.log` (rotated to
 model keys to `turn-history.json`. No real turn reads them; they were left in
 place, as in h #g275, rather than rewriting files live processes write.
 
+Shipped as v0.65.0 on 2026-10-31 (PR #150, PR #151, PR #152, PR #153 and PR #154
+together), a minor: CI green on Linux and Windows on the merge commit `b40a5cc` before
+the tag. On the release commit `4c2b1de` Linux passed and Windows failed once, in
+`test/turn-progress-store.test.ts` (`every write is seen`, 42 against 43), a timing
+assertion the same commit's parent passed, the release commit changing only
+`package.json`'s version; it was not rerun and is logged in `TODO.md`. The publish was
+confirmed by the Publish step's tail and the version document's shasum (`b6356e28`,
+checked again on 2026-11-01 for this record), with a GitHub Release.
+
 ## The operator's own commands run as typed under `verbatimPrompts` (2026-10-31)
 
 h #g280. Follow-up to h #g276, from the question it left open: the plugin promises that
@@ -9666,6 +9713,15 @@ Checks: `npm run typecheck` (0), the focused files `test/always-load-verbatim`,
 bundle allowlist is untouched. `test/verbatim-own-commands.test.ts` uses the fake-CLI
 harness and is on `.github/windows-skipped-tests.txt` (h #g275); `test/user-commands.test.ts`
 is portable and runs on Windows.
+
+Shipped as v0.65.0 on 2026-10-31 (PR #150, PR #151, PR #152, PR #153 and PR #154
+together), a minor: CI green on Linux and Windows on the merge commit `b40a5cc` before
+the tag. On the release commit `4c2b1de` Linux passed and Windows failed once, in
+`test/turn-progress-store.test.ts` (`every write is seen`, 42 against 43), a timing
+assertion the same commit's parent passed, the release commit changing only
+`package.json`'s version; it was not rerun and is logged in `TODO.md`. The publish was
+confirmed by the Publish step's tail and the version document's shasum (`b6356e28`,
+checked again on 2026-11-01 for this record), with a GitHub Release.
 
 ## Own commands from the first message, failed API results, and the comparison claims (2026-11-01)
 
@@ -9780,3 +9836,9 @@ resume-record case, the flake already in `TODO.md` (3 runs of the file alone, 0 
 second `npm test`: 2048 pass, exit 0. `npm run build` (0, `dist/tui.js` free of log lines),
 `npm run generate:log-messages` (no change: no NOTICE, WARN or ERROR text changed), the site
 build (0, the new `#opencode-2s-own-btw` anchor resolves from the comparison page).
+
+Shipped as v0.65.1 on 2026-11-01 after the maintainer's "go forward": PR #155 green on
+Linux and Windows, CI green on the merge commit `1b0d005` before the tag and on the
+release commit `32937a5`, a patch because no other feature PR had merged since v0.65.0,
+the publish confirmed by the Publish step's tail against the version document's
+shasum (`6c628db9`, visible about 90 s after), and the GitHub Release created after.
