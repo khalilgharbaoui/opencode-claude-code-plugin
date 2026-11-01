@@ -280,6 +280,7 @@ export function createClaudeCode(
       cwd: settings.cwd,
       account: settings.account,
       configDir: settings.configDir,
+      accountInProcess: settings.accountInProcess,
       failoverAccounts: settings.failoverAccounts,
       baseCliPath: settings.baseCliPath ?? cliPath,
       // Passed through, with no default applied here: the form is opt-in and
