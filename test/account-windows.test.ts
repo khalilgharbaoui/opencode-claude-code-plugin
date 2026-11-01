@@ -22,12 +22,26 @@ import * as path from "node:path"
 import { describe, test } from "node:test"
 
 import { ensureAccountRuntime } from "../src/accounts.js"
+import { createClaudeCode } from "../src/index.js"
 import { stripAccountSuffix } from "../src/account-failover.js"
 import { parseModelId } from "../src/models.js"
 import { buildCliArgs, claudeSpawnEnv } from "../src/session-manager.js"
 import { planClaudeSpawn } from "../src/windows-spawn.js"
 
 const isWindows = process.platform === "win32"
+
+test("provider factory preserves the Windows account runtime flag", () => {
+  const model = createClaudeCode({
+    account: "max",
+    configDir: "C:/isolated/.claude-max",
+    accountInProcess: true,
+  })("claude-sonnet-5-5@max") as unknown as {
+    config: { accountInProcess?: boolean; configDir?: string }
+  }
+
+  assert.equal(model.config.accountInProcess, true)
+  assert.equal(model.config.configDir, "C:/isolated/.claude-max")
+})
 
 interface Sandbox {
   root: string
