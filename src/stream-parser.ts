@@ -5,7 +5,8 @@ import { emitCliToolCall } from "./turn-state.js"
 import { log } from "./logger.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
-import { getClaudeSessionId, setClaudeSessionId } from "./session-manager.js"
+import { getClaudeSessionId, rewindForkSource, setClaudeSessionId } from "./session-manager.js"
+import { forgetConversationCheckpoints } from "./conversation-gap.js"
 import { reportFastModeState } from "./fast-mode.js"
 import {
   describeResultFailure,
@@ -271,6 +272,9 @@ export function createLineHandler(
       // The CLI compacted its own context. Nothing else tells the user
       // that everything before this point is now a summary.
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
+        // A cut before the boundary would bring back the long conversation
+        // the CLI just summarised because it was nearly full (h #g282).
+        forgetConversationCheckpoints(state.sessionKey)
         const note = reportCompactBoundary(msg)
         if (note) {
           state.controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
@@ -704,6 +708,25 @@ export function createLineHandler(
           0
       ) {
         state.lastCallUsage = callUsage
+      }
+      // Where Claude's reply has reached in its transcript, for the turn's
+      // checkpoint (h #g282): each `assistant` frame is one record and carries
+      // that record's uuid. The CLI's own error replies (a limit, a refused
+      // model, an expired login) are records too, but not Claude's turn, and a
+      // turn that ends on one records no checkpoint anyway.
+      if (
+        msg.type === "assistant" &&
+        typeof msg.uuid === "string" &&
+        msg.uuid.length > 0 &&
+        (msg as { is_api_error_message?: unknown }).is_api_error_message !== true &&
+        typeof msg.error !== "string" &&
+        msg.message?.model !== "<synthetic>"
+      ) {
+        state.lastReplyEntry = {
+          uuid: msg.uuid,
+          sessionId: msg.session_id,
+          toolUse: (msg.message?.content ?? []).some((block) => block.type === "tool_use"),
+        }
       }
       // Fallback: extract thinking from the complete assistant
       // message. opus-4-7's CLI strips thinking_delta from stream
@@ -1141,7 +1164,22 @@ export function createLineHandler(
         // this one may say the request was honoured.
         reportFastModeState(msg, ctx.fastMode, "result")
 
-        if (msg.session_id) {
+        // A rewound thread's fork that never started (its cut was not in the
+        // parent's transcript) reports the id it would have had, and nothing
+        // was written under it (measured on 2.1.314, h #g282). Mapping it
+        // would send the next turn to `--resume` a session that does not exist,
+        // and keeping the checkpoints would let a retry aim at the same cut:
+        // with both gone, the next turn replays the thread instead.
+        const forkedFrom = rewindForkSource(state.activeProcess?.cliArgs)
+        // No `init` mapped the fork's id yet: a later turn of a fork that did
+        // start can fail before an API call too, and that is not this case.
+        const forkNeverStarted =
+          !!forkedFrom &&
+          msg.is_error === true &&
+          msg.num_turns === 0 &&
+          getClaudeSessionId(state.sessionKey) === undefined
+        if (forkNeverStarted) forgetConversationCheckpoints(state.sessionKey)
+        if (msg.session_id && !forkNeverStarted) {
           setClaudeSessionId(state.sessionKey, msg.session_id)
         }
 
@@ -1151,11 +1189,12 @@ export function createLineHandler(
         // way. A headless total is the Claude session's running total, so the
         // ledger takes the difference from the last one it saw (h #g245), and
         // the `turnStats` footer prints that same difference (h #g257). Taken
-        // once here: the baseline moves with every read.
+        // once here: the baseline moves with every read. A rewound thread's
+        // fork starts from its parent's total (h #g282).
         const resultCost = ctx.budget
-          ? recordResultCost(ctx.budget, msg.session_id, msg.total_cost_usd)
+          ? recordResultCost(ctx.budget, msg.session_id, msg.total_cost_usd, forkedFrom)
           : ctx.config.turnStats && typeof msg.total_cost_usd === "number"
-            ? takeResultCost(msg.session_id, msg.total_cost_usd, !ctx.interactive)
+            ? takeResultCost(msg.session_id, msg.total_cost_usd, !ctx.interactive, forkedFrom)
             : undefined
 
         if (deliverPendingCompletions(state)) {

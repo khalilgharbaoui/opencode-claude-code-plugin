@@ -25,8 +25,10 @@ import {
   classifyConversationChange,
   formatConversationRewoundNote,
   recordServedConversation,
+  restoreConversationCheckpoints,
   type MissedMessages,
 } from "./conversation-gap.js"
+import { planRewindFork } from "./rewind-fork.js"
 import {
   getAgentRegistry,
   qualifyModelName,
@@ -2535,15 +2537,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     }
 
     // A rewound thread: what the session was answering is gone, and nothing
-    // the CLI offers can take those turns back out of its context. There are
-    // no Claude message uuids here for opencode's prompt messages, so
-    // `--resume-session-at` cannot be aimed even in principle, and h #g187
-    // measured it costing about a replay anyway. So the session goes and the
-    // thread as it stands now is replayed into a fresh one by the bounded
-    // replay this turn already has (h #g238): the child first, so one `claude`
-    // owns one conversation, then the id, which takes the served chain, the
-    // fork fingerprint and the resume record with it.
+    // the CLI offers can take those turns back out of its context. So the
+    // session goes: the child first, so one `claude` owns one conversation,
+    // then the id, which takes the served chain, the fork fingerprint and the
+    // resume record with it. What replaces it is a COPY cut at the last turn
+    // the thread still has (`--resume-session-at`, `forkOnRewind`, h #g282)
+    // when that turn left a checkpoint, and otherwise the thread as it stands
+    // now, replayed into a fresh session by the bounded replay this turn
+    // already has (h #g238).
     let rewoundNote: string | null = null
+    let forkAtMessageUuid: string | undefined
     if (conversationChange?.kind === "rewound") {
       await deleteActiveProcessAndWait(sk)
       deleteClaudeSessionId(sk)
@@ -2564,18 +2567,56 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         accountGroupNote = accountGroupNote ?? accountGroupNoteFor(from)
         logAnotherAccountGroup(from)
       } else {
-        includeHistoryContext = true
-        replayReason = "history-rewound"
-        log.notice("replaying the conversation as text: the thread was edited or undone", {
-          sessionKey: sk,
-          reason: "history-rewound",
-          sharedMessages: conversationChange.sharedMessages,
-          removedMessages: conversationChange.removedMessages,
-          removedUserMessages: conversationChange.removedUserMessages,
+        // Where the fork would come from is the spawn's own account directory:
+        // a transcript is one file under one account's config dir (h #g98).
+        const spawnTranscriptDir = join(
+          resolveConfigDir(this.skillBridgeSpawn(failover).configDir),
+          "projects",
+          encodeCwd(cwd),
+        )
+        // The only await this adds, and the version is cached per binary for
+        // the life of the process: a rewound key has served a turn already.
+        // Raced against the abort for the reason the fork probe above is.
+        const plan = await planRewindFork({
+          change: conversationChange,
+          enabled: this.config.forkOnRewind !== false,
+          interactive: useInteractive,
+          cliVersion: () =>
+            Promise.race([detectCliVersion(cliPath), turnAbort.whenAborted.then(() => null)]),
+          transcriptPath: (id) => join(spawnTranscriptDir, `${id}.jsonl`),
         })
-        // Not on a `doGenerate` turn, for the reason the usage-limit note is
-        // not: its text is aggregated into a return value rather than shown.
-        if (mode !== "generate") rewoundNote = formatConversationRewoundNote()
+        if (turnAbort.aborted) {
+          return abortedBeforeWork("checking where to fork the rewound conversation")
+        }
+        if (plan.kind === "fork") {
+          forkFromClaudeSessionId = plan.claudeSessionId
+          forkAtMessageUuid = plan.messageUuid
+          // The checkpoints the cut keeps outlive the id that was just
+          // dropped; the later ones were taken on the turns that were removed.
+          restoreConversationCheckpoints(sk, plan.kept)
+          log.notice("forking the claude session at the last turn the edited thread still has", {
+            sessionKey: sk,
+            sharedMessages: conversationChange.sharedMessages,
+            removedMessages: conversationChange.removedMessages,
+            removedUserMessages: conversationChange.removedUserMessages,
+            keptMessages: plan.keptMessages,
+          })
+          if (mode !== "generate") rewoundNote = formatConversationRewoundNote("forked")
+        } else {
+          includeHistoryContext = true
+          replayReason = "history-rewound"
+          log.notice("replaying the conversation as text: the thread was edited or undone", {
+            sessionKey: sk,
+            reason: "history-rewound",
+            forkRefused: plan.reason,
+            sharedMessages: conversationChange.sharedMessages,
+            removedMessages: conversationChange.removedMessages,
+            removedUserMessages: conversationChange.removedUserMessages,
+          })
+          // Not on a `doGenerate` turn, for the reason the usage-limit note is
+          // not: its text is aggregated into a return value rather than shown.
+          if (mode !== "generate") rewoundNote = formatConversationRewoundNote()
+        }
       }
     }
 
@@ -3745,6 +3786,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               sessionKey: sk,
               skipPermissions,
               forkFromClaudeSessionId,
+              forkAtMessageUuid,
               model: spawnModelId,
               // `--effort` rather than CLAUDE_CODE_EFFORT_LEVEL where a later
               // effort change may be applied live: the variable beats
@@ -3987,8 +4029,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // the CLI received the envelope either way, and a turn it refused is
           // in its transcript as a question without an answer, so replaying
           // that question later would hand it the same message twice.
+          //
+          // A served turn also leaves its checkpoint: the transcript entry its
+          // reply ended on, which an undo or edit later cuts a copy of the
+          // session at (h #g282). Only a reply that ended on Claude's own
+          // words, in the session this result names: a turn that failed, or
+          // whose last record is a tool call, is no place to cut.
           if (!compactionMode) {
-            recordServedConversation(sk, filterSideQuestionHistory(options.prompt))
+            const reply = state.lastReplyEntry
+            const checkpoint =
+              msg.is_error !== true &&
+              !state.resultFailure &&
+              typeof msg.session_id === "string" &&
+              reply !== undefined &&
+              !reply.toolUse &&
+              (reply.sessionId === undefined || reply.sessionId === msg.session_id)
+                ? { claudeSessionId: msg.session_id, messageUuid: reply.uuid }
+                : undefined
+            recordServedConversation(sk, filterSideQuestionHistory(options.prompt), checkpoint)
           }
           // The socket may have closed after the tool-result prompt was matched,
           // or while the result-boundary grace timer was running.

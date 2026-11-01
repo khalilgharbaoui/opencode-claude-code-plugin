@@ -1572,9 +1572,13 @@ export function spawnClaudeProcess(
 
     // "No conversation found with session ID: <uuid>" is what `--resume`
     // prints for a purged transcript — note the lowercase "session ID",
-    // which the capitalized match below does not catch.
+    // which the capitalized match below does not catch. A rewound thread's
+    // fork cut at an entry the transcript does not hold answers "No message
+    // found with message.uuid of: <uuid>" and exits before writing anything
+    // (measured on 2.1.314, h #g282): the fork's new id names nothing either.
     if (
       stderr.includes("No conversation found") ||
+      stderr.includes("No message found with message.uuid") ||
       (stderr.includes("Session ID") &&
         (stderr.includes("already in use") ||
           stderr.includes("not found") ||
@@ -1621,12 +1625,19 @@ export function appendResumeIfNeeded(
   // once this key has a session id of its own the respawn continues that
   // instead. Before the `system`/`init` frame there is no such id and nothing
   // was written, and re-forking the parent is then the correct recovery.
+  // A rewound thread's fork also carries `--resume-session-at`, the cut in
+  // the PARENT's transcript (h #g282): the fork already ends there, so it
+  // goes with `--fork-session`.
   if (cliArgs.includes("--fork-session")) {
     const forkedSessionId = claudeSessions.get(sessionKey)
     if (!forkedSessionId) return cliArgs
     const resumed: string[] = []
     for (let i = 0; i < cliArgs.length; i++) {
       if (cliArgs[i] === "--fork-session") continue
+      if (cliArgs[i] === "--resume-session-at") {
+        i++
+        continue
+      }
       if (cliArgs[i] === "--resume") {
         resumed.push("--resume", forkedSessionId)
         i++
@@ -1646,6 +1657,22 @@ export function appendResumeIfNeeded(
   const sid = claudeSessions.get(sessionKey)
   if (!sid) return cliArgs
   return [...cliArgs, "--resume", sid]
+}
+
+/**
+ * The session a spawn forked a rewound thread from, read off its own args
+ * (`--resume <id> --resume-session-at <uuid> --fork-session`), or undefined
+ * for every other spawn. The budget ledger takes that session's last total as
+ * the fork's cost baseline, because the fork's first total carries it
+ * (h #g282). A respawn after `init` resumes the fork itself and no longer
+ * names a parent.
+ */
+export function rewindForkSource(cliArgs: readonly string[] | undefined): string | undefined {
+  if (!cliArgs || !cliArgs.includes("--resume-session-at") || !cliArgs.includes("--fork-session")) {
+    return undefined
+  }
+  const at = cliArgs.indexOf("--resume")
+  return at >= 0 ? cliArgs[at + 1] : undefined
 }
 
 /**
@@ -1736,6 +1763,13 @@ export function buildCliArgs(opts: {
    * a key that already has a session id of its own is never a fork candidate.
    */
   forkFromClaudeSessionId?: string
+  /**
+   * With `forkFromClaudeSessionId`: the transcript entry to cut the fork at,
+   * as `--resume-session-at <uuid>`, for a thread that was undone or edited
+   * (h #g282). The fork holds the parent's conversation up to and including
+   * that entry and nothing after it. Already gated on the CLI version.
+   */
+  forkAtMessageUuid?: string
   model?: string
   permissionMode?: string
   mcpConfig?: string | string[]
@@ -1770,6 +1804,7 @@ export function buildCliArgs(opts: {
     skipPermissions,
     includeSessionId = true,
     forkFromClaudeSessionId,
+    forkAtMessageUuid,
     model,
     permissionMode,
     mcpConfig,
@@ -1857,6 +1892,8 @@ export function buildCliArgs(opts: {
       // the `system`/`init` frame reports, so the stream parser maps this key
       // to it exactly as it would a fresh one) and never touches the parent's.
       args.push("--resume", forkFromClaudeSessionId, "--fork-session")
+      // A rewound thread: the fork ends at the last turn the thread still has.
+      if (forkAtMessageUuid) args.push("--resume-session-at", forkAtMessageUuid)
     }
   }
 

@@ -122,6 +122,8 @@ export interface ClaudeCodeConfig {
   enableTodoTools?: boolean
   /** Branch a forked opencode session off the parent's Claude conversation. */
   forkSessions?: boolean
+  /** Continue a copy of the Claude session cut where an undone or edited thread still matches. Default true. */
+  forkOnRewind?: boolean
   /** Resume a conversation's Claude session after opencode restarts. Default true. */
   resumeAfterRestart?: boolean
   /** Carry a conversation's Claude session over when its model or effort changes. Default true. */
@@ -762,6 +764,31 @@ export interface ClaudeCodeProviderSettings {
   forkSessions?: boolean
 
   /**
+   * After an opencode undo, an edited message or a regenerated reply,
+   * continue a copy of the conversation's Claude session cut at the last turn
+   * both versions of the thread still share, instead of ending the session
+   * and replaying the shorter thread as text. Default `true`.
+   *
+   * Every served turn records where its reply ended in Claude's transcript.
+   * When the thread comes back shorter, the turn resumes the old session at
+   * that entry with `--resume <id> --resume-session-at <uuid> --fork-session`:
+   * a new Claude session holding exactly the turns that are left, the old
+   * transcript untouched. Measured on Claude Code 2.1.288, 2.1.293 and
+   * 2.1.314 against the replay on the same four-turn thread: 38 to 121 tokens
+   * written to the prompt cache against 11,152 to 20,659, 6.9 to 9.7 times
+   * cheaper, faster in every run, and the model kept the document and tool
+   * output the replay's clipping had dropped.
+   *
+   * Every refusal falls back to the replay, unchanged: no checkpoint that ends
+   * where the thread now ends (an undo to before the first answered turn, a
+   * thread another agent or model answered since), a transcript or entry
+   * that is gone, the interactive transport (the CLI takes the cut in print
+   * mode only), a `claude` older than 2.1.288, an account in another
+   * `accountGroups` group, and a compaction.
+   */
+  forkOnRewind?: boolean
+
+  /**
    * Resume a conversation's Claude session after opencode restarts, instead
    * of replaying the whole thread as text into a fresh one. Default `true`.
    *
@@ -1176,6 +1203,13 @@ export interface ClaudeStreamMessage {
   }
 
   session_id?: string
+  /**
+   * On an `assistant` frame: the transcript record it was written as. One
+   * frame per content block, each its own record, and the uuid is the one
+   * `--resume-session-at` accepts (measured on 2.1.288, 2.1.293 and 2.1.314,
+   * h #g282).
+   */
+  uuid?: string
   total_cost_usd?: number
   duration_ms?: number
   duration_api_ms?: number

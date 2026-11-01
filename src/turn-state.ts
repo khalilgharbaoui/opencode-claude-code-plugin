@@ -257,6 +257,14 @@ export interface TurnState {
    * zero-usage (`<synthetic>`) frame must never overwrite it.
    */
   lastCallUsage: ClaudeStreamMessage["usage"]
+  /**
+   * The transcript entry Claude's reply has reached so far: the uuid of the
+   * newest `assistant` frame that was Claude's own (not the CLI's error
+   * reply), the session it was written in, and whether it was a tool call.
+   * The `result` records it as the turn's checkpoint, which an undo or edit
+   * later cuts a copy of the session at (h #g282).
+   */
+  lastReplyEntry: { uuid: string; sessionId?: string; toolUse: boolean } | undefined
   /** Subtype of a failing `result`, so the finish reports an error not a stop. */
   resultFailure: string | undefined
   /**
@@ -460,6 +468,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
 
     resultMeta: {},
     lastCallUsage: undefined,
+    lastReplyEntry: undefined,
     resultFailure: undefined,
     accountLimitHit: null,
     apiErrorTextShown: null,

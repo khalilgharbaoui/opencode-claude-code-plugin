@@ -498,11 +498,14 @@ record({
   configDir: process.env.CLAUDE_CONFIG_DIR || null,
 })
 emit({ type: "system", subtype: "init", session_id: sessionId })
+let replies = 0
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const envelope = JSON.parse(line)
   if (envelope.type !== "user") return
   record({ type: "input", sessionId, envelope })
-  emit({ type: "assistant", session_id: sessionId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "MARLIN" }] } })
+  // A uuid per reply, as the real CLI's frames carry: each served turn leaves
+  // a checkpoint an undo could cut at (h #g282).
+  emit({ type: "assistant", uuid: sessionId + "-a" + (++replies), session_id: sessionId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "MARLIN" }] } })
   emit({ type: "result", subtype: "success", session_id: sessionId, is_error: false, usage: { input_tokens: 9, output_tokens: 4 } })
 })
 `,
@@ -864,6 +867,60 @@ test("accountGroups keeps a cross-group exchange out of a rewound replay", E2E, 
     const text = deltas(parts)
     assert.ok(text.includes(ACCOUNT_GROUP_MARKER), text.slice(0, 500))
     assert.ok(!text.includes(CONVERSATION_REWOUND_MARKER), text.slice(0, 500))
+  } finally {
+    await fake.cleanup()
+  }
+})
+
+/**
+ * The rewind's fork (h #g282) sits behind the same guard: a cross-group
+ * rewind keeps the fresh start of h #g261 even where alpha's own turn left a
+ * checkpoint the thread still ends on. The control runs the identical
+ * sequence with both accounts in one group, and that one forks.
+ */
+async function rewindOntoAlphasFirstTurn(fake: Awaited<ReturnType<typeof createSwitchFixture>>) {
+  await fake.warm()
+  await fake.turn("alpha", MODEL, [...BEFORE])
+  // Alpha's transcript holds its first reply's entry, so a cut there is real.
+  fake.writeTranscript("alpha", "claude-on-alpha")
+  fake.appendTranscript("alpha", "claude-on-alpha", '{"type":"assistant","uuid":"claude-on-alpha-a1"}\n')
+  await fake.turn("alpha", MODEL, [...BEFORE, assistantText("OK"), userText("Second question on alpha.")])
+  await fake.turn("beta", MODEL, [...BEFORE, assistantText("OK"), userText("Ask beta instead.")])
+  // Both exchanges undone, and alpha asked again: the thread ends on alpha's
+  // first turn, which is exactly where its checkpoint is.
+  return fake.turn("alpha", MODEL, [...BEFORE, assistantText("OK"), userText("Third question.")])
+}
+
+test("a cross-group rewind does not fork either, even where a checkpoint matches", E2E, async () => {
+  _resetServedConversations()
+  const fake = await createSwitchFixture({ beta: "work" })
+  try {
+    const parts = await rewindOntoAlphasFirstTurn(fake)
+    const args: string[] = fake.spawns().at(-1)!.args
+    assert.ok(!args.includes("--resume-session-at"), JSON.stringify(args))
+    assert.ok(!args.includes("--resume"), `a fresh session: ${JSON.stringify(args)}`)
+    const text = deltas(parts)
+    assert.ok(text.includes(ACCOUNT_GROUP_MARKER), text.slice(0, 500))
+    assert.ok(!text.includes(CONVERSATION_REWOUND_MARKER), text.slice(0, 500))
+  } finally {
+    await fake.cleanup()
+  }
+})
+
+test("the same rewind inside one group forks alpha's session at its first turn", E2E, async () => {
+  _resetServedConversations()
+  const fake = await createSwitchFixture(
+    { alpha: "work", beta: "work" },
+    { crossAccountResume: false },
+  )
+  try {
+    const parts = await rewindOntoAlphasFirstTurn(fake)
+    const args: string[] = fake.spawns().at(-1)!.args
+    const at = args.indexOf("--resume")
+    assert.deepEqual(args.slice(at, at + 2), ["--resume", "claude-on-alpha"], JSON.stringify(args))
+    assert.ok(args.includes("--fork-session"), JSON.stringify(args))
+    assert.equal(args[args.indexOf("--resume-session-at") + 1], "claude-on-alpha-a1")
+    assert.ok(deltas(parts).includes(CONVERSATION_REWOUND_MARKER))
   } finally {
     await fake.cleanup()
   }
