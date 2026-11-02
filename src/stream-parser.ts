@@ -5,7 +5,12 @@ import { emitCliToolCall } from "./turn-state.js"
 import { log } from "./logger.js"
 import { mapTool, isWebSearchTool, isWebSearchHandledByCli } from "./tool-mapping.js"
 import { applyTaskCreateToolResult } from "./todo-ledger.js"
-import { getClaudeSessionId, rewindForkSource, setClaudeSessionId } from "./session-manager.js"
+import {
+  compactionForkSource,
+  getClaudeSessionId,
+  rewindForkSource,
+  setClaudeSessionId,
+} from "./session-manager.js"
 import { forgetConversationCheckpoints } from "./conversation-gap.js"
 import { reportFastModeState } from "./fast-mode.js"
 import {
@@ -1170,7 +1175,11 @@ export function createLineHandler(
         // would send the next turn to `--resume` a session that does not exist,
         // and keeping the checkpoints would let a retry aim at the same cut:
         // with both gone, the next turn replays the thread instead.
-        const forkedFrom = rewindForkSource(state.activeProcess?.cliArgs)
+        // A compaction run on a fork of the conversation (h #g284) starts
+        // from its parent's total the same way.
+        const forkedFrom =
+          rewindForkSource(state.activeProcess?.cliArgs) ??
+          (ctx.compactionMode ? compactionForkSource(state.activeProcess?.cliArgs) : undefined)
         // No `init` mapped the fork's id yet: a later turn of a fork that did
         // start can fail before an API call too, and that is not this case.
         const forkNeverStarted =

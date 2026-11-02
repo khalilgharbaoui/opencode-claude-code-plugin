@@ -607,6 +607,13 @@ export function getClaudeUserMessage(
      * h #g280); omitted, `verbatimPrompts` alone decides.
      */
     ownCommands?: OwnCommandContext
+    /**
+     * A text block appended after the current message, for a compaction run
+     * on a fork of the conversation (h #g284): the fork already holds the
+     * conversation, so it gets opencode's instruction and this line, not a
+     * transcript.
+     */
+    trailingInstruction?: string
   } = {},
 ): string {
   const compactionMode = opts.compactionMode === true
@@ -779,6 +786,10 @@ Now continuing with the current message:
         }
       }
     }
+  }
+
+  if (opts.trailingInstruction?.trim()) {
+    content.push({ type: "text", text: opts.trailingInstruction })
   }
 
   if (content.length === 0) {

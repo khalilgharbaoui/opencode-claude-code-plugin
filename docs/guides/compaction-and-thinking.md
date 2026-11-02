@@ -27,6 +27,26 @@ Every cause counts, not just a usage limit: an expired login, an account on hold
 
 There is nothing to configure and no way to turn this off. Retry the compaction once the account can serve again.
 
+### Compaction on a fork
+
+With `forkCompaction: true` (off by default), a headless `/compact` does not render the thread as text. It branches the chat's own Claude session with `claude --resume <id> --fork-session` and asks for the summary inside that copy, on the chat's own model. The copy already holds the whole conversation, tool output and all, and it reads it from that model's prompt cache. `compactionModel` is not used when it does.
+
+What it costs, measured on Claude Code 2.1.314:
+
+| Thread | Today (Claude Haiku 4.5, transcript) | Fork on the chat's model |
+|---|---|---|
+| 136k tokens, Claude Haiku 5.5 | $0.122, 12.2 s, kept 4 of 10 planted facts | $0.013, 9.7 s, kept 10 of 10 |
+| 81k tokens, Claude Opus 5.5 | $0.055, 14.0 s, kept 11 of 12 | $0.054, 13.6 s, kept 11 of 12 |
+| 61k tokens, Claude Haiku 5.5, through the plugin | $0.066, 12.2 s | $0.002, 8.2 s, 98% of the input from cache |
+
+The long thread is where the transcript loses: it keeps the newest 180,000 characters, so a decision made early is gone before the summarizer reads anything. The fork sees all of it.
+
+It is off by default because it is not cheaper in every case. It pays the chat model's prices, so on Opus it costs about what today's Haiku 4.5 transcript does, and a chat whose cache has expired (idle past its cache lifetime) has its whole thread re-read at the model's cache-write price. A fork on a different model reads nothing from the cache (the cache is per model), which is why the fork always runs on the chat's own.
+
+The fork runs with no MCP servers and `--permission-mode dontAsk`, so it cannot reach opencode's tools or write anything, and it is told to answer with the summary only. Its copy of the conversation is deleted when the summary is done; the chat's own Claude session and transcript are never touched, and the chat carries on in its own process. A failed fork is a failed compaction exactly as above: no text, an error, nothing stored.
+
+It falls back to the transcript, silently apart from one `INFO` line naming why, when the chat has no live `claude` process, a turn or a proxied tool call is still running, the chat moved to another account, its transcript is gone, or the CLI lacks `--fork-session` or `dontAsk`. The [interactive transport](interactive-transport.md) always uses its own compaction.
+
 ### Picking a different compaction model
 
 | Source | How | Wins over |
