@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
-import { conversationDigests, type ForkMessageDigest } from "./session-fork.js"
+import {
+  continuesRecordedConversation,
+  conversationDigests,
+  type ForkMessageDigest,
+} from "./session-fork.js"
 import { log } from "./logger.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
@@ -179,6 +183,26 @@ export function restoreConversationCheckpoints(
 export function forgetConversationCheckpoints(sessionKey: string): void {
   const record = served.get(sessionKey)
   if (record) record.checkpoints = []
+}
+
+/**
+ * The session key whose Claude session was last asked to continue exactly the
+ * conversation `prompt` holds, newest first, among the keys `accept` admits.
+ * Compared on the SHAPE chain, so a compaction request (whose model is not
+ * the conversation's, h #g215) still matches; a prompt with a user message
+ * past the recorded chain, other than its own trailing instruction, does not.
+ * For a compaction run on a fork of that session (h #g284).
+ */
+export function findServedConversation(
+  prompt: Prompt,
+  accept: (sessionKey: string) => boolean,
+): string | undefined {
+  const keys = [...served.entries()].sort((a, b) => b[1].seq - a[1].seq)
+  for (const [key, record] of keys) {
+    if (!accept(key)) continue
+    if (continuesRecordedConversation(record.chain, prompt, { assistantContent: false })) return key
+  }
+  return undefined
 }
 
 /** Drop what was remembered for a key whose Claude session is gone. */

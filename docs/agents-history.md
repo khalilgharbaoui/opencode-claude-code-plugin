@@ -9969,6 +9969,11 @@ one spawn record, and the three samples under `main/claude-haiku-5-5` and `main/
 whose tag `6e11e179` is its hash), `turn-progress.json` (no tag matched a fixture) and the other
 three stores. The real records the 40 had pushed out at the cap cannot be recovered from here.
 
+Shipped as v0.66.0 on 2026-11-02 (PR #156 and PR #157 together), a minor: CI green on
+Linux and Windows on the merge commit `4051a70` before the tag and on the release commit
+`aaa3dd6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`f40a8dec`), with a GitHub Release.
+
 ## An undo or an edit forks the Claude session at the last shared turn (2026-11-01)
 
 h #g282. Lane `forkundo`, idea 3 of the vault note's "From opencode's built-in
@@ -10139,3 +10144,111 @@ EXIT 0), `npm run build` (0), the site build (0).
 Probe cost: about 30 Haiku calls and one Haiku 4.5 run, about $0.07. Scratch
 cwds, their transcripts under `~/.claude/projects/` and the probe scripts were
 deleted afterwards.
+
+Shipped as v0.66.0 on 2026-11-02 (PR #156 and PR #157 together), a minor: CI green on
+Linux and Windows on the merge commit `4051a70` before the tag and on the release commit
+`aaa3dd6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`f40a8dec`), with a GitHub Release.
+
+## Compaction on a fork of the conversation's own session, opt-in (2026-11-02)
+
+h #g284. Lane `compactfork`, idea 6 of the vault note's "From opencode's built-in
+Claude Agent" list. The built-in runs compaction "on a throwaway copy of the
+chat" that keeps the chat's tools and prompt so Claude reuses its prompt cache
+(its test: newly cached tokens 8,577 to 32). The plugin's `/compact` renders the
+thread as text (newest first, 180,000 characters, tool results clipped at 10k)
+for a fresh process on the compaction model (Claude Haiku 4.5 by default).
+
+### Measured
+
+Claude Code 2.1.314, default account, `claude --print` stream-json with the
+plugin's flags, scratch cwds, `DISABLE_AUTOUPDATER=1`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Costs are the delta of the CLI's
+`total_cost_usd` (a fork restores its parent's running total). Facts are
+planted strings looked for in each summary.
+
+Run 1, an 81k-token Opus 5.5 thread (six turns reading four source files,
+facts in user messages and NOTES.md):
+
+| Path | Cost | Cache read / write | Wall | Facts |
+|---|---|---|---|---|
+| (a) transcript, Haiku 4.5 (today) | $0.055 | 0 / 24,337 | 14.0 s | 11/12 |
+| (a) transcript, Haiku 5.5 | $0.006 | 0 / 26,332 | 12.3 s | 11/12 |
+| (b) fork, Opus 5.5 | $0.054 | 81,118 / 1,186 | 13.6 s | 11/12 |
+| (c) fork, Haiku 4.5 | $0.130 | 0 / 62,298 | 12.9 s | 8/12 |
+| (c) fork, Haiku 5.5 | $0.017 | 0 / 82,062 | 11.6 s | 11/12 |
+
+Run 2, a 136k-token Haiku 5.5 thread (facts only in the first message, then
+ten pasted files): today's transcript keeps the newest 180,000 characters and
+the first message was not among them.
+
+| Path | Cost | Cache read / write | Wall | Facts |
+|---|---|---|---|---|
+| (a) transcript, Haiku 4.5 (today) | $0.122 | 0 / 58,680 | 12.2 s | 4/10 |
+| (a) transcript, Haiku 5.5 | $0.015 | 0 / 73,145 | 11.0 s | 4/10 |
+| (b) fork, Haiku 5.5 | $0.013 | 135,150 / 1,504 | 9.7 s | 10/10 |
+| (c) fork, Haiku 4.5 | $0.207 | 0 / 101,103 | 12.3 s | 4/10 |
+
+(c) is answered by the numbers: the CLI allows another `--model` on a fork,
+and no cache survives it, so it pays a full write of the whole thread.
+
+What the cache keys on, run 3 (Haiku 5.5, 65,734-token conversation with a
+stdio MCP server): forks with identical args read 65,734; with
+`--permission-mode dontAsk` instead of the skip flag 65,957; with no MCP config
+65,734; with `CLAUDE_CODE_EFFORT_LEVEL=high` 65,734; with another appended
+system prompt 65,957 (the resumed session answers under its first one, h #g187);
+with `--disallowedTools Bash Edit Write` added 0 (65,564 written); with
+`--tools "" --strict-mcp-config` and another prompt, on run 2's session, 0
+(123,388 written). Under `dontAsk` an MCP call is refused and Read runs;
+`--max-turns 1` ends a fork that calls ToolSearch as `error_max_turns` with no
+text, which is why it is not used. The parent's transcript was byte-identical
+after every fork.
+
+Through the plugin (a real `doStream`, the real `claude`, Haiku 5.5, two turns
+of about 60k tokens, then a compaction call): forked, 60,096 of 61,225 input
+tokens from cache, 8.2 s, 4/4 facts, the fork's transcript copy gone after;
+off, Haiku 4.5, 14,420 read and 29,482 written, $0.066, 12.2 s, 4/4.
+
+### Decision
+
+Not strictly better, so opt-in (`forkCompaction`, default false). It is
+cheaper, faster and more faithful when the chat model is inexpensive and the
+cache warm, about even on Opus 5.5 against today's Haiku 4.5 default, and 8
+times Haiku 5.5's transcript there; and a conversation idle past its cache
+lifetime has its whole thread rewritten at the chat model's price, which on a
+long Opus thread is dollars rather than cents. The summary is better whenever
+the thread is longer than the transcript keeps.
+
+### What shipped
+
+- `src/compaction-fork.ts`: `compactionForkArgs`, `planCompactionFork` and its
+  refusals, `retireCompactionFork`, `COMPACTION_FORK_INSTRUCTION`.
+- `findServedConversation` in `src/conversation-gap.ts`, `peekActiveProcess`
+  and `compactionForkSource` in `src/session-manager.ts`, the parser taking the
+  parent's total as the fork's baseline, `trailingInstruction` in
+  `getClaudeUserMessage`.
+- The wiring in the prologue (before the envelope) and the compaction spawn.
+  The compaction key, `compactionMode` and every invariant tied to them are
+  unchanged: no effort, no notes, no nudge, failure writes nothing (h #g214).
+  Metadata reports the fork's model and `compactionForked: true`.
+
+### Not done
+
+- The interactive transport keeps its own compaction (h #g199): a TUI fork
+  would need the conversation's TUI args and the transcript tail, for a
+  feature that is opt-in on headless already.
+- No warm-cache gate: the plugin cannot see when the cache expires, only that
+  the conversation's process is alive. Documented instead.
+- opencode's own compaction request was not run live through opencode; the
+  match was exercised by a real `doStream` with a fake and a real CLI. If a
+  host renders the compaction history differently from the turns, the shape
+  chain does not match and the transcript path runs.
+
+Tests: `test/compaction-fork.test.ts` (10). Probe cost: about $1.80, mostly the
+Opus thread and the Haiku 4.5 fork (c). Scratch cwds, their transcripts under
+`~/.claude/projects/` and the probe scripts were deleted afterwards.
+
+Shipped as v0.67.0 on 2026-11-02 (PR #159), a minor: CI green on Linux and Windows on
+the merge commit `95e92e8` before the tag and on the release commit
+`e598a62`, the publish confirmed by the Publish step's tail
+and the version document's shasum (`61e6e408`), with a GitHub Release.
