@@ -10252,3 +10252,58 @@ Shipped as v0.67.0 on 2026-11-02 (PR #159), a minor: CI green on Linux and Windo
 the merge commit `95e92e8` before the tag and on the release commit
 `e598a62`, the publish confirmed by the Publish step's tail
 and the version document's shasum (`61e6e408`), with a GitHub Release.
+
+## Fork sweep, 2026-11-02: the Windows account flag through the provider factory (2026-11-02)
+
+h #g285. The sweep due after (h #g261). 29 forks, one of them new: @army113
+(David Sluga), created 2026-11-01, added as the remote `fork-army113`. Every
+fork remote was fetched, and only the two forks GitHub reports a push for since
+2026-10-22 had a ref move. One open PR, #158, from the new fork; no open issues.
+
+### The sweep
+
+- **@army113, PR #158** (`38fd9d2`, `fix/factory-account-in-process`, opened
+  2026-11-01): taken, merged as the PR so the commit keeps its author.
+  `createClaudeCode` builds the model's config field by field, and passed
+  `account` and `configDir` on but not `accountInProcess`, although both entry
+  points put it in the provider options (the V1 config hook spreads
+  `ensureAccountRuntime`'s result into them, `planV2Providers` assigns it). The
+  model reads `this.config.accountInProcess` everywhere the Windows path acts
+  (the spawn's `CLAUDE_CONFIG_DIR`, the marker off `--model`, the account check
+  on a reused process, the doctor's `/cost` spawn), so on Windows none of it
+  ran. The reporter ran two accounts (`~/.claude`, `~/.claude-max`) on Windows
+  11, both answering on the default login, and has run the patch since
+  2026-10-20, on 0.61.0 and then 0.65.1. (h #g221)'s tests built the runtime
+  directly and never went through the factory, which is why nothing caught it.
+  Measured here: the PR's test fails on master without the line
+  (`accountInProcess` reads `undefined`) and passes with it, 8/8 in
+  `test/account-windows.test.ts`; the full suite on master plus the PR passed
+  2087/2087; CI passed on Linux and Windows.
+- **@army113, the other 14 refs**: `master` plus 13 branches that are copies of
+  this repository's own merged lane branches (`account-group-catchup` to
+  `turn-cost-and-failover`), which GitHub copied at fork time. `git cherry`
+  finds nothing in any of them.
+- **@bangnh1**: pushed `master` on 2026-10-28, and `git cherry` shows no unique
+  patch: a sync with this repository.
+- **The other 26 forks**: no push since 2026-10-22, and the fetch moved none of
+  their refs.
+
+### A fork PR's CI approved a day late
+
+A first-time contributor's runs wait for approval, and these had waited since
+2026-11-01. Approved on 2026-11-02, CI (Linux) ran and passed, and CI (Windows)
+ended at once in `startup_failure` ("This run likely failed because of a
+workflow file issue") with zero jobs. The workflow file had not changed since
+the PR's base, and master's own Windows runs before and after passed, so the
+file was not the cause. `gh run rerun` failed the same way. `gh pr update-branch
+158` (the PR allows maintainer edits) merged master into the branch, which is a
+new pull_request event; its two runs needed approving again, and both passed.
+So for a fork PR whose runs sat unapproved, update the branch rather than
+re-run, which also tests it against the master it merges into.
+
+### Origin still holds merged lane branches
+
+On 2026-11-02 origin carried 13 branches beside `master`, last committed
+between 2026-10-19 and 2026-10-28, every one with an empty `git cherry` against
+it. Every new fork copies them, so a fork's branch list says nothing about its
+work: read `git cherry`.

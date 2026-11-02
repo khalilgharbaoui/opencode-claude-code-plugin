@@ -176,7 +176,7 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 - With the next compatibility sweep: the interactive transport's full live list on Claude Code 2.1.300
   (`INTERACTIVE_MEASURED_CLI` is still 2.1.293), and on opencode 2.1.3 the forms, the MCP bridge with a
   real server, background subagents, `/btw` and the doctor (h #g264's "not measured").
-- Next fork sweep: early November.
+- Next fork sweep: mid-November.
 
 ## Parked
 
@@ -198,6 +198,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-02: **done** (PR #158, h #g285): the fork sweep. 29 forks, one new (@army113), whose PR #158 is
+  merged: `createClaudeCode` now passes `accountInProcess` on to the model, so `accounts` on Windows uses each
+  account's own login instead of the default one. Unreleased.
 - 2026-11-02: **done** (v0.67.0, PR #159, h #g284): `/compact` can run on a fork of the conversation's
   own Claude session (`forkCompaction`, opt-in): a 136k-token Haiku 5.5 thread compacted for $0.013 against
   $0.122 and kept 10/10 planted facts against 4/10; about even on Opus.

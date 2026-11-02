@@ -31,6 +31,7 @@ Made and maintained by [@khalilgharbaoui](https://github.com/khalilgharbaoui) (K
 | [@JWebCoder](https://github.com/JWebCoder) (joao moura) | Diagnosed that auto-continue never fires on current CLIs (PR #15). | PR #15 |
 | [@internetisalie](https://github.com/internetisalie) (Michael Crawford) | Found and fixed, each measured over days of real transcripts, two ways a proxied tool call went wrong: a session in another workspace read as idle, so opencode's routine abort at a tool boundary rejected the call and told the model the user had interrupted it (PR #89), and user messages opencode promoted beside a tool result (background-PTY notices, steered prompts) never reached the CLI (PR #88). | PR #88, PR #89 |
 | [@taylormitchell](https://github.com/taylormitchell) (Taylor Mitchell) | Forwarded opencode 2's per-call subagent `model` through the proxied `task` and `task_batch`, so a model you ask for in the conversation reaches the subagent, and kept it off opencode 1, whose `task` tool has none (PR #123). | PR #123 |
+| [@army113](https://github.com/army113) (David Sluga) | Found that the provider factory dropped the Windows account flag, so on Windows every configured account ran on the default login, and fixed it with a test that builds a model through the factory (PR #158). | PR #158 |
 
 Commit hashes are on the contributors' forks where the work was cherry-picked; `git log --author` on this repo shows the preserved authorship.
 
