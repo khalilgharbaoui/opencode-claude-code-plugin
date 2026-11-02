@@ -10247,3 +10247,8 @@ the thread is longer than the transcript keeps.
 Tests: `test/compaction-fork.test.ts` (10). Probe cost: about $1.80, mostly the
 Opus thread and the Haiku 4.5 fork (c). Scratch cwds, their transcripts under
 `~/.claude/projects/` and the probe scripts were deleted afterwards.
+
+Shipped as v0.67.0 on 2026-11-02 (PR #159), a minor: CI green on Linux and Windows on
+the merge commit `95e92e8` before the tag and on the release commit
+`e598a62`, the publish confirmed by the Publish step's tail
+and the version document's shasum (`61e6e408`), with a GitHub Release.

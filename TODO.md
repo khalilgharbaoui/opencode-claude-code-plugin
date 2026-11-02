@@ -198,6 +198,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-02: **done** (v0.67.0, PR #159, h #g284): `/compact` can run on a fork of the conversation's
+  own Claude session (`forkCompaction`, opt-in): a 136k-token Haiku 5.5 thread compacted for $0.013 against
+  $0.122 and kept 10/10 planted facts against 4/10; about even on Opus.
 - 2026-11-02: **done** (v0.66.0, PR #157, PR #156, h #g282, h #g283): after an opencode undo or edit the
   Claude session is forked at the last shared turn instead of replayed (`forkOnRewind`, default on, 6.9 to
   9.7 times cheaper in the measurements); test runs isolated from the live data and four load flakes fixed.
