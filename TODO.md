@@ -198,6 +198,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-02: **done** (v0.66.0, PR #157, PR #156, h #g282, h #g283): after an opencode undo or edit the
+  Claude session is forked at the last shared turn instead of replayed (`forkOnRewind`, default on, 6.9 to
+  9.7 times cheaper in the measurements); test runs isolated from the live data and four load flakes fixed.
 - 2026-11-01: **done** (v0.65.1, PR #155, h #g281): the operator's own Claude Code commands run as typed
   from the first message in a folder, decided by the definition file on the CLI's own walk (a plugin's
   `/plugin:cmd` still from the second); a failed API result, such as a 529 after the CLI's own retries,

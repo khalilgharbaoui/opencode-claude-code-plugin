@@ -9969,6 +9969,11 @@ one spawn record, and the three samples under `main/claude-haiku-5-5` and `main/
 whose tag `6e11e179` is its hash), `turn-progress.json` (no tag matched a fixture) and the other
 three stores. The real records the 40 had pushed out at the cap cannot be recovered from here.
 
+Shipped as v0.66.0 on 2026-11-02 (PR #156 and PR #157 together), a minor: CI green on
+Linux and Windows on the merge commit `4051a70` before the tag and on the release commit
+`aaa3dd6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`f40a8dec`), with a GitHub Release.
+
 ## An undo or an edit forks the Claude session at the last shared turn (2026-11-01)
 
 h #g282. Lane `forkundo`, idea 3 of the vault note's "From opencode's built-in
@@ -10139,3 +10144,8 @@ EXIT 0), `npm run build` (0), the site build (0).
 Probe cost: about 30 Haiku calls and one Haiku 4.5 run, about $0.07. Scratch
 cwds, their transcripts under `~/.claude/projects/` and the probe scripts were
 deleted afterwards.
+
+Shipped as v0.66.0 on 2026-11-02 (PR #156 and PR #157 together), a minor: CI green on
+Linux and Windows on the merge commit `4051a70` before the tag and on the release commit
+`aaa3dd6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`f40a8dec`), with a GitHub Release.
