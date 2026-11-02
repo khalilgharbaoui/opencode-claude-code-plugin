@@ -124,6 +124,8 @@ export interface ClaudeCodeConfig {
   forkSessions?: boolean
   /** Continue a copy of the Claude session cut where an undone or edited thread still matches. Default true. */
   forkOnRewind?: boolean
+  /** Run `/compact` inside a fork of the conversation's own Claude session. Default false. */
+  forkCompaction?: boolean
   /** Resume a conversation's Claude session after opencode restarts. Default true. */
   resumeAfterRestart?: boolean
   /** Carry a conversation's Claude session over when its model or effort changes. Default true. */
@@ -762,6 +764,27 @@ export interface ClaudeCodeProviderSettings {
    * `--fork-session` flag.
    */
   forkSessions?: boolean
+
+  /**
+   * Run opencode's `/compact` inside a fork of the conversation's own Claude
+   * session (`--resume <id> --fork-session`) on the conversation's own model,
+   * instead of rendering the thread as text for a fresh process on the
+   * compaction model. Default `false`.
+   *
+   * The fork reads the conversation's prompt cache and sees the whole thread,
+   * unclipped. Measured on 2.1.314 (h #g284): on a 136k-token Haiku 5.5
+   * thread it cost $0.013 against $0.122 for today's Haiku 4.5 transcript and
+   * kept 10 of 10 planted facts against 4; on an 81k-token Opus 5.5 thread it
+   * cost $0.054 against $0.055, with the same 11 of 12. It pays the
+   * conversation model's prices, so it is not strictly cheaper: on a cold
+   * cache (a conversation idle past its cache lifetime) Opus re-reads the
+   * whole thread at its write price. `compactionModel` is ignored when it
+   * fires. Every case it cannot serve keeps the transcript path: the
+   * interactive transport, no live process for the conversation, a turn or
+   * proxied call in flight, another account's binary, a missing transcript,
+   * or a `claude` without `--fork-session` and `dontAsk`.
+   */
+  forkCompaction?: boolean
 
   /**
    * After an opencode undo, an edited message or a regenerated reply,

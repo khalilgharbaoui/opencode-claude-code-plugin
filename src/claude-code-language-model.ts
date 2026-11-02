@@ -146,6 +146,7 @@ import {
   deleteClaudeSessionId,
   deleteActiveProcess,
   deleteActiveProcessAndWait,
+  peekActiveProcess,
   resolveIdleProcessTimeoutMs,
   scheduleIdleProcessEviction,
   noteTurnStarted,
@@ -209,6 +210,13 @@ import {
   turnToolCalls,
 } from "./turn-history.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
+import {
+  COMPACTION_FORK_INSTRUCTION,
+  logCompactionForkPlan,
+  planCompactionFork,
+  retireCompactionFork,
+  type CompactionFork,
+} from "./compaction-fork.js"
 import {
   carryTranscriptToAccount,
   configDirForAccount,
@@ -2641,6 +2649,45 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         : failover.modelId,
     )
 
+    // `forkCompaction` (h #g284): summarise inside a fork of the
+    // conversation's own Claude session, which reads that session's prompt
+    // cache, instead of a transcript on the compaction model. Every refusal
+    // keeps the transcript path below exactly as it was.
+    let compactionFork: CompactionFork | undefined
+    let compactionForkDir = ""
+    if (compactionMode) {
+      const transcriptDir = join(
+        resolveConfigDir(this.skillBridgeSpawn(failover).configDir),
+        "projects",
+        encodeCwd(cwd),
+      )
+      const plan = await planCompactionFork({
+        enabled: this.config.forkCompaction === true,
+        interactive: useInteractive,
+        cwd,
+        affinity,
+        prompt: filterSideQuestionHistory(options.prompt),
+        cliPath,
+        transcriptDir,
+        lookupClaudeSessionId: getClaudeSessionId,
+        lookupProcess: peekActiveProcess,
+        isWriting: claudeSessionIsWriting,
+        cliSupportsFork: async () => {
+          const [supported, version] = await Promise.race([
+            Promise.all([detectCliSupportsFlag(cliPath, "--fork-session"), detectCliVersion(cliPath)]),
+            turnAbort.whenAborted.then(() => [false, null] as const),
+          ])
+          return supported && cliSupportsDontAsk(version)
+        },
+      })
+      if (turnAbort.aborted) return abortedBeforeWork("checking whether to compact on a fork")
+      logCompactionForkPlan(plan, sk)
+      if ("fork" in plan) {
+        compactionFork = plan.fork
+        compactionForkDir = transcriptDir
+      }
+    }
+
     const exitPlanModeQuestionResult = compactionMode
       ? null
       : consumeExitPlanModeQuestionResult(sk, options.prompt as any)
@@ -2668,6 +2715,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         : options.prompt
     const userMsg =
       exitPlanModeQuestionResult ??
+      (compactionFork
+        ? getClaudeUserMessage(effectivePrompt, false, {
+            cliToolCallIds: new Set(),
+            stripContextReminders: this.stripContextRemindersEnabled(),
+            verbatimPrompts: this.config.verbatimPrompts !== false,
+            trailingInstruction: COMPACTION_FORK_INSTRUCTION,
+          })
+        : undefined) ??
       getClaudeUserMessage(effectivePrompt, includeHistoryContext, {
         compactionMode,
         compactionInstructions: useInteractive && compactionMode
@@ -3722,15 +3777,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // normal tool wiring is pure overhead and adds latency.
             // Explicitly opt out of `--resume` so a stale id can never
             // resume into the lean spawn.
-            state.cliArgs = buildCliArgs({
-              sessionKey: sk,
-              skipPermissions,
-              includeSessionId: false,
-              model: spawnModelId,
-              permissionMode: self.config.permissionMode,
-              fastMode,
-              cliVersion,
-            })
+            state.cliArgs = compactionFork
+              ? compactionFork.cliArgs
+              : buildCliArgs({
+                  sessionKey: sk,
+                  skipPermissions,
+                  includeSessionId: false,
+                  model: spawnModelId,
+                  permissionMode: self.config.permissionMode,
+                  fastMode,
+                  cliVersion,
+                })
           } else {
             const {
               excludeServers,
@@ -4385,7 +4442,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 ...state.resultMeta,
                 ...(state.resultFailure ? { resultSubtype: state.resultFailure } : {}),
                 ...(compactionMode
-                  ? { compactionModel: effectiveModelId }
+                  ? {
+                      compactionModel: compactionFork?.model ?? effectiveModelId,
+                      ...(compactionFork ? { compactionForked: true } : {}),
+                    }
                   : {}),
               },
               // opencode falls back to this when the usage has no cache
@@ -4499,7 +4559,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 "claude-code": {
                   ...state.resultMeta,
                   ...(compactionMode
-                    ? { compactionModel: effectiveModelId }
+                    ? { compactionModel: compactionFork?.model ?? effectiveModelId }
                     : {}),
                 },
               },
@@ -4557,6 +4617,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           state.asideSinkUnregister = null
           state.proc.off("error", procErrorHandler)
           if (compactionMode && useInteractive) state.proc.kill()
+          // The fork is a full copy of the conversation's transcript and
+          // exists for one answer: end it and take its copy back off disk.
+          // Its id was only ever this compaction key's (h #g284).
+          if (compactionFork) void retireCompactionFork(sk, compactionFork, compactionForkDir)
         }
 
         const procErrorHandler = (err: Error) => {

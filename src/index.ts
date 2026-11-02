@@ -339,6 +339,7 @@ export function createClaudeCode(
       enableTodoTools: settings.enableTodoTools === true,
       forkSessions: settings.forkSessions === true,
       forkOnRewind: settings.forkOnRewind !== false,
+      forkCompaction: settings.forkCompaction === true,
       resumeAfterRestart: settings.resumeAfterRestart !== false,
       resumeAcrossModelChanges: settings.resumeAcrossModelChanges !== false,
       liveModelSwitch: settings.liveModelSwitch !== false,

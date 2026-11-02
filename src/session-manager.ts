@@ -619,6 +619,15 @@ export function getActiveProcess(key: string): ActiveProcess | undefined {
 }
 
 /**
+ * A live child, read without refreshing its LRU place or cancelling its idle
+ * timer: a compaction looking at the conversation's process (h #g284) is not
+ * a use of it.
+ */
+export function peekActiveProcess(key: string): ActiveProcess | undefined {
+  return activeProcesses.get(key)
+}
+
+/**
  * Whether a live child was spawned as a DIFFERENT account than the one this
  * turn is about to use, which is what makes it unusable: a child speaks to
  * the CLI it was started as, under the config dir it was started with.
@@ -1671,6 +1680,17 @@ export function rewindForkSource(cliArgs: readonly string[] | undefined): string
   if (!cliArgs || !cliArgs.includes("--resume-session-at") || !cliArgs.includes("--fork-session")) {
     return undefined
   }
+  const at = cliArgs.indexOf("--resume")
+  return at >= 0 ? cliArgs[at + 1] : undefined
+}
+
+/**
+ * The session a compaction fork branched off (`--resume <id> --fork-session`,
+ * h #g284), or undefined. Its first total carries that session's running
+ * total, so the parent's last total is its cost baseline, as for a rewind.
+ */
+export function compactionForkSource(cliArgs: readonly string[] | undefined): string | undefined {
+  if (!cliArgs || !cliArgs.includes("--fork-session")) return undefined
   const at = cliArgs.indexOf("--resume")
   return at >= 0 ? cliArgs[at + 1] : undefined
 }
