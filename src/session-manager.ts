@@ -646,7 +646,7 @@ export function processBelongsToAnotherAccount(
 ): boolean {
   if (!active) return false
   if (active.cliPath && active.cliPath !== cliPath) return true
-  return !!active.configDir && active.configDir !== configDir
+  return (active.configDir ?? undefined) !== (configDir ?? undefined)
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {

@@ -1799,17 +1799,20 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.config.resumeAcrossModelChanges !== false
     ) {
       const forCli = parseModelId(stripAccountSuffix(failover.modelId))
+      const liveAccountInProcess = Boolean(
+        this.config.accountInProcess || failover.accountInProcess,
+      )
       await switchLiveProcess(
         {
           sessionKey: sk,
           model: forCli.model,
           fast: forCli.fast,
           spawnModelArg: parseModelId(
-            this.config.accountInProcess ? stripAccountSuffix(failover.modelId) : failover.modelId,
+            liveAccountInProcess ? stripAccountSuffix(failover.modelId) : failover.modelId,
           ).model,
           effort: reasoningEffort,
           cliPath,
-          configDir: this.config.accountInProcess
+          configDir: liveAccountInProcess
             ? this.skillBridgeSpawn(failover).configDir
             : undefined,
         },
@@ -2069,7 +2072,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // only where no wrapper script carries the account (`accountInProcess`,
     // Windows, h #g221). Undefined everywhere else, so every POSIX install is
     // on exactly the path it was before.
-    const spawnConfigDir = this.config.accountInProcess
+    const accountInProcess = Boolean(
+      this.config.accountInProcess || failover.accountInProcess,
+    )
+    const spawnConfigDir = accountInProcess
       ? this.skillBridgeSpawn(failover).configDir
       : undefined
     const processForAccount = getActiveProcess(sk)
@@ -2653,7 +2659,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Windows) the marker comes off here on every turn: nothing downstream
     // would strip it and the CLI has no such model (h #g221).
     const { model: spawnModelId, fast: fastMode } = parseModelId(
-      this.config.accountInProcess
+      accountInProcess
         ? stripAccountSuffix(failover.modelId)
         : failover.modelId,
     )
@@ -3761,6 +3767,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // Which account's binary this TUI runs, for the account check
               // in the prologue, exactly as a headless child records it.
               ap.cliPath = cliPath
+              ap.configDir = spawnConfigDir
               setActiveProcess(sk, ap)
               state.proc = ap.proc
               state.lineEmitter = ap.lineEmitter
