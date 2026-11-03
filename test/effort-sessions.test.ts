@@ -4,9 +4,10 @@ import { EventEmitter } from "node:events"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { test } from "node:test"
+import { after, before, test } from "node:test"
 import type { ChildProcess } from "node:child_process"
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
+import { MAX_DEADLINE_REPROBES, detectCliSupportsFlag, detectCliVersion } from "../src/cli-version.js"
 import { createClaudeCode } from "../src/index.js"
 import {
   deleteActiveProcess,
@@ -308,17 +309,20 @@ function scriptedActive() {
 /**
  * Runs a tool-result turn against a child parked in call `id`, and ends it the
  * way the CLI would once the call is answered. Returns what the call got.
+ * `answered` settles when the call is resolved: waiting on it rather than on a
+ * clock is what keeps a loaded machine's slow prologue from failing the test,
+ * and its callers' 60-second timeout is a hang-stop, not a deadline (h #g286).
+ * A turn that never answers the call still fails, on that timeout.
  */
 async function answerParkedCall(
   run: () => Promise<unknown>,
   active: ActiveProcess,
-  answered: () => boolean,
+  answered: Promise<unknown>,
 ): Promise<unknown> {
   const pending = run()
-  for (let attempt = 0; attempt < 200 && !answered(); attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  assert.ok(answered(), "the parked call got this turn's tool result")
+  // A turn that throws before it answers fails here, not on the timeout.
+  const delivered = await Promise.race([answered, pending.then(() => answered)])
+  assert.notEqual(delivered, undefined, "the parked call got this turn's tool result")
   active.lineEmitter.emit("line", JSON.stringify({ type: "result", session_id: "parked", is_error: false }))
   const response = await pending
   if (response && typeof response === "object" && "stream" in response) {
@@ -329,10 +333,16 @@ async function answerParkedCall(
   return response
 }
 
-function fixture(settings: Record<string, unknown> = {}) {
-  const cwd = mkdtempSync(join(tmpdir(), "opencode-effort-"))
-  const cliPath = join(cwd, "fake-claude.cjs")
-  writeFileSync(cliPath, `#!/usr/bin/env node
+/**
+ * One fake CLI for the whole file, so the probes a turn awaits (`--version`,
+ * and `--help` for `--plugin-dir`) are answered once, in the `before` hook,
+ * instead of inside the window a test measures. A fresh copy per fixture made
+ * every test probe cold, and under load those probes were killed at their
+ * 5-second deadline and asked again until the test timed out (h #g286).
+ */
+const FAKE_CLI_DIR = mkdtempSync(join(tmpdir(), "opencode-effort-cli-"))
+const FAKE_CLI = join(FAKE_CLI_DIR, "fake-claude.cjs")
+writeFileSync(FAKE_CLI, `#!/usr/bin/env node
 const readline = require("node:readline")
 if (process.argv.includes("--version")) {
   console.log("2.1.258")
@@ -350,6 +360,23 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
 })
 `, { mode: 0o755 })
+
+before(async () => {
+  // A probe our own deadline killed is forgotten and asked again, and the
+  // third kill in a row is kept, so asking until the same promise comes back
+  // ends.
+  for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+    const version = detectCliVersion(FAKE_CLI)
+    const pluginDir = detectCliSupportsFlag(FAKE_CLI, "--plugin-dir")
+    await Promise.all([version, pluginDir])
+    if (detectCliVersion(FAKE_CLI) === version && detectCliSupportsFlag(FAKE_CLI, "--plugin-dir") === pluginDir) break
+  }
+})
+after(() => rmSync(FAKE_CLI_DIR, { recursive: true, force: true }))
+
+function fixture(settings: Record<string, unknown> = {}) {
+  const cwd = mkdtempSync(join(tmpdir(), "opencode-effort-"))
+  const cliPath = FAKE_CLI
   const modelId = "claude-haiku-4-5"
   const provider = createClaudeCode({
     cwd, cliPath, bridgeOpencodeMcp: false, proxyOpencodeMcpTools: false,
@@ -396,7 +423,7 @@ for (const method of ["doStream", "doGenerate"] as const) {
     }
   })
 
-  test(`${method}: an effort switch mid-turn finishes that turn on the old child, then applies (h #g271)`, { timeout: 15_000 }, async () => {
+  test(`${method}: an effort switch mid-turn finishes that turn on the old child, then applies (h #g271)`, { timeout: 60_000 }, async () => {
     const { cwd, modelId, provider, base, options } = fixture()
     const high = effortSessionKey(base, "high")
     const low = effortSessionKey(base, "low")
@@ -404,10 +431,11 @@ for (const method of ["doStream", "doGenerate"] as const) {
     setActiveProcess(high, first.active)
     setClaudeSessionId(high, "pending-high")
     const id = `pending-integration-${method}`
-    let delivered: unknown
+    let answer!: (result: unknown) => void
+    const answered = new Promise<unknown>((resolve) => { answer = resolve })
     queuePendingProxyCall(high, {
       id, toolName: "read", input: {}, channel: { closed: false },
-      resolve(result) { delivered = result }, reject() {},
+      resolve(result) { answer(result) }, reject() {},
     })
     markPendingProxyCallEmitted(id)
     options.providerOptions!["claude-code"].reasoningEffort = "low"
@@ -416,7 +444,7 @@ for (const method of ["doStream", "doGenerate"] as const) {
       { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "result" } }] },
     )
     try {
-      await answerParkedCall(() => provider.languageModel(modelId)[method](options), first.active, () => delivered !== undefined)
+      await answerParkedCall(() => provider.languageModel(modelId)[method](options), first.active, answered)
       assert.equal(first.killed(), false, "the turn in flight was not cut")
       assert.equal(getActiveProcess(high), first.active)
       assert.equal(getActiveProcess(low), undefined, "and nothing spawned beside it")
@@ -447,7 +475,7 @@ for (const method of ["doStream", "doGenerate"] as const) {
     }
   })
 
-  test(`${method}: high -> low -> high carries one claude conversation across both switches`, { timeout: 15_000 }, async () => {
+  test(`${method}: high -> low -> high carries one claude conversation across both switches`, { timeout: 60_000 }, async () => {
     const { cwd, modelId, provider, base, options } = fixture()
     const high = effortSessionKey(base, "high")
     const low = effortSessionKey(base, "low")
@@ -525,7 +553,7 @@ for (const method of ["doStream", "doGenerate"] as const) {
   })
 }
 
-test("doStream: dropping the agent's cacheTtl and effort leaves one child, resuming the same conversation (issue #140)", { timeout: 15_000 }, async () => {
+test("doStream: dropping the agent's cacheTtl and effort leaves one child, resuming the same conversation (issue #140)", { timeout: 60_000 }, async () => {
   const { cwd, modelId, provider, base, options } = fixture()
   // What the previous turn ran under, while the agent still declared
   // `cacheTtl: 1h` and `reasoningEffort: high`.
@@ -556,7 +584,7 @@ test("doStream: dropping the agent's cacheTtl and effort leaves one child, resum
   }
 })
 
-test("effort changes leave other agent, provider, account, model and conversation contexts alive", { timeout: 15_000 }, async () => {
+test("effort changes leave other agent, provider, account, model and conversation contexts alive", { timeout: 60_000 }, async () => {
   const { cwd, modelId, provider, base, options } = fixture()
   const otherBases = [
     base.replace('"worker"', '"other-agent"'),
@@ -602,17 +630,18 @@ test("effort changes leave other agent, provider, account, model and conversatio
   }
 })
 
-test("doStream: a model change mid-turn finishes that turn on the old model's child (h #g271)", { timeout: 15_000 }, async () => {
+test("doStream: a model change mid-turn finishes that turn on the old model's child (h #g271)", { timeout: 60_000 }, async () => {
   const { cwd, modelId, provider, base, options } = fixture()
   const otherModel = base.replace(`::${modelId}::`, "::claude-sonnet-4-5::")
   const first = scriptedActive()
   setActiveProcess(otherModel, first.active)
   setClaudeSessionId(otherModel, "pending-sonnet")
   const id = "pending-model-change"
-  let delivered: unknown
+  let answer!: (result: unknown) => void
+  const answered = new Promise<unknown>((resolve) => { answer = resolve })
   queuePendingProxyCall(otherModel, {
     id, toolName: "read", input: {}, channel: { closed: false },
-    resolve(result) { delivered = result }, reject() {},
+    resolve(result) { answer(result) }, reject() {},
   })
   markPendingProxyCallEmitted(id)
   options.prompt.push(
@@ -620,7 +649,7 @@ test("doStream: a model change mid-turn finishes that turn on the old model's ch
     { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "result" } }] },
   )
   try {
-    await answerParkedCall(() => provider.languageModel(modelId).doStream(options), first.active, () => delivered !== undefined)
+    await answerParkedCall(() => provider.languageModel(modelId).doStream(options), first.active, answered)
     assert.equal(first.killed(), false)
     assert.equal(getActiveProcess(otherModel), first.active)
     assert.equal(getActiveProcess(base), undefined, "no second child beside the busy one")
@@ -634,7 +663,7 @@ test("doStream: a model change mid-turn finishes that turn on the old model's ch
   }
 })
 
-test("doStream: with resumeAcrossModelChanges false an effort change replays instead of resuming", { timeout: 15_000 }, async () => {
+test("doStream: with resumeAcrossModelChanges false an effort change replays instead of resuming", { timeout: 60_000 }, async () => {
   const { cwd, modelId, provider, base, options } = fixture({ resumeAcrossModelChanges: false })
   const high = effortSessionKey(base, "high")
   const low = effortSessionKey(base, "low")

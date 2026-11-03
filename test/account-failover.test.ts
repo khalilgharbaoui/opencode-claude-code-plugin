@@ -29,6 +29,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { ensureAccountRuntime } from "../src/accounts.js"
+import { MAX_DEADLINE_REPROBES, detectCliSupportsFlag, detectCliVersion } from "../src/cli-version.js"
 import { _resetAgentRegistryForTests, setProviderFallbackModels } from "../src/agent-models.js"
 import { configDirForAccount } from "../src/account-transcript.js"
 import { interactiveTranscriptPath } from "../src/claude-session-bun.js"
@@ -2661,23 +2662,42 @@ test("auto: without a transcript to carry, the thread is replayed into a fresh s
   })
 })
 
+/**
+ * Answers the probes a turn awaits (`--version`, and `--help` for
+ * `--plugin-dir`) before the window a test measures. A probe our own 5-second
+ * deadline killed is forgotten and asked again, and the third kill in a row is
+ * kept, so asking until the same promise comes back ends (h #g181, h #g286).
+ */
+async function warmCliProbes(cliPath: string): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+    const version = detectCliVersion(cliPath)
+    const pluginDir = detectCliSupportsFlag(cliPath, "--plugin-dir")
+    await Promise.all([version, pluginDir])
+    if (detectCliVersion(cliPath) === version && detectCliSupportsFlag(cliPath, "--plugin-dir") === pluginDir) break
+  }
+}
+
 test("auto: stopping the turn stops the switch, and nothing else is spawned", async () => {
   await withScriptedAccounts({ appical: "slow-limit", default: "ok" }, async (fake) => {
     const model = await buildFailoverModel(fake, ["default", "appical"], "auto")
+    await warmCliProbes((await ensureAccountRuntime("appical", fake.cliPath)).cliPath)
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 100)
-    try {
-      const parts = await drain(
-        await model.doStream({ prompt: autoPrompt, tools: TOOLS, abortSignal: controller.signal } as any),
-      )
-      // Long enough for the limit the fake was still holding to arrive.
-      await new Promise((resolve) => setTimeout(resolve, 600))
-      assert.deepEqual(fake.spawns().map(accountOf), ["appical"])
-      assert.equal(textOf(parts).includes("answered by"), false)
-      assert.equal(resolveAccountOverride("appical"), undefined)
-    } finally {
-      clearTimeout(timer)
+    const response = await model.doStream({ prompt: autoPrompt, tools: TOOLS, abortSignal: controller.signal } as any)
+    // Stop only once appical has the request, so the stop lands on a turn in
+    // flight rather than on a prologue still waiting for a spawn, which a
+    // fixed 100 ms timer did under load (h #g286).
+    // The bound is a hang-stop: one spawn took over 10 s at a load of 50.
+    for (let waited = 0; fake.spawns().length === 0 && waited < 60_000; waited += 10) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
     }
+    assert.deepEqual(fake.spawns().map(accountOf), ["appical"])
+    controller.abort()
+    const parts = await drain(response)
+    // Long enough for the limit the fake was still holding to arrive.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    assert.deepEqual(fake.spawns().map(accountOf), ["appical"])
+    assert.equal(textOf(parts).includes("answered by"), false)
+    assert.equal(resolveAccountOverride("appical"), undefined)
   })
 })
 
