@@ -10322,3 +10322,138 @@ Shipped as v0.67.1 on 2026-11-03 (PR #158), a patch: CI green on Linux and Windo
 the merge commit `e35ed31` before the tag and on the release commit
 `e86e7f6`, the publish confirmed by the Publish step's tail
 and the version document's shasum (`7bf10a2f`), with a GitHub Release.
+
+## One opencode step per proxied call stays: a reply's later calls cannot go early (2026-11-03)
+
+h #g288. Lane `onestep`, idea 1 of the vault note's "From opencode's built-in
+Claude Agent" list: hand all of one Claude reply's proxied calls (`bash`,
+`edit`, `write`, `webfetch`) to opencode in one step, instead of one step per
+call. The built-in does it: it reads every `tool_use` block of the reply,
+emits them all as one step at `message_stop`, and its in-process MCP handler
+picks each result up as the CLI calls the tools one by one, matched by a
+PreToolUse SDK hook. It runs with `settingSources: []`, `dontAsk` and an
+allow list of its own tools, so no user hook or settings rule reaches it.
+Measured first. Dropped; nothing was built.
+
+### What a reply with N proxied calls costs today
+
+Claude Code 2.1.314, `claude-haiku-5-5`, opencode 2.2.5
+(`run --standalone --format json --auto`, scratch XDG dirs, the plugin from
+the worktree's `dist`), `echo` commands, 1-minute load under 9 on 18 cores
+and no `yes` running. "Outside the tool" is the call's round trip at the
+proxy minus opencode's own `time.start`/`time.end` for the tool part.
+
+| Calls | opencode steps | Wall, first step start to last step finish | Outside the tool, per call | CLI API requests | Output tokens |
+|---|---|---|---|---|---|
+| 3 | 4 | 15.9 s | 0.93 to 1.44 s, mean 1.12 s | 2 | 185 |
+| 5 | 6 | 17.3 s | 0.66 to 0.95 s, mean 0.80 s | 2 | 422 |
+
+Per call: the plugin's 100 ms drain window, the tool (110 to 280 ms for an
+`echo` through opencode's shell), 300 to 550 ms from the tool's end to the
+step's finish, 300 ms to 1.05 s to the next step's start, 11 to 20 ms of the
+plugin's next prologue, and 13 ms for the CLI to send the next call. The CLI
+makes one request for the reply that holds the N `tool_use` blocks and one
+for the answer, whatever opencode does between them, so one step could save
+only wall time: about (N - 1) times 0.8 to 1.1 s per reply, and no tokens.
+Two runs are left out: a first 5-call run, during which another lane's load
+test started (load 58, 36 `yes` processes), and a second 3-call run that
+began with two `yes` processes running (mean 0.91 s per call).
+
+### The premise does not hold on 2.1.314
+
+The idea assumed the plugin sees every block before the CLI sends the first
+MCP call. Thirteen direct probes (the real CLI over stream-json with the
+plugin's flags, against a logging HTTP MCP server named `opencode_proxy`
+serving the plugin's own `bash`, `write` and `edit` schemas): the CLI sent
+call 1 6 to 10 ms after the first block's `content_block_stop` (263 and
+527 ms when a PreToolUse hook had to run first), and before the reply's last
+proxied block closed in all 13, 5 to 1,599 ms earlier. It executes each tool
+as its block completes. So one step needs call 1 held until `message_stop`,
+which costs call 1 the rest of the reply's streaming (247 ms for 3 calls,
+870 ms for 5); today opencode runs call 1 while Claude is still writing the
+others.
+
+h #g69's deadlock does not reproduce: `message_stop` never waited for a
+call. In 9 of the 13 it came out while call 1 was still held, and in the
+other 4 call 1 had already returned. The CLI never had two calls in flight
+(the next one 9 to 18 ms after the previous result when nothing ran between),
+except in one probe that served the tools with `readOnlyHint: true`: there
+all three were in flight at once, each sent as its own block closed, 162 and
+100 ms apart. The proxy serves no annotations, so (h #g75) holds as written.
+
+### The safety questions
+
+- (a) A project `.claude/settings.json` PreToolUse hook denying one of three
+  writes (by its file name): each hook ran after the previous call's result
+  (the denied write's hook at 12,703 ms, call 1's result at 12,265 ms, the
+  denied write's block closed at 11,181 ms). The CLI sent the other two and
+  never the denied one, and Claude was told it was blocked.
+- (b) Refusals at execution time, all with the tool offered to the model and
+  its block in the stream: `permissions.ask` on `mcp__opencode_proxy__write`
+  in project settings refused the write even under
+  `--dangerously-skip-permissions` ("Claude requested permissions to use
+  mcp__opencode_proxy__write, but you haven't granted it yet");
+  `--permission-mode dontAsk` with only `bash` allowed refused it ("running
+  in don't ask mode"); with `--permission-prompt-tool stdio` the CLI asked
+  `can_use_tool` for each call only after the previous result, and a deny
+  sent no MCP call. `--disallowedTools` removes the tool from the model's
+  list instead, so it never reaches a block.
+- (c) An `isError` result on call 1 did not stop calls 2 and 3, and a hook
+  answering `continue: false` on call 2 did not stop call 3 (the turn ended
+  after the calls, with no second request). The call the CLI never sends is
+  the interrupted one, below.
+- (d) The CLI runs a reply's calls in block order, each after the last: a
+  `write` then a `bash cat` printed the fresh content, and two edits
+  (`ONE`->`TWO`, then `TWO`->`THREE`) ended `start THREE end`. opencode 2.2.5
+  runs one step's calls at once (a fake CLI sent N calls together, so the
+  drain window made one step): three 2-second `bash` calls started within
+  6 ms of each other, their commands began in the order A, C, B, and all
+  three were done 3.5 s after the first started; parts are recorded in
+  emission order and reported in completion order.
+  `sleep 0.5; echo second-value > dep.txt` and then `cat dep.txt` in one
+  step: `cat` printed `first-value`. The two dependent edits and a write
+  then `cat` came out in the serial order in that run; one run cannot tell
+  an ordering guarantee from timing.
+- (e) Matching is not the blocker: in 35 of 35 calls the `arguments` text in
+  the request body was byte-equal to `JSON.stringify` of the assistant
+  frame's `tool_use.input` (quotes, backslashes, `é`, `✓`, a tab, two
+  identical `echo alpha` calls) and never to the streamed `partial_json`,
+  and calls came in block order.
+- (f) An interrupt while call 2 was held: the CLI closed call 2's request,
+  recorded calls 2 and 3 as "The user doesn't want to proceed with this tool
+  use. The tool use was rejected (eg. if it was a file edit, the new_string
+  was NOT written to the file)", never sent call 3, and ended
+  `error_during_execution`.
+- (g) `task`, `task_batch` and `question` would have stayed out. `task_batch`
+  is the one batch that is safe, because the CLI decided it as one call.
+
+### Verdict
+
+Dropped. The step cost is real, but every refusal above happens when the CLI
+reaches the call, after the previous result, so no design that hands a
+reply's later calls to opencode before the CLI asks can avoid running one the
+CLI refuses. The CLI would then tell Claude the call was refused or "NOT
+written" while opencode had run it, and opencode would run dependent calls at
+once where the CLI runs them in order. Neither can be read off the stream in
+advance: a hook is a program that decides at the moment of the call, a
+permission rule can sit in any settings layer, and which calls depend on each
+other is hidden inside shell commands. opencode's built-in avoids (a) and (b)
+only by loading no settings at all, which this plugin cannot do (its spawns
+load the operator's hooks, h #g241); (d) and (f) apply to it as much.
+
+Not built, noted for whoever takes it up:
+
+- `readOnlyHint: true` on a tool that is read-only (`webfetch` among the
+  defaults) is the safe way to more than one call in one step, since the CLI
+  then decides each call and sends them at once. It needs the drain to wait
+  for the reply's end (arrivals were 100 to 162 ms apart, beyond the 100 ms
+  window), and it changes what plan mode allows.
+- The 100 ms drain window batches nothing while the CLI sends proxied calls
+  one at a time (max in flight 1); it is about a tenth of each call's cost.
+  Its other jobs (the result boundary, the subagent dispatch form) were not
+  measured here.
+
+Probe cost: about $0.08 at list prices (14 direct probe runs over 13
+scenarios, four opencode runs with the real CLI, three with a fake). Scratch
+cwds, the scratch XDG dirs, their transcripts under `~/.claude/projects/` and
+the probe scripts were deleted afterwards.
