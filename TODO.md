@@ -108,6 +108,14 @@ checks and suspected defects found in passing.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
 
+- 2026-11-04, seen by the flakes2 lane (h #g286), not investigated: one full `npm test`, run right after
+  the lane's own load runs (15-minute load average 29), failed two tests in files the lane did not touch,
+  and both passed alone and in the next full run: `test/cli-model-probe.test.ts`'s "a CLI that sends no
+  version in initialize is keyed on `claude --version`" (13.4 s, version `undefined` against `2.1.293`,
+  which looks like a probe killed at its deadline) and `test/session-fork.test.ts`'s "a forked opencode
+  session resumes the parent's claude conversation" (10.5 s, `Parent answer` against `Forked answer`).
+  Reproduce each with h #g283's load before changing anything.
+
 - 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
   "releasing a session stops its idle child and forgets it in memory, but keeps the resume
   record" failed once in a full `npm test` (the record was missing from disk at line 394),
