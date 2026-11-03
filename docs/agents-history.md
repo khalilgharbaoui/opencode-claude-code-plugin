@@ -10323,6 +10323,124 @@ the merge commit `e35ed31` before the tag and on the release commit
 `e86e7f6`, the publish confirmed by the Publish step's tail
 and the version document's shasum (`7bf10a2f`), with a GitHub Release.
 
+## Four load flakes and a Windows reader bug (2026-11-04)
+
+h #g286. Lane `flakes2`, the two test items h #g283 and h #g281 left in `TODO.md`,
+plus two more tests another lane's full `npm test` saw fail under load on
+2026-11-03 (approved the same day). Method: h #g283's, 40 concurrent copies of a
+file plus `yes` on every core (36 on this 18-core Mac), one log per copy, the
+failing tests counted per run. Test-only, no release.
+
+### `test/proxy-task.test.ts`
+
+| run | failed runs |
+|---|---|
+| master, 40 copies + 36 `yes` (load 16 to 188) | 40 of 40 |
+| master, 40 copies, no `yes` (load 11 to 55) | 40 of 40 |
+| master with only the shebang changed, 40 + 36 `yes` (load 56 to 135) | 25 of 40, all timer races |
+| fixed, 2 x 40 copies + 36 `yes` (load 7 to 117) | 0 of 80 |
+| fixed, 40 copies + 72 `yes` (load 87 to 174) | 0 of 40 |
+
+Three causes, all in the test:
+
+- **The fake CLI's `result` timers**, which the TODO suspected. `task_batch` and
+  `followup` wrote a `result` 100 ms after their call while it was parked; under
+  load it landed between the turns and turn two ended on it with the
+  `▌ **no reply:**` note, exactly `background-running-count`'s flake (h #g283).
+  Those modes write no `result` while parked now, and `normal` and `duplicate`
+  write theirs once the call is queued, because the proxy flushes the call's
+  headers in the same tick it queues it.
+- **`race` and `batch` act inside the provider's fixed windows**, the 250 ms
+  result-boundary grace and the 100 ms drain. Their delays are what those tests
+  prove, so the tests widen the window instead: `_setProxyResultBoundaryGraceMs`
+  (`src/stream-parser.ts`) is a new seam beside `_setDrainQuietMs`, and production
+  keeps 250 ms. Mutation checks: with the grace branch disabled `race` fails 10 of
+  10, with every call drained on arrival `batch` fails 10 of 10.
+- **Exec on this Mac.** `#!/usr/bin/env node` costs an extra `env` exec, and with
+  the endpoint agent inspecting every exec, 40 concurrent cold starts took 1.1 to
+  5.3 s at the median (up to 9.8 s), against 0.2 to 0.5 s with node's absolute
+  path; spawn to `init` went from p50 2.5 s, max 9.9 s, to p50 0.34 s, max 0.56 s.
+  The file shares one fake script whose shebang is `process.execPath`, and warms
+  the `--version` and `--plugin-dir` probes once in a `before` hook (h #g181).
+  proxy-task is skipped on Windows, so a POSIX shebang is safe there.
+
+### `test/turn-progress-store.test.ts` on Windows: a product bug
+
+The one CI (Windows) failure (run 41243712269, `every write is seen`, 42 against
+43) was real. All four TUI store readers (`turn-progress-store`, `turn-history`,
+`account-usage`, `spawn-record-store`) re-parse only when
+`${mtimeMs}:${size}:${ino}` changes, and read `ino` as a number. An NTFS file id is
+above 2^53, so it loses its low bits, and the file a write renames into place
+(the neighbouring MFT record) reads back as the one it replaced. With both
+writes in one timestamp tick and the same size, the reader keeps the old map.
+Three probe runs on `windows-latest` (a temporary test file, removed from the
+branch before merge):
+
+| probe | pairs | result |
+|---|---|---|
+| number stats, same-size pairs | 1,000 | 225 missed; `ino` equal as a number in 474, never as a bigint; 971 ids above 2^53; mtimes equal in 475 |
+| fixed readers, each through its own same-size write | 3 x 500 | 0 missed (ids above 2^53 in 495, 500, 500) |
+| old and new identity on the same pairs | 1,500 | same tick 492; old identity would miss 43, bigint 0; reader missed 0 |
+
+The fix reads `statSync(path, { bigint: true })` and keys on `mtimeNs`, `size`
+and the exact `ino`. A missed write costs the TUI one stale frame until the next
+write, which is why it surfaced only as a test. The three sibling store tests
+gained the same same-size second write, with the size asserted so the premise is
+checked rather than assumed.
+
+### `test/account-failover.test.ts`: the stop races a 100 ms timer
+
+"auto: stopping the turn stops the switch" aborted on a fixed 100 ms timer. Run
+alone the version probe is cold, so the abort always landed before the fake had
+spawned and nothing was in flight (`spawns` was `[]`); in the full file earlier
+tests warm the probe and only load pushed the spawn past 100 ms. The test now
+aborts once the fake has recorded the request, the gate the cancel test beside
+it already used, and warms that test's own account wrapper first (a fresh
+wrapper per test, so it probes cold too).
+
+| run, the one test by name | failed runs |
+|---|---|
+| master, quiet | 1 of 1 |
+| master, 40 + 36 `yes` (load 6 to 22) | 40 of 40 |
+| stop on the spawn, 10 s bound | 1 of 40 (no probe kill: the fake was alive and had not read its line after 10 s at load 50) |
+| final, 60 s hang-stop bound (load 52 to 68) | 0 of 40 |
+
+Mutation checks: the operator's signal dropped from the attempt
+(`AbortSignal.any` replaced by the internal cancel) fails 3 of 3 with `default`
+spawned. Disabling only the `stopped()` guard in `runAccountFailover` does not
+fail it, because the attempt's own abort branch already keeps the switch from
+happening; the guard is a second line.
+
+### `test/effort-sessions.test.ts`: the h #g271 mid-turn tests
+
+`answerParkedCall` gave the parked call 2 s (200 x 10 ms) to be answered, and
+every fixture wrote a fresh fake CLI, so every test probed cold inside its
+window. Every failure of the three mid-turn tests was that helper's "the parked
+call got this turn's tool result". It now waits on the call's own `resolve`
+(a turn that throws first fails at once, one that never answers fails on the
+timeout), the file shares one fake warmed in a `before` hook, and its six 15 s
+timeouts are 60 s. The other four of those six (`high -> low -> high` twice,
+issue #140's, the contexts test and the replay case) were not in the brief but
+fail the same way: four spawns in a row, passing runs already at 14.0 to
+15.0 s under load. Raising them changes no assertion.
+
+| run | failed runs |
+|---|---|
+| master, the mid-turn tests by name, quiet | 0 of 1 |
+| master, by name, 40 + 36 `yes` (load 9 to 103) | 37 of 40 |
+| master, full file, 40 + 36 `yes` (load to 119) | 40 of 40 (mid-turn 39, 39, 36; the 15 s timeouts 39, 37, 12, 10, 6) |
+| promise wait only, by name (load 52 to 90) | 24 of 40, all 15 s timeouts, 95 probe deadline kills |
+| plus the shared warmed fake, by name (load 41 to 62) | 1 of 40 (17 s, the second turn's child slow) |
+| plus 60 s on the mid-turn tests, full file (load 22 to 65) | 36 of 40, every one another test's 15 s timeout |
+| final, full file (load 29 to 70) | 0 of 40 |
+
+### Rules
+
+`AGENTS.md`'s suite rules gained the new seam and one sentence: a fake CLI
+written fresh per test probes cold in every test, so share one per file, warm it
+in a `before` hook, and name node by `process.execPath`; and a test's timeout or
+a wait loop's bound is a hang-stop sized for a loaded machine.
+
 ## One opencode step per proxied call stays: a reply's later calls cannot go early (2026-11-03)
 
 h #g288. Lane `onestep`, idea 1 of the vault note's "From opencode's built-in

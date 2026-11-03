@@ -72,13 +72,11 @@
 
 ## Backlog
 
-- 2026-11-01, found by the testhygiene lane (PR #156, h #g283), not scheduled:
-  1. Two opencode processes can overwrite each other's store writes: every store under
-     `$XDG_STATE_HOME/opencode-claude-code-plugin/` saves by read, merge and rename with no lock
-     between processes. Measured in tests (16/40 lost writes with one shared state dir). A lost
-     write costs one resume record or one progress sample. A fix means a lock in eight stores.
-  2. `test/proxy-task.test.ts` uses the same early-`result` fake-CLI timer pattern that made
-     `background-running-count` flaky under load (12/40). Not yet tested under load.
+- 2026-11-01, found by the testhygiene lane (PR #156, h #g283), not scheduled: two opencode
+  processes can overwrite each other's store writes: every store under
+  `$XDG_STATE_HOME/opencode-claude-code-plugin/` saves by read, merge and rename with no lock
+  between processes. Measured in tests (16/40 lost writes with one shared state dir). A lost
+  write costs one resume record or one progress sample. A fix means a lock in eight stores.
 
 - 2026-11-01, found by the patch lane (h #g281): on opencode 2 both opencode's own `/btw`
   (the TUI's "Ask a side question", any provider) and this plugin's server command are
@@ -109,13 +107,6 @@ checks and suspected defects found in passing.
   title stub (`src/title.ts`, h #g36) may be reading the wrong part of a V2 title request.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
-
-- 2026-11-01, found while recording the releases (h #g281): CI (Windows) failed on v0.65.0's own
-  release commit `4c2b1de` (run 41243712269, not rerun) in `test/turn-progress-store.test.ts`,
-  "the reader re-parses only a changed file, drops an old record, and treats a broken file as
-  empty": `every write is seen`, 42 against 43. The merge commit before it (`b40a5cc`) passed
-  on Windows and the release commit changes only `package.json`'s version, so it reads as a
-  timing flake in the reader's change detection on Windows. Not investigated.
 
 - 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
   "releasing a session stops its idle child and forgets it in memory, but keeps the resume
@@ -198,6 +189,14 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-04: **done** (PR #160, h #g286, test-only, no release): the flakes2 lane. `test/proxy-task.test.ts`
+  failed 40 of 40 runs under h #g283's load and 0 of 80 after (fake CLI `result` timers, two tests acting
+  inside the provider's fixed windows, and a `/usr/bin/env` exec costing seconds per cold start on this Mac).
+  The Windows `turn-progress-store` failure was a product bug in all four TUI store readers: `ino` read as a
+  number loses its low bits above 2^53 on NTFS, so a same-size write in the same tick read as the old file
+  (225 of 1,000 write pairs missed on `windows-latest`, 0 with a bigint stat). Follow-up, approved 2026-11-03:
+  `test/account-failover.test.ts`'s stop test (40 of 40 to 0 of 40) and `test/effort-sessions.test.ts`'s
+  mid-turn tests (40 of 40 full-file runs to 0 of 40).
 - 2026-11-02: **done** (v0.67.1, PR #158, h #g285): the fork sweep. 29 forks, one new (@army113), whose PR #158 is
   merged: `createClaudeCode` now passes `accountInProcess` on to the model, so `accounts` on Windows uses each
   account's own login instead of the default one.
