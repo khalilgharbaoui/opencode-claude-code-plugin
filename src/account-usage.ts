@@ -585,7 +585,10 @@ export function snapshotAccountUsage(now: number = Date.now()): AccountUsage {
 
 /**
  * A reader that re-parses the file only when it changed, for the TUI's
- * refresh clock: an unchanged file costs one `stat`.
+ * refresh clock: an unchanged file costs one `stat`. The `ino` is read
+ * exactly: as a number, an NTFS file id above 2^53 loses its low bits, and
+ * two writes inside one timestamp tick, of the same size, read back as the
+ * same file on Windows (h #g286).
  */
 export function createAccountUsageReader(
   file: () => string = accountUsageStorePath,
@@ -597,8 +600,8 @@ export function createAccountUsageReader(
     const path = file()
     let next = ""
     try {
-      const stats = statSync(path)
-      next = `${stats.mtimeMs}:${stats.size}:${stats.ino}`
+      const stats = statSync(path, { bigint: true })
+      next = `${stats.mtimeNs}:${stats.size}:${stats.ino}`
     } catch {
       next = "missing"
     }

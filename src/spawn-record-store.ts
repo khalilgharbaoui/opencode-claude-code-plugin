@@ -160,7 +160,10 @@ export function recordSessionSpawn(
 
 /**
  * A reader that re-parses the file only when it changed. The TUI calls `read()`
- * on every refresh; an unchanged file costs one `stat`.
+ * on every refresh; an unchanged file costs one `stat`. The `ino` is read
+ * exactly: as a number, an NTFS file id above 2^53 loses its low bits, and two
+ * writes inside one timestamp tick, of the same size, read back as the same
+ * file on Windows (h #g286).
  */
 export function createSpawnRecordReader(file: () => string = spawnRecordStorePath) {
   let identity = ""
@@ -170,8 +173,8 @@ export function createSpawnRecordReader(file: () => string = spawnRecordStorePat
       const path = file()
       let next = ""
       try {
-        const stats = statSync(path)
-        next = `${stats.mtimeMs}:${stats.size}:${stats.ino}`
+        const stats = statSync(path, { bigint: true })
+        next = `${stats.mtimeNs}:${stats.size}:${stats.ino}`
       } catch {
         next = "missing"
       }
