@@ -417,7 +417,8 @@ export function recordTurnSample(key: string, sample: TurnSample): boolean {
 /**
  * A reader that re-parses the file only when it changed. The TUI calls
  * `read()` on every refresh while something runs; an unchanged file costs
- * one `stat`.
+ * one `stat`. The `ino` is read exactly, for the reason
+ * `createTurnProgressReader` gives (h #g286).
  */
 export function createTurnHistoryReader(file: () => string = turnHistoryStorePath) {
   let identity = ""
@@ -427,8 +428,8 @@ export function createTurnHistoryReader(file: () => string = turnHistoryStorePat
       const path = file()
       let next = ""
       try {
-        const stats = statSync(path)
-        next = `${stats.mtimeMs}:${stats.size}:${stats.ino}`
+        const stats = statSync(path, { bigint: true })
+        next = `${stats.mtimeNs}:${stats.size}:${stats.ino}`
       } catch {
         next = "missing"
       }

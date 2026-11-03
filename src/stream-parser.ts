@@ -166,6 +166,17 @@ const KNOWN_DELTA_TYPES = new Set([
 
 const PROXY_RESULT_BOUNDARY_GRACE_MS = 250
 
+let proxyResultBoundaryGraceMs = PROXY_RESULT_BOUNDARY_GRACE_MS
+
+/**
+ * Test seam: `null` restores the default. A test whose call has to arrive
+ * inside this window after a `result` widens it instead of racing it, as
+ * `_setDrainQuietMs` does for the drain window (h #g286).
+ */
+export function _setProxyResultBoundaryGraceMs(ms: number | null): void {
+  proxyResultBoundaryGraceMs = ms ?? PROXY_RESULT_BOUNDARY_GRACE_MS
+}
+
 /**
  * Register, and complete the `tool-call` part of, a CLI-executed call whose
  * content block has not closed yet, so a `tool_result` that arrives first can
@@ -1473,13 +1484,13 @@ export function createLineHandler(
             "waiting for delayed proxy call at turn-result boundary",
             {
               sessionKey: state.sessionKey,
-              graceMs: PROXY_RESULT_BOUNDARY_GRACE_MS,
+              graceMs: proxyResultBoundaryGraceMs,
             },
           )
           scheduleResultBoundary(
             state,
             () => ctx.completeResult(msg),
-            PROXY_RESULT_BOUNDARY_GRACE_MS,
+            proxyResultBoundaryGraceMs,
           )
           return
         }

@@ -117,6 +117,11 @@ test("the reader re-parses only a changed file and treats a broken one as empty"
     const first = reader.read()
     assert.equal(first.get("ses_a")?.effort, "low")
     assert.equal(reader.read(), first, "an unchanged file returns the same map")
+    // On Windows a number `ino` read this write's file as the last one's (h #g286).
+    const size = statSync(spawnRecordStorePath()).size
+    recordSessionSpawn("ses_a", { model: "claude-opus-5-5", effort: "max" })
+    assert.equal(statSync(spawnRecordStorePath()).size, size, "the same size, so only the file's identity tells the writes apart")
+    assert.equal(reader.read().get("ses_a")?.effort, "max", "every write is seen")
 
     writeFileSync(spawnRecordStorePath(), "{ half written")
     assert.equal(reader.read().size, 0)

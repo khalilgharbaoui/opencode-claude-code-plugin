@@ -385,6 +385,11 @@ test("the TUI reader re-parses only when the file changed", () => {
   const first = reader.read()
   assert.equal(first.get("appical")?.get("five_hour")?.utilization, 0.4)
   assert.equal(reader.read(), first, "an unchanged file hands back the same map")
+  // On Windows a number `ino` read this write's file as the last one's (h #g286).
+  const size = statSync(file).size
+  recordUsageReading("appical", "five_hour", { utilization: 0.5, resetsAt: Date.now() + HOUR, status: "allowed" })
+  assert.equal(statSync(file).size, size, "the same size, so only the file's identity tells the writes apart")
+  assert.equal(reader.read().get("appical")?.get("five_hour")?.utilization, 0.5, "every write is seen")
   rmSync(file)
   assert.equal(reader.read().size, 0)
 })

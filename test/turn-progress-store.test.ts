@@ -104,7 +104,12 @@ test("the reader re-parses only a changed file, drops an old record, and treats 
     const first = reader.read(NOW)
     assert.deepEqual(first.get(TAG), { turn: NOW, out: 42, at: NOW })
     assert.equal(reader.read(NOW), first, "an unchanged file returns the same map")
-    recordTurnProgress(TAG, { turn: NOW, out: 43 }, NOW + 1)
+    // On Windows a number `ino` read this write's file as the last one's: two
+    // NTFS file ids above 2^53 in neighbouring records, one timestamp tick and
+    // the same size (h #g286).
+    const size = statSync(turnProgressStorePath()).size
+    assert.equal(recordTurnProgress(TAG, { turn: NOW, out: 43 }, NOW + 1), true)
+    assert.equal(statSync(turnProgressStorePath()).size, size, "the same size, so only the file's identity tells the writes apart")
     assert.equal(reader.read(NOW + 1).get(TAG)?.out, 43, "every write is seen")
 
     writeFileSync(turnProgressStorePath(), "{ half written")
