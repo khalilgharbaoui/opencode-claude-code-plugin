@@ -10307,3 +10307,18 @@ On 2026-11-02 origin carried 13 branches beside `master`, last committed
 between 2026-10-19 and 2026-10-28, every one with an empty `git cherry` against
 it. Every new fork copies them, so a fork's branch list says nothing about its
 work: read `git cherry`.
+
+All 13 were deleted from origin on 2026-11-03 at the maintainer's go, each with
+an empty `git cherry`, and these are their tips (all still on `fork-army113`
+too), so any of them can be restored: `account-group-catchup` `8d66035`,
+`backlog-todo-dcp` `b5a5b34`, `busy-spawn-routing` `753d9e9`,
+`compat/opencode-2-1-3` `aa7fc69`, `lifecycle-events-race` `3469ab4`,
+`live-account-usage` `aee4bcc`, `quiet-unconnected-connectors` `dfca9dd`,
+`restart-resume-dcp` `e775b1f`, `rewound-digest` `77a209f`,
+`skill-bridge-hermetic` `406574a`, `spawn-variants` `4fbfdfb`,
+`todo-tools-option` `226a648`, `turn-cost-and-failover` `ff38d9a`.
+
+Shipped as v0.67.1 on 2026-11-03 (PR #158), a patch: CI green on Linux and Windows on
+the merge commit `e35ed31` before the tag and on the release commit
+`e86e7f6`, the publish confirmed by the Publish step's tail
+and the version document's shasum (`7bf10a2f`), with a GitHub Release.
