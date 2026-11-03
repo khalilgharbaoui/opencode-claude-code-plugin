@@ -43,6 +43,7 @@ import {
   spawnInteractiveProcess,
 } from "../src/claude-session-wrapper.js"
 import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "../src/plan-mode-question.js"
+import { _setAccountUsageStorePathForTests, snapshotAccountUsage } from "../src/account-usage.js"
 import { describeResultFailure, parseToolProgress } from "../src/cli-events.js"
 import {
   deleteActiveProcess,
@@ -1578,6 +1579,34 @@ test("a usage limit on the PTY ends on the plugin's note, with the TUI's reset t
     assert.equal(finish.finishReason.unified, "error")
     assert.equal(finish.finishReason.raw, "usage_limit")
   } finally {
+    dirs.cleanup()
+  }
+})
+
+test("the 5-hour limit's newer name on the PTY still names the window and records it there", async () => {
+  // Claude Code 2.1.312 renamed the window in its own table of limit names:
+  // `five_hour: "5-hour limit"` in 2.1.314 where 2.1.293 has "session limit"
+  // (both read out of the binaries, h #g287). The PTY has no
+  // `rate_limit_event`, so this sentence is the only place the window is said.
+  const dirs = scratch()
+  _setAccountUsageStorePathForTests(path.join(dirs.cwd, "account-usage.json"))
+  try {
+    const record = structuredClone(SESSION_LIMIT_RECORD)
+    record.message.content = [
+      { type: "text", text: "You've hit your 5-hour limit · resets 3pm (Europe/Amsterdam)" },
+    ]
+    const { parts } = await runFakeBunTurn(dirs, "claude-test-pty-limit-5h", (t) => {
+      t.append(record)
+      t.append({ type: "system", subtype: "turn_duration", durationMs: 812 })
+    })
+    const text = textOf(parts)
+    assert.match(text, /in the 5-hour window, which resets 3pm \(Europe\/Amsterdam\)\./)
+    assert.doesNotMatch(text, /You've hit your 5-hour limit/, "the note replaces the CLI's sentence")
+    const windows = snapshotAccountUsage().get("default")
+    assert.equal(windows?.get("five_hour")?.status, "rejected")
+    assert.equal(windows?.has("unknown"), false)
+  } finally {
+    _setAccountUsageStorePathForTests(null)
     dirs.cleanup()
   }
 })
