@@ -1,5 +1,5 @@
 import "./isolate.js"
-import { test } from "node:test"
+import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import type { ChildProcess } from "node:child_process"
@@ -20,6 +20,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { UNATTENDED_REPLAY_MARKER } from "../src/cli-events.js"
+import {
+  MAX_DEADLINE_REPROBES,
+  detectCliSupportsFlag,
+  detectCliVersion,
+} from "../src/cli-version.js"
 import plugin, { createClaudeCode } from "../src/index.js"
 import {
   createProxyMcpServer,
@@ -53,6 +58,8 @@ import {
   type ActiveProcess,
   sessionKey,
 } from "../src/session-manager.js"
+import { _setProxyResultBoundaryGraceMs } from "../src/stream-parser.js"
+import { _setDrainQuietMs } from "../src/turn-controller.js"
 
 const TASK_INPUT = {
   description: "Inspect provider flow",
@@ -77,29 +84,52 @@ function modelProxyTools(settings: { proxyTools?: string[] } = {}) {
   return model.config.proxyTools
 }
 
-function createFakeTaskCli(
-  mode:
-    | "normal"
-    | "race"
-    | "batch"
-    | "duplicate"
-    | "error"
-    | "abort"
-    | "followup"
-    | "late"
-    | "late-queued"
-    | "swallow"
-    | "bookkeeping"
-    | "bookkeeping-respawn"
-    | "task_batch",
-  taskModel?: string,
-  secondTaskModel?: string,
-) {
-  const cwd = mkdtempSync(join(tmpdir(), "opencode-proxy-task-"))
-  const cliPath = join(cwd, "fake-claude.cjs")
-  const eventsPath = join(cwd, "events.jsonl")
-  const source = `#!/usr/bin/env node
+type FakeTaskMode =
+  | "normal"
+  | "race"
+  | "batch"
+  | "duplicate"
+  | "error"
+  | "abort"
+  | "followup"
+  | "late"
+  | "late-queued"
+  | "swallow"
+  | "bookkeeping"
+  | "bookkeeping-respawn"
+  | "task_batch"
+
+/**
+ * Every test spawns this one script, and reads its mode and task inputs from a
+ * `fake-config.json` in the cwd the provider spawns it in. One script for the
+ * whole file means the probes a turn awaits (`--version`, and `--help` for
+ * `--plugin-dir`) are answered once, in the `before` hook below, instead of
+ * inside every test's own turns (h #g181): with a fresh script per test, 40
+ * concurrent runs saw those probes killed at their 5-second deadline, and a
+ * killed `--version` is asked again by the next turn, inside its window
+ * (h #g286).
+ *
+ * Its shebang names this node directly rather than `/usr/bin/env node`. On a
+ * Mac whose endpoint agent inspects every exec, the extra `env` exec made 40
+ * concurrent cold starts take 1.1 to 5.3 s at the median and up to 9.8 s,
+ * against 0.2 to 0.5 s with the direct path, and a fake still starting when a
+ * 10-second window closed failed its test (h #g286). The real `claude` is
+ * one exec too.
+ *
+ * What it writes around a call is tied to the call, not to a clock (h #g283,
+ * h #g286). The proxy flushes a broker-backed call's headers in the same tick
+ * it queues the call, so by the time `fetch` resolves the call is in the
+ * turn's drain buffer, and `onQueued` runs then. A `result` while a call is
+ * parked is written only where the result boundary is what the test is about,
+ * and never by a fake whose test runs a second turn: a real CLI blocks inside
+ * the MCP call (h #g69), and a stray `result` that lands between turns ends
+ * the next one before its answer. The two delays left, `race`'s call after its
+ * result and `batch`'s second call, are what those tests are about, so their
+ * tests widen the provider window the delay has to land in.
+ */
+const FAKE_TASK_CLI_SOURCE = `#!${process.execPath}
 const fs = require("node:fs")
+const path = require("node:path")
 const readline = require("node:readline")
 
 if (process.argv.includes("--version")) {
@@ -131,11 +161,10 @@ if (!proxyUrl) {
   process.exit(2)
 }
 
-const mode = ${JSON.stringify(mode)}
-const taskInput = ${JSON.stringify(TASK_INPUT)}
-if (${JSON.stringify(taskModel !== undefined)}) taskInput.model = ${JSON.stringify(taskModel) ?? "undefined"}
-const secondTaskInput = ${JSON.stringify(PARALLEL_TASK_INPUT)}
-if (${JSON.stringify(secondTaskModel !== undefined)}) secondTaskInput.model = ${JSON.stringify(secondTaskModel) ?? "undefined"}
+const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), "fake-config.json"), "utf8"))
+const mode = config.mode
+const taskInput = config.taskInput
+const secondTaskInput = config.secondTaskInput
 const assistant = {
   type: "assistant",
   session_id: "fake-session",
@@ -265,7 +294,7 @@ function emitAssistant() {
   emit(assistant)
 }
 
-async function callTask(input = taskInput, id = 1, signal, name = "task") {
+async function callTask(input = taskInput, id = 1, signal, name = "task", onQueued) {
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
@@ -281,6 +310,7 @@ async function callTask(input = taskInput, id = 1, signal, name = "task") {
       params: { name: name, arguments: input },
     }),
   })
+  onQueued?.()
   if (recoveryMode) {
     record({ type: "http-response", id, status: response.status, contentType: response.headers.get("content-type") })
   }
@@ -295,7 +325,7 @@ async function callTask(input = taskInput, id = 1, signal, name = "task") {
 
 const recoveryMode = ["late", "late-queued", "swallow", "bookkeeping", "bookkeeping-respawn"].includes(mode)
 const swallowMode = mode === "swallow" || mode.startsWith("bookkeeping")
-const eventsPath = ${JSON.stringify(eventsPath)}
+const eventsPath = config.eventsPath
 function record(event) {
   fs.appendFileSync(eventsPath, JSON.stringify(event) + "\\n")
 }
@@ -395,6 +425,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return
   }
   if (mode === "race") {
+    // The call really is delayed after the result, which is the test's point;
+    // its test widens the window the call has to land in instead.
     emit(result)
     setTimeout(() => void callTask().catch(() => {}), 25)
     return
@@ -404,15 +436,22 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return
   }
   if (mode === "batch") {
-    void callTask().catch(() => {})
-    setTimeout(() => void callTask(secondTaskInput, 2).catch(() => {}), 25)
-    setTimeout(() => emit(result), 50)
+    // The second call 25 ms after the first, inside the drain window its test
+    // widens, and the result once both are queued.
+    let queued = 0
+    const resultOnceBothQueued = () => {
+      queued += 1
+      if (queued === 2) emit(result)
+    }
+    void callTask(taskInput, 1, undefined, "task", resultOnceBothQueued).catch(() => {})
+    setTimeout(() => void callTask(secondTaskInput, 2, undefined, "task", resultOnceBothQueued).catch(() => {}), 25)
     return
   }
   if (mode === "duplicate") {
-    void callTask().catch(() => {})
-    setTimeout(() => emit(result), 30)
-    setTimeout(() => emit(result), 40)
+    void callTask(taskInput, 1, undefined, "task", () => {
+      emit(result)
+      emit(result)
+    }).catch(() => {})
     return
   }
   if (mode === "task_batch") {
@@ -435,7 +474,6 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         emit({ ...result, num_turns: 2 })
       })
       .catch(() => {})
-    setTimeout(() => emit(result), 100)
     return
   }
   if (mode === "followup") {
@@ -456,16 +494,49 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         emit({ ...result, num_turns: 2 })
       })
       .catch(() => {})
-    setTimeout(() => emit(result), 100)
     return
   }
-  void callTask().catch(() => {})
-  setTimeout(() => emit(result), 100)
+  void callTask(taskInput, 1, undefined, "task", () => emit(result)).catch(() => {})
 })
 `
-  writeFileSync(cliPath, source)
-  chmodSync(cliPath, 0o755)
-  return { cliPath, cwd, eventsPath }
+
+const FAKE_TASK_CLI_DIR = mkdtempSync(join(tmpdir(), "opencode-proxy-task-cli-"))
+const FAKE_TASK_CLI = join(FAKE_TASK_CLI_DIR, "fake-claude.cjs")
+writeFileSync(FAKE_TASK_CLI, FAKE_TASK_CLI_SOURCE)
+chmodSync(FAKE_TASK_CLI, 0o755)
+
+before(async () => {
+  // A probe our own deadline killed is forgotten and asked again, and the
+  // third kill in a row is kept, so asking until the same promise comes back
+  // ends. Node itself is warmed too, for the recovery tests that run a turn on
+  // a stand-in process with `process.execPath` as the CLI.
+  for (const cliPath of [FAKE_TASK_CLI, process.execPath]) {
+    for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+      const version = detectCliVersion(cliPath)
+      const pluginDir = detectCliSupportsFlag(cliPath, "--plugin-dir")
+      await Promise.all([version, pluginDir])
+      if (detectCliVersion(cliPath) === version && detectCliSupportsFlag(cliPath, "--plugin-dir") === pluginDir) break
+    }
+  }
+})
+after(() => rmSync(FAKE_TASK_CLI_DIR, { recursive: true, force: true }))
+
+function createFakeTaskCli(
+  mode: FakeTaskMode,
+  taskModel?: string,
+  secondTaskModel?: string,
+) {
+  const cwd = mkdtempSync(join(tmpdir(), "opencode-proxy-task-"))
+  const eventsPath = join(cwd, "events.jsonl")
+  writeFileSync(join(cwd, "fake-config.json"), JSON.stringify({
+    mode,
+    taskInput: taskModel === undefined ? TASK_INPUT : { ...TASK_INPUT, model: taskModel },
+    secondTaskInput: secondTaskModel === undefined
+      ? PARALLEL_TASK_INPUT
+      : { ...PARALLEL_TASK_INPUT, model: secondTaskModel },
+    eventsPath,
+  }))
+  return { cliPath: FAKE_TASK_CLI, cwd, eventsPath }
 }
 
 async function streamTaskBoundary(
@@ -1289,16 +1360,34 @@ test("normal text plus Task result closes on native tool boundary", async () => 
 })
 
 test("result before delayed Task call still closes on native tool boundary", async () => {
-  const result = await streamTaskBoundary("race")
-  assertNativeTaskBoundary(result.parts, result.pending)
+  // The provider waits PROXY_RESULT_BOUNDARY_GRACE_MS (250 ms) for a call that
+  // follows a result, and this test's call follows its result on purpose, so
+  // the window is widened rather than raced (h #g283): under load the fake's
+  // 25 ms timer and its cold fetch arrived after 250 ms (h #g286).
+  _setProxyResultBoundaryGraceMs(5_000)
+  try {
+    const result = await streamTaskBoundary("race")
+    assertNativeTaskBoundary(result.parts, result.pending)
+  } finally {
+    _setProxyResultBoundaryGraceMs(null)
+  }
 })
 
 test("parallel Task calls drain in one native tool boundary", async () => {
-  const result = await streamTaskBoundary("batch")
-  assertNativeTaskBoundary(result.parts, result.pending, [
-    TASK_INPUT,
-    PARALLEL_TASK_INPUT,
-  ])
+  // The second call has to land inside the drain window the first one opened,
+  // and that window is what this test is about, so it is widened rather than
+  // raced (h #g283): the fake sends both calls in one tick, but under load the
+  // second still reached the provider after the default 100 ms (h #g286).
+  _setDrainQuietMs(5_000)
+  try {
+    const result = await streamTaskBoundary("batch")
+    assertNativeTaskBoundary(result.parts, result.pending, [
+      TASK_INPUT,
+      PARALLEL_TASK_INPUT,
+    ])
+  } finally {
+    _setDrainQuietMs(null)
+  }
 })
 
 // task_batch (from @broskees' 68ed142, adapted): the CLI serialises MCP
