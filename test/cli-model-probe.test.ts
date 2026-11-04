@@ -5,7 +5,8 @@
  * refresh's once-per-binary rule, and a real `doStream` whose agent forces a
  * model only the CLI's catalog knows.
  *
- * POSIX only: the fake is a `#!/usr/bin/env node` script made executable.
+ * POSIX only: the fake is a script made executable, whose shebang names node
+ * by `process.execPath` (an `env` exec costs seconds under load, h #g286).
  *
  * Usage: npx tsx --test test/cli-model-probe.test.ts
  */
@@ -27,13 +28,34 @@ import {
   refreshCliModelCatalog,
   writeCatalogEntry,
 } from "../src/cli-model-catalog.js"
-import { _clearCache } from "../src/cli-version.js"
+import { MAX_DEADLINE_REPROBES, _clearCache, detectCliVersion } from "../src/cli-version.js"
 import { createClaudeCode } from "../src/index.js"
 import { _resetAgentRegistryForTests, setAgentRegistry } from "../src/agent-models.js"
 import { killAllActiveProcesses } from "../src/session-manager.js"
 import { setOpencodeClient } from "../src/runtime-status.js"
 
 let dir: string
+
+/**
+ * The probe deadline every test that is not about a deadline passes: a
+ * hang-stop sized for a loaded machine, where 40 copies of this file plus a
+ * busy core each pushed four concurrent spawns past the 20-second default.
+ */
+const HANG_STOP_MS = 60_000
+
+/**
+ * Answers `claude --version` before a refresh reads it, because the refresh
+ * keys its entry on that answer and a probe our own 5-second deadline killed
+ * reads as no version at all. A killed probe is forgotten, so ask until the
+ * same promise comes back (h #g181, h #g286).
+ */
+async function warmVersion(cliPath: string): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+    const version = detectCliVersion(cliPath)
+    await version
+    if (detectCliVersion(cliPath) === version) break
+  }
+}
 const savedSeam = process.env[CLI_MODEL_PROBE_ENV]
 const savedKey = process.env.ANTHROPIC_API_KEY
 
@@ -88,7 +110,7 @@ function createFakeCli(options: FakeOptions = {}) {
     spawnLog,
     stdinLog,
   }
-  const source = `#!/usr/bin/env node
+  const source = `#!${process.execPath}
 const fs = require("node:fs")
 const readline = require("node:readline")
 const C = ${JSON.stringify(config)}
@@ -153,6 +175,7 @@ test("each probe spawn is --bare with no credential, is sent two control request
   const identity = binaryIdentity(fake.cliPath)!
   const outcome = await probeCliCatalog(fake.cliPath, identity, {
     ids: ["claude-opus-4-6", "claude-sonnet-4-5", "claude-opus-5-5", "claude-sonnet-9-9"],
+    deadlineMs: HANG_STOP_MS,
   })
   assert.equal(outcome.ok, true)
   if (!outcome.ok) return
@@ -184,12 +207,18 @@ test("each probe spawn is --bare with no credential, is sent two control request
 test("one spawn that never answers writes nothing, and a dead first one costs one spawn", async () => {
   const fake = createFakeCli({ known: KNOWN, fail: ["claude-opus-5-5"] })
   const identity = binaryIdentity(fake.cliPath)!
-  const partial = await probeCliCatalog(fake.cliPath, identity, { ids: ["claude-opus-4-6", "claude-opus-5-5"] })
+  const partial = await probeCliCatalog(fake.cliPath, identity, {
+    ids: ["claude-opus-4-6", "claude-opus-5-5"],
+    deadlineMs: HANG_STOP_MS,
+  })
   assert.deepEqual(partial.ok, false)
   if (!partial.ok) assert.equal(partial.reason, "no-answer")
 
   const before = fake.spawns().length
-  const first = await probeCliCatalog(fake.cliPath, identity, { ids: ["claude-opus-5-5", "claude-opus-4-6"] })
+  const first = await probeCliCatalog(fake.cliPath, identity, {
+    ids: ["claude-opus-5-5", "claude-opus-4-6"],
+    deadlineMs: HANG_STOP_MS,
+  })
   assert.equal(first.ok, false)
   assert.equal(fake.spawns().length - before, 1)
 })
@@ -209,7 +238,8 @@ test("the refresh probes once per binary, keeps the answer, and re-asks only for
   const fake = createFakeCli({ known: KNOWN })
   const settings = { cliPath: fake.cliPath }
   let reloads = 0
-  const first = await refreshCliModelCatalog(settings, { onLearned: () => void reloads++ })
+  await warmVersion(fake.cliPath)
+  const first = await refreshCliModelCatalog(settings, { onLearned: () => void reloads++, deadlineMs: HANG_STOP_MS })
   assert.equal(first.status, "learned")
   assert.equal(reloads, 1, "a changed catalog asks the host to reload its providers")
   const probes = fake.spawns().length
@@ -221,7 +251,8 @@ test("the refresh probes once per binary, keeps the answer, and re-asks only for
   // A new process: memory empty, the file there.
   _resetCliModelCatalogForTests(join(dir, "state", "cli-models.json"))
   _clearCache()
-  const again = await refreshCliModelCatalog(settings)
+  await warmVersion(fake.cliPath)
+  const again = await refreshCliModelCatalog(settings, { deadlineMs: HANG_STOP_MS })
   assert.equal(again.status, "current")
   assert.equal(fake.spawns().length, probes, "no probe for a binary already answered")
 
@@ -229,13 +260,15 @@ test("the refresh probes once per binary, keeps the answer, and re-asks only for
   writeCatalogEntry({ ...stored!, cliVersion: "2.1.1" })
   _resetCliModelCatalogForTests(join(dir, "state", "cli-models.json"))
   _clearCache()
-  assert.equal((await refreshCliModelCatalog(settings)).status, "learned")
+  await warmVersion(fake.cliPath)
+  assert.equal((await refreshCliModelCatalog(settings, { deadlineMs: HANG_STOP_MS })).status, "learned")
   assert.ok(fake.spawns().length > probes)
 })
 
 test("a CLI that sends no version in initialize is keyed on `claude --version`", async () => {
   const fake = createFakeCli({ known: KNOWN, noVersionInInit: true, version: "2.1.293" })
-  const result = await refreshCliModelCatalog({ cliPath: fake.cliPath })
+  await warmVersion(fake.cliPath)
+  const result = await refreshCliModelCatalog({ cliPath: fake.cliPath }, { deadlineMs: HANG_STOP_MS })
   assert.equal(result.status, "learned")
   assert.equal(readCatalogEntries()[0]!.cliVersion, "2.1.293")
 })
@@ -243,7 +276,8 @@ test("a CLI that sends no version in initialize is keyed on `claude --version`",
 test("a refusal is remembered for a day and a deadline kill is not", async () => {
   const fake = createFakeCli({ known: KNOWN, refuse: true })
   const settings = { cliPath: fake.cliPath }
-  const first = await refreshCliModelCatalog(settings)
+  await warmVersion(fake.cliPath)
+  const first = await refreshCliModelCatalog(settings, { deadlineMs: HANG_STOP_MS })
   assert.equal(first.status, "failed")
   assert.equal(fake.spawns().length, 1, "a CLI that cannot be probed costs one spawn")
   const [stored] = readCatalogEntries()
@@ -254,7 +288,8 @@ test("a refusal is remembered for a day and a deadline kill is not", async () =>
   _resetCliModelCatalogForTests(join(dir, "state", "cli-models.json"))
   _clearCache()
   activateCliModelCatalog(settings)
-  assert.deepEqual(await refreshCliModelCatalog(settings), {
+  await warmVersion(fake.cliPath)
+  assert.deepEqual(await refreshCliModelCatalog(settings, { deadlineMs: HANG_STOP_MS }), {
     status: "current",
     cliVersion: "2.1.314",
     refused: "request-refused",
@@ -264,7 +299,8 @@ test("a refusal is remembered for a day and a deadline kill is not", async () =>
   writeCatalogEntry({ ...stored!, probedAt: Date.now() - REFUSAL_RETRY_MS - 1 })
   _resetCliModelCatalogForTests(join(dir, "state", "cli-models.json"))
   _clearCache()
-  assert.equal((await refreshCliModelCatalog(settings)).status, "failed")
+  await warmVersion(fake.cliPath)
+  assert.equal((await refreshCliModelCatalog(settings, { deadlineMs: HANG_STOP_MS })).status, "failed")
   assert.equal(fake.spawns().length, 2, "asked again once the day is over")
 
   rmSync(join(dir, "state"), { recursive: true, force: true })
@@ -317,7 +353,7 @@ test("an agent may force a model only the CLI's catalog knows, through a real do
   assert.equal(await turn(), "claude-opus-4-7", "an id nothing registered is refused, as before")
 
   const identity = binaryIdentity(fake.cliPath)!
-  const outcome = await probeCliCatalog(fake.cliPath, identity, { ids: ["claude-opus-4-7"] })
+  const outcome = await probeCliCatalog(fake.cliPath, identity, { ids: ["claude-opus-4-7"], deadlineMs: HANG_STOP_MS })
   assert.equal(outcome.ok, true)
   if (outcome.ok) writeCatalogEntry(outcome.entry)
   activateCliModelCatalog({ cliPath: fake.cliPath })

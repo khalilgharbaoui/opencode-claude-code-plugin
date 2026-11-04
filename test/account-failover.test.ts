@@ -1080,7 +1080,8 @@ function createFakeCli() {
   const cliPath = join(cwd, "fake-claude.cjs")
   const record = join(cwd, "spawns.jsonl")
   const controls = join(cwd, "controls.jsonl")
-  const source = `#!/usr/bin/env node
+  // Node by its absolute path: an `env` exec costs seconds under load (h #g286).
+  const source = `#!${process.execPath}
 const fs = require("node:fs")
 const readline = require("node:readline")
 
@@ -2679,6 +2680,19 @@ test("auto: without a transcript to carry, the thread is replayed into a fresh s
   })
 })
 
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Waits for the plugin to write an `interrupt` to `account`'s child, bounded
+ * by a hang-stop. A fixed pause raced the write under load; the assertion
+ * after it still fails when no interrupt is ever sent.
+ */
+async function waitForInterrupt(fake: ReturnType<typeof createFakeCli>, account: string): Promise<void> {
+  const sent = () =>
+    fake.controls().some((control: any) => accountOf(control) === account && /"interrupt"/.test(control.line))
+  for (let waited = 0; !sent() && waited < 60_000; waited += 10) await pause(10)
+}
+
 /**
  * Answers the probes a turn awaits (`--version`, and `--help` for
  * `--plugin-dir`) before the window a test measures. A probe our own 5-second
@@ -2804,16 +2818,20 @@ test("auto: the next account is chosen when the failure arrives, so a limit lear
 test("auto: cancelling the returned stream stops the walk, and no other account is started", async () => {
   await withScriptedAccounts({ appical: "slow-limit", default: "ok" }, async (fake) => {
     const model = await buildFailoverModel(fake, ["default", "appical"], "auto")
+    await warmCliProbes((await ensureAccountRuntime("appical", fake.cliPath)).cliPath)
     const response = await model.doStream({ prompt: autoPrompt, tools: TOOLS } as any)
     const reader = response.stream.getReader()
     const first = await reader.read()
     assert.equal(first.value?.type, "stream-start")
-    // Cancel only once appical has the request, so it lands on a turn in flight.
-    for (let waited = 0; fake.spawns().length === 0 && waited < 3000; waited += 10) {
+    // Cancel only once appical has the request, so it lands on a turn in
+    // flight. The bound is a hang-stop: a cold spawn under load took longer
+    // than the 3 s this waited before (h #g290).
+    for (let waited = 0; fake.spawns().length === 0 && waited < 60_000; waited += 10) {
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     assert.deepEqual(fake.spawns().map(accountOf), ["appical"])
     await reader.cancel("the caller went away")
+    await waitForInterrupt(fake, "appical")
     // Long enough for the limit the fake was still holding to arrive.
     await new Promise((resolve) => setTimeout(resolve, 700))
     assert.equal(fake.spawns().some((spawn: any) => accountOf(spawn) === "default"), false)
@@ -2832,8 +2850,6 @@ test("auto: cancelling the returned stream stops the walk, and no other account 
 // ---------------------------------------------------------------------------
 // PR #115's leftovers, each a test first (h #g257)
 // ---------------------------------------------------------------------------
-
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** `prompt`, then the form's call and opencode's answer naming `label`. */
 function formAnswerPrompt(prompt: any[], call: any, label: string) {
@@ -2874,12 +2890,15 @@ test("off and ask: cancelling the returned stream stops the turn in flight", asy
   for (const mode of ["off", "ask"] as const) {
     await withScriptedAccounts({ appical: "slow-limit", default: "ok" }, async (fake) => {
       const model = await buildFailoverModel(fake, ["default", "appical"], mode)
+      await warmCliProbes((await ensureAccountRuntime("appical", fake.cliPath)).cliPath)
       const response = await model.doStream({ prompt: autoPrompt, tools: TOOLS } as any)
       const reader = response.stream.getReader()
       assert.equal((await reader.read()).value?.type, "stream-start")
-      for (let waited = 0; fake.spawns().length === 0 && waited < 3000; waited += 10) await pause(10)
+      // Hang-stop bounds, as in the auto test above (h #g290).
+      for (let waited = 0; fake.spawns().length === 0 && waited < 60_000; waited += 10) await pause(10)
+      assert.deepEqual(fake.spawns().map(accountOf), ["appical"], mode)
       await reader.cancel("the caller went away")
-      await pause(700)
+      await waitForInterrupt(fake, "appical")
       // The cancel reached the CLI: it was interrupted like any stopped turn,
       // not left to run the request to its end and bill it.
       assert.ok(

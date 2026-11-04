@@ -34,6 +34,7 @@ import {
   _resetSubagentDispatchForTests,
 } from "../src/subagent-dispatch.js"
 import { _setDispatchChoiceStorePath } from "../src/dispatch-choice-store.js"
+import { MAX_DEADLINE_REPROBES, detectCliSupportsFlag, detectCliVersion } from "../src/cli-version.js"
 
 // Every account runtime this file builds lands under a throwaway HOME, so no
 // test writes a wrapper or a config dir into the real one.
@@ -87,7 +88,8 @@ function createFakeCli() {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-dispatch-"))
   const cliPath = join(cwd, "fake-claude.cjs")
   const record = join(cwd, "spawns.jsonl")
-  const source = `#!/usr/bin/env node
+  // Node by its absolute path: an `env` exec costs seconds under load (h #g286).
+  const source = `#!${process.execPath}
 const fs = require("node:fs")
 const readline = require("node:readline")
 
@@ -176,6 +178,21 @@ rl.on("line", async (line) => {
       existsSync(record)
         ? readFileSync(record, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
         : [],
+  }
+}
+
+/**
+ * Answers the probes a spawn's argv depends on (`--version` for the thinking
+ * flags, `--help` for `--plugin-dir`) before a test compares two argvs. A
+ * probe our own 5-second deadline killed is forgotten and the third kill in a
+ * row is kept, so ask until the same promises come back (h #g181, h #g286).
+ */
+async function warmCliProbes(cliPath: string): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+    const version = detectCliVersion(cliPath)
+    const pluginDir = detectCliSupportsFlag(cliPath, "--plugin-dir")
+    await Promise.all([version, pluginDir])
+    if (detectCliVersion(cliPath) === version && detectCliSupportsFlag(cliPath, "--plugin-dir") === pluginDir) break
   }
 }
 
@@ -288,6 +305,9 @@ test("turning the option on changes no argv on a turn that dispatches nothing", 
   const off = createFakeCli()
   const on = createFakeCli()
   try {
+    // Each fake is its own binary, so a probe killed for one and answered for
+    // the other would differ the argvs for a reason this test is not about.
+    await Promise.all([warmCliProbes(off.cliPath), warmCliProbes(on.cliPath)])
     await drain(
       await buildModel(off).doStream(promptFor(PARENT_SESSION, "go") as any),
     )

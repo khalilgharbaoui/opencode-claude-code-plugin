@@ -114,28 +114,6 @@ checks and suspected defects found in passing.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
 
-- 2026-11-04, seen by the flakes2 lane (h #g286), not investigated: one full `npm test`, run right after
-  the lane's own load runs (15-minute load average 29), failed two tests in files the lane did not touch,
-  and both passed alone and in the next full run: `test/cli-model-probe.test.ts`'s "a CLI that sends no
-  version in initialize is keyed on `claude --version`" (13.4 s, version `undefined` against `2.1.293`,
-  which looks like a probe killed at its deadline) and `test/session-fork.test.ts`'s "a forked opencode
-  session resumes the parent's claude conversation" (10.5 s, `Parent answer` against `Forked answer`).
-  Reproduce each with h #g283's load before changing anything.
-  Two more seen by the webfetch-ro lane (h #g289) on 2026-11-04, each in one full `npm test` and
-  passing alone: a `test/subagent-dispatch*` test, and an `account-failover` test that failed on master
-  too with that lane's change stashed. Same method: reproduce under load first.
-
-- 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
-  "releasing a session stops its idle child and forgets it in memory, but keeps the resume
-  record" failed once in a full `npm test` (the record was missing from disk at line 394),
-  then passed in the next full run and in three runs of the file alone. It writes the resume
-  store that every test process shares under the suite's one scratch `XDG_STATE_HOME`
-  without a `_setResumeStorePath` of its own. My guess is a lost update between two
-  processes' merge-on-write, but that is unconfirmed. If it recurs, give the file a scratch
-  store path as `test/session-resume.test.ts` does.
-  It failed again on 2026-11-01 in the patch lane's first full `npm test` (h #g281) and
-  passed in three runs of the file alone and in the next full run.
-
 ## Deferred decisions
 
 Only decisions about this plugin belong here. Items about the global opencode config
@@ -208,11 +186,14 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-- 2026-11-04, next: the four suspected load flakes in the Backlog (`cli-model-probe`, `session-fork`,
-  `subagent-dispatch`, `account-failover`), now that no lane is taking live measurements.
-
 ## Done
 
+- 2026-11-04: **done** (h #g290, lane `flakes3`, tests only): the suspected load flakes, each reproduced
+  with 40 copies under load first. `cli-model-probe` (40 of 40 to 0 of 80), `session-fork` (34 of 40 to
+  0 of 80), `subagent-dispatch-stream`'s argv comparison (16 of 40 to 0 of 80; `subagent-dispatch` itself
+  0 of 40), `account-failover`'s two cancel tests (35 of 40 on master, to 0 of 40) and `claude-login`
+  (35 of 40 to 0 of 80): cold probes inside the measured window, `env` shebangs and clock-bound waits.
+  `plugin-copies`' missing resume record did not reproduce (0 of 80), closed by h #g283's isolation.
 - 2026-11-04: **done** (v0.68.0, PR #163, h #g289): one reply's proxied webfetch calls run in one
   opencode step (`parallelWebfetch`, default on): three 1-second fetches went from 4 steps and 5.1 to 5.8 s
   to 2 steps and 2.2 to 2.4 s; hooks, deny rules and opencode's prompts unchanged. Released together

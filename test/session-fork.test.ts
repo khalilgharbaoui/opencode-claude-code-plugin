@@ -39,7 +39,7 @@ import {
   sessionKey,
   setClaudeSessionId,
 } from "../src/session-manager.js"
-import { detectCliVersion } from "../src/cli-version.js"
+import { MAX_DEADLINE_REPROBES, detectCliSupportsFlag, detectCliVersion } from "../src/cli-version.js"
 import { createClaudeCode } from "../src/index.js"
 
 const CLI_A = "/opt/claude-accounts/default/claude"
@@ -534,7 +534,8 @@ function createForkCli(options: { forkSessions: boolean }) {
   writeFileSync(eventsPath, "")
   writeFileSync(
     cliPath,
-    `#!/usr/bin/env node
+    // Node by its absolute path: an `env` exec costs seconds under load (h #g286).
+    `#!${process.execPath}
 const fs = require("node:fs")
 const readline = require("node:readline")
 const args = process.argv.slice(2)
@@ -620,13 +621,28 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         .map((part) => (part as any).delta)
         .join("")
     },
-    /** Resolve the version probe before any turn depends on it (h #g181). */
+    /**
+     * Resolve the probes a turn awaits (`--version`, `--help` for
+     * `--fork-session` and `--plugin-dir`) before any turn depends on them.
+     * A probe our own 5-second deadline killed is forgotten and the third
+     * kill in a row is kept, so ask until the same promises come back
+     * (h #g181, h #g286): a killed `--fork-session` probe reads as "no
+     * support" and the fork silently replays instead.
+     */
     async warmCliVersion() {
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        const version = await detectCliVersion(cliPath)
-        if (version) return version
+      const ask = () => [
+        detectCliVersion(cliPath),
+        detectCliSupportsFlag(cliPath, "--fork-session"),
+        detectCliSupportsFlag(cliPath, "--plugin-dir"),
+      ] as const
+      for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+        const probes = ask()
+        await Promise.all(probes)
+        if (ask().every((probe, index) => probe === probes[index])) break
       }
-      throw new Error("the fake CLI never answered --version")
+      const version = await detectCliVersion(cliPath)
+      if (!version) throw new Error("the fake CLI never answered --version")
+      return version
     },
     async cleanup() {
       for (const affinity of ["ses_parent", "ses_fork"]) {

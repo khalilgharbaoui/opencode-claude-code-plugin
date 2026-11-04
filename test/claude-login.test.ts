@@ -22,7 +22,7 @@ import {
   parseClaudeAuthStatus,
   type ClaudeLoginState,
 } from "../src/claude-login.js"
-import { cliSupportsAuthStatus } from "../src/cli-version.js"
+import { MAX_DEADLINE_REPROBES, cliSupportsAuthStatus, detectCliVersion } from "../src/cli-version.js"
 
 // What 2.1.314 printed, logged in with a subscription. The account fields are
 // in the real output and must never be kept.
@@ -162,7 +162,8 @@ function fakeCli(options: { version?: string; mode: "in" | "out" | "hang" | "gar
   const cliPath = join(dir, "claude")
   const record = join(dir, "calls.jsonl")
   writeFileSync(record, "")
-  const source = `#!/usr/bin/env node
+  // Node by its absolute path: an `env` exec costs seconds under load (h #g286).
+  const source = `#!${process.execPath}
 const fs = require("node:fs")
 const args = process.argv.slice(2)
 fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(args) + "\\n")
@@ -170,7 +171,7 @@ if (args.includes("--version")) { process.stdout.write(${JSON.stringify(options.
 if (args[0] !== "auth" || args[1] !== "status") process.exit(9)
 const mode = ${JSON.stringify(options.mode)}
 const keySource = process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : undefined
-if (mode === "hang") setTimeout(() => {}, 60000)
+if (mode === "hang") setInterval(() => {}, 60000)
 else if (mode === "garbage") { process.stdout.write("something else entirely\\n"); process.exit(0) }
 else if (mode === "out") { process.stdout.write(JSON.stringify({ loggedIn: false, authMethod: "none", apiProvider: "firstParty" })); process.exit(1) }
 else { process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: keySource ? "api_key" : "claude.ai", apiProvider: "firstParty", apiKeySource: keySource, subscriptionType: keySource ? undefined : "max", email: "someone@example.com" })); process.exit(0) }
@@ -187,9 +188,33 @@ else { process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: keySour
   }
 }
 
+/**
+ * The deadline every check that is not about a deadline passes: a hang-stop
+ * sized for a loaded machine, not the time the test is about (h #g286).
+ */
+const HANG_STOP_MS = 60_000
+
+/**
+ * A fresh fake with its `--version` probe already answered. The check awaits
+ * that probe before anything it reports on, and a probe our own 5-second
+ * deadline killed reads as "did not report a version", so a cold probe under
+ * load failed checks that had nothing to do with the version. A killed probe
+ * is forgotten and the third kill in a row is kept, so ask until the same
+ * promise comes back (h #g181, h #g286).
+ */
+async function warmFakeCli(options: Parameters<typeof fakeCli>[0]): Promise<ReturnType<typeof fakeCli>> {
+  const cli = fakeCli(options)
+  for (let attempt = 0; attempt <= MAX_DEADLINE_REPROBES; attempt++) {
+    const version = detectCliVersion(cli.cliPath)
+    await version
+    if (detectCliVersion(cli.cliPath) === version) break
+  }
+  return cli
+}
+
 test("a logged-in CLI answers with its method, through the real spawn", async () => {
-  const cli = fakeCli({ mode: "in" })
-  const state = await checkClaudeLogin({ cliPath: cli.cliPath, ignoreAnthropicApiKey: true })
+  const cli = await warmFakeCli({ mode: "in" })
+  const state = await checkClaudeLogin({ cliPath: cli.cliPath, ignoreAnthropicApiKey: true, timeoutMs: HANG_STOP_MS })
   assert.deepEqual(state, {
     status: "logged-in",
     auth: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max" },
@@ -201,11 +226,15 @@ test("the check sees the API key a turn would see, and not one the provider stri
   const saved = process.env.ANTHROPIC_API_KEY
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-real"
   try {
-    const kept = await checkClaudeLogin({ cliPath: fakeCli({ mode: "in" }).cliPath })
+    const kept = await checkClaudeLogin({
+      cliPath: (await warmFakeCli({ mode: "in" })).cliPath,
+      timeoutMs: HANG_STOP_MS,
+    })
     assert.equal(kept.status === "logged-in" && kept.auth.authMethod, "api_key")
     const stripped = await checkClaudeLogin({
-      cliPath: fakeCli({ mode: "in" }).cliPath,
+      cliPath: (await warmFakeCli({ mode: "in" })).cliPath,
       ignoreAnthropicApiKey: true,
+      timeoutMs: HANG_STOP_MS,
     })
     assert.equal(stripped.status === "logged-in" && stripped.auth.authMethod, "claude.ai")
   } finally {
@@ -215,32 +244,38 @@ test("the check sees the API key a turn would see, and not one the provider stri
 })
 
 test("exit 1 with auth status's JSON is logged out", async () => {
-  const state = await checkClaudeLogin({ cliPath: fakeCli({ mode: "out" }).cliPath })
+  const state = await checkClaudeLogin({ cliPath: (await warmFakeCli({ mode: "out" })).cliPath, timeoutMs: HANG_STOP_MS })
   assert.equal(state.status, "logged-out")
 })
 
 test("a binary that is not there is missing", async () => {
-  const state = await checkClaudeLogin({ cliPath: join(tmpdir(), "no-such-claude-binary-v2host") })
+  const state = await checkClaudeLogin({ cliPath: join(tmpdir(), "no-such-claude-binary-v2host"), timeoutMs: HANG_STOP_MS })
   assert.deepEqual(state, { status: "missing" })
 })
 
 test("a CLI older than the gate is never asked auth status", async () => {
-  const cli = fakeCli({ mode: "in", version: "2.1.280" })
-  const state = await checkClaudeLogin({ cliPath: cli.cliPath })
+  const cli = await warmFakeCli({ mode: "in", version: "2.1.280" })
+  const state = await checkClaudeLogin({ cliPath: cli.cliPath, timeoutMs: HANG_STOP_MS })
   assert.equal(state.status, "failed")
   assert.match((state as Extract<ClaudeLoginState, { status: "failed" }>).reason, /2\.1\.280 is older than 2\.1\.288/)
   assert.ok(cli.calls().every((args) => args[0] !== "auth"), "only the version probe ran")
 })
 
 test("a CLI that never answers is a failed check after the deadline, not a hang", async () => {
-  const cli = fakeCli({ mode: "hang" })
+  // The fake never exits on its own, so only the check's own deadline can end
+  // this. The version probe is answered first, so what is timed is the
+  // `auth status` spawn alone: the deadline's reason proves it fired, and the
+  // bound proves the check did not wait on the CLI. It is far above 400 ms
+  // because a spawn took seconds at a load of 50 (h #g286).
+  const cli = await warmFakeCli({ mode: "hang" })
   const started = Date.now()
   const state = await checkClaudeLogin({ cliPath: cli.cliPath, timeoutMs: 400 })
   assert.equal(state.status, "failed")
-  assert.ok(Date.now() - started < 5_000)
+  assert.match((state as Extract<ClaudeLoginState, { status: "failed" }>).reason, /^no answer within /)
+  assert.ok(Date.now() - started < 30_000)
 })
 
 test("output that is not auth status's is a failed check, never a login", async () => {
-  const state = await checkClaudeLogin({ cliPath: fakeCli({ mode: "garbage" }).cliPath })
+  const state = await checkClaudeLogin({ cliPath: (await warmFakeCli({ mode: "garbage" })).cliPath, timeoutMs: HANG_STOP_MS })
   assert.equal(state.status, "failed")
 })
