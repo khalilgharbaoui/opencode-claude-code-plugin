@@ -10921,6 +10921,8 @@ Windows on the merge commit `1d97213` before the tag and on the release commit
 `4113528`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`238e48a2`), with a GitHub Release.
 
+## No catch-up on a step that answers the session's own proxied call (2026-11-04)
+
 h #g292. The false catch-up on every step of a turn with proxied calls,
 found 2026-11-04 while checking why the opencode server of the maintainer's
 largest session (8,454 messages, 30 MB) had looked busy. It was not busy: the
@@ -10981,3 +10983,8 @@ plugin's `dist` 12 times that day, so the likeliest reading is a call parked
 in an older copy whose session later moved to a newer one (h #g269). Its
 start had already rotated out of `plugin.log`, which at INFO grew 97 KB in
 20 seconds and kept about an hour. Logged in `TODO.md` rather than guessed at.
+
+Shipped as v0.68.2 on 2026-11-04 (PR #166), a patch: CI green on Linux and
+Windows on the merge commit `da5e1e9` before the tag and on the release commit
+`f41cb3b`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`ebde42f9`), with a GitHub Release.

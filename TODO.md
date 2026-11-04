@@ -195,6 +195,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-04: **done** (v0.68.2, PR #166, h #g292): a step that answers the session's own parked proxy
+  calls no longer reads as a missed conversation. Every step after a proxied tool call had logged a
+  false `replaying the messages this claude session missed` catch-up (76 in two and a quarter hours
+  across four sessions) and built a block it then discarded; nothing wrong reached Claude.
 - 2026-11-04: **done** (v0.68.1, PR #164, h #g290, lane `flakes3`, tests only): the suspected load flakes, each reproduced
   with 40 copies under load first. `cli-model-probe` (40 of 40 to 0 of 80), `session-fork` (34 of 40 to
   0 of 80), `subagent-dispatch-stream`'s argv comparison (16 of 40 to 0 of 80; `subagent-dispatch` itself
