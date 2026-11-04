@@ -10441,6 +10441,11 @@ written fresh per test probes cold in every test, so share one per file, warm it
 in a `before` hook, and name node by `process.execPath`; and a test's timeout or
 a wait loop's bound is a hang-stop sized for a loaded machine.
 
+Shipped as v0.68.0 on 2026-11-04 (PR #160, PR #162, PR #163), a minor: CI green on Linux and
+Windows on the merge commit `2c13a7d` before the tag and on the release commit
+`a4abe38`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`06aff012`), with a GitHub Release.
+
 ## One opencode step per proxied call stays: a reply's later calls cannot go early (2026-11-03)
 
 h #g288. Lane `onestep`, idea 1 of the vault note's "From opencode's built-in
@@ -10703,6 +10708,11 @@ Probe cost: a few dollars at list prices across both sittings, almost all Haiku.
 The scratch tree, the worktree and the probe sessions' transcripts were deleted
 afterwards.
 
+Shipped as v0.68.0 on 2026-11-04 (PR #160, PR #162, PR #163), a minor: CI green on Linux and
+Windows on the merge commit `2c13a7d` before the tag and on the release commit
+`a4abe38`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`06aff012`), with a GitHub Release.
+
 ## One reply's webfetch calls run in one opencode step (2026-11-04)
 
 h #g289. Lane `webfetch-ro`, the narrower idea (h #g288) left for whoever
@@ -10785,3 +10795,8 @@ Probe cost: about $0.48 at list prices (42 opencode runs with the real CLI,
 13 of them lost to a probe-script bug that applied no setup, and two direct
 CLI runs). The scratch cwds, XDG dirs, their transcripts under
 `~/.claude-appical/projects/` and the probe scripts were deleted afterwards.
+
+Shipped as v0.68.0 on 2026-11-04 (PR #160, PR #162, PR #163), a minor: CI green on Linux and
+Windows on the merge commit `2c13a7d` before the tag and on the release commit
+`a4abe38`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`06aff012`), with a GitHub Release.

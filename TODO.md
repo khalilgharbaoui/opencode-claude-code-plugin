@@ -115,6 +115,9 @@ checks and suspected defects found in passing.
   which looks like a probe killed at its deadline) and `test/session-fork.test.ts`'s "a forked opencode
   session resumes the parent's claude conversation" (10.5 s, `Parent answer` against `Forked answer`).
   Reproduce each with h #g283's load before changing anything.
+  Two more seen by the webfetch-ro lane (h #g289) on 2026-11-04, each in one full `npm test` and
+  passing alone: a `test/subagent-dispatch*` test, and an `account-failover` test that failed on master
+  too with that lane's change stashed. Same method: reproduce under load first.
 
 - 2026-10-31: suspected flaky test, not investigated: `test/plugin-copies.test.ts`'s
   "releasing a session stops its idle child and forgets it in memory, but keeps the resume
@@ -199,20 +202,21 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-- 2026-11-04, Khalil: "go" on the plan: lanes `compat-2-2` and `webfetch-ro` are running. Once both
-  have merged, cut ONE release carrying the Windows store-reader fix from PR #160 (h #g286) with
-  whatever those lanes change, then look at the two suspected flakes in the Backlog
-  (`cli-model-probe`, `session-fork`), not before, so their load runs do not skew live measurements.
-  Store locking stays in the Backlog for later.
+- 2026-11-04, next: the four suspected load flakes in the Backlog (`cli-model-probe`, `session-fork`,
+  `subagent-dispatch`, `account-failover`), now that no lane is taking live measurements.
 
 ## Done
 
-- 2026-11-04: **done** (h #g287, lane `compat-2-2`, no release): the compatibility sweep, opencode 2.2.5 and
+- 2026-11-04: **done** (v0.68.0, PR #163, h #g289): one reply's proxied webfetch calls run in one
+  opencode step (`parallelWebfetch`, default on): three 1-second fetches went from 4 steps and 5.1 to 5.8 s
+  to 2 steps and 2.2 to 2.4 s; hooks, deny rules and opencode's prompts unchanged. Released together
+  with PR #160 and PR #162 as Khalil's 2026-11-04 plan said.
+- 2026-11-04: **done** (v0.68.0, PR #162, h #g287, lane `compat-2-2`): the compatibility sweep, opencode 2.2.5 and
   1.19.5 against Claude Code 2.1.314. APIs additive; headless and interactive lists live on both majors;
   `INTERACTIVE_MEASURED_CLI` 2.1.314 with fixtures; the built-in Claude Agent provider coexists. Fixed the
   plan dialog for an `ExitPlanMode` call with no plan (never recognised, turn interrupted) and the 5-hour
   limit's 2.1.312 name; documented that opencode 2 refuses `provider.claude-code.options.transport`.
-- 2026-11-04: **done** (PR #160, h #g286, test-only, no release): the flakes2 lane. `test/proxy-task.test.ts`
+- 2026-11-04: **done** (v0.68.0, PR #160, h #g286): the flakes2 lane. `test/proxy-task.test.ts`
   failed 40 of 40 runs under h #g283's load and 0 of 80 after (fake CLI `result` timers, two tests acting
   inside the provider's fixed windows, and a `/usr/bin/env` exec costing seconds per cold start on this Mac).
   The Windows `turn-progress-store` failure was a product bug in all four TUI store readers: `ino` read as a
