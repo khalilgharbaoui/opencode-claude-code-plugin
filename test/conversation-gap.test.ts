@@ -24,6 +24,8 @@ import {
   recordServedConversation,
 } from "../src/conversation-gap.js"
 import { createClaudeCode } from "../src/index.js"
+import { configureLogger, _resetLoggerForTests } from "../src/logger.js"
+import { getPendingProxyCalls, resolvePendingProxyCallById } from "../src/proxy-broker.js"
 import {
   deleteActiveProcessAndWait,
   deleteClaudeSessionId,
@@ -709,6 +711,159 @@ test("a compacted thread keeps its process: a shared prefix of zero is not a rew
     assert.equal(missedBlock(sent[2].stdin), null)
     assert.equal(countNotes(after.text), 0, after.text)
   } finally {
+    await f.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// A step that answers the session's own parked proxy call (h #g292)
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake CLI whose second turn makes one proxied `bash` call and answers once
+ * opencode's result comes back through the proxy. The call is sent over a
+ * client warmed with `initialize`, never on a timer (h #g283).
+ */
+function proxiedTurnFixture() {
+  const cwd = mkdtempSync(join(tmpdir(), "opencode-gap-proxy-"))
+  const cliPath = join(cwd, "fake-claude.cjs")
+  const bashInput = { command: "echo hi", description: "Say hi" }
+  writeFileSync(
+    cliPath,
+    `#!${process.execPath}
+const fs = require("node:fs")
+const readline = require("node:readline")
+if (process.argv.includes("--version")) {
+  console.log("2.1.293")
+  process.exit(0)
+}
+const args = process.argv.slice(2)
+const configIndex = args.indexOf("--mcp-config")
+let proxyUrl
+let proxyHeaders = {}
+for (let index = configIndex + 1; configIndex >= 0 && index < args.length; index++) {
+  if (args[index].startsWith("--")) break
+  try {
+    const entry = JSON.parse(fs.readFileSync(args[index], "utf8")).mcpServers?.opencode_proxy
+    proxyUrl = entry?.url ?? proxyUrl
+    proxyHeaders = entry?.headers ?? proxyHeaders
+  } catch {}
+}
+const session = "session-" + process.pid
+const emit = (message) => console.log(JSON.stringify(message))
+const post = (method, params) =>
+  fetch(proxyUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", ...proxyHeaders },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  })
+const warm = post("initialize", {}).then((response) => response.text()).catch(() => {})
+const reply = (text) => {
+  emit({ type: "assistant", session_id: session, message: {
+    role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text }],
+  } })
+  emit({ type: "result", subtype: "success", session_id: session,
+    is_error: false, usage: { input_tokens: 1, output_tokens: 1 } })
+}
+let turns = 0
+emit({ type: "system", subtype: "init", session_id: session })
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  if (JSON.parse(line).type !== "user") return
+  turns++
+  if (turns === 1) return reply("first")
+  void warm.then(async () => {
+    emit({ type: "assistant", session_id: session, message: {
+      role: "assistant", stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "cli-bash", name: "mcp__opencode_proxy__bash", input: ${JSON.stringify(bashInput)} }],
+    } })
+    const response = await post("tools/call", { name: "bash", arguments: ${JSON.stringify(bashInput)} })
+    const body = await response.text()
+    reply(body.includes("hi from opencode") ? "saw the result" : "no result")
+  })
+})
+`,
+    { mode: 0o755 },
+  )
+  const modelId = "claude-haiku-4-5"
+  const provider = createClaudeCode({
+    cwd,
+    cliPath,
+    bridgeOpencodeMcp: false,
+    proxyOpencodeMcpTools: false,
+    proxyTools: ["Bash"],
+    interactive: false,
+    autoContinueIncompleteTurns: false,
+    resumeAfterRestart: false,
+  })
+  const key = sessionKey(cwd, `${modelId}::tools::conversation::context=["claude-code","build"]`)
+  const turn = async (prompt: unknown[]) => {
+    const response = await provider.languageModel(modelId).doStream({
+      tools: [{ type: "function", name: "bash", inputSchema: { type: "object" } }],
+      providerOptions: { "claude-code": { opencodeSessionID: "conversation", opencodeAgent: "build" } },
+      prompt: p(prompt),
+    } as LanguageModelV3CallOptions)
+    const parts: any[] = []
+    for await (const part of response.stream) {
+      if (part.type === "error") throw part.error
+      parts.push(part)
+    }
+    return parts
+  }
+  const cleanup = async () => {
+    for (const call of getPendingProxyCalls(key)) {
+      resolvePendingProxyCallById(call.toolCallId, { kind: "text", text: "test cleanup" })
+    }
+    killAllActiveProcesses()
+    deleteClaudeSessionId(key)
+    _resetServedConversations()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+  return { bashInput, key, turn, cleanup }
+}
+
+test("a step answering the session's own proxied call is not read as a missed conversation", async () => {
+  _resetServedConversations()
+  const f = proxiedTurnFixture()
+  const lines: string[] = []
+  const original = console.error
+  console.error = (line: unknown) => {
+    lines.push(String(line))
+  }
+  _resetLoggerForTests()
+  configureLogger({ mode: "debug", level: "debug" })
+  try {
+    // One served turn, so the session has a recorded chain to compare with.
+    await f.turn([u("one")])
+
+    // The next turn's first step ends on the proxied call.
+    const step1 = await f.turn([u("one"), a("first"), u("two")])
+    const call = step1.find((part) => part.type === "tool-call")
+    assert.ok(call, "the proxied call reached opencode")
+    assert.equal(call.toolName, "bash")
+
+    // Its second step carries opencode's result. The turn's own user message
+    // and tool call are past the recorded chain, which is what read as missed.
+    const step2 = await f.turn([
+      u("one"),
+      a("first"),
+      u("two"),
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: call.toolCallId, toolName: "bash", input: f.bashInput }] },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: call.toolCallId, toolName: "bash", output: { type: "text", value: "hi from opencode" } }],
+      },
+    ])
+    const text = step2.filter((part) => part.type === "text-delta").map((part) => part.delta).join("")
+    assert.match(text, /saw the result/)
+    assert.ok(lines.some((line) => line.includes("resolved pending proxy call")))
+    assert.equal(
+      lines.filter((line) => line.includes("this claude session missed")).length,
+      0,
+      lines.filter((line) => line.includes("missed")).join("\n"),
+    )
+  } finally {
+    console.error = original
+    _resetLoggerForTests()
     await f.cleanup()
   }
 })

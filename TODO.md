@@ -72,6 +72,17 @@
 
 ## Backlog
 
+- 2026-11-04, found on the alwasiyyah session's server (h #g292, "Not fixed here"): a `task` proxy call
+  held unemitted (`emitted: false`, `channelClosed: false`) for 3.5 hours, warning `proxy call still
+  waiting, no deadline` every five minutes, while later turns on the same session key ran normally on a
+  fresh `claude` and never saw it. The server had re-imported `dist` 12 times that day, so the guess is a
+  call parked in an older plugin copy after the session moved to a newer one (h #g269); `sessionHeldHere`
+  counts a writing session or an open form, not a parked call whose child is gone. The call's start had
+  rotated out of `plugin.log`. Next time: capture the log when the first stall WARN appears, and check
+  whether a copy with no child left should reject its parked calls.
+- 2026-11-04: `plugin.log` keeps about an hour at INFO on a busy machine (97 KB in 20 s, two files), so
+  anything older cannot be traced after the fact. Consider a larger rotation or a per-session filter
+  before the next post-mortem needs it.
 - 2026-11-04, seen while lane `flakes3` ran its load tests: the lane's own turn ended on the start
   watchdog ("Claude process produced no output after the envelope write") at a 1-minute load of 58 to
   68. Unknown whether the `claude` child was wedged or only starved. If a busy machine alone can end a
