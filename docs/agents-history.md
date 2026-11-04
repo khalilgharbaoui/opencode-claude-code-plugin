@@ -10801,6 +10801,8 @@ Windows on the merge commit `2c13a7d` before the tag and on the release commit
 `a4abe38`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`06aff012`), with a GitHub Release.
 
+## Six test files' load flakes, fixed in the tests (2026-11-04)
+
 h #g290. Lane `flakes3`, the suspected load flakes `TODO.md` held after h #g286 and
 h #g289, plus `test/claude-login.test.ts`, which the lane's first full `npm test`
 failed (approved 2026-11-04, "do the most recommended"). Method: h #g283's, 40
@@ -10834,6 +10836,11 @@ its own (`setInterval`), the version probe is answered first so only the
 `auth status` spawn is timed, the reason must be the timeout's ("no answer within"),
 and the bound is 30 s, far below a hang and far above a loaded spawn. Its old
 5,000 ms bound also held the version probe, which alone took longer under load.
+
+Shipped as v0.68.1 on 2026-11-04 (PR #164, PR #165), a patch: CI green on Linux and
+Windows on the merge commit `1d97213` before the tag and on the release commit
+`4113528`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`238e48a2`), with a GitHub Release.
 
 ## The interactive transport answers "Resume this conversation?" with Resume (2026-11-04)
 
@@ -10908,3 +10915,8 @@ PELICAN, answered `PELICAN` with `end_turn`. The probe transcripts, their
 `session-env` entries and the scratch tree were deleted. The first probe ran
 while the parallel lane's load lock was held (a check that printed the lock
 and did not wait); it made no API call.
+
+Shipped as v0.68.1 on 2026-11-04 (PR #164, PR #165), a patch: CI green on Linux and
+Windows on the merge commit `1d97213` before the tag and on the release commit
+`4113528`, the publish confirmed by the Publish step's tail and the version
+document's shasum (`238e48a2`), with a GitHub Release.

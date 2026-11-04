@@ -184,13 +184,13 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
-- 2026-11-04: **done** (h #g290, lane `flakes3`, tests only): the suspected load flakes, each reproduced
+- 2026-11-04: **done** (v0.68.1, PR #164, h #g290, lane `flakes3`, tests only): the suspected load flakes, each reproduced
   with 40 copies under load first. `cli-model-probe` (40 of 40 to 0 of 80), `session-fork` (34 of 40 to
   0 of 80), `subagent-dispatch-stream`'s argv comparison (16 of 40 to 0 of 80; `subagent-dispatch` itself
   0 of 40), `account-failover`'s two cancel tests (35 of 40 on master, to 0 of 40) and `claude-login`
   (35 of 40 to 0 of 80): cold probes inside the measured window, `env` shebangs and clock-bound waits.
   `plugin-copies`' missing resume record did not reproduce (0 of 80), closed by h #g283's isolation.
-- 2026-11-04: **done** (h #g291): the interactive transport answers Claude Code 2.1.314's "Resume this
+- 2026-11-04: **done** (v0.68.1, PR #165, h #g291): the interactive transport answers Claude Code 2.1.314's "Resume this
   conversation?" dialog with Resume, read off the drawn rows, and never "Start a new conversation"; a
   dialog it cannot answer that way fails the start. What draws it was read out of the binary; four live
   probes on this Max 5x account could not get the CLI to draw it, so the fake-TUI tests carry the
