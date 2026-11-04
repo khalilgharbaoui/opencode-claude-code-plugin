@@ -257,6 +257,10 @@ export function createLineHandler(
       if (outer.type === "stream_event") {
         state.gotPartialEvents = true
       }
+      // Whether a reply is still streaming, for the drain's read-only hold
+      // (h #g289): its read-only calls can still arrive until `message_stop`.
+      if (msg.type === "message_start") state.replyStreaming = true
+      if (msg.type === "message_stop" || msg.type === "result") state.replyStreaming = false
 
       if (ctx.handleControlRequest(msg, state.proc)) {
         return

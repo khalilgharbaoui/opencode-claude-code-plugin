@@ -34,6 +34,7 @@ import {
 } from "./background-tasks.js"
 import {
   applyAlwaysLoad,
+  applyReadOnlyHints,
   createProxyMcpServer,
   resolveMcpProxyToolDefs,
   DEFAULT_PROXY_TOOLS,
@@ -563,8 +564,13 @@ export async function ensureProxyServer(
     return completed
   }
   // Served with `_meta["anthropic/alwaysLoad"]` on the tools the option names,
-  // so the first proxied call skips the `ToolSearch` request (h #g276).
-  const served = applyAlwaysLoad(tools, config.alwaysLoadProxyTools)
+  // so the first proxied call skips the `ToolSearch` request (h #g276), and
+  // with `readOnlyHint` on `webfetch`, so one reply's fetches run at once
+  // (h #g289).
+  const served = applyReadOnlyHints(
+    applyAlwaysLoad(tools, config.alwaysLoadProxyTools),
+    config.parallelWebfetch !== false,
+  )
   const srv = await createProxyMcpServer(served, timeoutOverrides, interceptors, {
     admit,
     taskModelGuard,

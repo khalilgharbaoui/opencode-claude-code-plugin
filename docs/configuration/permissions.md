@@ -137,6 +137,8 @@ Set `permissionMode: "plan"` to forward `--permission-mode plan` to Claude. The 
 > **Plan mode never permits edits, and you do not have to configure anything for that.** The CLI lets `--dangerously-skip-permissions` override `--permission-mode plan` outright, and `skipPermissions` defaults to `true`, so until this was fixed anyone asking for plan mode silently got full write access (measured on CLI 2.1.258: the run wrote a file on request without a prompt). The plugin now drops the skip flag whenever `permissionMode` is `"plan"`; every other mode governs prompting, which is what that flag is for, so those still pass it.
 >
 > Two things to know. Nothing releases plan mode mid-session: headless Claude Code is not offered an `ExitPlanMode` tool, so approving a plan in chat does not unlock writes, and leaving plan mode means changing the config and restarting opencode. The plugin warns about this once at startup. And the CLI still writes its own plan document under `~/.claude*/plans/`, which is its own feature and outside your workspace; your files and commands are untouched.
+>
+> Claude can fetch web pages in plan mode. The proxied `webfetch` is marked read-only (`parallelWebfetch`, on by default), so plan mode lets it through as it lets Claude's own WebFetch through, and opencode's `webfetch` permission still decides each fetch. With `parallelWebfetch: false` every proxied fetch is refused in plan mode.
 
 By default that prompt is text: the plan is rendered as markdown, followed by `**Do you want to proceed with this plan?** (yes/no)`, and you answer in your next message.
 

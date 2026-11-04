@@ -87,6 +87,8 @@ export interface ClaudeCodeConfig {
   proxyOpencodeTools?: string[]
   /** See `ClaudeCodeProviderSettings.alwaysLoadProxyTools`. Default bash, edit, write. */
   alwaysLoadProxyTools?: boolean | string[]
+  /** See `ClaudeCodeProviderSettings.parallelWebfetch`. Default true. */
+  parallelWebfetch?: boolean
   stripContextReminders?: boolean
   /** See `ClaudeCodeProviderSettings.verbatimPrompts`. Default true. */
   verbatimPrompts?: boolean
@@ -538,6 +540,23 @@ export interface ClaudeCodeProviderSettings {
    * ignores the field.
    */
   alwaysLoadProxyTools?: boolean | string[]
+
+  /**
+   * Run the proxied `webfetch` calls of one Claude reply at once, in one
+   * opencode step. Default true.
+   *
+   * The proxy serves `webfetch` with the MCP `readOnlyHint` annotation, which
+   * Claude Code reads as safe to run beside the reply's other read-only calls,
+   * and the plugin holds those calls until the reply has finished streaming
+   * so they leave in one step. Measured on Claude Code 2.1.314 with three
+   * fetches of one second each: one opencode step instead of three, 2.3 s
+   * from the first call to the answer instead of 5.3 s, the same API
+   * requests. A non-read-only call (`bash`, `edit`, `write`) still runs
+   * alone and in order. The hint also lets Claude call `webfetch` under
+   * `permissionMode: "plan"`, where fetching is reading; opencode's own
+   * `webfetch` permission still decides. `false` serves no annotation.
+   */
+  parallelWebfetch?: boolean
 
   /**
    * Deliver the text of every message as written. Default true.

@@ -317,6 +317,7 @@ export function createClaudeCode(
       proxyTools,
       proxyOpencodeTools: settings.proxyOpencodeTools,
       alwaysLoadProxyTools: settings.alwaysLoadProxyTools,
+      parallelWebfetch: settings.parallelWebfetch !== false,
       stripContextReminders: settings.stripContextReminders === true,
       verbatimPrompts: settings.verbatimPrompts !== false,
       extraDisallowedTools:
