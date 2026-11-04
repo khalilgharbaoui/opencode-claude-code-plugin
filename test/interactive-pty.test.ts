@@ -43,6 +43,7 @@ import {
   spawnInteractiveProcess,
 } from "../src/claude-session-wrapper.js"
 import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "../src/plan-mode-question.js"
+import { _setAccountUsageStorePathForTests, snapshotAccountUsage } from "../src/account-usage.js"
 import { describeResultFailure, parseToolProgress } from "../src/cli-events.js"
 import {
   deleteActiveProcess,
@@ -1037,6 +1038,63 @@ test("the plan approval dialog is recognised, and a reply quoting it is not", ()
   )
 })
 
+/** Verbatim from 2.1.314: the dialog for an `ExitPlanMode` call with no plan. */
+const EMPTY_PLAN_DIALOG =
+  "Exit plan mode? Claude wants to exit plan mode ❯ 1. Yes, and switch to default (ask each time) for this session 2. No"
+
+test("the dialog for a call with no plan is a plan approval with plain Yes and No keys", () => {
+  assert.equal(classifyScreen(EMPTY_PLAN_DIALOG)?.kind, "plan-approval")
+  assert.equal(classifyScreen("Claude wants to exit plan mode, so I asked. Yes or no?"), null)
+  assert.deepEqual(planApprovalKeys(EMPTY_PLAN_DIALOG), { approve: "1", reject: "2", rejectTakesText: false })
+  // A full plan dialog drawn after it in the same window is the one read.
+  assert.deepEqual(planApprovalKeys(`${EMPTY_PLAN_DIALOG} ${PLAN_DIALOG}`), {
+    approve: "2",
+    reject: "3",
+    rejectTakesText: true,
+  })
+})
+
+for (const approved of [true, false]) {
+  test(`an ExitPlanMode call with no plan parks on its own dialog and is ${approved ? "approved" : "rejected"}`, async () => {
+    // Measured on 2.1.314 (h #g287): Haiku 5.5 called `ExitPlanMode` with
+    // `{}`, the TUI drew this dialog, and before it was read the turn was
+    // interrupted after `planDialogWaitMs`.
+    const key = approved ? "1" : "2"
+    const tui = new FakeTui()
+    tui.turns.push((t) => {
+      t.append(
+        assistantRecord("m-plan-0", "tool_use", { type: "tool_use", id: "plan-0", name: "ExitPlanMode", input: {} }),
+      )
+      t.later(20, () => t.screen(EMPTY_PLAN_DIALOG))
+    })
+    const onWrite = tui.onWrite.bind(tui)
+    tui.onWrite = (data: string) => {
+      onWrite(data)
+      if (data !== key) return
+      tui.append(
+        approved
+          ? planResultRecord("plan-0", "User has approved exiting plan mode. You can now proceed.")
+          : planResultRecord("plan-0", REJECTED_EXIT_PLAN_MODE_PREFIX, true),
+        assistantRecord("m-done", "end_turn", textBlock("done")),
+      )
+    }
+    const events: ScreenEvent[] = []
+    await withSession(
+      tui,
+      async (session) => {
+        await session.start()
+        const turn = session.tailTurn("plan it", () => {})
+        await waitFor(() => events.some((event) => event.action === "parked"))
+        assert.equal(await session.answerPlanApproval({ approved, feedback: "not typed anywhere" }), true)
+        assert.equal((await turn).end, "stop")
+      },
+      { onScreen: (event) => events.push(event) },
+    )
+    assert(tui.writes.includes(key))
+    assert(!tui.writes.some((w) => w.includes("not typed anywhere")), "a plain No takes no text")
+  })
+}
+
 test("a plan approval parks the turn until the operator decides, then the turn goes on", async () => {
   const tui = new FakeTui()
   tui.turns.push((t) => {
@@ -1578,6 +1636,34 @@ test("a usage limit on the PTY ends on the plugin's note, with the TUI's reset t
     assert.equal(finish.finishReason.unified, "error")
     assert.equal(finish.finishReason.raw, "usage_limit")
   } finally {
+    dirs.cleanup()
+  }
+})
+
+test("the 5-hour limit's newer name on the PTY still names the window and records it there", async () => {
+  // Claude Code 2.1.312 renamed the window in its own table of limit names:
+  // `five_hour: "5-hour limit"` in 2.1.314 where 2.1.293 has "session limit"
+  // (both read out of the binaries, h #g287). The PTY has no
+  // `rate_limit_event`, so this sentence is the only place the window is said.
+  const dirs = scratch()
+  _setAccountUsageStorePathForTests(path.join(dirs.cwd, "account-usage.json"))
+  try {
+    const record = structuredClone(SESSION_LIMIT_RECORD)
+    record.message.content = [
+      { type: "text", text: "You've hit your 5-hour limit · resets 3pm (Europe/Amsterdam)" },
+    ]
+    const { parts } = await runFakeBunTurn(dirs, "claude-test-pty-limit-5h", (t) => {
+      t.append(record)
+      t.append({ type: "system", subtype: "turn_duration", durationMs: 812 })
+    })
+    const text = textOf(parts)
+    assert.match(text, /in the 5-hour window, which resets 3pm \(Europe\/Amsterdam\)\./)
+    assert.doesNotMatch(text, /You've hit your 5-hour limit/, "the note replaces the CLI's sentence")
+    const windows = snapshotAccountUsage().get("default")
+    assert.equal(windows?.get("five_hour")?.status, "rejected")
+    assert.equal(windows?.has("unknown"), false)
+  } finally {
+    _setAccountUsageStorePathForTests(null)
     dirs.cleanup()
   }
 })

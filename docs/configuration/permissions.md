@@ -146,6 +146,7 @@ The [interactive transport](../guides/interactive-transport.md) is where plan mo
 
 - **Approve** with a bare yes (`yes`, `ok`, `proceed`, `lgtm`...), or `yes` in the form with `planModeQuestion`. The plugin picks "Yes, manually approve edits" and the same Claude turn carries on and does the work.
 - **Anything else** is what Claude should change. The plugin picks "Tell Claude what to change" and types your words, Claude revises the plan, and you are asked again.
+- **When Claude asks to leave plan mode without writing a plan**, Claude Code shows a shorter dialog with only Yes and No. Approving picks its Yes; anything else picks No, and your words are not passed on, because that dialog has no field for them. Measured on Claude Code 2.1.314.
 
 To write its plan file Claude needs its own `Write`, so in plan mode on this transport the proxy does not serve `write` and `edit`: Claude's own `Write` and `Edit` stay enabled, confined by plan mode to the plan file until you approve, and pre-allowed by `interactiveAllowTools` afterwards. Measured on Claude Code 2.1.288 through opencode 1.18.34 (with and without `planModeQuestion`) and 2.0.22: a plan approved by form and by a typed `yes`, and a rejection carrying "Call the file plan-b.txt instead" that came back as a revised plan.
 

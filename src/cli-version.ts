@@ -349,9 +349,9 @@ export function cliSupportsMaxTurns(v: CliVersion | null): boolean {
  * transport exists for the day a new CLI drops `--print`, and refusing
  * unmeasured versions would switch it off exactly then.
  */
-export const INTERACTIVE_MEASURED_CLI = "2.1.293"
+export const INTERACTIVE_MEASURED_CLI = "2.1.314"
 
-const INTERACTIVE_MEASURED = { major: 2, minor: 1, patch: 293 }
+const INTERACTIVE_MEASURED = { major: 2, minor: 1, patch: 314 }
 
 /** True when `v` is known and newer than `INTERACTIVE_MEASURED_CLI`. */
 export function isUnmeasuredInteractiveCli(v: CliVersion | null): boolean {

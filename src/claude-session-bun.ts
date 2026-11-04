@@ -314,6 +314,17 @@ const SCREEN_PATTERNS: ReadonlyArray<{ kind: ScreenKind; pattern: RegExp }> = [
     ),
   },
   {
+    // The same approval when the call carries no plan, measured on 2.1.314:
+    // "Exit plan mode? Claude wants to exit plan mode ❯ 1. Yes, and switch to
+    // default (ask each time) for this session 2. No". Drawn instead of the
+    // dialog above whenever the plan is empty (in 2.1.288 to 2.1.314, h #g287).
+    kind: "plan-approval",
+    pattern: new RegExp(
+      `${words("Claude wants to exit plan mode")}[\\s\\S]{0,200}?\\d\\s*\\.\\s*Yes\\b[\\s\\S]{0,200}?\\d\\s*\\.\\s*No\\b`,
+      "i",
+    ),
+  },
+  {
     // The question alone is not enough: Claude can write "Do you want to
     // proceed?" in a reply. The dialog always numbers its options.
     kind: "permission",
@@ -377,12 +388,22 @@ export interface PlanApprovalAnswer {
  * only Yes drawn. Rejection is "Tell Claude what to change", which takes the
  * operator's words (measured on 2.1.288: the CLI hands them to the model in the
  * `ExitPlanMode` result), or an older "No, keep planning", which takes none.
+ * The dialog for a call with no plan offers one "Yes" and a "No", and its
+ * "No" takes no text either.
  */
 export function planApprovalKeys(text: string): {
   approve: string | null
   reject: string | null
   rejectTakesText: boolean
 } {
+  const emptyPlan = /Claude\s*wants\s*to\s*exit\s*plan\s*mode([\s\S]*)$/i.exec(text)?.[1]
+  if (emptyPlan !== undefined && !/Would\s*you\s*like\s*to\s*proceed\?/i.test(emptyPlan)) {
+    return {
+      approve: /(\d)\s*\.\s*Yes\b/i.exec(emptyPlan)?.[1] ?? null,
+      reject: /(\d)\s*\.\s*No\b/i.exec(emptyPlan)?.[1] ?? null,
+      rejectTakesText: false,
+    }
+  }
   const approve =
     /(\d)\s*\.\s*Yes,?\s*(?:and\s*)?manually\s*approve\s*edits/i.exec(text)?.[1] ??
     /(\d)\s*\.\s*Yes,?\s*(?:and\s*)?auto-?\s*accept\s*edits/i.exec(text)?.[1] ??

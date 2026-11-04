@@ -10575,3 +10575,130 @@ Probe cost: about $0.08 at list prices (14 direct probe runs over 13
 scenarios, four opencode runs with the real CLI, three with a fake). Scratch
 cwds, the scratch XDG dirs, their transcripts under `~/.claude/projects/` and
 the probe scripts were deleted afterwards.
+
+## Compatibility sweep: opencode 2.2.5, opencode 1.19.5, Claude Code 2.1.314 (2026-11-04)
+
+h #g287. Lane `compat-2-2`, the regular sweep, done as h #g240 and h #g264 did it.
+The newest published versions were opencode 2.2.5 (`@opencode/plugin`,
+`@opencode/schema` and `@opencode/cli-darwin-arm64` all at 2.2.5, which also
+ships opencode's built-in Claude Agent provider since 2.2.3) and opencode 1.19.5;
+Claude Code was 2.1.314, the newest installed (the registry's `latest` was
+2.1.317, `stable` 2.1.311). The lane ran over two sittings: the first stopped
+when the `default` account's 5-hour window ran out, and the second ran its
+probes on the `appical` account (`CLAUDE_CONFIG_DIR=~/.claude-appical`).
+
+### The APIs, by `curl`'d tarball
+
+- **opencode 1**: `@opencode-ai/plugin` 1.19.0 to 1.19.5 is identical apart from
+  its version and its SDK dependency. `@opencode-ai/sdk` adds one optional field,
+  a model's `reasoning_options` in the provider config. Nothing the plugin reads.
+- **opencode 2**: `@opencode/plugin` 2.1.2 to 2.2.5 is additive for everything the
+  plugin is handed. `SessionDomain`'s `Pick` still has `list` and still has no
+  `active` (h #g176 holds). New: `experimental.generate` and `experimental.artifact`,
+  a `gui` entry beside `server`/`tui`/`rpc`, `session.instructions.entry`, and
+  `event.subscribe` taking typed options, which a call with none (the plugin's)
+  is unaffected by. `@opencode/schema`: the `session.*` event set is the same 53
+  names, `session.execution.interrupted`'s reasons are unchanged, `Session.Info`
+  (`session.js`) and `config/mcp` (`mcp.js`) are byte-identical, and an MCP status
+  is still one of `connected`, `pending`, `disabled`, `failed`, `needs_auth`.
+  `src/opencode-v2-types.ts` needed no edit.
+
+### Live, headless
+
+Every probe used a scratch XDG tree, the plugin from the worktree's `dist`,
+`OPENCODE_CLAUDE_CODE_LOG_DIR` in the scratch tree and `claude-haiku-5-5`.
+
+- **opencode 2.2.5** (`run --standalone` and a private `serve`): a text turn, a
+  proxied `shell` with a CLI-native `read` in one turn (`queued pending proxy
+  call`, `resolved pending proxy call`, `tool call complete {"executed":true}`),
+  reuse (a second prompt on the same process), `/compact` (the compaction
+  transcript on `claude-haiku-4-5`, then the codeword still answered),
+  `/claude-code-doctor` (`opencode 2.2.5`, `claude CLI 2.1.314`), and `/btw` during
+  a 25-second proxied call, answered inside the running turn after 19.8 s with the
+  `/btw` message dropped.
+- **opencode 1.19.5**: the same seven, the same results (`/btw` 20.2 s).
+
+### Live, interactive transport
+
+- **opencode 2.2.5** (default account): text, a proxied `bash` with a CLI-native
+  `Read`, reuse, compaction (a fresh tool-free TUI, exit 143, then the codeword),
+  two images (Blue, Green; the transcript holds the image blocks), `/btw` through a
+  fork (16.9 s), a 130-second proxied call answered after 135.8 s in the
+  foreground (no "moved to the background" in the transcript), and the plan
+  approval through V2's `Form` route (the TUI's three-choice dialog, `yes`, the
+  same turn wrote the file).
+- **opencode 1.19.5** (appical account): text, the proxied `bash` with a native
+  `Read`, reuse (one spawn), an image (Red), `/btw` through a fork (19.8 s), the
+  130-second call in the foreground (142 s, none moved), compaction, and the plan
+  approval, which failed once and passed twice; the failure is the fix below.
+
+So `INTERACTIVE_MEASURED_CLI` is 2.1.314 and `test/fixtures/interactive/2.1.314/`
+was recorded with `scripts/record-interactive-fixtures.ts` (six scenarios; the
+account's `~/.claude-appical/` plan path was rewritten to `~/.claude/`). Its
+`interrupted` scenario holds only the prompt: the Esc landed before Haiku 4.5's
+first record.
+
+### Fix 1: the plan dialog for a call with no plan
+
+The failed plan run on opencode 1: Haiku 5.5 called `ExitPlanMode` with `{}`, the
+TUI drew a dialog the plugin did not know, and after `planDialogWaitMs` the turn
+was interrupted (`interactive transport could not answer the plan approval`).
+Claude Code draws "Exit plan mode? Claude wants to exit plan mode ❯ 1. Yes, and
+switch to default (ask each time) for this session 2. No" instead of the "Would you
+like to proceed?" card whenever the plan is empty (`Wo=!co||co.trim()===""` in
+2.1.314; the strings are in 2.1.288 and 2.1.293 too, so the gap is older than this
+sweep). `classifyScreen` now reads it as a `plan-approval` and `planApprovalKeys`
+answers its plain Yes and No (a No takes no text, like "No, keep planning"). Live
+after the fix, straight through `ClaudeSession` and then through opencode 1.19.5:
+`waiting on a plan approval` with that dialog, `yes`, the same turn wrote the file
+and ended on `end_turn`. Tests: `test/interactive-pty.test.ts` (both answers, red
+without the fix).
+
+### Fix 2: the 5-hour limit's newer name
+
+Claude Code 2.1.312 renamed the window in its own table of limit names:
+`five_hour: "5-hour limit"` in 2.1.314 where 2.1.293 has `"session limit"`. The
+interactive transport has no `rate_limit_event`, so the CLI's sentence ("You've
+hit your 5-hour limit · resets 3pm") is the only place it learns the window, and
+`limitFactsFromText` read only the old name: the usage-limit note lost its window
+and the reading its key. Both names are read now. Tests:
+`test/account-failover.test.ts`, `test/interactive-pty.test.ts`.
+
+### opencode 2 refuses `provider.claude-code.options.transport`
+
+Measured with `opencode models --standalone` (no model call) on 2.1.4, 2.2.0 and
+2.2.5: a config holding `provider.claude-code.options.transport` set to
+`"interactive"`, `"auto"` or `"headless"` makes opencode fail with
+`UnexpectedStatus: 500`, and `"http"` loads. `transport` is opencode 2's own
+provider setting (`Provider.Transport`, `http | websocket`, in the schema since
+2.0.22). The native `providers.claude-code.settings.transport` loads, but opencode
+logs `configuration normalization diagnostic ... skipped malformed recognized
+value` and drops that provider block from its own view; the plugin still reads it
+off disk, which is how the opencode 2 plan probe ran. Nothing in the plugin can
+catch it, because opencode fails before the plugin is asked. The docs now say to
+choose the transport on opencode 2 with `interactive: true`, the plugin's own
+options in the `plugin` tuple, or `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`.
+
+### The built-in Claude Agent provider beside the plugin
+
+On 2.2.5 both are listed: `claude-agent` ("Claude Agent", `activation: auto`,
+`aisdk:@opencode/claude-agent`, models `opus`, `claude-fable-5-1[1m]`, `sonnet`,
+`haiku`) and `claude-code` ("Claude Code", 19 models). No provider id, model id or
+config key is shared. `/connect` lists both, `claude-agent` with `claude-login`
+and `claude-code` with `claude-code-cli`, and connecting the plugin's ran its login
+check (`status: logged-in`). A `claude-agent` turn wrote no plugin log line, and
+the same session switched to `claude-code` replayed the thread as text (no Claude
+session of the plugin's to continue, the expected path) and answered with the
+earlier turn's word; the next turn reused the process.
+
+### Seen and not chased
+
+Claude Code 2.1.314 has a "Resume this conversation?" dialog ("This conversation
+has been inactive for ... and is N tokens long. Resuming it will use about X% of
+your 5-hour usage limit"), which the interactive transport does not recognise. No
+probe drew it; what triggers it on a `--resume` of a long idle conversation is
+owed (`TODO.md`).
+
+Probe cost: a few dollars at list prices across both sittings, almost all Haiku.
+The scratch tree, the worktree and the probe sessions' transcripts were deleted
+afterwards.

@@ -351,11 +351,14 @@ export interface AccountLimitFacts {
 /**
  * What the CLI's own limit sentence says, read off its text. Measured on
  * 2.1.288: `You've hit your session limit · resets 3pm (Europe/Amsterdam)`,
- * the 5-hour window. Only the shapes seen are read; anything else yields `{}`.
+ * the 5-hour window. 2.1.312 renamed that window in the CLI's own table of
+ * limit names (`five_hour: "5-hour limit"`, read out of 2.1.314; 2.1.293 has
+ * `"session limit"`), so both names are read. Only the shapes seen are read;
+ * anything else yields `{}`.
  */
 export function limitFactsFromText(text: string): AccountLimitFacts {
   const facts: AccountLimitFacts = {}
-  if (/\bsession limit\b/i.test(text)) facts.window = "five_hour"
+  if (/\b(?:session|5-hour) limit\b/i.test(text)) facts.window = "five_hour"
   const reset = /\bresets\s+([^·\n]{1,60}?)\s*$/im.exec(text)
   if (reset) facts.resetsText = reset[1]!.trim()
   return facts

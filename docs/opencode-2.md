@@ -17,6 +17,8 @@ The same package runs on opencode 1.x and 2.x, and nothing changes for 1.x. The 
 
 Your existing `provider.claude-code.options` block keeps working, because opencode 2 still reads 1.x config files. opencode 2's own spelling is `providers.claude-code.settings` (note the plural `providers`). All four places the plugin reads its settings from, lowest precedence first: `provider.claude-code.options`, `provider.claude-code.settings`, `providers.claude-code.settings`, and the plugin entry's own `options`, which wins over all of them. Plugin-level settings such as `accounts` usually go in that last one: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
 
+**One setting must not go in the provider block on opencode 2: `transport`.** opencode 2 has a provider setting of that name for itself (`http` or `websocket`), so `provider.claude-code.options.transport` set to `"interactive"`, `"auto"` or `"headless"` stops opencode from loading its config (every command fails with `UnexpectedStatus: 500`, measured on 2.1.4, 2.2.0 and 2.2.5), and under `providers.claude-code.settings` opencode drops the whole block as malformed. Put `transport` in the plugin entry's own `options`, or use `"interactive": true` or `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`. See [Interactive transport](guides/interactive-transport.md).
+
 For a local checkout, point opencode 2 at the **`dist` directory**, not the repository root. It loads `<dir>/server` or `<dir>/index` from a directory and never reads `package.json#main`:
 
 ```json
@@ -25,7 +27,7 @@ For a local checkout, point opencode 2 at the **`dist` directory**, not the repo
 }
 ```
 
-`/connect` and the retry opt-out were measured on opencode **2.2.5** (2026-10-31) with Claude Code 2.1.314. Last checked on opencode **2.1.3** (2026-10-23): a chat turn, a proxied `shell` call, one of Claude's own tools, a session opened in a subdirectory of a project, and a second prompt reusing the same `claude` process. First verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxied tools running through opencode 2's own `shell`, `edit`, `write`, `webfetch` and `subagent` tools and their permission rules, Claude's own tools rendered in the transcript, subagent dispatch with the agent list, reasoning variants, compaction, account providers, `/claude-code-doctor`, `/btw`, and the bundled configuration skill.
+Last checked on opencode **2.2.5** (2026-11-04) with Claude Code 2.1.314: on the default transport a chat turn, a proxied `shell` call with one of Claude's own tools, a second prompt reusing the same `claude` process, `/compact`, `/claude-code-doctor` and `/btw` during a running turn; on the [interactive transport](guides/interactive-transport.md) the same plus images, a 130-second proxied call and the plan-mode approval. `/connect` and the retry opt-out were measured on 2.2.5 on 2026-10-31. On opencode **2.1.3** (2026-10-23): a session opened in a subdirectory of a project. First verified live on opencode **2.0.11** with Claude Code 2.1.280: chat turns, proxied tools running through opencode 2's own `shell`, `edit`, `write`, `webfetch` and `subagent` tools and their permission rules, Claude's own tools rendered in the transcript, subagent dispatch with the agent list, reasoning variants, compaction, account providers, `/claude-code-doctor`, `/btw`, and the bundled configuration skill.
 
 opencode 2 gives a plugin no way to ask whether a session is busy and no toast of its own, so the plugin reads opencode 2's event stream for the first and uses the channel opencode 2 gives a plugin between its two halves for the second. With those, these work as they do on 1.x (measured on 2.0.22 and 2.0.31):
 
@@ -33,6 +35,8 @@ opencode 2 gives a plugin no way to ask whether a session is busy and no toast o
 - **A permission prompt does not count against a proxied call's deadline.** While opencode is still running the turn, because it is waiting on you or the tool is still working, a proxied call that passes its deadline is kept.
 - **Stopping a turn releases the proxied calls it was waiting on**, and interrupts Claude's own turn, instead of leaving them until your next message.
 - **The plugin's warnings appear as toasts** titled `claude-code`, raised by the sidebar half. See [Logging](configuration/logging.md).
+
+opencode 2.2.3 and later ship their own **Claude Agent** provider (id `claude-agent`). It and this plugin share no provider id, model id, setting or `/connect` entry, and both can be used in one opencode (measured on 2.2.5). Moving a chat from one to the other replays the conversation to the new one as text, because neither can continue the other's Claude session.
 
 opencode 2 also has two things 1.x has no counterpart for:
 

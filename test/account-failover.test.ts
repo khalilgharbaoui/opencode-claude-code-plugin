@@ -56,6 +56,7 @@ import {
   formatFailoverNote,
   isAccountFailoverQuestionActive,
   isAccountLimitError,
+  limitFactsFromText,
   resolveAccountOverride,
   resolveFailoverSpawn,
   setAccountOverride,
@@ -362,6 +363,22 @@ test("with no other account the note says what is left: wait, or enable extra us
   })
   assert.match(note, /Wait for the window to reset, or enable extra usage on the account\./)
   assert.equal(note.includes("Pick a model"), false)
+})
+
+test("the CLI's limit sentence names the 5-hour window under its old and its 2.1.312 name", () => {
+  // 2.1.293's table says `five_hour: "session limit"`, 2.1.314's
+  // `five_hour: "5-hour limit"` (h #g287); the reset phrase is the same.
+  for (const name of ["session limit", "5-hour limit"]) {
+    assert.deepEqual(limitFactsFromText(`You've hit your ${name} · resets 3pm (Europe/Amsterdam)`), {
+      window: "five_hour",
+      resetsText: "3pm (Europe/Amsterdam)",
+    })
+  }
+  // A window the plugin has not seen in this sentence stays unnamed.
+  assert.deepEqual(limitFactsFromText("You've hit your weekly limit · resets Nov 5, 9am"), {
+    resetsText: "Nov 5, 9am",
+  })
+  assert.deepEqual(limitFactsFromText("Something else went wrong"), {})
 })
 
 test("an unknown window and a missing reset are omitted, never guessed", () => {
