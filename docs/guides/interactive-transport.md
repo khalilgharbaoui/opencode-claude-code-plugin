@@ -23,9 +23,10 @@ With `transport` unset, the default remains headless. `interactive: true` or `CL
 
 ### Requirements
 
-- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. Explicit `transport: "interactive"` and an automatic PTY selection fail clearly when it is absent. The legacy `interactive` option still falls back to headless. Both opencode 1.x and 2.x provide it: verified live on 1.18.35 and 2.0.22 with Claude Code 2.1.293. On opencode 2 the option goes under `providers.claude-code.settings` instead of `provider.claude-code.options`.
+- opencode must be running under **Bun** with `Bun.Terminal` (PTY) support. Explicit `transport: "interactive"` and an automatic PTY selection fail clearly when it is absent. The legacy `interactive` option still falls back to headless. Both opencode 1.x and 2.x provide it: verified live on 1.19.5 and 2.2.5 with Claude Code 2.1.314.
+- **On opencode 2, do not set `transport` in the provider block.** `transport` is also opencode 2's own provider setting (`http` or `websocket`), so `provider.claude-code.options.transport` set to `"interactive"`, `"auto"` or `"headless"` stops opencode from loading its config at all (measured on 2.1.4, 2.2.0 and 2.2.5: every command fails with `UnexpectedStatus: 500`), and under `providers.claude-code.settings` opencode logs it as a malformed value and drops that block. Use `"interactive": true` there instead, or the plugin's own options (`"plugin": [["@khalilgharbaoui/opencode-claude-code-plugin", { "transport": "auto" }]]`), or `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`.
 - A working, authenticated `claude` using the account you intend. Transport selection cannot repair an expired login or a usage limit.
-- **Measured on Claude Code 2.1.293.** The transport reads the TUI's screen and its transcript, and neither is a published contract, so a newer release can change what it relies on. A newer CLI is not refused (this transport exists for the day a new release drops `--print`); the plugin logs one warning per new version and `/claude-code-doctor` flags it. If a turn hangs or a dialog is not handled on a newer CLI, `/claude-code-doctor bundle` is the report to send.
+- **Measured on Claude Code 2.1.314.** The transport reads the TUI's screen and its transcript, and neither is a published contract, so a newer release can change what it relies on. A newer CLI is not refused (this transport exists for the day a new release drops `--print`); the plugin logs one warning per new version and `/claude-code-doctor` flags it. If a turn hangs or a dialog is not handled on a newer CLI, `/claude-code-doctor bundle` is the report to send.
 
 ### What carries over from the headless transport
 
@@ -72,7 +73,7 @@ The TUI has no control channel, so everything it is blocked on is drawn on the s
 - **A tool permission dialog** is denied with Esc, because there is nobody at that terminal to ask. The denial ends the turn as an interrupted one and is reported in the result's `permission_denials` with the tool's name and id. With the default `skipPermissions` on Claude Code 2.1.263 or newer no dialog is raised; otherwise widen `interactiveAllowTools` for a tool you want to run.
 - **The usage-limit screen's "continuing automatically at <time>"** is cancelled, or the turn would rerun hours later with nobody watching.
 
-The plan approval dialog is the one it does **not** answer: it waits for your decision, then presses the matching choice, read off the dialog itself.
+The plan approval dialog is the one it does **not** answer: it waits for your decision, then presses the matching choice, read off the dialog itself. That includes the shorter dialog Claude Code draws when `ExitPlanMode` arrives with no plan written ("Exit plan mode? ... 1. Yes ... 2. No"), which until h #g287 was never recognised and ended the turn as interrupted.
 
 ### How a turn behaves
 

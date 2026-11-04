@@ -172,9 +172,13 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 - Live checks owed by v0.55.0: `accountFailover: "auto"` (PR #115) and PR #115's v0.60.2 fixes against
   two real logins hitting real limits (needs the second login under Parked), and the #114 agent-switch
   gap replay on opencode 2.
-- With the next compatibility sweep: the interactive transport's full live list on Claude Code 2.1.300
-  (`INTERACTIVE_MEASURED_CLI` is still 2.1.293), and on opencode 2.1.3 the forms, the MCP bridge with a
-  real server, background subagents, `/btw` and the doctor (h #g264's "not measured").
+- With the next compatibility sweep, still not measured on opencode 2.2.x (h #g287 ran the headless and
+  interactive lists only): the account-switch and dispatch forms, the MCP bridge with a real server and
+  background subagents.
+- Claude Code 2.1.314's "Resume this conversation?" dialog ("inactive for ... Resuming it will use about
+  X% of your 5-hour usage limit"): the interactive transport does not recognise it. Find out what draws it
+  on a `--resume` of a long idle conversation (an idle-evicted TUI resuming), then classify and answer it
+  with a fake-TUI test (h #g287).
 - Next fork sweep: mid-November.
 
 ## Parked
@@ -203,6 +207,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-04: **done** (h #g287, lane `compat-2-2`, no release): the compatibility sweep, opencode 2.2.5 and
+  1.19.5 against Claude Code 2.1.314. APIs additive; headless and interactive lists live on both majors;
+  `INTERACTIVE_MEASURED_CLI` 2.1.314 with fixtures; the built-in Claude Agent provider coexists. Fixed the
+  plan dialog for an `ExitPlanMode` call with no plan (never recognised, turn interrupted) and the 5-hour
+  limit's 2.1.312 name; documented that opencode 2 refuses `provider.claude-code.options.transport`.
 - 2026-11-04: **done** (PR #160, h #g286, test-only, no release): the flakes2 lane. `test/proxy-task.test.ts`
   failed 40 of 40 runs under h #g283's load and 0 of 80 after (fake CLI `result` timers, two tests acting
   inside the provider's fixed windows, and a `/usr/bin/env` exec costing seconds per cold start on this Mac).

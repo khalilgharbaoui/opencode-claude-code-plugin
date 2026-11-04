@@ -359,7 +359,12 @@ all opencode processes after provider/plugin changes; ask before live probes.
 ### Transport selection
 
 To opt into fallback when the CLI removes headless flags, put this in the provider
-options (or `providers.claude-code.settings` on opencode 2):
+options on opencode 1. On opencode 2 put it in the plugin's own options instead
+(`"plugin": [["<plugin spec>", { "transport": "auto" }]]`), or use
+`"interactive": true` or `CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`: `transport` is
+opencode 2's own provider setting (`http` / `websocket`), so it fails opencode's config
+load under `provider.claude-code.options` (a 500 on every command, 2.1.4 to 2.2.5) and is
+dropped as malformed under `providers.claude-code.settings`:
 
 ```json
 { "transport": "auto" }
