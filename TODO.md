@@ -162,10 +162,6 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 - With the next compatibility sweep, still not measured on opencode 2.2.x (h #g287 ran the headless and
   interactive lists only): the account-switch and dispatch forms, the MCP bridge with a real server and
   background subagents.
-- Claude Code 2.1.314's "Resume this conversation?" dialog ("inactive for ... Resuming it will use about
-  X% of your 5-hour usage limit"): the interactive transport does not recognise it. Find out what draws it
-  on a `--resume` of a long idle conversation (an idle-evicted TUI resuming), then classify and answer it
-  with a fake-TUI test (h #g287).
 - Next fork sweep: mid-November.
 
 ## Parked
@@ -194,6 +190,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
   0 of 40), `account-failover`'s two cancel tests (35 of 40 on master, to 0 of 40) and `claude-login`
   (35 of 40 to 0 of 80): cold probes inside the measured window, `env` shebangs and clock-bound waits.
   `plugin-copies`' missing resume record did not reproduce (0 of 80), closed by h #g283's isolation.
+- 2026-11-04: **done** (h #g291): the interactive transport answers Claude Code 2.1.314's "Resume this
+  conversation?" dialog with Resume, read off the drawn rows, and never "Start a new conversation"; a
+  dialog it cannot answer that way fails the start. What draws it was read out of the binary; four live
+  probes on this Max 5x account could not get the CLI to draw it, so the fake-TUI tests carry the
+  component's literal text and the live check is a resumed 3-hour-old conversation keeping its context.
 - 2026-11-04: **done** (v0.68.0, PR #163, h #g289): one reply's proxied webfetch calls run in one
   opencode step (`parallelWebfetch`, default on): three 1-second fetches went from 4 steps and 5.1 to 5.8 s
   to 2 steps and 2.2 to 2.4 s; hooks, deny rules and opencode's prompts unchanged. Released together

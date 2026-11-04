@@ -252,6 +252,12 @@ export type ScreenKind =
   /** The usage-limit screen's armed "continuing automatically at <time>".
    *  Cancelled, or the turn reruns later with nobody watching. */
   | "auto-continue"
+  /** Claude Code's cold-cache "Resume this conversation?" dialog (2.1.314),
+   *  drawn on a `--resume` of a conversation whose prompt cache has expired
+   *  and, mid-session, after an idle stretch. Answered "Resume", the choice
+   *  that keeps the whole conversation, which is what a headless `--resume`
+   *  does without asking. Never "Start a new conversation". */
+  | "resume-quota"
 
 export interface ScreenState {
   kind: ScreenKind
@@ -260,7 +266,7 @@ export interface ScreenState {
 }
 
 export interface ScreenEvent extends ScreenState {
-  action: "accepted" | "denied" | "cancelled" | "fatal" | "parked"
+  action: "accepted" | "denied" | "cancelled" | "fatal" | "parked" | "resumed"
 }
 
 function words(text: string): string {
@@ -334,6 +340,19 @@ const SCREEN_PATTERNS: ReadonlyArray<{ kind: ScreenKind; pattern: RegExp }> = [
     ),
   },
   {
+    // Read out of the 2.1.314 binary (the component behind the
+    // `cli_cold_resume_quota_warning` dialog): the title, "This conversation
+    // has been inactive for <time> and is <n> tokens long. Resuming it will
+    // use about <x>% of your 5-hour usage limit.", then the choices "Resume"
+    // and "Start a new conversation". The title alone could be a reply quoting
+    // it; the second choice is what only the dialog draws after it.
+    kind: "resume-quota",
+    pattern: new RegExp(
+      `${words("Resume this conversation?")}[\\s\\S]{0,1200}?${words("Start a new conversation")}`,
+      "i",
+    ),
+  },
+  {
     kind: "auto-continue",
     pattern: new RegExp(
       `${words("continuing automatically at")}[^·\\n]{1,40}·\\s*${words("esc to cancel")}`,
@@ -371,6 +390,23 @@ export function highlightedChoice(text: string): "yes" | "no" | null {
     last = match[1]!.toLowerCase()
   }
   return last === "yes" || last === "no" ? last : null
+}
+
+/**
+ * Which row of the "Resume this conversation?" dialog the TUI's `❯` marks,
+ * read from the newest draw, or null when no marked row is on screen. The
+ * CLI focuses "Resume" by default, "Start a new conversation" under a server
+ * flag, and nothing at all in screen reader mode, so Enter is only ever
+ * pressed once this says "resume".
+ */
+export function resumeQuotaChoice(text: string): "resume" | "new" | null {
+  let last: "resume" | "new" | null = null
+  for (const match of text.matchAll(
+    /❯\s*(?:\d+\s*\.\s*)?(?:(Resume)(?!\s*this\s*conversation)\b|(Start\s*a\s*new\s*conversation))/gi,
+  )) {
+    last = match[1] ? "resume" : "new"
+  }
+  return last
 }
 
 /** The operator's decision on an `ExitPlanMode` approval dialog. */
@@ -900,6 +936,9 @@ function fatalScreenMessage(kind: ScreenKind, configDir: string, cwd: string): s
   if (kind === "trust") {
     return `Claude Code's folder trust dialog for ${cwd} could not be answered. Run \`claude\` in that folder once by hand and trust it, then retry.`
   }
+  if (kind === "resume-quota") {
+    return `Claude Code's "Resume this conversation?" dialog could not be answered with Resume, and the other choice would start a new conversation. Resume this session once with \`claude --resume\` by hand, then retry.`
+  }
   if (kind === "login") {
     return `Claude Code is not logged in for ${configDir}. Run \`claude\` there once by hand and log in (or \`claude auth login\`), then retry.`
   }
@@ -941,6 +980,10 @@ export class ClaudeSession {
   private trustPending = false
   private trustMoves = 0
   private trustMovedAt = 0
+  /** The cold-cache resume dialog is up, answered once "Resume" is marked. */
+  private resumeQuotaPending = false
+  private resumeQuotaMoves = 0
+  private resumeQuotaMovedAt = 0
   private turn: Promise<unknown> | null = null
   /** The running turn's read state, shared with `flushTranscript`. */
   private scan: TurnScan | null = null
@@ -1173,7 +1216,9 @@ export class ClaudeSession {
     // lines, which no longer match the dialog's own wording.
     const state: ScreenState | null = this.trustPending
       ? { kind: "trust", detail: "folder trust dialog" }
-      : classifyScreen(text)
+      : this.resumeQuotaPending
+        ? { kind: "resume-quota", detail: "resume this conversation dialog" }
+        : classifyScreen(text)
     if (!state) return null
     let action: ScreenEvent["action"]
     switch (state.kind) {
@@ -1198,6 +1243,32 @@ export class ClaudeSession {
         this.trustMoves++
         this.trustMovedAt = Date.now()
         this.write("\x1b[B")
+        return null
+      }
+      case "resume-quota": {
+        // Like trust: read the marked row, move only with arrows, press Enter
+        // only on "Resume". "Resume" is the first row, so the move is up.
+        this.resumeQuotaPending = true
+        const choice = resumeQuotaChoice(text)
+        if (choice === "resume") {
+          this.write("\r")
+          this.resumeQuotaPending = false
+          this.resumeQuotaMoves = 0
+          this.resumeQuotaMovedAt = 0
+          action = "resumed"
+          break
+        }
+        if (this.resumeQuotaMovedAt && this.lastDataAt <= this.resumeQuotaMovedAt) return null
+        if (this.resumeQuotaMoves >= 4) {
+          this.resumeQuotaPending = false
+          action = "fatal"
+          break
+        }
+        // "Start a new conversation" marked, or no row marked yet (screen
+        // reader mode focuses none): an arrow moves focus and answers nothing.
+        this.resumeQuotaMoves++
+        this.resumeQuotaMovedAt = Date.now()
+        this.write("\x1b[A")
         return null
       }
       case "permission":
@@ -1269,7 +1340,7 @@ export class ClaudeSession {
       const sinceData = Date.now() - this.lastDataAt
       if (elapsed >= this.o.bootMinMs && sinceData >= this.o.bootQuietMs) {
         const acted = this.checkScreen()
-        if (!acted && !this.trustPending) return
+        if (!acted && !this.trustPending && !this.resumeQuotaPending) return
         const fatalNow = this.fatalError()
         if (fatalNow) throw fatalNow
       }
@@ -1277,6 +1348,11 @@ export class ClaudeSession {
     // Pasting a prompt into the dialog would answer it with the prompt's text.
     if (this.trustPending) {
       this.fatal = { kind: "trust", detail: "folder trust dialog", action: "fatal" }
+      this.killProcess()
+      throw this.fatalError()!
+    }
+    if (this.resumeQuotaPending) {
+      this.fatal = { kind: "resume-quota", detail: "resume this conversation dialog", action: "fatal" }
       this.killProcess()
       throw this.fatalError()!
     }
