@@ -319,6 +319,15 @@ export interface TurnState {
   readonly drainBuffer: PendingProxyCall[]
   /** Quiet timer for the drain and for the result boundary; they share it. */
   drainTimer: ReturnType<typeof setTimeout> | null
+  /**
+   * `parallelWebfetch`: a batch of read-only calls waits for the reply's
+   * `message_stop` before it drains (h #g289).
+   */
+  readonly holdReadOnlyDrain: boolean
+  /** True between an assistant message's `message_start` and its `message_stop`. */
+  replyStreaming: boolean
+  /** When the oldest call in `drainBuffer` arrived, for the read-only hold's cap. */
+  drainHeldSince: number | null
   /** The `result` whose completion the boundary is holding, or null. */
   pendingResultCompletion: (() => void) | null
 
@@ -342,6 +351,8 @@ export interface TurnStateInit {
   ignoreAnthropicApiKey?: boolean
   /** Stamp the nudge and a late proxy result `client_composed`. Default false. */
   verbatimPrompts?: boolean
+  /** `parallelWebfetch`. Absent is off, which keeps hand-built states unchanged. */
+  holdReadOnlyDrain?: boolean
   /** This turn's envelope, which is also what a respawn re-sends. */
   userMsg: string
   /** `autoContinueEnabledFor(compactionMode, configured)`, resolved by the caller. */
@@ -480,6 +491,9 @@ export function createTurnState(init: TurnStateInit): TurnState {
     subagentDispatchForm: null,
     drainBuffer: [],
     drainTimer: null,
+    holdReadOnlyDrain: init.holdReadOnlyDrain === true,
+    replyStreaming: false,
+    drainHeldSince: null,
     pendingResultCompletion: null,
 
     lineHandler: unassigned(),

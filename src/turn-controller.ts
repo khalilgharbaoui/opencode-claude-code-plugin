@@ -17,6 +17,7 @@ import {
   type PendingProxyCall,
 } from "./proxy-broker.js"
 import {
+  READ_ONLY_PROXY_TOOLS,
   TASK_BATCH_TOOL_NAME,
   taskBatchChildToolCallId,
   taskBatchTasks,
@@ -552,11 +553,53 @@ export function finishAwaitingPlanApproval(state: TurnState): void {
 
 // ---- The batched drain ----------------------------------------------------
 
+/**
+ * Longest the drain waits for a reply to finish streaming while it holds only
+ * read-only calls (h #g289). Measured on 2.1.314, a reply's read-only calls
+ * reached the proxy 100 to 180 ms apart, so the quiet window alone split
+ * three fetches over two steps; the reply's own `message_stop` came a few
+ * hundred ms after its first call. The cap bounds a reply that keeps
+ * streaming text after its calls.
+ */
+export const READ_ONLY_HOLD_CAP_MS = 2000
+
+/** True while the drain should keep waiting for more of this reply's calls. */
+function holdsForReadOnlyReply(state: TurnState, now: number): boolean {
+  return (
+    state.holdReadOnlyDrain &&
+    state.replyStreaming &&
+    state.drainBuffer.length > 0 &&
+    state.drainBuffer.every((call) => READ_ONLY_PROXY_TOOLS.includes(call.toolName)) &&
+    now - (state.drainHeldSince ?? now) < READ_ONLY_HOLD_CAP_MS
+  )
+}
+
+/**
+ * (Re)arms the drain after a proxied call arrived. Claude Code sends a
+ * non-read-only call only after the previous result, so a batch holding one
+ * drains after the quiet window as it always did. A batch of read-only calls
+ * may still grow while the reply streams, so it waits for `message_stop`
+ * (`replyStreaming`), up to `READ_ONLY_HOLD_CAP_MS`.
+ */
+export function scheduleDrain(state: TurnState): void {
+  if (state.drainTimer) clearTimeout(state.drainTimer)
+  if (state.drainHeldSince === null) state.drainHeldSince = Date.now()
+  state.drainTimer = setTimeout(() => {
+    state.drainTimer = null
+    if (holdsForReadOnlyReply(state, Date.now())) {
+      scheduleDrain(state)
+      return
+    }
+    drainNow(state)
+  }, currentDrainQuietMs())
+}
+
 export function drainNow(state: TurnState): void {
   if (state.drainTimer) {
     clearTimeout(state.drainTimer)
     state.drainTimer = null
   }
+  state.drainHeldSince = null
   if (state.drainBuffer.length === 0) return
   if (state.controllerClosed) return
   // The interactive TUI writes a reply's records before it runs the reply's

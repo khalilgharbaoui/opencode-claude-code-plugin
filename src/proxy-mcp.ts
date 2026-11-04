@@ -54,6 +54,8 @@ export interface ProxyToolDef {
   inputSchema: Record<string, unknown>
   /** MCP tool metadata, served verbatim in `tools/list` (see `applyAlwaysLoad`). */
   _meta?: Record<string, unknown>
+  /** MCP tool annotations, served verbatim in `tools/list`. */
+  annotations?: Record<string, unknown>
 }
 
 /** The MCP `_meta` key that keeps a tool out of Claude Code's `ToolSearch`. */
@@ -88,6 +90,29 @@ export function applyAlwaysLoad(
     wanted && !wanted.has(tool.name.toLowerCase())
       ? tool
       : { ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD_META_KEY]: true } },
+  )
+}
+
+/**
+ * The proxy tools served with `annotations.readOnlyHint: true` while
+ * `parallelWebfetch` is on (h #g289). Claude Code treats a read-only MCP tool
+ * as safe to run alongside its siblings, so the calls of one reply reach the
+ * proxy together instead of one after each result. Only tools that change
+ * nothing belong here: the hint also lets plan mode run the tool.
+ */
+export const READ_ONLY_PROXY_TOOLS: readonly string[] = ["webfetch"]
+
+/**
+ * Adds `readOnlyHint: true` to the defs named in `READ_ONLY_PROXY_TOOLS`,
+ * keeping any annotation a def already has. Off returns the input as it is;
+ * on returns new objects and leaves the input untouched.
+ */
+export function applyReadOnlyHints(tools: ProxyToolDef[], enabled: boolean): ProxyToolDef[] {
+  if (!enabled) return tools
+  return tools.map((tool) =>
+    READ_ONLY_PROXY_TOOLS.includes(tool.name)
+      ? { ...tool, annotations: { ...tool.annotations, readOnlyHint: true } }
+      : tool,
   )
 }
 
@@ -1467,6 +1492,7 @@ export async function createProxyMcpServer(
               description: t.description,
               inputSchema: t.inputSchema,
               ...(t._meta ? { _meta: t._meta } : {}),
+              ...(t.annotations ? { annotations: t.annotations } : {}),
             })),
           },
         })

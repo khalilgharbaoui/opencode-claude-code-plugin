@@ -137,7 +137,7 @@ It switches itself off whenever `compress` is named in `proxyTools` or `proxyOpe
 ## What you give up
 
 - A small per-call latency hop through `127.0.0.1:<random>/mcp`.
-- **One opencode step per proxied call.** Claude Code sends the proxied calls of one reply one at a time, each after the previous one has returned, so a reply with five calls is five opencode steps. On opencode 2.2.5 each step cost 0.7 to 1.4 s on top of the tool itself, and no extra tokens. The plugin does not hand the later calls to opencode early, because Claude Code decides each call only when it reaches it: a `PreToolUse` hook, a permission rule or an interrupt can still refuse it. Also, opencode runs the calls of one step at the same time, so a call that reads what an earlier one wrote could see the old state. For subagents, `task_batch` runs several at once. Full numbers: `docs/agents-history.md` under `#g288`.
+- **One opencode step per proxied call.** Claude Code sends the proxied calls of one reply one at a time, each after the previous one has returned, so a reply with five calls is five opencode steps. On opencode 2.2.5 each step cost 0.7 to 1.4 s on top of the tool itself, and no extra tokens. The plugin does not hand the later calls to opencode early, because Claude Code decides each call only when it reaches it: a `PreToolUse` hook, a permission rule or an interrupt can still refuse it. Also, opencode runs the calls of one step at the same time, so a call that reads what an earlier one wrote could see the old state. For subagents, `task_batch` runs several at once. Full numbers: `docs/agents-history.md` under `#g288`. The one exception is `webfetch`, which changes nothing and is marked read-only, so one reply's fetches run together in one step; see [Parallel webfetch](#parallel-webfetch).
 - Batched-edit ergonomics: with `Edit` proxied, Claude can no longer use `MultiEdit`, so a refactor that would have been one tool call becomes N single `Edit` calls.
 - **One extra Claude Code API call per `claude` process for a tool that is not always loaded**, and it is a `ToolSearch`. A proxied tool reaches the model as an MCP tool, and Claude Code 2.1.280 defers MCP tools behind its own `ToolSearch` tool, so before the first proxied call of a session the model spends one request finding the tool. Claude's built-in `Bash` is never deferred, so an unproxied tool goes straight to the call. Since this release `bash`, `edit` and `write` are served always loaded and skip it; see [Always-loaded proxy tools](#always-loaded-proxy-tools).
 
@@ -163,6 +163,25 @@ Change the set with `alwaysLoadProxyTools`:
 `true` loads every tool the proxy serves, MCP tools routed by `proxyOpencodeMcpTools` included, which is the shape of the 2.5 to 4 times cost above when there are many; `false` defers them all, as before this release. A Claude Code that predates the field ignores it.
 
 The proxy does not raise `_meta["anthropic/maxResultSizeChars"]`. Claude Code saves an MCP result over 100,000 characters to a file and hands the model a preview, which it then reads with its own `Read` (measured: a 149,618-character result took 3 calls and the answer was right). opencode truncates its own tool output at 2,000 lines or 50 KB before the result reaches the proxy, so the limit is not met in practice, and raising it would put the whole result into the prompt instead.
+
+## Parallel webfetch
+
+The proxy serves `webfetch` with the MCP `readOnlyHint` annotation. Claude Code reads that as safe to run beside the reply's other read-only calls, so when Claude fetches several pages in one reply it sends the calls together instead of one after each result. The plugin then waits for the reply to finish streaming, at most 2 seconds, and hands the fetches to opencode as one step, where they run at the same time. Measured on Claude Code 2.1.314 with `claude-haiku-5-5` and opencode 2.2.5, three fetches of one second each, three runs a side:
+
+| | opencode steps | First call to the answer | API requests |
+|---|---|---|---|
+| before | 4 (one per fetch, then the answer) | 5.1 to 5.8 s | 3 |
+| `parallelWebfetch` (default) | 2 (all three fetches, then the answer) | 2.2 to 2.4 s | 3 |
+
+Nothing else changes:
+
+- A `bash`, `edit` or `write` call is not read-only. Claude Code still runs it alone and in the order Claude wrote it, after the calls before it have returned, and the plugin hands it to opencode without waiting.
+- opencode's own `webfetch` permission still decides each fetch. With `"webfetch": "ask"` you get one prompt per URL, all at once.
+- A `PreToolUse` hook, a `--disallowedTools` entry or a settings `deny` rule on `mcp__opencode_proxy__webfetch` still stops the call before it reaches opencode.
+- `permissionPreset: "read-only"` does not serve `webfetch` at all.
+- Under `permissionMode: "plan"` Claude can now fetch, as it can with its own WebFetch tool there; before, every proxied fetch was refused in plan mode. Fetching changes no file.
+
+`"parallelWebfetch": false` serves `webfetch` without the annotation, which is the behaviour before this release. Full numbers: `docs/agents-history.md` under `#g289`.
 
 ## Per-tool proxy timeouts
 

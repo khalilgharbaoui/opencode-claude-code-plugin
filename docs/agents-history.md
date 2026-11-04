@@ -10702,3 +10702,86 @@ owed (`TODO.md`).
 Probe cost: a few dollars at list prices across both sittings, almost all Haiku.
 The scratch tree, the worktree and the probe sessions' transcripts were deleted
 afterwards.
+
+## One reply's webfetch calls run in one opencode step (2026-11-04)
+
+h #g289. Lane `webfetch-ro`, the narrower idea (h #g288) left for whoever
+took it up: mark the proxied `webfetch` read-only so Claude Code may run a
+reply's fetches at once. Measured first, then built as `parallelWebfetch`,
+default on.
+
+### What the annotation does inside the CLI
+
+Read out of 2.1.314: an MCP tool's `isConcurrencySafe()` is
+`mayOverlap || annotations.readOnlyHint`, and `isReadOnly()` is
+`annotations.readOnlyHint`. `mayOverlap` comes from an internal slot registry
+no MCP config reaches, so the hint is the only lever. The CLI's `callTool`
+also retries a call after a connection error when it did not run or when the
+tool is read-only, so a read-only proxied call can in principle reach the
+proxy twice; for a fetch that is harmless, and it is why only a tool that
+changes nothing may carry the hint.
+
+### Measured
+
+Claude Code 2.1.314, `claude-haiku-5-5`, opencode 2.2.5
+(`run --standalone --format json --auto`, scratch XDG dirs, the plugin from
+the worktree's `dist`, the `appical` account's config dir), three URLs on a
+local server that answers each after 1.0 s, 1-minute load 5 to 9 on 18
+cores and no `yes` running. "First call to answer" is from the first call
+reaching the proxy to the start of the answer step.
+
+| | opencode steps | Proxy arrivals | Fetches started | First call to answer | API requests |
+|---|---|---|---|---|---|
+| no annotation | 4 (1 + 1 + 1, answer) | 0, 1.7 to 2.2 s, 3.3 to 4.0 s | one after each result | 5.07, 5.16, 5.80 s | 3 |
+| annotation only | 3 (1 + 2, answer) | 0, 159 to 179 ms, 276 to 301 ms | 0, then 1.7 to 1.9 s | 3.52, 3.55, 3.70 s | 3 |
+| annotation + hold | 2 (3, answer) | 0, 152 to 178 ms, 267 to 296 ms | within 1 ms | 2.18, 2.22, 2.42 s | 3 |
+
+The three requests are the `ToolSearch` (webfetch is deferred), the reply
+holding the three `tool_use` blocks, and the answer, in every variant, so the
+saving is wall time only. The annotation alone is not enough: the calls
+arrive further apart than the 100 ms drain window, so it split them 1 + 2.
+The hold keeps a batch that holds only read-only calls until the reply's
+`message_stop` (cap 2 s) and then drains it after the usual quiet window.
+With `alwaysLoadProxyTools: true` as well the calls arrived 3 and 45 ms
+apart, one step, and 2 API requests. The shipped build (no probe switches)
+was run once more: one step of three, the fetches started within 1 ms.
+
+### Regressions, each run without and with
+
+- Plan mode (`permissionMode: "plan"`): without the hint every proxied fetch
+  was refused by the CLI ("Cannot call mcp__opencode_proxy__webfetch while
+  in plan mode") and never reached the proxy; with it all three ran, in one
+  step. Claude's own WebFetch under `--permission-mode plan` ran with no
+  prompt and no denial (and under `default` it was denied as unapproved), so
+  the hint gives the proxied tool the native tool's plan-mode behaviour.
+  Kept, and documented.
+- opencode's own permission: `"webfetch": "deny"` removed the tool in both
+  ("No tool named \"webfetch\""). `"webfetch": "ask"` through a private
+  `serve`: three permission requests appeared at the same moment, one per
+  URL; answered after 4 s, all three resolved and fetched together, and no
+  proxy deadline fired.
+- A project PreToolUse hook on `mcp__opencode_proxy__webfetch` exiting 2 for
+  `/b`: honoured in both; with the hint `/a` and `/c` ran in one step and
+  `/b` never reached opencode.
+- A settings `permissions.deny` on the tool and `--disallowedTools
+  mcp__opencode_proxy__webfetch` (through `extraDisallowedTools`): the tool
+  was gone in both, and the model said so.
+- `permissionPreset: "read-only"`: `webfetch` is not served at all, both
+  ways.
+- A reply with `webfetch /a`, `bash` (a write with a timestamp), `webfetch
+  /b`: four steps in both, strictly in that order; the bash timestamp lies
+  between `/a`'s end and `/b`'s start. The CLI keeps a non-read-only call in
+  place, and a read-only call after it waits for it.
+
+### Verdict
+
+Built, default on, with `parallelWebfetch: false` serving no annotation.
+`test/parallel-webfetch.test.ts` drives a real `doStream` with a fake CLI.
+The hold applies only while every buffered call is read-only and a reply is
+streaming, so a `bash`/`edit`/`write` drains as before and the interactive
+transport (no stream events) never holds.
+
+Probe cost: about $0.48 at list prices (42 opencode runs with the real CLI,
+13 of them lost to a probe-script bug that applied no setup, and two direct
+CLI runs). The scratch cwds, XDG dirs, their transcripts under
+`~/.claude-appical/projects/` and the probe scripts were deleted afterwards.

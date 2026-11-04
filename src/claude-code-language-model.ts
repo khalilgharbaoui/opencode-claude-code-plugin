@@ -346,6 +346,7 @@ import {
   currentDrainQuietMs,
   deliverPendingCompletions,
   drainNow,
+  scheduleDrain,
   enqueueProxyToolCall,
   finishWithQuestionCall,
   noteProxyActivity,
@@ -3070,6 +3071,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           cliPath,
           ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
           verbatimPrompts: self.config.verbatimPrompts !== false,
+          holdReadOnlyDrain: self.config.parallelWebfetch !== false,
           userMsg,
           autoContinueEnabled: autoContinueEnabledFor(
             compactionMode,
@@ -4773,8 +4775,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           noteToolActivity(state)
           state.drainBuffer.push(call)
           if (noteResultBoundaryCall(state)) return
-          if (state.drainTimer) clearTimeout(state.drainTimer)
-          state.drainTimer = setTimeout(() => drainNow(state), currentDrainQuietMs())
+          scheduleDrain(state)
         })
 
         state.proc.on("error", procErrorHandler)
