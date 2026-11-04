@@ -195,6 +195,12 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
+- 2026-11-04, Khalil: "go" on the plan: lanes `compat-2-2` and `webfetch-ro` are running. Once both
+  have merged, cut ONE release carrying the Windows store-reader fix from PR #160 (h #g286) with
+  whatever those lanes change, then look at the two suspected flakes in the Backlog
+  (`cli-model-probe`, `session-fork`), not before, so their load runs do not skew live measurements.
+  Store locking stays in the Backlog for later.
+
 ## Done
 
 - 2026-11-04: **done** (PR #160, h #g286, test-only, no release): the flakes2 lane. `test/proxy-task.test.ts`
