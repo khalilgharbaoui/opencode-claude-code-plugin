@@ -72,6 +72,12 @@
 
 ## Backlog
 
+- 2026-11-04, seen while lane `flakes3` ran its load tests: the lane's own turn ended on the start
+  watchdog ("Claude process produced no output after the envelope write") at a 1-minute load of 58 to
+  68. Unknown whether the `claude` child was wedged or only starved. If a busy machine alone can end a
+  healthy turn, the watchdog (h #g84, h #g256) may need to tell the two apart; measure a reused child's
+  time to first output under load before changing anything.
+
 - 2026-11-01, found by the testhygiene lane (PR #156, h #g283), not scheduled: two opencode
   processes can overwrite each other's store writes: every store under
   `$XDG_STATE_HOME/opencode-claude-code-plugin/` saves by read, merge and rename with no lock
