@@ -147,11 +147,12 @@ const version = (raw: string) => {
 }
 
 test("a CLI newer than the interactive transport was measured on is reported once, never refused", () => {
-  assert.equal(INTERACTIVE_MEASURED_CLI, "2.1.293")
+  assert.equal(INTERACTIVE_MEASURED_CLI, "2.1.314")
   assert.equal(isUnmeasuredInteractiveCli(null), false, "an unknown version is not a claim either way")
   assert.equal(isUnmeasuredInteractiveCli(version("2.1.288")), false)
   assert.equal(isUnmeasuredInteractiveCli(version("2.1.293")), false)
-  assert.equal(isUnmeasuredInteractiveCli(version("2.1.294")), true)
+  assert.equal(isUnmeasuredInteractiveCli(version("2.1.314")), false)
+  assert.equal(isUnmeasuredInteractiveCli(version("2.1.315")), true)
   assert.equal(isUnmeasuredInteractiveCli(version("2.2.0")), true)
   assert.equal(isUnmeasuredInteractiveCli(version("3.0.0")), true)
 
@@ -162,11 +163,11 @@ test("a CLI newer than the interactive transport was measured on is reported onc
     _resetLoggerForTests()
     configureLogger({ mode: "debug", level: "debug" })
     _resetUnmeasuredInteractiveWarnings()
-    reportUnmeasuredInteractiveCli(version("2.1.293"))
+    reportUnmeasuredInteractiveCli(version("2.1.314"))
     reportUnmeasuredInteractiveCli(null)
-    reportUnmeasuredInteractiveCli(version("2.1.300"))
-    reportUnmeasuredInteractiveCli(version("2.1.300"))
-    reportUnmeasuredInteractiveCli(version("2.1.301"))
+    reportUnmeasuredInteractiveCli(version("2.1.320"))
+    reportUnmeasuredInteractiveCli(version("2.1.320"))
+    reportUnmeasuredInteractiveCli(version("2.1.321"))
   } finally {
     console.error = original
     _resetLoggerForTests()
@@ -175,6 +176,6 @@ test("a CLI newer than the interactive transport was measured on is reported onc
   const warns = lines.filter((line) => line.includes("has not been measured"))
   assert.equal(warns.length, 2, "one per new version")
   assert.match(warns[0]!, /WARN/)
-  assert.match(warns[0]!, /2\.1\.300/)
-  assert.match(warns[1]!, /2\.1\.301/)
+  assert.match(warns[0]!, /2\.1\.320/)
+  assert.match(warns[1]!, /2\.1\.321/)
 })

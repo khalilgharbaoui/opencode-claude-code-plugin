@@ -1,0 +1,71 @@
+{
+  "cliVersion": "2.1.314",
+  "model": "claude-haiku-4-5",
+  "recordedAt": "2026-11-04",
+  "scenarios": {
+    "answer": {
+      "prompt": "Reply with exactly the word ALPHA and nothing else.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "ALPHA",
+        "outputTokens": 54,
+        "cacheReadTokens": 0
+      }
+    },
+    "native-tool": {
+      "prompt": "Use the Bash tool to run exactly: echo golden-ok   Then reply with the output only.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "golden-ok",
+        "outputTokens": 164,
+        "cacheReadTokens": 47115
+      }
+    },
+    "interrupted": {
+      "prompt": "Write a 500-word story about a lighthouse keeper. No tools.",
+      "expect": {
+        "end": "interrupted",
+        "stopReason": null,
+        "text": "",
+        "outputTokens": 0,
+        "cacheReadTokens": 0
+      },
+      "afterActionFrom": -1
+    },
+    "plan-approval": {
+      "prompt": "Create a file named plan.txt containing the word hi. You are in plan mode: write a one-line plan and call ExitPlanMode with it.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "I'm in plan mode, which means I can only write a plan file. Let me create the plan file at the designated location with a one-line plan for your request.\nDone. I've created plan.txt containing the word \"hi\" in the current working directory.",
+        "outputTokens": 1537,
+        "cacheReadTokens": 117633
+      },
+      "dialogScreen": "───────────────────────── Claude has written up a plan and is ready to execute. Would you like to proceed? ❯ 1. Yes, auto-accept edits 2. Yes, manually approve edits 3. Tell Claude what to change shift+tab to approve with this feedback ctrl+g to edit in Sublime · ~/.claude/plans/create-a-fil",
+      "afterActionFrom": 7
+    },
+    "queued-input": {
+      "prompt": "Use the Bash tool to run exactly: sleep 8 && echo first-done   Then report the output.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "The command completed successfully. The output is: **first-done**\n\nAlso, as requested: **PELICAN**",
+        "outputTokens": 234,
+        "cacheReadTokens": 47118
+      }
+    },
+    "fork": {
+      "prompt": "Side question: what was the codeword? Answer with one word, no tools.",
+      "expect": {
+        "end": "stop",
+        "stopReason": "end_turn",
+        "text": "ORCHID",
+        "outputTokens": 79,
+        "cacheReadTokens": 31906
+      },
+      "forkOf": "fixture-session"
+    }
+  }
+}
