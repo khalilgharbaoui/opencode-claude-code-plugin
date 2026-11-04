@@ -10842,6 +10842,20 @@ Windows on the merge commit `1d97213` before the tag and on the release commit
 `4113528`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`238e48a2`), with a GitHub Release.
 
+Mutation checks, run afterwards the same day with no load in a scratch worktree from
+`a3543fe`, each test run alone by name. Every mutation sits on a path only its own test
+takes, and each failure was read to be the assertion that guards it. `cli-model-probe`'s
+no-version test, with `refreshCliModelCatalog` ignoring the `claude --version` answer:
+failed, keyed on `undefined` against `2.1.293`. `session-fork`'s fork test, with the
+prologue never taking a supported `--fork-session`: failed, `Parent answer` against
+`Forked answer`. `subagent-dispatch-stream`'s argv test, with `--strict-mcp-config`
+added when the option is `ask`: failed on that argv entry. `account-failover`'s two
+cancel tests, with a `cancel()` that no longer aborts the attempt (in `stopOnCancel` and
+in the `"auto"` stream): both failed after their 60 s hang-stops, `auto` having started
+`default` and `off` having sent no `interrupt`. `claude-login`'s deadline test, with the
+deadline ×100 (40 s): failed its 30 s bound. With `src/` restored all six passed, so no
+test needed a change.
+
 ## The interactive transport answers "Resume this conversation?" with Resume (2026-11-04)
 
 h #g291. Lane `resume-dialog`, the owed check from h #g287: Claude Code
