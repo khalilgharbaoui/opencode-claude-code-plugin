@@ -10920,3 +10920,64 @@ Shipped as v0.68.1 on 2026-11-04 (PR #164, PR #165), a patch: CI green on Linux 
 Windows on the merge commit `1d97213` before the tag and on the release commit
 `4113528`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`238e48a2`), with a GitHub Release.
+
+h #g292. The false catch-up on every step of a turn with proxied calls,
+found 2026-11-04 while checking why the opencode server of the maintainer's
+largest session (8,454 messages, 30 MB) had looked busy. It was not busy: the
+earlier "99% for hours" was `ps`'s recent %CPU read against the process's
+age. That server had used 102 minutes of CPU in 10 hours and sat at 0 to 0.2%
+when sampled with `top`. The log it was checked against showed something else.
+
+### What the log said
+
+`replaying the messages this claude session missed: the conversation
+continued under another session key` 76 times in the two and a quarter
+hours the rotated log still held (16:52 to 19:06 UTC), across four sessions,
+21 of them on the large one, each followed by `including the messages this
+claude session missed`. None followed an agent or model switch: on each key
+`messages` climbed 2, 4, 6 ... 26 with `userMessages` always 1, and every one
+was on a step that resolved a parked proxied `bash` call.
+
+### Why
+
+`recordServedConversation` writes the chain at a `result`. A turn with
+proxied calls has no `result` until its last step, so from its second step
+on the prompt is the recorded chain plus the turn's own user message, the
+assistant tool call and its result. `classifyConversationChange` reads user
+content past the chain as `missed`. On those steps `userMsg` is built and
+then not written (a tool-result step resolves the parked calls and writes no
+envelope), so nothing wrong reached the CLI; the cost was the NOTICE and the
+INFO per step and the work behind them. Measured offline with the real
+functions on a synthetic prompt of the same size: 21 to 30 ms to classify
+and 4 to 7 ms to render, per step.
+
+### Fix
+
+The prologue asks first whether the prompt answers any of this key's parked
+proxy calls (`promptAnswersPendingCall`, `src/proxy-results.ts`, the same
+match `extractPendingProxyResultForCall` makes, without building results, so
+a partial `task_batch` does not warn twice). If it does, neither verdict is
+read: no catch-up, and no rewind, which on such a step would have stopped
+the child in the middle of its own turn. A step that also forwards user
+messages the host promoted beside the results (h #g204) is covered too,
+because the gate is the match, not the prompt's last role.
+
+### Test
+
+`test/conversation-gap.test.ts`, "a step answering the session's own proxied
+call is not read as a missed conversation": a fake CLI answers one turn,
+then makes one proxied `bash` call on the next and answers once the result
+comes back through the proxy. Without the gate the second step logged the
+catch-up (verified: the test fails on master), with it the log holds no
+`this claude session missed` line and the reply quotes the result.
+
+### Not fixed here
+
+A `task` call on the same key had been held unemitted for 3.5 hours,
+warning every five minutes, while later turns on that key ran normally and
+never saw it (`leaving unmatched parallel proxy call pending` and `draining
+proxy calls queued between turns` never named it). The server had loaded the
+plugin's `dist` 12 times that day, so the likeliest reading is a call parked
+in an older copy whose session later moved to a newer one (h #g269). Its
+start had already rotated out of `plugin.log`, which at INFO grew 97 KB in
+20 seconds and kept about an hour. Logged in `TODO.md` rather than guessed at.

@@ -281,7 +281,7 @@ import {
   resolveOpencodeAgent,
   resolveSessionAffinity,
 } from "./call-options.js"
-import { extractPendingProxyResultForCall } from "./proxy-results.js"
+import { extractPendingProxyResultForCall, promptAnswersPendingCall } from "./proxy-results.js"
 import { handleControlRequest } from "./control-request.js"
 import {
   createLiveToolInfoLoader,
@@ -2504,8 +2504,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // under a session: the operator undid part of it, edited a message in it
     // or regenerated the last reply, so the session holds turns the thread no
     // longer has and will act on them (h #g242). That one is handled below.
+    //
+    // Neither question is asked on a step that answers this session's own
+    // parked proxy calls: that prompt is the turn the session is in the middle
+    // of, so its user message and tool calls read as "missed" on every step,
+    // and no envelope is written that a catch-up could ride on (h #g292).
+    const continuesOwnTurn =
+      !compactionMode && promptAnswersPendingCall(options.prompt, getPendingProxyCalls(sk))
     const conversationChange =
       !compactionMode &&
+      !continuesOwnTurn &&
       !includeHistoryContext &&
       failoverAnswer?.kind !== "switch" &&
       !accountGroupNote &&

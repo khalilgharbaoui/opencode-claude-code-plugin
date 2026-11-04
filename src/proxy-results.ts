@@ -135,3 +135,28 @@ export function extractPendingProxyResultForCall(
   }
   return formatTaskBatchResults(children)
 }
+
+/**
+ * Whether the prompt carries opencode's result for any of these calls: the
+ * same question `extractPendingProxyResultForCall` answers per call, asked
+ * without building the results, so it warns about nothing and can run before
+ * the turn reads them for real.
+ */
+export function promptAnswersPendingCall(
+  prompt: LanguageModelV3CallOptions["prompt"],
+  calls: readonly PendingProxyCall[],
+): boolean {
+  return calls.some((call) => {
+    if (call.toolName !== TASK_BATCH_TOOL_NAME) {
+      return extractPendingProxyResult(prompt, call.toolCallId) !== null
+    }
+    const tasks = taskBatchTasks(call.input)
+    return (
+      tasks.length === 0 ||
+      tasks.some(
+        (_, index) =>
+          extractPendingProxyResult(prompt, taskBatchChildToolCallId(call.toolCallId, index)) !== null,
+      )
+    )
+  })
+}
