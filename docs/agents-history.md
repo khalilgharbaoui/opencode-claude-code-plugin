@@ -10800,3 +10800,37 @@ Shipped as v0.68.0 on 2026-11-04 (PR #160, PR #162, PR #163), a minor: CI green 
 Windows on the merge commit `2c13a7d` before the tag and on the release commit
 `a4abe38`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`06aff012`), with a GitHub Release.
+
+h #g290. Lane `flakes3`, the suspected load flakes `TODO.md` held after h #g286 and
+h #g289, plus `test/claude-login.test.ts`, which the lane's first full `npm test`
+failed (approved 2026-11-04, "do the most recommended"). Method: h #g283's, 40
+concurrent copies of a file under `yes` load, one log per copy, failing tests counted
+per run. Test-only, no release, no product change.
+
+The first attempt ran 36 `yes` (one per core on this 18-core Mac) and several 40-copy
+runs back to back. The 1-minute load reached 58 to 68 and the lane's own `claude`
+went silent until the plugin's start watchdog ended it ("Claude process produced no
+output after the envelope write"). The rest ran one load run at a time, one `yes` per
+two cores (9), each started only once the 1-minute load was under 20, with a trap
+that killed every `yes` and removed `load-run.lock` either way. That lighter load
+still reproduced `claude-login` 35 of 40, so it is enough to find these flakes.
+
+| item | cause | master | fixed |
+|---|---|---|---|
+| `cli-model-probe` (the whole file) | each refresh awaited `claude --version` cold (a probe killed at 5 s reads as no version, so the entry was keyed on `undefined`), four concurrent probe spawns ran past the 20 s default deadline (`deadline` against `no-answer`), and an `env` shebang | 40 of 40 (36 `yes`, load 7 to 56) | 0 of 40 (36 `yes`, load 13 to 52), 0 of 40 (72 `yes`, load 62 to 92) |
+| `session-fork` (three fork tests) | the warm-up looped on `--version` only and gave up with "never answered --version"; a killed `--fork-session` probe reads as no support, so the fork replayed (`Parent answer`); `env` shebang | 34 of 40 (load 42 to 48) | 0 of 40 (load 10 to 19), 0 of 40 (72 `yes`, load 36 to 46) |
+| `subagent-dispatch-stream`: "turning the option on changes no argv on a turn that dispatches nothing" | two fresh fakes, each probing cold: a version probe killed for one and answered for the other gave only one argv `--thinking` | 16 of 40 (load 25 to 54); `subagent-dispatch` itself 0 of 40 (load 19 to 23) | 0 of 40 (load 20 to 43), by name 0 of 40 (72 `yes`, load 81 to 86) |
+| `account-failover`: both cancel tests (`auto`, and `off` and `ask`) | still on master after PR #160: the spawn wait gave up at 3 s, and a fixed 700 ms pause raced the interrupt write; the account wrapper's probes ran cold | 35 of 40 (load 41 to 126) | 0 of 40 (load 14 to 127) |
+| `plugin-copies`: the missing resume record (2026-10-31) | did not reproduce; h #g283's per-process isolation closed it | 0 of 40 twice (load 75 to 90) | unchanged |
+| `claude-login` (five spawn tests) | a fresh fake per test, `checkClaudeLogin` awaiting `detectCliVersion` cold inside the check ("did not report a version"), the deadline test counting that probe in its 5,000 ms bound, and an `env` shebang | 32 of 40 (36 `yes`, load 8 to 59), 35 of 40 (9 `yes`, load 11 to 19) | 0 of 40 twice (9 `yes`, load 16 to 17) |
+
+Every fix is h #g286's patterns: `process.execPath` as the shebang, the probes a
+check or a turn awaits warmed before the window under test and asked again while
+our own deadline kills them (`MAX_DEADLINE_REPROBES`), waits tied to the event
+(`waitForInterrupt` polls for the `interrupt` the fake records), and deadlines that
+are not the subject sized as 60 s hang-stops. No assertion was weakened. The
+`claude-login` deadline test still proves a deadline: its fake now never exits on
+its own (`setInterval`), the version probe is answered first so only the
+`auth status` spawn is timed, the reason must be the timeout's ("no answer within"),
+and the bound is 30 s, far below a hang and far above a loaded spawn. Its old
+5,000 ms bound also held the version probe, which alone took longer under load.
