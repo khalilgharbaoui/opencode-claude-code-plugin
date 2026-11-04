@@ -599,6 +599,7 @@ export function spawnInteractiveProcess(
       else if (event.action === "fatal") log.error("interactive transport cannot continue", data)
       else if (event.action === "denied") log.warn("interactive transport denied a permission prompt", data)
       else if (event.action === "parked") log.info("interactive transport is waiting on a plan approval", data)
+      else if (event.action === "resumed") log.info("interactive transport resumed the whole conversation past Claude Code's resume dialog", data)
       else log.warn("interactive transport cancelled the usage-limit auto-continue", data)
     },
     onExit: (code) => {

@@ -10834,3 +10834,77 @@ its own (`setInterval`), the version probe is answered first so only the
 `auth status` spawn is timed, the reason must be the timeout's ("no answer within"),
 and the bound is 30 s, far below a hang and far above a loaded spawn. Its old
 5,000 ms bound also held the version probe, which alone took longer under load.
+
+## The interactive transport answers "Resume this conversation?" with Resume (2026-11-04)
+
+h #g291. Lane `resume-dialog`, the owed check from h #g287: Claude Code
+2.1.314 draws a "Resume this conversation?" dialog the interactive transport
+did not recognise, so a `--resume` that drew it stalled until a watchdog.
+2.1.314 is the newest binary on this machine (beside 2.1.288 and 2.1.293).
+
+### What draws it, read out of the binary
+
+The dialog is the `cli_cold_resume_quota_warning` (component `hCs`, payload
+`dre`, gate `cre`, asker `ure`). `cre(messages, model, trigger)` returns
+null, and nothing is drawn, unless all of these hold:
+
+- the GrowthBook config `tengu_amber_tally` parses (`minPercent`,
+  `fiveHourCredits` per rate-limit tier, `creditsPerMillionTokens` per model);
+  it is served to this account, with `default_claude_max_5x: 50000` and
+  `default_claude_max_20x: 200000`;
+- global config (`~/.claude.json`) has no `resumeReturnDismissed`;
+- prompt caching is on for the model (no `DISABLE_PROMPT_CACHING*`);
+- the account is not limited, in overage or in the wrap-up zone (`AG()`);
+- the last non-synthetic assistant record is older than the cache TTL (an
+  hour for the main thread), or was on another model;
+- context (the last assistant record's usage, capped at the model's window)
+  times the model's credit price is at least `minPercent` (5) of the tier's
+  five-hour credits. Haiku 5.5 has no price in the table, so it never draws
+  it; on Max 5x Opus 5.5 tops out at 3.7% (1M window) and only Fable or Opus
+  4.7 with a long context reach 5%.
+
+It is asked from the REPL's `_promptStaleResume` (trigger `resume`, after a
+`--resume` or `/resume` with no initial message) and from the idle watcher
+(trigger `idle`, mid-session once the cache has gone cold). Print mode has no
+REPL and never draws it.
+
+The choices are `Resume` and `Start a new conversation` (the latter with
+"Claude can look this one up if you refer to it later" when a pointer can be
+left). `Resume` is focused by default; `tengu_stateful_mitten` focuses `Start
+a new conversation` (off for this account), and screen reader mode focuses
+neither. On `resume` the rows are numbered, on `idle` they are not. Esc is
+`dismiss`, which the controller treats as `resume`. `Resume` keeps the whole
+conversation and only costs the cold cache write; `Start a new conversation`
+runs `/clear`. There is no setting or env var for it: `resumeReturnDismissed`
+is a global-config key the CLI sets itself (from the sibling
+`tengu_gleaming_fair` dialog's "never"), not a settings key the transport's
+one `--settings` layer could carry, and the plugin does not own that file.
+
+### The fix
+
+A new screen kind, `resume-quota`, matched on the title followed within 1,200
+characters by "Start a new conversation" (a reply quoting the title alone is
+not the dialog). `resumeQuotaChoice` reads the newest `❯`-marked row; Enter
+is pressed only on a marked `Resume`. Otherwise the session presses Up
+(`Resume` is the first row), waits for the TUI to redraw, and reads again;
+after four moves, or a boot that ends with the dialog still pending, the start
+fails with a message saying the other choice would start a new conversation.
+It is answered at boot and between turns alike, and logs at INFO
+(`interactive transport resumed the whole conversation past Claude Code's
+resume dialog`).
+
+### Live
+
+Four PTY probes of the real 2.1.314 TUI on the default account (Max 5x)
+resumed crafted transcripts whose last assistant record was three hours old
+and reported 900k to 950k context tokens (Fable 5.1, Fable 5.1 `[1m]`, Opus
+4.7): the CLI loaded each with `Ctx: 90%` or `95%` and drew no dialog, so some
+gate in `cre` not visible from the outside (the served tier is the likeliest)
+held, and `--debug-file` logs nothing about it. None made a model call. The
+fake-TUI tests therefore carry the component's literal text. The live check
+through the transport itself: `ClaudeSession` under Bun, `claude-haiku-5-5`,
+resuming a crafted three-hour-old conversation that asked it to remember
+PELICAN, answered `PELICAN` with `end_turn`. The probe transcripts, their
+`session-env` entries and the scratch tree were deleted. The first probe ran
+while the parallel lane's load lock was held (a check that printed the lock
+and did not wait); it made no API call.

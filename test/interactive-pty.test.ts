@@ -27,6 +27,7 @@ import {
   isInterruptRecord,
   isTurnDurationRecord,
   planApprovalKeys,
+  resumeQuotaChoice,
   stripTerminal,
   type ClaudeSessionOptions,
   type PtySpawner,
@@ -630,6 +631,120 @@ test("a trust dialog that cannot be answered fails boot instead of eating the pr
   await withSession(tui, async (session) => {
     await assert.rejects(session.start(), /folder trust dialog/)
   })
+})
+
+/**
+ * Claude Code 2.1.314's cold-cache resume dialog, as its component draws it
+ * (read out of the binary, h #g291): on the `resume` trigger the rows are
+ * numbered, on the mid-session `idle` trigger they are not.
+ */
+const RESUME_QUOTA_SCREEN =
+  "Resume this conversation?\nThis conversation has been inactive for 3h 12m and is 412.3k tokens long. Resuming it will use about 16% of your 5-hour usage limit.\n"
+const RESUME_QUOTA_RESUME = "❯ 1. Resume\n  2. Start a new conversation\n  Claude can look this one up if you refer to it later\nEnter to confirm · Esc to resume"
+const RESUME_QUOTA_NEW = "  1. Resume\n❯ 2. Start a new conversation\n  Claude can look this one up if you refer to it later"
+
+test("the resume dialog is recognised only with its choices, and its marked row is read", () => {
+  assert.equal(classifyScreen(RESUME_QUOTA_SCREEN + RESUME_QUOTA_RESUME)?.kind, "resume-quota")
+  assert.equal(classifyScreen(`${RESUME_QUOTA_SCREEN}❯ Resume\n  Start a new conversation`)?.kind, "resume-quota")
+  // A reply that merely asks the question is not the dialog.
+  assert.equal(classifyScreen("Should I ask: Resume this conversation? Sure."), null)
+  assert.equal(resumeQuotaChoice(RESUME_QUOTA_RESUME), "resume")
+  assert.equal(resumeQuotaChoice(RESUME_QUOTA_NEW), "new")
+  assert.equal(resumeQuotaChoice(`${RESUME_QUOTA_NEW}\n❯ 1. Resume\n  2. Start a new conversation`), "resume")
+  assert.equal(resumeQuotaChoice("❯ Start a new conversation"), "new")
+  // The title is never a row, and screen reader mode marks none.
+  assert.equal(resumeQuotaChoice("❯ Resume this conversation?"), null)
+  assert.equal(resumeQuotaChoice(`${RESUME_QUOTA_SCREEN}  1. Resume\n  2. Start a new conversation`), null)
+})
+
+test("a --resume that draws the resume dialog continues the conversation with Resume, the default", async () => {
+  const tui = new FakeTui()
+  tui.bootScreen = RESUME_QUOTA_SCREEN + RESUME_QUOTA_RESUME
+  const screens: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      // The marked row is Resume, so Enter goes straight to it: no arrow.
+      assert.deepEqual(tui.writes, ["\r"])
+      assert.equal(session.hasExited, false)
+      assert.deepEqual(
+        screens.map((s) => [s.kind, s.action]),
+        [["resume-quota", "resumed"]],
+      )
+    },
+    { resumeSessionId: "11111111-2222-3333-4444-555555555555", onScreen: (event) => screens.push(event) },
+  )
+})
+
+test("the resume dialog is never confirmed on Start a new conversation", async () => {
+  // The CLI focuses the second row under a server flag. Enter there would
+  // drop the conversation; the session moves up first and confirms only once
+  // the TUI has drawn Resume as marked.
+  const tui = new FakeTui()
+  tui.bootScreen = RESUME_QUOTA_SCREEN + RESUME_QUOTA_NEW
+  let enterOnNew = false
+  let marked: "resume" | "new" = "new"
+  const realWrite = (tui as any).onWrite.bind(tui)
+  ;(tui as any).onWrite = (data: string) => {
+    realWrite(data)
+    if (data === "\r" && marked === "new") enterOnNew = true
+    if (data === "\x1b[A") {
+      tui.later(5, () => {
+        marked = "resume"
+        tui.screen("❯ 1. Resume\n  2. Start a new conversation")
+      })
+    }
+  }
+  const screens: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      assert.equal(enterOnNew, false)
+      const up = tui.writes.indexOf("\x1b[A")
+      assert.ok(up >= 0, "moved off Start a new conversation")
+      assert.ok(tui.writes.indexOf("\r") > up, "confirmed only after the move")
+      assert.deepEqual(
+        screens.map((s) => [s.kind, s.action]),
+        [["resume-quota", "resumed"]],
+      )
+    },
+    { resumeSessionId: "11111111-2222-3333-4444-555555555555", onScreen: (event) => screens.push(event) },
+  )
+})
+
+test("a resume dialog that will not mark Resume fails the start rather than drop the conversation", async () => {
+  const tui = new FakeTui()
+  tui.bootScreen = RESUME_QUOTA_SCREEN + RESUME_QUOTA_NEW
+  // The cursor never leaves the second row.
+  ;(tui as any).onWrite = (data: string) => {
+    tui.writes.push(data)
+    if (data === "\x1b[A") tui.later(5, () => tui.screen("❯ 2. Start a new conversation"))
+  }
+  await withSession(tui, async (session) => {
+    await assert.rejects(session.start(), /Resume this conversation\?" dialog/)
+    assert.ok(!tui.writes.includes("\r"))
+  })
+})
+
+test("the idle resume dialog drawn between turns is answered and the next turn runs", async () => {
+  // The mid-session trigger: no row numbers, drawn while the TUI sits idle.
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.append(assistantRecord("m1", "end_turn", textBlock("still here"))))
+  const screens: ScreenEvent[] = []
+  await withSession(
+    tui,
+    async (session) => {
+      await session.start()
+      tui.screen(`${RESUME_QUOTA_SCREEN}❯ Resume\n  Start a new conversation`)
+      await waitFor(() => screens.length === 1)
+      assert.deepEqual([screens[0]!.kind, screens[0]!.action], ["resume-quota", "resumed"])
+      const result = await session.tailTurn("hi", () => {})
+      assert.equal(result.end, "stop")
+    },
+    { onScreen: (event) => screens.push(event) },
+  )
 })
 
 test("a login screen at boot fails the start with something the operator can act on", async () => {
