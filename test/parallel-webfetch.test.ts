@@ -165,6 +165,10 @@ readline.createInterface({ input: process.stdin }).on("line", async () => {
   }
 }
 
+// POSIX-only for the reason every fake-CLI test is: the shim is a shebang
+// script made executable with `chmod`.
+const POSIX_ONLY = { skip: process.platform === "win32" }
+
 const TOOLS = [
   { type: "function", name: "bash", description: "Run a command", inputSchema: { type: "object" } },
   { type: "function", name: "webfetch", description: "Fetch a URL", inputSchema: { type: "object" } },
@@ -218,7 +222,7 @@ async function runStep(
   }
 }
 
-test("by default three fetches of one reply leave in one step", async () => {
+test("by default three fetches of one reply leave in one step", POSIX_ONLY, async () => {
   const step = await runStep([fetchCall("a", 50), fetchCall("b", 450), fetchCall("c", 850)], 1000)
   assert.equal(step.finishReason, "tool-calls")
   assert.deepEqual(
@@ -228,7 +232,7 @@ test("by default three fetches of one reply leave in one step", async () => {
   assert.deepEqual(readOnly(step.seen.tools ?? []), ["webfetch"])
 })
 
-test("parallelWebfetch false serves no hint and drains the first fetch alone", async () => {
+test("parallelWebfetch false serves no hint and drains the first fetch alone", POSIX_ONLY, async () => {
   const step = await runStep(
     [fetchCall("a", 50), fetchCall("b", 450), fetchCall("c", 850)],
     1000,
@@ -240,14 +244,14 @@ test("parallelWebfetch false serves no hint and drains the first fetch alone", a
   assert.ok((step.seen.tools ?? []).every((tool: any) => !("annotations" in tool)))
 })
 
-test("a bash call drains without waiting for the reply to end", async () => {
+test("a bash call drains without waiting for the reply to end", POSIX_ONLY, async () => {
   const step = await runStep([{ name: "bash", args: { command: "echo hi" }, at: 50 }], 1500)
   assert.deepEqual(step.toolCalls.map((input) => input.command), ["echo hi"])
   // The step ended on the quiet window, well before the fake's message_stop.
   assert.equal(step.seen.messageStopAt, undefined)
 })
 
-test("a reply that never stops streaming is drained at the cap", async () => {
+test("a reply that never stops streaming is drained at the cap", POSIX_ONLY, async () => {
   const started = Date.now()
   const step = await runStep([fetchCall("a", 50)], null)
   assert.deepEqual(step.toolCalls.map((input) => input.url), ["http://127.0.0.1:9/a"])
