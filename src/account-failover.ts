@@ -533,6 +533,7 @@ export interface FailoverSpawn {
   modelId: string
   target?: string
   failedOver: boolean
+  accountInProcess?: boolean
 }
 
 /**
@@ -546,6 +547,7 @@ export async function resolveFailoverSpawn(input: {
   cliPath: string
   modelId: string
   now?: number
+  platform?: string
 }): Promise<FailoverSpawn> {
   const unchanged: FailoverSpawn = {
     cliPath: input.cliPath,
@@ -557,15 +559,20 @@ export async function resolveFailoverSpawn(input: {
   if (!target) return unchanged
 
   try {
-    const cliPath =
+    const runtime =
       target === DEFAULT_ACCOUNT
-        ? input.baseCliPath
-        : (await ensureAccountRuntime(target, input.baseCliPath)).cliPath
+        ? { cliPath: input.baseCliPath }
+        : await ensureAccountRuntime(
+            target,
+            input.baseCliPath,
+            input.platform ? { platform: input.platform } : undefined,
+          )
     return {
-      cliPath,
+      cliPath: runtime.cliPath,
       modelId: stripAccountSuffix(input.modelId),
       target,
       failedOver: true,
+      ...(runtime.accountInProcess ? { accountInProcess: true } : {}),
     }
   } catch (err) {
     // A wrapper we cannot write is not a reason to spawn nothing: fall back

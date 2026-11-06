@@ -23,9 +23,21 @@ import { describe, test } from "node:test"
 
 import { ensureAccountRuntime } from "../src/accounts.js"
 import { createClaudeCode } from "../src/index.js"
-import { stripAccountSuffix } from "../src/account-failover.js"
+import {
+  _resetAccountOverrides,
+  resolveFailoverSpawn,
+  setAccountOverride,
+  stripAccountSuffix,
+} from "../src/account-failover.js"
 import { parseModelId } from "../src/models.js"
-import { buildCliArgs, claudeSpawnEnv } from "../src/session-manager.js"
+import {
+  buildCliArgs,
+  claudeSpawnEnv,
+  processBelongsToAnotherAccount,
+  type ActiveProcess,
+} from "../src/session-manager.js"
+import { skillBridgeSpawn } from "../src/spawn-planning.js"
+import { resolveDispatchAccountSpawn } from "../src/subagent-dispatch.js"
 import { planClaudeSpawn } from "../src/windows-spawn.js"
 
 const isWindows = process.platform === "win32"
@@ -249,6 +261,64 @@ test(
     })
   },
 )
+
+test("processBelongsToAnotherAccount detects switches between default and a Windows account in both directions", () => {
+  const workDir = "C:/Users/alice/.claude-work"
+  const personalDir = "C:/Users/alice/.claude-personal"
+  const onDefault = { cliPath: "claude", configDir: undefined } as ActiveProcess
+  const onWork = { cliPath: "claude", configDir: workDir } as ActiveProcess
+
+  assert.equal(processBelongsToAnotherAccount(onDefault, "claude", undefined), false)
+  assert.equal(processBelongsToAnotherAccount(onWork, "claude", workDir), false)
+  assert.equal(processBelongsToAnotherAccount(onWork, "claude", personalDir), true)
+  assert.equal(processBelongsToAnotherAccount(onWork, "claude", undefined), true)
+  // Switching from `default` (`configDir: undefined`) to a named account on
+  // Windows must also replace the live child, even though `cliPath` is identical.
+  assert.equal(processBelongsToAnotherAccount(onDefault, "claude", workDir), true)
+})
+
+test("failing over or dispatching from default to a named account on Windows carries accountInProcess", async () => {
+  await withSandbox(async (box) => {
+    _resetAccountOverrides()
+    setAccountOverride("default", "work")
+    try {
+      const failover = await resolveFailoverSpawn({
+        account: "default",
+        baseCliPath: "claude",
+        cliPath: "claude",
+        modelId: "claude-opus-5",
+        platform: "win32",
+      })
+      assert.equal(failover.cliPath, "claude")
+      assert.equal(failover.target, "work")
+      assert.equal(failover.accountInProcess, true)
+
+      const defaultConfig = {
+        provider: "claude-code-default",
+        cliPath: "claude",
+        account: "default",
+        configDir: undefined,
+        accountInProcess: undefined,
+      }
+      const inProcess = Boolean(defaultConfig.accountInProcess || failover.accountInProcess)
+      const spawnConfigDir = inProcess
+        ? skillBridgeSpawn(defaultConfig as any, failover).configDir
+        : undefined
+      assert.equal(spawnConfigDir, path.join(box.home, ".claude-work"))
+
+      const dispatched = await resolveDispatchAccountSpawn({
+        account: "work",
+        baseCliPath: "claude",
+        modelId: "claude-opus-5",
+        ensureRuntime: (acct, base) =>
+          ensureAccountRuntime(acct, base, { platform: "win32" }),
+      })
+      assert.equal(dispatched?.accountInProcess, true)
+    } finally {
+      _resetAccountOverrides()
+    }
+  })
+})
 
 // ---------------------------------------------------------------------------
 // The proof. Everything above plans; this spawns.
