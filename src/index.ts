@@ -352,6 +352,10 @@ export function createClaudeCode(
       budgetWarnAt,
       maxBackgroundSubagents,
       leanGenerate: settings.leanGenerate === true,
+      titleModel:
+        typeof settings.titleModel === "string" && settings.titleModel.trim()
+          ? settings.titleModel.trim()
+          : undefined,
       usageWarnThresholds: resolveUsageWarnThresholds(settings.usageWarnThresholds),
       usageSwitchAt: resolveUsageSwitchAt(settings.usageSwitchAt),
       transport: settings.transport,

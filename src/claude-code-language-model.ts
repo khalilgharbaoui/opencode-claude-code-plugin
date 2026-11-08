@@ -309,6 +309,7 @@ import {
   synthesizeTitle,
 } from "./title.js"
 import { generateDetachedText, isDetachedGenerateRequest } from "./lean-generate.js"
+import { generateTitleWithModel } from "./title-model.js"
 import {
   lastCallContextUsage,
   toFinishReason,
@@ -1684,7 +1685,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           ? Object.keys(options.providerOptions)
           : [],
       })
-      const text = this.synthesizeTitle(options.prompt)
+      // `titleModel` (#169): a real model names the session; the synthetic
+      // title stays the default and the fallback.
+      const titleModel = this.config.titleModel
+      const modelTitle = titleModel
+        ? await generateTitleWithModel(options.prompt as readonly any[], {
+            cliPath,
+            model: titleModel,
+            configDir: this.config.accountInProcess ? this.config.configDir : undefined,
+            ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
+            abortSignal: options.abortSignal,
+          })
+        : undefined
+      const text = modelTitle ?? this.synthesizeTitle(options.prompt)
       const textId = generateId()
       const stream = new ReadableStream<LanguageModelV3StreamPart>({
         start(controller) {

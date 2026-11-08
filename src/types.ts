@@ -144,6 +144,8 @@ export interface ClaudeCodeConfig {
   maxBackgroundSubagents?: number
   /** See `ClaudeCodeProviderSettings.leanGenerate`. */
   leanGenerate?: boolean
+  /** See `ClaudeCodeProviderSettings.titleModel`. Trimmed; unset keeps the synthetic title. */
+  titleModel?: string
   /** Resolved `usageWarnThresholds`, in percent; empty for no notes. */
   usageWarnThresholds?: number[]
   /** Resolved `usageSwitchAt`, in percent, or null for never. */
@@ -380,6 +382,13 @@ export interface ClaudeCodeProviderSettings {
    * from a project. A failure runs the normal turn. Default false.
    */
   leanGenerate?: boolean
+  /**
+   * A Claude CLI model, for example `haiku`, that names sessions: a title
+   * request gets one lean `claude -p` on it with the title agent's system
+   * prompt and messages. Unset (the default) keeps the synthetic title; a
+   * failed or 30 s call falls back to it.
+   */
+  titleModel?: string
   /**
    * Models to try, in order, when the model a turn would have run on is
    * refused. The default for every agent that declares no `fallbackModels` of
