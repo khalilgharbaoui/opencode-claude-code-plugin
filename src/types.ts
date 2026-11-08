@@ -142,6 +142,8 @@ export interface ClaudeCodeConfig {
   budgetWarnAt?: number[]
   /** See `ClaudeCodeProviderSettings.maxBackgroundSubagents`. Resolved; unset is off. */
   maxBackgroundSubagents?: number
+  /** See `ClaudeCodeProviderSettings.leanGenerate`. */
+  leanGenerate?: boolean
   /** Resolved `usageWarnThresholds`, in percent; empty for no notes. */
   usageWarnThresholds?: number[]
   /** Resolved `usageSwitchAt`, in percent, or null for never. */
@@ -371,6 +373,13 @@ export interface ClaudeCodeProviderSettings {
    * never capped. Unset (the default) is no cap.
    */
   maxBackgroundSubagents?: number
+  /**
+   * Answer a detached generate call (opencode 2 `experimental.generate.text`:
+   * no session, no agent; OpenChamber's AI rename and walkthroughs) with one
+   * lean `claude -p` on the requested model: no tools, no MCP, no CLAUDE.md
+   * from a project. A failure runs the normal turn. Default false.
+   */
+  leanGenerate?: boolean
   /**
    * Models to try, in order, when the model a turn would have run on is
    * refused. The default for every agent that declares no `fallbackModels` of
