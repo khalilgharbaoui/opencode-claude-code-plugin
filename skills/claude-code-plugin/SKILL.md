@@ -1242,7 +1242,7 @@ Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `cl
 `claude-sonnet-5`, `claude-sonnet-5-5`, `claude-opus-4-5`, `claude-opus-4-6`,
 `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-8-fast`, `claude-opus-5`,
 `claude-opus-5-fast`, `claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`,
-`claude-fable-5-1`, `claude-fable-5-2`, `claude-mythos-5`, `claude-mythos-5-1`. With `cliModelCatalog` on
+`claude-fable-5-1`, `claude-fable-5-2`, `claude-mythos-5`, `claude-mythos-5-1`, `claude-mythos-5-2`. With `cliModelCatalog` on
 (the default), a model the installed CLI's own picker offers that this list lacks is
 registered too, named from the CLI, at an unknown (zero) price.
 

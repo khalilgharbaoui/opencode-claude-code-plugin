@@ -79,17 +79,26 @@ test("configModelsForProvider registers claude-mythos-5 with real metadata", () 
   assert.ok(variants && "max" in variants, "reasoning variants must be carried")
 })
 
-test("configModelsForProvider registers Fable 5.2 at its $8/$40 price", () => {
+test("configModelsForProvider registers Fable and Mythos 5.2 at their $8/$40 price", () => {
   const models = configModelsForProvider({}, "claude-code")
 
-  const fable = models["claude-fable-5-2"] as Record<string, unknown>
-  assert.ok(fable, "claude-fable-5-2 should be present")
-  assert.equal(fable.name, "Claude Fable 5.2 (8×)")
-  assert.equal(fable.family, "fable")
-  assert.equal(fable.release_date, "2026-11-09")
-  assert.equal(fable.reasoning, true)
-  assert.deepEqual(fable.cost, { input: 8, output: 40, cache_read: 0.2, cache_write: 10 })
-  assert.ok("max" in (fable.variants as Record<string, unknown>))
+  for (const [id, name, family] of [
+    ["claude-fable-5-2", "Claude Fable 5.2 (8×)", "fable"],
+    ["claude-mythos-5-2", "Claude Mythos 5.2 (8×)", "mythos"],
+  ] as const) {
+    const model = models[id] as Record<string, unknown>
+    assert.ok(model, `${id} should be present`)
+    assert.equal(model.name, name)
+    assert.equal(model.family, family)
+    assert.equal(model.release_date, "2026-11-09")
+    assert.equal(model.reasoning, true)
+    assert.deepEqual(
+      model.cost,
+      { input: 8, output: 40, cache_read: 0.2, cache_write: 10 },
+      id,
+    )
+    assert.ok("max" in (model.variants as Record<string, unknown>), id)
+  }
 })
 
 test("configModelsForProvider registers Fable and Mythos 5.1 metadata", () => {
@@ -328,6 +337,7 @@ test("configModelsForProvider reports the published context and output limits", 
     "claude-fable-5-2",
     "claude-mythos-5",
     "claude-mythos-5-1",
+    "claude-mythos-5-2",
   ]) {
     assert.deepEqual(limitOf(id), { context: 1_000_000, output: 128_000 }, id)
   }
