@@ -26,6 +26,7 @@ The plugin auto-registers the following, and they appear in the model picker wit
 | `claude-opus-5-5-fast` | Claude Opus 5.5 Fast | 1M | 128,000 | low/medium/high/xhigh/max | 8× |
 | `claude-fable-5` | Claude Fable 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-fable-5-1` | Claude Fable 5.1 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
+| `claude-fable-5-2` | Claude Fable 5.2 | 1M | 128,000 | low/medium/high/xhigh/max | 8× |
 | `claude-mythos-5` | Claude Mythos 5 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 | `claude-mythos-5-1` | Claude Mythos 5.1 | 1M | 128,000 | low/medium/high/xhigh/max | 10× |
 
@@ -33,9 +34,11 @@ The plugin auto-registers the following, and they appear in the model picker wit
 
 Capabilities for every model: text, image and PDF input, text output, tool use, attachments. No temperature control, no audio/video, no interleaved streaming.
 
-**Price ×** is each model's per-token list price relative to Haiku 4.5, which anchors the scale at 1×. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku 4.5 $1/$5 = 1×, Haiku 5.5 $0.10/$0.50 = 0.1×, Sonnet 5 and 5.5 $2/$10 = 2×, Sonnet 4.5/4.6 $3/$15 = 3×, Opus 5.5 $4/$20 = 4×, Opus $5/$25 = 5×, Opus 5.5 fast mode $8/$40 = 8×, Fable/Mythos 5 and 5.1 / Opus 5 and 4.8 fast mode $10/$50 = 10×). So **Fable/Mythos 5 and 5.1, and fast-mode Opus 5 and 4.8, all cost 2× standard Opus 5**, and fast mode is 2× the standard price on every Opus that offers it. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
+**Price ×** is each model's per-token list price relative to Haiku 4.5, which anchors the scale at 1×. It's derived exactly from Anthropic's published pricing (input and output ratios both come out the same: Haiku 4.5 $1/$5 = 1×, Haiku 5.5 $0.10/$0.50 = 0.1×, Sonnet 5 and 5.5 $2/$10 = 2×, Sonnet 4.5/4.6 $3/$15 = 3×, Opus 5.5 $4/$20 = 4×, Opus $5/$25 = 5×, Opus 5.5 fast mode and Fable 5.2 $8/$40 = 8×, Fable/Mythos 5 and 5.1 / Opus 5 and 4.8 fast mode $10/$50 = 10×). So **Fable/Mythos 5 and 5.1, and fast-mode Opus 5 and 4.8, all cost 2× standard Opus 5**, and fast mode is 2× the standard price on every Opus that offers it. The same multiplier is shown as a `(N×)` suffix on the display name in opencode's model picker, since opencode has no dedicated multiplier field. On a flat Max/Pro subscription it doubles as a rough guide to how fast each model drains your usage limit.
 
 Fable 5.1 and Mythos 5.1 keep the same $10/M input and $50/M output rates as 5.0, but cache reads cost $0.25/M instead of $1/M. Their cache-write rate remains $12.50/M.
+
+Fable 5.2 (released 2026-11-09) is the first Fable below the $10/$50 line: $8/M input and $40/M output, with cache reads at $0.20/M (the same 0.025x input ratio as 5.1) and cache writes at $10/M.
 
 Haiku 5.5 (released 2026-10-07) is a tenth of Haiku 4.5 on every axis: $0.10/M input, $0.50/M output, cache writes at $0.125/M and cache reads at $0.01/M, with a 1M context window, 128,000 output tokens and adaptive thinking, so unlike Haiku 4.5 it carries the reasoning variants. It needs **Claude Code 2.1.293 or newer**, the release that added it and made it the default Haiku; an older CLI still serves it, on fallback limits, and the plugin warns once.
 

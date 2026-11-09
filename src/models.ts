@@ -52,7 +52,7 @@ function defineModel(opts: {
   // List-price multiplier relative to Haiku (the cheapest model). Derived
   // exactly from published per-token pricing: input AND output ratios both come
   // out to haiku 1, sonnet 3 (sonnet 5 and 5.5: 2), opus 5 (opus 5.5: 4),
-  // fable/mythos 10. Rendered
+  // fable/mythos 10 (fable 5.2: 8). Rendered
   // as an `(N×)` suffix so it surfaces in opencode's model picker, which has no
   // dedicated multiplier field.
   // Display-only: model resolution keys off `id`.
@@ -162,6 +162,11 @@ const fableCost = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
 // Fable 5.1 and Mythos 5.1 keep the same input/output and cache-write rates,
 // but Anthropic cut cache reads to $0.25/M (one quarter of the 5.0 price).
 const fable51Cost = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 }
+// Fable 5.2 is the first Fable priced below the $10/$50 line: $8/M in, $40/M
+// out. Cache reads keep 5.1's 0.025x input ratio ($0.20/M) and cache writes
+// the standard 1.25x ($10/M). Anthropic models overview and pricing pages,
+// 2026-11-09.
+const fable52Cost = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 }
 // Fast mode bills the same per-token rates as the Mythos-class tier: $10/M in,
 // $50/M out, cache read 1, cache write 12.5. Not an inference; this is the
 // exact table the CLI itself applies for `speed: "fast"` on Opus 4.8 / Opus 5
@@ -484,6 +489,17 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     cost: fable51Cost,
     multiplier: 10,
     releaseDate: "2026-09-01",
+  }),
+  "claude-fable-5-2": defineModel({
+    id: "claude-fable-5-2",
+    name: "Claude Fable 5.2",
+    family: "fable",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: fable52Cost,
+    multiplier: 8,
+    releaseDate: "2026-11-09",
   }),
   // Mythos 5 and 5.1 share the corresponding Fable models' capabilities and
   // pricing without the safety classifiers; limited availability via Project

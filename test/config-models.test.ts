@@ -79,6 +79,19 @@ test("configModelsForProvider registers claude-mythos-5 with real metadata", () 
   assert.ok(variants && "max" in variants, "reasoning variants must be carried")
 })
 
+test("configModelsForProvider registers Fable 5.2 at its $8/$40 price", () => {
+  const models = configModelsForProvider({}, "claude-code")
+
+  const fable = models["claude-fable-5-2"] as Record<string, unknown>
+  assert.ok(fable, "claude-fable-5-2 should be present")
+  assert.equal(fable.name, "Claude Fable 5.2 (8×)")
+  assert.equal(fable.family, "fable")
+  assert.equal(fable.release_date, "2026-11-09")
+  assert.equal(fable.reasoning, true)
+  assert.deepEqual(fable.cost, { input: 8, output: 40, cache_read: 0.2, cache_write: 10 })
+  assert.ok("max" in (fable.variants as Record<string, unknown>))
+})
+
 test("configModelsForProvider registers Fable and Mythos 5.1 metadata", () => {
   const models = configModelsForProvider({}, "claude-code")
 
@@ -312,6 +325,7 @@ test("configModelsForProvider reports the published context and output limits", 
     "claude-opus-5-5",
     "claude-fable-5",
     "claude-fable-5-1",
+    "claude-fable-5-2",
     "claude-mythos-5",
     "claude-mythos-5-1",
   ]) {
