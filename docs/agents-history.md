@@ -12066,3 +12066,151 @@ pass after rebasing onto h #g302 and h #g306; a first run at a load average of
 47 lost two `test/process-lifecycle.test.ts` timeouts, and that file passed 3
 of 3 alone); `npm run build` (0); the site build (0, 39 pages);
 `npm run generate:log-messages` for the one new NOTICE.
+
+## Instruction updates mid-session, and instruction files sent twice (2026-11-10)
+
+h #g303. Lane `instructions`, approved by the maintainer on 2026-11-10 ("go
+forth with the recommended"), from Research pass 3's two instruction items
+(`agents.md` candidates 6 and 7, `opencode-native-claude.md` ranked item 2).
+
+### 1. Instruction changes mid-session: already delivered, no change
+
+The note expected opencode 2 to append a later instruction change to the
+history as a `system` message, which the plugin only reads at spawn
+(`extractSystemMessages` into `--append-system-prompt-file`), so a reused
+`claude` would never hear about it. Read out of opencode 2.2.6 and measured:
+
+- opencode emits `session.instructions.updated` and stores a `system`-type
+  message, `The instructions changed:` plus the new `Instructions from: <path>`
+  block, described `Instructions updated: core/instructions`.
+- Its AI SDK lowering (`prompt()` in `@opencode/core`, identical in 2.2.5 and
+  2.2.6) sends the leading system text as one `system` message and turns every
+  LATER `system` message into a user message wrapped in `<system-update>`
+  (`ProviderShared.wrapSystemUpdate`, XML-escaped). So the plugin receives the
+  update as user content and never sees a mid-history `system` message.
+- Live through a private 2.2.6 `serve` with the plugin from a worktree `dist`
+  and the real Claude Code 2.1.322 on Haiku 5.5: turn 1 answered `ZEBRA` from
+  `AGENTS.md`; the file was edited to `QUAIL`; turn 2 reused the same process
+  (no spawn) and its envelope, in Claude's own transcript, was
+  `[<system-update>...QUAIL...</system-update>, the question]`, answered
+  `QUAIL`. A mid-turn edit (Claude changed the file with a proxied `edit`)
+  reached the same turn as a `queued_command` beside the next tool result
+  (the h #g204 forwarding path), and the model acted on `HERON`. A child
+  killed between turns respawned with `--resume` and answered `HERON`. No
+  `rewound` or `missed` verdict fired on any of these turns: the update is an
+  ordinary stored user message, so the digest chain stays stable.
+- The respawn's appended prompt held opencode's INITIAL value (`ZEBRA`, which
+  opencode keeps in the leading system prompt for the session's life) and,
+  pushed by the plugin from disk, the current one (`HERON`); the resumed
+  conversation answers under its first snapshot anyway (below).
+
+So opencode itself does what the note proposed (#62983's design, user content
+never the system prompt). Nothing to build.
+
+### 2. Instruction files sent twice: real, fixed
+
+Measured on Claude Code 2.1.322 with `claude -p --model claude-haiku-5-5`, a
+9 KB `AGENTS.md` forwarded the way opencode forwards it
+(`Instructions from: <path>` plus the file) in `--append-system-prompt-file`,
+reading the transcript's `instructions` attachment for what Claude Code
+loaded itself:
+
+| arm | Claude Code's own memory | total input |
+|---|---|---|
+| A: `AGENTS.md` only | `AGENTS.md` (8,986 chars) | 40,520 |
+| B: `CLAUDE.md` symlink to it | `CLAUDE.md` | 40,532 |
+| C: `CLAUDE.md` copy | `CLAUDE.md` | 40,532 |
+| D: `CLAUDE.md` = `@AGENTS.md` | `CLAUDE.md` (10) + imported `AGENTS.md` | 40,618 |
+| E: B + exclude `CLAUDE.md` | `AGENTS.md` (the fallback) | 40,531 |
+| F: D + exclude `AGENTS.md` | `CLAUDE.md` (10) | 37,512 |
+| G: C + exclude `CLAUDE.md` | `AGENTS.md` (the fallback) | 40,531 |
+
+The duplicate is not only a `CLAUDE.md` copy: Claude Code 2.1.277 added
+"in a project with no CLAUDE.md, Claude Code reads AGENTS.md instead"
+(CHANGELOG), so EVERY headless spawn in a project with an `AGENTS.md` sent it
+twice, 3,008 tokens here, held in context for the whole conversation. Arms E
+and G: an excluded `CLAUDE.md` counts as none, and the `AGENTS.md` beside it
+is loaded instead. Arm H: a `claudeMdExcludes` in a project's
+`.claude/settings.local.json` and one in `--settings` both applied, so the
+flag layer adds to the operator's own excludes.
+
+What a resume does, measured the same way: resuming arm A's session with the
+file unchanged attached nothing new; with the file edited (`KESTREL`) and the
+new text in a new appended prompt, Claude Code attached the edited file and the
+model answered `KESTREL`, while both `prompt_snapshot` records in the transcript
+still held the first spawn's prompt (`OSPREY`): the resumed process wrote no
+new snapshot, which is h #g187 again on 2.1.322. Resuming arm F's session
+WITHOUT the exclude attached the `AGENTS.md` the first spawn had skipped. In a
+live stream-json process, an edit between two turns attached nothing and the
+model answered from its unchanged system prompt.
+
+Read out of 2.1.322: the names Claude Code looks for in every directory from
+the cwd to the filesystem root (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`,
+`.claude/CLAUDE.md`, `.claude/AGENTS.md`), its import regex
+`(?:^|\s)@((?:[^\s\\]|\\ )+)`, `claudeMdExcludes` matched with picomatch, and
+a GrowthBook flag (`tengu_paper_halyard`) that drops Project and Local memory
+at attach time.
+
+### Fix
+
+`src/native-memory.ts`. Keep opencode's copy and tell Claude Code to skip its
+own, through `claudeMdExcludes` in the spawn's one `--settings` object (merged
+with `fastMode` in `buildCliArgs`, gated at 2.1.239, the first CHANGELOG entry
+naming the setting). That way round because dropping the forwarded block
+instead would stake the operator's instructions on predicting Claude Code's
+memory loading, which that server flag can switch off; an exclude that turns
+out moot costs nothing. `planNativeMemoryExcludes` excludes a candidate only
+when its whole trimmed text is in every string it is given, and:
+
+- a fresh spawn is judged on the appended prompt it writes
+  (`composeAppendedSystemPrompt`, split out of `buildAppendedSystemPrompt`);
+- a `--resume` or a fork (`plannedResume`, the decision `buildCliArgs` now
+  reads too) is judged on every `prompt_snapshot` in the resumed transcript
+  (`readPromptSnapshots`), because the model answers under that and Claude Code
+  would attach an edited file; no transcript or no snapshot excludes nothing;
+- a file that imports an existing file is never excluded (the import's text is
+  not in the prompt); a handle like `@someone` names no file and does not block;
+- a `CLAUDE.md` is excluded only when every `AGENTS.md` in its directory is
+  excluded too or absent, or the exclude would load a file never seen before;
+- a path picomatch would read as a glob is never sent, and Windows sends none
+  (a `\` path is a glob escape there).
+
+The plugin's own disk push of `AGENTS.md` (h #g58) counts as in the prompt, so
+a file opencode did not forward is skipped too. The excludes ride on
+`ActiveProcess.nativeMemoryExcludes` with a sha256 of what each file held, and
+the two places that reuse an argv re-check them (`recheckNativeMemoryExcludes`):
+the watchdog respawn (h #g84) and the compaction fork (h #g284). One INFO line
+(`claude code skips its own copy of instruction files the system prompt
+holds`, `files`, `resumed`) per spawn that excludes anything. No option,
+following h #g58. Not done: the interactive transport, which forwards no
+opencode prompt but pushes `AGENTS.md` from disk and so has the same duplicate;
+its spawn has its own `--settings` layer and was not measured on the TUI.
+
+### Tests
+
+`test/native-memory.test.ts` (portable where it can be): the candidates and
+their spellings, a file not wholly in the prompt, a symlink, the CLAUDE.md /
+AGENTS.md pairing, an import kept and a handle ignored, ancestors and the
+account's own `CLAUDE.md`, every snapshot required, glob paths and Windows,
+`readPromptSnapshots`, the re-check, `withClaudeMdExcludes`, and one
+`--settings` from `buildCliArgs` with the version gate.
+`test/native-memory-stream.test.ts`: a fake CLI that records its prompt as the
+transcript's snapshot, through real `doStream` turns: a fresh spawn excludes
+the forwarded `AGENTS.md`, a resume keeps it while the snapshot holds the file
+and drops it once the file was edited, a `CLAUDE.md` nobody forwarded is left
+alone, an unforwarded `AGENTS.md` is excluded on the plugin's own push, and a
+watchdog respawn drops an exclude whose file changed. Each fix was taken out
+in turn: master's spawn site fails two stream tests, judging a resume on the
+new prompt fails the edited-file assertion, and a respawn without the re-check
+fails its test.
+
+### Live, with the fix
+
+The same private 2.2.6 `serve`, rebuilt, two sessions in two directories with
+the 9 KB `AGENTS.md`, the control's `cliPath` wrapper stripping the new
+`--settings`: first turn 57,875 tokens with the exclude against 61,040 without
+(3,165 saved), both answering `OSPREY`; the fixed session's transcript held no
+native `AGENTS.md`, the control's did. A resume from the store (opencode had
+re-imported the plugin, h #g269) kept the exclude and answered `OSPREY`; after
+editing the file to `KESTREL` the next resume carried no `--settings` and
+answered `KESTREL`.

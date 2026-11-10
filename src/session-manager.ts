@@ -30,6 +30,7 @@ import { forgetServedConversation, moveServedConversation } from "./conversation
 import { forgetResumePoint, moveResumePoint } from "./session-resume-store.js"
 import {
   cliHygieneEnv,
+  cliSupportsClaudeMdExcludes,
   cliSupportsFastMode,
   cliSupportsPermissionPrompts,
   cliSupportsRestricted,
@@ -39,6 +40,7 @@ import {
   spawnMcpTimeoutEnv,
 } from "./cli-version.js"
 import { isReadOnlyPermissionMode } from "./permission-presets.js"
+import { recheckNativeMemoryExcludes, type NativeMemoryExclude } from "./native-memory.js"
 import { planClaudeSpawn } from "./windows-spawn.js"
 import type { ReasoningEffort } from "./types.js"
 import { dispatchSideQuestionResponse, isSideQuestionPending } from "./side-question.js"
@@ -66,6 +68,12 @@ export interface ActiveProcess {
   mcpServers?: string[]
   /** Temp file holding `--append-system-prompt-file` content; unlinked on exit. */
   systemPromptFile?: string
+  /**
+   * Claude Code's own instruction files this spawn's `--settings` told it to
+   * skip, with the content each was judged on (h #g303). A respawn or a
+   * compaction fork that reuses these args re-checks them first.
+   */
+  nativeMemoryExcludes?: NativeMemoryExclude[]
   /** Effort the process was spawned with, so a respawn keeps it. */
   effort?: ReasoningEffort
   /**
@@ -1755,9 +1763,16 @@ export function respawnActiveProcess(
   try {
     old.proc.kill()
   } catch {}
+  // The old argv excluded Claude Code's own copy of instruction files the
+  // conversation's system prompt held; a file edited since must come off the
+  // list, or this resume would never show the edit (h #g303).
+  const memory = recheckNativeMemoryExcludes(
+    appendResumeIfNeeded(sessionKey, old.cliArgs ?? cliArgs),
+    old.nativeMemoryExcludes,
+  )
   const replacement = spawnClaudeProcess(
     cliPath,
-    appendResumeIfNeeded(sessionKey, old.cliArgs ?? cliArgs),
+    memory.args,
     cwd,
     sessionKey,
     old.proxyServer,
@@ -1774,6 +1789,7 @@ export function respawnActiveProcess(
   // to ride with it, or the next turn's hot-reload diff reports every server
   // as newly joined.
   replacement.mcpServers = old.mcpServers
+  replacement.nativeMemoryExcludes = memory.excludes
   // Same args, so the same capability, including a model or effort an earlier
   // live switch already applied to them (h #g278).
   replacement.liveSwitch = old.liveSwitch
@@ -1781,6 +1797,21 @@ export function respawnActiveProcess(
   delete old.pendingProxyCompletions
   if (turnWasInFlight) noteTurnStarted(replacement)
   return replacement
+}
+
+/**
+ * The Claude session a spawn for this key will continue, and whether as a
+ * fork: what `buildCliArgs` turns into `--resume` (h #g187), read before the
+ * spawn by anything that must know whether the conversation is new (h #g303).
+ */
+export function plannedResume(
+  sessionKey: string,
+  forkFromClaudeSessionId?: string,
+): { claudeSessionId: string; fork: boolean } | null {
+  const sessionId = claudeSessions.get(sessionKey)
+  if (sessionId && !activeProcesses.has(sessionKey)) return { claudeSessionId: sessionId, fork: false }
+  if (forkFromClaudeSessionId) return { claudeSessionId: forkFromClaudeSessionId, fork: true }
+  return null
 }
 
 export function buildCliArgs(opts: {
@@ -1831,6 +1862,12 @@ export function buildCliArgs(opts: {
    * on every `--resume` (h #g245). Already gated; subagents only.
    */
   maxBudgetUsd?: number
+  /**
+   * `claudeMdExcludes` paths for the `--settings` layer: Claude Code's own
+   * copy of instruction files the appended prompt already holds, from
+   * `planNativeMemoryExcludes` (h #g303). Gated on the CLI version.
+   */
+  claudeMdExcludes?: string[]
 }): string[] {
   const {
     sessionKey,
@@ -1852,6 +1889,7 @@ export function buildCliArgs(opts: {
     cliVersion,
     maxTurns,
     maxBudgetUsd,
+    claudeMdExcludes,
   } = opts
   const args = [
     "--print",
@@ -1915,16 +1953,16 @@ export function buildCliArgs(opts: {
   // that ID already exists on disk. Continuing an existing session requires
   // `--resume` (which keeps the same session ID in print mode).
   if (includeSessionId) {
-    const sessionId = claudeSessions.get(sessionKey)
-    if (sessionId && !activeProcesses.has(sessionKey)) {
-      args.push("--resume", sessionId)
-    } else if (forkFromClaudeSessionId) {
+    const resume = plannedResume(sessionKey, forkFromClaudeSessionId)
+    if (resume && !resume.fork) {
+      args.push("--resume", resume.claudeSessionId)
+    } else if (resume) {
       // A forked opencode session continuing another session's Claude
       // conversation. `--fork-session` is what makes this safe to point at a
       // transcript that is not ours: the CLI writes a new session id (which
       // the `system`/`init` frame reports, so the stream parser maps this key
       // to it exactly as it would a fresh one) and never touches the parent's.
-      args.push("--resume", forkFromClaudeSessionId, "--fork-session")
+      args.push("--resume", resume.claudeSessionId, "--fork-session")
       // A rewound thread: the fork ends at the last turn the thread still has.
       if (forkAtMessageUuid) args.push("--resume-session-at", forkAtMessageUuid)
     }
@@ -1973,8 +2011,16 @@ export function buildCliArgs(opts: {
   // in the user's own settings.json is NOT enough for a `--print` run.
   // Built as one object so later flag-settings keys merge here instead of
   // adding a second `--settings` (the CLI takes the flag once).
-  if (fastMode && cliSupportsFastMode(cliVersion ?? null)) {
-    args.push("--settings", JSON.stringify({ fastMode: true }))
+  const flagSettings: Record<string, unknown> = {}
+  if (fastMode && cliSupportsFastMode(cliVersion ?? null)) flagSettings.fastMode = true
+  // Claude Code's own copy of instruction files the system prompt already
+  // holds (h #g303). Merged with the operator's own `claudeMdExcludes`, never
+  // replacing them (measured on 2.1.322).
+  if (claudeMdExcludes && claudeMdExcludes.length > 0 && cliSupportsClaudeMdExcludes(cliVersion ?? null)) {
+    flagSettings.claudeMdExcludes = [...claudeMdExcludes]
+  }
+  if (Object.keys(flagSettings).length > 0) {
+    args.push("--settings", JSON.stringify(flagSettings))
   }
 
   if (maxTurns !== undefined) args.push("--max-turns", String(maxTurns))

@@ -291,6 +291,18 @@ export function cliSupportsFastMode(v: CliVersion | null): boolean {
 }
 
 /**
+ * `claudeMdExcludes` in the `--settings` layer, which the plugin uses to keep
+ * Claude Code from loading its own copy of an instruction file the system
+ * prompt already holds (h #g303). 2.1.239 is the first CHANGELOG entry that
+ * names the setting, not a measured floor; an unknown settings key is ignored
+ * rather than fatal, so gating too high only keeps the duplicate.
+ */
+export function cliSupportsClaudeMdExcludes(v: CliVersion | null): boolean {
+  if (!v) return false
+  return gte(v, { major: 2, minor: 1, patch: 239 })
+}
+
+/**
  * `--restricted` (removes the command and code-running built-ins plus
  * WebFetch, confines the file tools to the working directories, refuses
  * bypassPermissions). Claude Code's changelog puts it at 2.1.248; 2.1.258 is

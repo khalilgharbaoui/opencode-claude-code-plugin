@@ -172,6 +172,7 @@ import {
   invalidateOtherSpawnVariants,
   transferClaudeSession,
   describeSessionKey,
+  plannedResume,
 } from "./session-manager.js"
 import { interactiveSpawnEnv, spawnInteractiveProcess } from "./claude-session-wrapper.js"
 import {
@@ -190,6 +191,7 @@ import {
   type TurnBudget,
 } from "./budget-ledger.js"
 import {
+  cliSupportsClaudeMdExcludes,
   cliSupportsDontAsk,
   cliSupportsInteractiveBypass,
   cliSupportsLiveModelSwitch,
@@ -220,6 +222,12 @@ import {
   turnToolCalls,
 } from "./turn-history.js"
 import { encodeCwd, resolveConfigDir } from "./claude-session-bun.js"
+import {
+  excludePaths,
+  planNativeMemoryExcludes,
+  readPromptSnapshots,
+  type NativeMemoryExclude,
+} from "./native-memory.js"
 import {
   COMPACTION_FORK_INSTRUCTION,
   logCompactionForkPlan,
@@ -273,6 +281,8 @@ import {
 } from "./proxy-broker.js"
 import {
   buildAppendedSystemPrompt,
+  composeAppendedSystemPrompt,
+  writeAppendedSystemPrompt,
   extractSystemMessages,
   userAuthoredInstructions,
   QUESTION_PROXY_HINT,
@@ -4013,6 +4023,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
           } else {
           let spawnSystemPromptFile: string | undefined
+          let spawnNativeMemoryExcludes: NativeMemoryExclude[] | undefined
           let spawnProxyServer: ProxyMcpServer | null = null
           let spawnMcpHash: string | null = null
           let spawnMcpServers: string[] = []
@@ -4052,9 +4063,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               runtimeStatus!,
               excludeServers,
             )
-            const systemPromptFile = state.activeProcess
+            const systemPromptText = state.activeProcess
               ? undefined
-              : buildAppendedSystemPrompt(
+              : composeAppendedSystemPrompt(
                   cwd,
                   self.config.multiStepContinuation !== false,
                   [
@@ -4076,6 +4087,36 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     compressionSummary: getCompressionSummary(sk),
                   },
                 )
+            const systemPromptFile = writeAppendedSystemPrompt(systemPromptText)
+            // Claude Code's own copy of an instruction file this prompt
+            // already holds: an `AGENTS.md` it reads itself since 2.1.277, or
+            // a `CLAUDE.md` copying one (h #g303). On a resume the model
+            // answers under the conversation's FIRST system prompt (h #g187),
+            // so only what the transcript's snapshot holds counts there.
+            let nativeMemoryExcludes: NativeMemoryExclude[] = []
+            if (!state.activeProcess && cliSupportsClaudeMdExcludes(cliVersion)) {
+              const memoryConfigDir = resolveConfigDir(self.skillBridgeSpawn(failover).configDir)
+              const resume = plannedResume(sk, forkFromClaudeSessionId)
+              const visible = resume
+                ? (readPromptSnapshots(
+                    join(memoryConfigDir, "projects", encodeCwd(cwd), `${resume.claudeSessionId}.jsonl`),
+                  ) ?? [])
+                : systemPromptText
+                  ? [systemPromptText]
+                  : []
+              nativeMemoryExcludes = planNativeMemoryExcludes({
+                cwd,
+                configDir: memoryConfigDir,
+                visible,
+              })
+              if (nativeMemoryExcludes.length > 0) {
+                log.info("claude code skips its own copy of instruction files the system prompt holds", {
+                  sessionKey: sk,
+                  files: nativeMemoryExcludes.length,
+                  resumed: resume !== null,
+                })
+              }
+            }
             // Skill bridge (@broskees): stage opencode skills as a
             // session-scoped --plugin-dir so Claude's Skill tool can run them.
             // Opt-in via `bridgeOpencodeSkills: true`; the bundled skill is
@@ -4108,8 +4149,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               fastMode,
               cliVersion,
               ...(await resolveSpawnCliCaps(agentCliCaps, cliPath, cliVersion, turnAbort.whenAborted)),
+              claudeMdExcludes: excludePaths(nativeMemoryExcludes),
             })
             spawnSystemPromptFile = systemPromptFile
+            spawnNativeMemoryExcludes = nativeMemoryExcludes
             spawnProxyServer = state.proxyServer
             spawnMcpHash = mcp.bridgedHash
             spawnMcpServers = mcp.allEnabledServerNames
@@ -4137,6 +4180,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               self.config.enableTodoTools === true && !compactionMode,
             )
             ap.mcpServers = spawnMcpServers
+            ap.nativeMemoryExcludes = spawnNativeMemoryExcludes
             if (liveSwitchAtSpawn && !compactionMode) {
               ap.liveSwitch = {
                 model: stripAccountSuffix(spawnModelId),
