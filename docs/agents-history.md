@@ -11086,6 +11086,11 @@ real Windows machine with two logins: the Windows job runs
 and are in files the Windows job skips. No release here; one release follows the
 sweep.
 
+Shipped as v0.69.0 on 2026-11-10 (PR #168, PR #171, PR #172, PR #173, PR #174), a minor:
+CI green on Linux and Windows on the merge commit `52999af` before the tag and on the
+release commit `606bb1e`, the publish confirmed by the Publish step's tail and the
+version document's shasum (`109c758e`), with a GitHub Release.
+
 ## A lean `claude -p` for detached generate calls and titles (2026-11-10)
 
 h #g294. Two opt-in options from @army113, [#171](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/171)
@@ -11207,6 +11212,11 @@ closed #170 and #169. Not released here; it ships in the next release.
   usage, as the title stub always did.
 - On the interactive transport a lean run is still `claude -p`.
 
+Shipped as v0.69.0 on 2026-11-10 (PR #168, PR #171, PR #172, PR #173, PR #174), a minor:
+CI green on Linux and Windows on the merge commit `52999af` before the tag and on the
+release commit `606bb1e`, the publish confirmed by the Publish step's tail and the
+version document's shasum (`109c758e`), with a GitHub Release.
+
 ## Fable and Mythos 5.2, their fast mode, and a probe that believed a family name (2026-11-10)
 
 h #g295. Lane `pr173`, the review of PR #173 by @broskees (Joseph Roberts),
@@ -11294,6 +11304,11 @@ The fast-mode docs still say Vertex is excluded. 2.1.322's CHANGELOG adds
 fast mode on Vertex in three regions, and the catalog gives Fable and Mythos
 5.2 `vertex_fast_mode`, but nothing here was measured on Vertex.
 
+Shipped as v0.69.0 on 2026-11-10 (PR #168, PR #171, PR #172, PR #173, PR #174), a minor:
+CI green on Linux and Windows on the merge commit `52999af` before the tag and on the
+release commit `606bb1e`, the publish confirmed by the Publish step's tail and the
+version document's shasum (`109c758e`), with a GitHub Release.
+
 ## The synthetic title reads the user's message on opencode 2 (2026-11-10)
 
 h #g296. Lane `default-title`, approved by the maintainer on 2026-11-10
@@ -11363,3 +11378,24 @@ The worktree's built `dist`, fresh scratch XDG dirs, the same first message:
 opencode 2.2.6 titled the session "Why My Rust Borrow Checker Reject" (was
 "Here First Message Conversation Message Why"), and opencode 1.19.4 the
 same, unchanged. `plugin ready` once in each log.
+
+Shipped as v0.69.0 on 2026-11-10 (PR #168, PR #171, PR #172, PR #173, PR #174), a minor:
+CI green on Linux and Windows on the merge commit `52999af` before the tag and on the
+release commit `606bb1e`, the publish confirmed by the Publish step's tail and the
+version document's shasum (`109c758e`), with a GitHub Release.
+
+## Fork, PR and issue sweep, 2026-11-09: four contributor PRs, all merged (2026-11-10)
+
+h #g297. 30 forks fetched, one new (@effectustasi, created 2026-11-06; the remote is
+`fork-effectustasi`). Three forks pushed since the 2026-11-02 sweep (h #g285): @army113,
+@broskees and @effectustasi, and `git cherry origin/master` over every ref they moved
+held exactly the commits of their four open PRs and nothing else: #168 (h #g293), #171
+and #172 (h #g294) and #173 (h #g295), each reviewed in its own lane, fixed up on the
+contributor's branch where the review found something, merged with authorship kept,
+thanked on the PR and credited. Issues: #169 and #170 closed by #172 and #171; #167
+(OpenChamber's Usage panel listing every account) answered and closed as not planned at
+the maintainer's go, because the panel is OpenChamber's own code. The default-title gap
+the #172 review found was fixed as PR #174 (h #g296). The same day the local Claude Code
+went from 2.1.314 to 2.1.322, which knows Fable and Mythos 5.2. Open: whether Claude
+Code 2.1.322's fast mode on Vertex changes `docs/models.md`'s "Bedrock, Vertex, and
+Foundry are excluded" (in `TODO.md`).

@@ -72,6 +72,10 @@
 
 ## Backlog
 
+- 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
+  Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
+  setup before changing the docs.
+
 - 2026-11-04, found on the alwasiyyah session's server (h #g292, "Not fixed here"): a `task` proxy call
   held unemitted (`emitted: false`, `channelClosed: false`) for 3.5 hours, warning `proxy call still
   waiting, no deadline` every five minutes, while later turns on the same session key ran normally on a
@@ -181,7 +185,7 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 - With the next compatibility sweep, still not measured on opencode 2.2.x (h #g287 ran the headless and
   interactive lists only): the account-switch and dispatch forms, the MCP bridge with a real server and
   background subagents.
-- Next fork sweep: mid-November.
+- Next fork sweep: late November.
 
 ## Parked
 
@@ -203,6 +207,8 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-10: **done** (v0.69.0, h #g297): the 2026-11-09 fork, PR and issue sweep. PR #168, #171,
+  #172, #173 and the follow-up #174 merged; #167 answered and closed, #169 and #170 closed by their PRs.
 - 2026-11-04: **done** (v0.68.2, PR #166, h #g292): a step that answers the session's own parked proxy
   calls no longer reads as a missed conversation. Every step after a proxied tool call had logged a
   false `replaying the messages this claude session missed` catch-up (76 in two and a quarter hours
