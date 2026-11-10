@@ -72,6 +72,11 @@
 
 ## Backlog
 
+- 2026-11-10, found by the catalog-fixes lane (h #g298), not acted on: `claude-sonnet-4-5` is retired on
+  the Claude API on 2026-11-30 (Anthropic's model-deprecations page, replacement `claude-sonnet-5-5`;
+  Claude Code 2.1.322's own deprecation list says the same). The plugin still registers it; after the
+  date a turn on it fails. Decide whether to unregister it (and what a `forceModel` naming it does).
+
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
   setup before changing the docs.

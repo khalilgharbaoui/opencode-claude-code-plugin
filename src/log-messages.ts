@@ -181,6 +181,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "the interactive transport has not been measured on this Claude Code version; it reads the TUI's screen and transcript, which a new release can change. If a turn hangs or a dialog is not handled, run /claude-code-doctor bundle and report it",
   "the interactive turn did not take a forwarded user message",
   "the plugin build chosen for this turn could not take it; running it on this one",
+  "this fast-mode model id is retired: Anthropic removed the model's fast mode, so it runs at standard speed and standard price. Pick the replacement id to keep fast mode.",
   "this opencode process is running an older plugin build than the one on disk",
   "timed out pending proxy call",
   "titleModel is a model claude does not know; session titles stay synthetic",

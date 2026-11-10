@@ -27,7 +27,7 @@ import {
   isApiCallRecord,
 } from "../src/claude-session-bun.js"
 import { extractTurnStats } from "../src/turn-stats.js"
-import { apiCallCostUsd } from "../src/models.js"
+import { apiCallCostUsd, defaultModels } from "../src/models.js"
 import { lastCallContextUsage, toUsage } from "../src/usage.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -355,6 +355,62 @@ test("a 5-minute write, a fast call and a web search are priced as published", (
     32,
   )
   close(apiCallCostUsd("claude-haiku-4-5", { server_tool_use: { web_search_requests: 3 } }), 0.03)
+})
+
+// Claude Code 2.1.322's own `pricing_tiers` and the tier each catalog model
+// names, copied verbatim out of the binary on 2026-11-10 (h #g298). Every
+// registered standard model's cache read, 5-minute write and 1-hour write must
+// match it; Sonnet 5.5 is the one that did not (0.2 against `cache_read: 0.1`).
+const CLI_2_1_322_TIERS: Record<string, { cache_write_5m: number; cache_write_1h: number; cache_read: number }> = {
+  tier_2_10: { cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2 },
+  tier_2_10_cache_read_0_10: { cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.1 },
+  tier_3_15: { cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.3 },
+  tier_5_25: { cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.5 },
+  tier_10_50: { cache_write_5m: 12.5, cache_write_1h: 20, cache_read: 1 },
+  tier_10_50_cache_read_0_25: { cache_write_5m: 12.5, cache_write_1h: 20, cache_read: 0.25 },
+  tier_4_20_cache_read_0_20: { cache_write_5m: 5, cache_write_1h: 8, cache_read: 0.2 },
+  tier_8_40_cache_read_0_20: { cache_write_5m: 10, cache_write_1h: 16, cache_read: 0.2 },
+  haiku_45: { cache_write_5m: 1.25, cache_write_1h: 2, cache_read: 0.1 },
+  haiku_55: { cache_write_5m: 0.125, cache_write_1h: 0.2, cache_read: 0.01 },
+}
+const CLI_2_1_322_MODEL_TIERS: Record<string, string> = {
+  "claude-haiku-4-5": "haiku_45",
+  "claude-haiku-5-5": "haiku_55",
+  "claude-sonnet-4-5": "tier_3_15",
+  "claude-sonnet-4-6": "tier_3_15",
+  "claude-sonnet-5": "tier_2_10",
+  "claude-sonnet-5-5": "tier_2_10_cache_read_0_10",
+  "claude-opus-4-5": "tier_5_25",
+  "claude-opus-4-6": "tier_5_25",
+  "claude-opus-4-7": "tier_5_25",
+  "claude-opus-4-8": "tier_5_25",
+  "claude-opus-5": "tier_5_25",
+  "claude-opus-5-5": "tier_4_20_cache_read_0_20",
+  "claude-fable-5": "tier_10_50",
+  "claude-fable-5-1": "tier_10_50_cache_read_0_25",
+  "claude-fable-5-2": "tier_8_40_cache_read_0_20",
+  "claude-mythos-5": "tier_10_50",
+  "claude-mythos-5-1": "tier_10_50_cache_read_0_25",
+  "claude-mythos-5-2": "tier_8_40_cache_read_0_20",
+}
+
+test("every standard model's cache read and both cache writes match Claude Code's own table", () => {
+  const standard = Object.keys(defaultModels).filter((id) => !id.endsWith("-fast"))
+  assert.deepEqual(standard.sort(), Object.keys(CLI_2_1_322_MODEL_TIERS).sort())
+  for (const [model, tierName] of Object.entries(CLI_2_1_322_MODEL_TIERS)) {
+    const tier = CLI_2_1_322_TIERS[tierName]!
+    // A small call each, so Haiku 5.5's long-prompt tier never engages.
+    const read = apiCallCostUsd(model, { cache_read_input_tokens: 1_000 })!
+    const write5m = apiCallCostUsd(model, {
+      cache_creation: { ephemeral_5m_input_tokens: 1_000, ephemeral_1h_input_tokens: 0 },
+    })!
+    const write1h = apiCallCostUsd(model, {
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000 },
+    })!
+    close(read * 1_000, tier.cache_read)
+    close(write5m * 1_000, tier.cache_write_5m)
+    close(write1h * 1_000, tier.cache_write_1h)
+  }
 })
 
 // Haiku 5.5 is the one model Anthropic prices by prompt length. Claude Code

@@ -8,6 +8,29 @@
  */
 import type { ClaudeStreamMessage } from "./types.js"
 import { log } from "./logger.js"
+import { retiredFastModel } from "./models.js"
+
+/** Retired fast ids already reported this process. */
+const warnedRetiredFastModels = new Set<string>()
+
+/**
+ * Say, once per id per process, that a retired fast id runs at standard
+ * speed (`RETIRED_FAST_MODELS`, h #g298). A WARN for #g53's reason: the
+ * operator asked for fast mode by name and is not getting it, and the plugin
+ * spawns every turn of it that way, so the dedup is what keeps it to one
+ * toast. Returns whether the id was a retired one.
+ */
+export function reportRetiredFastModel(modelId: string): boolean {
+  const retired = retiredFastModel(modelId)
+  if (!retired) return false
+  if (warnedRetiredFastModels.has(retired.model)) return true
+  warnedRetiredFastModels.add(retired.model)
+  log.warn(
+    "this fast-mode model id is retired: Anthropic removed the model's fast mode, so it runs at standard speed and standard price. Pick the replacement id to keep fast mode.",
+    { model: retired.model, removedOn: retired.removedOn, instead: retired.instead },
+  )
+  return true
+}
 
 /**
  * Human-readable explanations for the CLI's `fast_mode_disabled_reason` codes,
@@ -35,6 +58,7 @@ const warnedFastModeReasons = new Set<string>()
 /** Test-only. */
 export function _resetFastModeWarnings(): void {
   warnedFastModeReasons.clear()
+  warnedRetiredFastModels.clear()
 }
 
 /**

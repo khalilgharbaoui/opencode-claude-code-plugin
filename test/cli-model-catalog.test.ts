@@ -275,7 +275,8 @@ test("the probe asks about every catalog id but our own -fast markers", () => {
   const ids = catalogProbeIds()
   assert.ok(ids.includes("claude-opus-5"))
   assert.ok(!ids.some((id) => id.endsWith("-fast")))
-  assert.equal(ids.length, Object.keys(defaultModels).length - 5)
+  // Four `-fast` markers since Opus 4.8's was retired (h #g298).
+  assert.equal(ids.length, Object.keys(defaultModels).length - 4)
 })
 
 test("the probe argv is --bare, never a prompt, and its env holds no Anthropic credential", () => {

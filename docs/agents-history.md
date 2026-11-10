@@ -11468,3 +11468,81 @@ field name.
 `/connect` check (`src/claude-login.ts` reads five fields by rule, h #g277);
 it would give the sidebar a date before an account's first turn, at the cost
 of widening that rule. The interactive transport stays without a date.
+
+## Sonnet 5.5's cache read, and Opus 4.8's fast mode retired (2026-11-10)
+
+h #g298. Lane `catalog-fixes`, approved by the maintainer on 2026-11-10 ("go for it"),
+the two catalog items of `Research pass 3/agents.md` in the vault (candidates 1 and 2).
+
+### Measured
+
+- **Sonnet 5.5 reads the cache at $0.10/M, not $0.20/M.** Anthropic's pricing page
+  (fetched as markdown 2026-11-10): Sonnet 5.5 "$0.10 / MTok" with footnote 2, "Cache
+  hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at 0.05x the
+  base input price"; Sonnet 5 "$0.20 / MTok". Claude Code 2.1.322's own catalog names
+  `pricing: "tier_2_10_cache_read_0_10"` for `claude-sonnet-5-5` and `tier_2_10` for
+  `claude-sonnet-5`, and its `pricing_tiers` give them `cache_read: 0.1` and `0.2`, each
+  with `cache_write_5m: 2.5` and `cache_write_1h: 4`. The plugin's `sonnet5Cost`
+  (cache read 0.2) was shared by both, so every cache read opencode priced for Sonnet 5.5,
+  the interactive transport's rebuilt `total_cost_usd` and the budget ledger fed from it
+  were twice the bill. h #g170's "cache read $0.20" for Sonnet 5.5 was the page as read
+  on 2026-09-30.
+- **Every other figure matches.** The whole `pricing_tiers` block of 2.1.322 and the
+  tier each of its catalog models names, set against `src/models.ts`: every cache read,
+  every 5-minute write and every 1-hour write (2x input, which `apiCallCostUsd` computes)
+  of the 18 standard models agrees, and the fast tables (`{8, 40, 10, 16, 0.4}` for Opus
+  5.5, `{16, 80, 20, 32, 0.4}` for the 5.2 pair, `{10, 50, 12.5, 20, 1}` for Opus 4.8
+  and 5) agree with the registered fast entries.
+- **Opus 4.8's fast mode is removed on 2026-11-30.** Claude Code 2.1.316's CHANGELOG
+  (in the binary and on GitHub): "Deprecated fast mode for Opus 4.8 as of October 30,
+  2026; it will be removed on November 30, 2026. After removal, fast mode requests on
+  Opus 4.8 return an error and do not fall back to standard Opus 4.8. Migrate to Opus
+  5.5 to keep the speedup". The fast-mode docs say the same of `speed: "fast"` on
+  `claude-opus-4-8`. Opus 5's fast mode is a research preview with no removal date, and
+  the 5.5 and 5.2 twins are unaffected.
+- **The CLI does nothing about it.** 2.1.322 still lists `fast_mode` in
+  `claude-opus-4-8`'s capabilities, its name test (`opus-4-8` or `opus-5`) still passes
+  it, and its only handling is a TUI notice (`tengu_sunset_penguin_opus48`, default
+  `2026-11-30`) that disappears on the date. A free `/cost` with `--model claude-opus-4-8
+  --settings '{"fastMode":true}'` reads exactly like Opus 5.5: `fast_mode_state: "on"`
+  at init and result under the plugin's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+  (h #g241's optimistic init), `off` / `extra_usage_disabled` without it, for both
+  models. So after the date the plugin's `claude-opus-4-8-fast` is an API error on
+  every turn. No fast turn could be measured: the only login has usage credits off.
+- **opencode cannot keep the id resolvable but hidden.** opencode 1.19.4 deletes a
+  model whose `status` is `deprecated` from the provider; 2.x marks it `disabled`.
+
+### Fix
+
+- `sonnet55Cost` ($2/$10, cache read $0.10, 5-minute write $2.50) for Sonnet 5.5;
+  `sonnet5Cost` unchanged for Sonnet 5.
+- `claude-opus-4-8-fast` is no longer registered. `RETIRED_FAST_MODELS` holds it with
+  its removal date and its replacement (`claude-opus-5-5-fast`). `parseModelId` strips
+  its marker and asks for no fast mode, `qualifyModelName` still accepts it (so a
+  `forceModel`, `defaultSubagentModel` or `fallbackModels` entry, and a model the user
+  registered under `provider.claude-code.models`, runs `claude-opus-4-8` at standard
+  speed and price), and `reportRetiredFastModel` WARNs once per id per process at the
+  spawn, never on compaction. `isRegisteredModelName` deliberately does not take it, so
+  a per-call task model is not completed to a provider opencode no longer has it under
+  (h #g255). Unconditional rather than dated: no turn may depend on the clock or on a
+  removal that lands a few hours early. Two bundle keys for the WARN: `removedOn`
+  (enum) and `instead` (name).
+- A fast call on Opus 4.8 that the operator's own Claude settings start (the plugin
+  never asks for one now) is priced at the standard rate by `apiCallCostUsd`, because
+  there is no fast entry to price it from. Accepted: it can only happen before the date.
+
+### Tests
+
+`test/retired-fast-model.test.ts` (new, portable: the registry, `parseModelId`,
+`retiredFastModel`, the one WARN, the three config resolvers),
+`test/retired-fast-model-stream.test.ts` (new, POSIX only, in the Windows skip list: a
+fake CLI through a real `doStream` giving `--model claude-opus-4-8` with no fast-mode
+settings against `claude-opus-5-5-fast` keeping them), `test/interactive-usage.test.ts` (every standard
+model's cache read and both writes against 2.1.322's `pricing_tiers`, copied verbatim),
+`test/config-models.test.ts`, `test/cli-args.test.ts`, `test/cli-model-catalog.test.ts`.
+
+### Not done
+
+- `claude-sonnet-4-5` is retired on the Claude API on 2026-11-30 too (the
+  model-deprecations page, replacement `claude-sonnet-5-5`; 2.1.322's own deprecation
+  list agrees). Outside this lane; in `TODO.md`.

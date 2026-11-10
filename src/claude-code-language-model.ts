@@ -117,6 +117,7 @@ import {
 } from "./doctor.js"
 import { claudeConfigDir, resolveSkillPluginDirs } from "./skill-bridge.js"
 import { parseModelId } from "./models.js"
+import { reportRetiredFastModel } from "./fast-mode.js"
 import {
   consumeExitPlanModeQuestionResult,
   hasExitPlanModeQuestions,
@@ -2736,6 +2737,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         ? stripAccountSuffix(failover.modelId)
         : failover.modelId,
     )
+    // A retired fast id runs its model at standard speed (h #g298); say so
+    // once. Compaction spawns its own model, so it has nothing to say.
+    if (!compactionMode) reportRetiredFastModel(failover.modelId)
 
     // `forkCompaction` (h #g284): summarise inside a fork of the
     // conversation's own Claude session, which reads that session's prompt

@@ -233,9 +233,10 @@ test("parseModelId strips the fast marker and keeps the account suffix", () => {
     model: "claude-opus-5",
     fast: true,
   })
+  // Retired (h #g298): the marker still comes off, fast mode is not asked for.
   assert.deepEqual(parseModelId("claude-opus-4-8-fast"), {
     model: "claude-opus-4-8",
-    fast: true,
+    fast: false,
   })
   assert.deepEqual(parseModelId("claude-opus-5-5-fast"), {
     model: "claude-opus-5-5",

@@ -220,8 +220,11 @@ test("configModelsForProvider registers Haiku 5.5 at its published metadata", ()
 
 test("configModelsForProvider registers Sonnet 5.5 at its published metadata", () => {
   // Anthropic's models overview and pricing pages, read 2026-09-30: released
-  // 2026-09-28, 1M context, 128K output, $2/$10, cache read $0.20, 5-minute
-  // cache write $2.50. Claude Code added it in 2.1.284.
+  // 2026-09-28, 1M context, 128K output, $2/$10, 5-minute cache write $2.50.
+  // Claude Code added it in 2.1.284. Cache read is $0.10, 0.05x input like
+  // Opus 5.5: the pricing page's footnote 2 and Claude Code 2.1.322's
+  // `tier_2_10_cache_read_0_10`, read 2026-11-10 (h #g298). It was registered
+  // at Sonnet 5's $0.20 until then.
   const models = configModelsForProvider({}, "claude-code")
   const sonnet = models["claude-sonnet-5-5"] as Record<string, unknown>
   assert.ok(sonnet, "claude-sonnet-5-5 must be registered")
@@ -233,23 +236,24 @@ test("configModelsForProvider registers Sonnet 5.5 at its published metadata", (
   assert.deepEqual(sonnet.cost, {
     input: 2,
     output: 10,
-    cache_read: 0.2,
+    cache_read: 0.1,
     cache_write: 2.5,
   })
+  // Sonnet 5 keeps $0.20 (`tier_2_10`), so the two may not share a table.
+  assert.equal((models["claude-sonnet-5"] as any).cost.cache_read, 0.2)
   assert.ok("max" in (sonnet.variants as Record<string, unknown>))
   // Fast mode is Opus-only in the CLI, so no fast entry may exist for it.
   assert.equal(models["claude-sonnet-5-5-fast"], undefined)
 })
 
-// Fast mode is only registered for the two models the CLI actually gates it
-// on, and it is priced at the Mythos-class rate ($10/$50 per MTok), which is
-// the exact table the CLI applies for `speed: "fast"`. A fast entry priced at
-// standard Opus rates would under-report every fast turn by half.
-test("configModelsForProvider registers the fast Opus entries at fast pricing", () => {
+// Opus 5's fast entry is priced at the Mythos-class rate ($10/$50 per MTok),
+// which is the exact table the CLI applies for `speed: "fast"`. A fast entry
+// priced at standard Opus rates would under-report every fast turn by half.
+// Opus 4.8's twin shared it until its fast mode was removed (h #g298).
+test("configModelsForProvider registers the fast Opus 5 entry at fast pricing", () => {
   const models = configModelsForProvider({}, "claude-code")
 
   for (const [id, name, releaseDate] of [
-    ["claude-opus-4-8-fast", "Claude Opus 4.8 Fast (10×)", "2026-05-28"],
     ["claude-opus-5-fast", "Claude Opus 5 Fast (10×)", "2026-07-24"],
   ] as const) {
     const model = models[id] as Record<string, unknown>
@@ -307,11 +311,12 @@ test("configModelsForProvider registers fast entries only for fast-capable model
   // The CLI asks its catalog's `fast_mode` capability first (2.1.280 lists it
   // for `claude-opus-5-5`, 2.1.322 for both 5.2 models) and falls back to the
   // name containing `opus-4-8` or `opus-5`. Anything else would render a fast
-  // price tag on a model that runs at standard speed.
+  // price tag on a model that runs at standard speed. Opus 4.8 still passes
+  // that test but Anthropic removed its fast mode on 2026-11-30, after which
+  // a fast request is an API error (h #g298), so it has no entry either.
   assert.deepEqual(fastIds.sort(), [
     "claude-fable-5-2-fast",
     "claude-mythos-5-2-fast",
-    "claude-opus-4-8-fast",
     "claude-opus-5-5-fast",
     "claude-opus-5-fast",
   ])
