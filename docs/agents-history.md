@@ -12419,3 +12419,81 @@ Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: 
 Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
 `30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
 shasum (`d5e5647b`), with a GitHub Release.
+
+## Background shells in the sidebar's Subagents section (2026-11-10)
+
+h #g307. Asked by the maintainer on 2026-11-10, while a 40-minute shader build ran
+as a backgrounded shell in their session: "subagent not visible in sidebare that is
+first". Nothing was broken. No subagent ran; the build was a shell they had moved to
+the background with `ctrl+b`, and the section lists child sessions only. Offered as a
+form, they chose "Build it now" and "Inside Subagents section".
+
+### Read out of opencode 2.2.6
+
+- `@opencode/plugin` 2.2.6's TUI `Context` has `data.shell.list(location?)`,
+  `get(id)`, `sync(location?)`, `invalidate(location?)`, returning `@opencode/client`'s
+  `ShellInfo`: `id`, `status` (`running | exited | timeout | killed`), `command`, `cwd`,
+  `shell`, `file`, `pid?`, `exit?`, `signal?`, `metadata`, `time.started`,
+  `time.completed?`. Events: `shell.created {info}`, `shell.exited {id, exit?, status}`,
+  `shell.deleted {id}`, the store keyed per location.
+- The binary creates a shell in exactly two places. `SessionShell.start` (a `!command`
+  typed in the prompt) passes `metadata: {sessionID, background: true}`; the model's
+  shell tool passes `metadata: {sessionID}` and starts a job
+  (`metadata: {sessionID, shellID}`, `recovery: {kind: "shell", ...}`), backgrounding the
+  JOB when the call asks for it, and removes the shell in a finalizer when the job ends.
+  So a tool shell's own metadata never says foreground or background.
+- opencode's own TUI counts a session's shells as
+  `data.shell.list(location).filter(shell => shell.metadata.sessionID === sessionID)`,
+  shown in the footer as `↓ 1 shell`, foreground calls included.
+- `ctrl+b` is `session.background`, "Background blocking session tools"
+  (`/api/session/:sessionID/background`); the moved call's result is "Command moved to
+  the background (shell ID: ...)" and the session gets a synthetic "User requested that
+  active blocking work be moved to the background".
+- A session's `location` is `{directory}` (`LocationPublicRef`); `LocationRef` is
+  `{directory, workspaceID?}`.
+
+### Design
+
+A running shell of the session becomes a row only once no running `shell`/`bash`
+tool part of the session carries its command (the shell tool's `create` passes the
+tool input's `command` unchanged). A foreground call is already the running tool on
+the progress line, and the model's ordinary bash calls would otherwise flood the
+section; a `ctrl+b`-moved call's part completes with the "moved" result while the
+shell runs on, so it turns into a row at the next derive. `createShellMemory`
+(pure, in `src/subagent-sidebar.ts`) remembers which shells were shown and how each
+ended, because the store drops a tool shell right after `shell.exited`; the TUI's
+`data.listen` handler feeds that event in. A shell that leaves the store with no
+event seen reads `ended`. Observation is scoped per location and session so a
+second sidebar on another session cannot end this one's shell. `formatElapsed`
+moved into the rows' module (the progress line re-exports it) because the rows'
+module imports nothing and the progress line already imports it.
+
+### Live, opencode 2.2.6 + Claude Code 2.1.322
+
+A scratch TUI (`--standalone`, every XDG dir and `TMPDIR` under the session's temp
+dir, the plugin from the worktree's `dist`) in its own tmux socket, read with
+`capture-pane`:
+
+- `!sleep 90`: `⠇ shell sleep 90  bg` / `5s`, then `53s`, then `✓ ... / exit 0 · 1m30s`.
+  opencode's footer said `↓ 1 shell` meanwhile.
+- `!sh -c 'sleep 4; exit 2'`: `⠋ ... / 1s`, then `✗ ... / exit 2 · 4s`, listed above
+  the older finished row.
+- A Haiku 5.5 turn running `sleep 10; echo second-done` in the foreground: the progress
+  line read `⠏ 8s · 1 call · shell` and the section kept only the two earlier rows,
+  during the call and after it. A first attempt's evidence was confounded (the column
+  was laid out differently mid-turn and a screen grep missed a row it should have
+  matched), so this run captured the whole sidebar column each tick.
+- A Haiku 5.5 turn running `sleep 40; echo moved-done` in the foreground, `ctrl+b`
+  after 7 s: before it no row (progress line `6s/~15s · shell`); 4 s after it
+  `⠧ shell sleep 40; echo moved-done bg` / `8s`, timed from the shell's own start; it
+  ended `✓ ... / exit 0 · 40s`, the code from `shell.exited` after the store dropped the
+  shell.
+- The probe's plugin log held one unrelated WARN (a needs-auth Stripe MCP server).
+
+### Found on the way, not fixed
+
+Asked to run a command "with background set to true", Haiku 5.5 answered that its
+bash tool "takes only command, description, and timeout, with no background option"
+and ran nothing. `src/host-tools.ts` passes `background` through to opencode 2's
+`shell`, but the proxied `bash` definition never offers the field, so through this
+plugin only the operator can put a shell in the background. Recorded in `TODO.md`.

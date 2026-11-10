@@ -53,6 +53,7 @@ import {
   ROW_INDENT,
   SIDEBAR_ROW_WIDTH,
   SPINNER_FRAMES,
+  formatElapsed,
   truncate,
   type ChildRunState,
   type Segment,
@@ -442,15 +443,8 @@ export function floorByChildren(estimate: TurnEstimate, elapsedMs: number, child
   }
 }
 
-/** `12s`, `1m03s`, `1h02m`. */
-export function formatElapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const pad = (value: number) => String(value).padStart(2, "0")
-  if (minutes < 60) return `${minutes}m${pad(seconds % 60)}s`
-  return `${Math.floor(minutes / 60)}h${pad(minutes % 60)}m`
-}
+/** Moved to the rows' module, which a shell row's label needs it in; re-exported so older imports resolve. */
+export { formatElapsed }
 
 /** The three runs of one line: what leads it, the bar's cells (one segment each, none without a bar), the rest. */
 export interface ProgressLayout {

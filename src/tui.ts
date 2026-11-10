@@ -49,12 +49,14 @@ import {
   SPINNER_FRAMES,
   collapsedSummary,
   completionsIn,
+  createShellMemory,
   deriveSubagentRows,
   layoutRow,
   partChildID,
   type ChildRunState,
   type ChildSessionInput,
   type CompletionInput,
+  type ObservedShell,
   type Segment,
   type SidebarInput,
   type SubagentRow,
@@ -103,6 +105,8 @@ const FRAME_WRAP = SPINNER_FRAMES.length * 600
 
 /** The tool names a subagent dispatch has: `task` on 1.x, `subagent` on 2.x. */
 const TASK_TOOLS = new Set(["task", "subagent"])
+/** The tool names that run a shell command: `shell` on 2.x, `bash` as 1.x named it. */
+const SHELL_TOOLS = new Set(["shell", "bash"])
 
 type Color = RGBA
 
@@ -182,7 +186,7 @@ const ROLE_COLOR: Record<Segment["role"], keyof SidebarColors> = {
 interface SidebarHost {
   colors(): SidebarColors
   /** The inputs for one parent session, minus the clock and the records. */
-  gather(parentID: string): Pick<SidebarInput, "children" | "parts" | "completions" | "status" | "stoppedAt" | "cost">
+  gather(parentID: string): Pick<SidebarInput, "children" | "parts" | "completions" | "shells" | "status" | "stoppedAt" | "cost">
   /** A session's own messages and todo list, what its progress line is measured from. */
   progress(sessionID: string): ProgressSource
   navigate(sessionID: string): void
@@ -886,7 +890,19 @@ interface V2Session {
   title?: string
   agent?: string
   time?: { created?: number; updated?: number }
+  /** Where the session runs; its shells are in that location's store (2.2.6). */
+  location?: { directory?: string }
 }
+/** One shell in a location's store (`ShellInfo`, 2.2.6). */
+interface V2Shell {
+  id: string
+  status: string
+  command: string
+  exit?: number
+  metadata?: Record<string, unknown>
+  time?: { started?: number; completed?: number }
+}
+type V2Location = { directory: string }
 interface V2Message {
   type?: string
   text?: string
@@ -909,6 +925,14 @@ interface V2Context {
       /** A child's own spend; a root's is its family's sum, which is not read. */
       cost?(sessionID: string): number
       message: { list(sessionID: string): V2Message[] | undefined }
+    }
+    /**
+     * Every location's shells (2.2.6, h #g307), each tagged with the session
+     * that started it. Absent on an older 2.x, which then shows no shell rows.
+     */
+    shell?: {
+      list(location?: V2Location): V2Shell[] | undefined
+      sync?(location?: V2Location): Promise<void>
     }
     /**
      * Every bus event, the plugin's own RPC events included (2.0.31,
@@ -935,7 +959,49 @@ interface V2Context {
   }
 }
 
+/** One store shell in the memory's terms; its owner is `metadata.sessionID`. */
+function observedShell(shell: V2Shell): ObservedShell {
+  const owner = shell.metadata?.sessionID
+  return {
+    id: shell.id,
+    sessionID: typeof owner === "string" ? owner : undefined,
+    command: shell.command,
+    status: shell.status,
+    exit: shell.exit,
+    started: shell.time?.started,
+    completed: shell.time?.completed,
+  }
+}
+
 export function setupV2(context: V2Context): () => void {
+  // Background shells (h #g307): which ran in the background, and how each
+  // ended once the store let go of it. One memory for every sidebar.
+  const shellMemory = createShellMemory()
+  const syncedLocations = new Set<string>()
+  const readShells = (sessionID: string, directory: string | undefined, foreground: ReadonlySet<string>) => {
+    const store = context.data.shell
+    if (!store) return undefined
+    const location = directory ? { directory } : undefined
+    const key = directory ?? ""
+    if (!syncedLocations.has(key) && store.sync) {
+      syncedLocations.add(key)
+      // Outside the computation that reads the store, and never an unhandled rejection.
+      void Promise.resolve()
+        .then(() => store.sync?.(location))
+        .catch(() => undefined)
+    }
+    const owned = (store.list(location) ?? []).map(observedShell).filter((shell) => shell.sessionID === sessionID)
+    const now = Date.now()
+    // Scoped to the session too, so one session's view never ends another's shell.
+    shellMemory.observe(`${key}\u0000${sessionID}`, owned, foreground, now)
+    return shellMemory.forSession(sessionID, now)
+  }
+  const noteShellExit = (data: unknown) => {
+    const exited = data as { id?: unknown; status?: unknown; exit?: unknown } | undefined
+    if (typeof exited?.id !== "string" || typeof exited.status !== "string") return
+    shellMemory.exited(exited.id, exited.status, typeof exited.exit === "number" ? exited.exit : undefined, Date.now())
+  }
+
   const host: SidebarHost = {
     colors() {
       const theme = context.theme
@@ -965,7 +1031,8 @@ export function setupV2(context: V2Context): () => void {
       }
     },
     gather(parentID) {
-      const children: ChildSessionInput[] = (context.data.session.list() ?? [])
+      const sessions = context.data.session.list() ?? []
+      const children: ChildSessionInput[] = sessions
         .filter((session) => session.parentID === parentID)
         .map((session) => ({
           id: session.id,
@@ -976,10 +1043,22 @@ export function setupV2(context: V2Context): () => void {
         }))
       const parts: TaskPartInput[] = []
       const completions: CompletionInput[] = []
+      // The commands of the session's shell calls still running: a shell with
+      // one of these is a foreground call, already on the progress line.
+      const foreground = new Set<string>()
       for (const message of context.data.session.message.list(parentID) ?? []) {
         if (message.type === "assistant") {
           for (const item of message.content ?? []) {
-            if (item.type !== "tool" || !TASK_TOOLS.has(item.name ?? "")) continue
+            if (item.type !== "tool") continue
+            if (SHELL_TOOLS.has(item.name ?? "")) {
+              const status = item.state?.status
+              const command = item.state?.input?.command
+              if ((status === "pending" || status === "running") && typeof command === "string") {
+                foreground.add(command.trim())
+              }
+              continue
+            }
+            if (!TASK_TOOLS.has(item.name ?? "")) continue
             parts.push({
               status: item.state?.status,
               input: item.state?.input,
@@ -992,10 +1071,12 @@ export function setupV2(context: V2Context): () => void {
           completions.push(...completionsIn(message.text, message.time?.created))
         }
       }
+      const location = sessions.find((session) => session.id === parentID)?.location?.directory
       return {
         children,
         parts,
         completions,
+        shells: attempt(() => readShells(parentID, location, foreground), undefined),
         status: (id: string): ChildRunState => {
           const status = attempt(() => context.data.session.status(id), undefined)
           if (status === "running") return "busy"
@@ -1060,7 +1141,14 @@ export function setupV2(context: V2Context): () => void {
     }),
   )
   const stopNotices = attempt(
-    () => context.data.listen?.((event) => void toastNotice(event?.details?.type, event?.details?.data)),
+    () =>
+      context.data.listen?.((event) => {
+        const type = event?.details?.type
+        const data = event?.details?.data
+        // How a background shell ended: the store drops it right after (h #g307).
+        if (type === "shell.exited") attempt(() => noteShellExit(data), undefined)
+        void toastNotice(type, data)
+      }),
     undefined,
   )
   return () => {

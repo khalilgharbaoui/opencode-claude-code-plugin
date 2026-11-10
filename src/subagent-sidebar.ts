@@ -25,6 +25,23 @@
  *     the fallback chain all change the spawn without telling opencode. So the
  *     label prefers the spawn record the server half writes
  *     (`src/spawn-record-store.ts`) and falls back to the part.
+ *
+ * Read out of opencode 2.2.6 (h #g307), and each one shapes the shell rows:
+ *
+ *   - Every shell a session starts is in the TUI's per-location shell store
+ *     (`data.shell.list(location)`) with `metadata.sessionID` naming the
+ *     session: the model's shell tool, foreground or background alike, and a
+ *     `!command` typed in the prompt (which also carries `background: true`).
+ *     opencode's own TUI counts a session's shells off exactly that.
+ *   - Nothing on a tool shell tells foreground from background: that lives on
+ *     its job, which a TUI plugin cannot read. A foreground call is a RUNNING
+ *     `shell` tool part with the same command, already shown on the progress
+ *     line; a backgrounded one's part has completed while the shell runs on.
+ *     So a running shell becomes a row only once no running part has its
+ *     command (`createShellMemory`), and a foreground call never does.
+ *   - A tool shell leaves the store when its job ends, and `shell.exited`
+ *     (exit code and status) arrives just before; the memory keeps the end so
+ *     the row can say how it went, for `FINISHED_TTL_MS` like a subagent.
  */
 
 export type SubagentState = "running" | "done" | "error"
@@ -65,10 +82,26 @@ export interface SpawnRecordInput {
 
 export type ChildRunState = "busy" | "idle" | "unknown"
 
+/**
+ * A background shell of the session, as `createShellMemory` hands it over:
+ * `status` is opencode's (`running`, `exited`, `timeout`, `killed`), or
+ * `ended` when the shell left the store with no `shell.exited` seen.
+ */
+export interface ShellInput {
+  id: string
+  command: string
+  status: string
+  exit?: number
+  started: number
+  completed?: number
+}
+
 export interface SidebarInput {
   children: ChildSessionInput[]
   parts: TaskPartInput[]
   completions: CompletionInput[]
+  /** The session's background shells (opencode 2.2.6+); none on a host without a shell store. */
+  shells?: ShellInput[]
   status: (sessionID: string) => ChildRunState
   record: (sessionID: string) => SpawnRecordInput | undefined
   /** When the TUI first saw a child stop, by session id. */
@@ -79,7 +112,9 @@ export interface SidebarInput {
 }
 
 export interface SubagentRow {
-  /** The child session, absent while a dispatch has not created one yet. */
+  /** A background shell rather than a subagent: `agent` is `shell` and `description` its command. */
+  kind?: "shell"
+  /** The child session, absent while a dispatch has not created one yet, and on a shell. */
   sessionID?: string
   agent: string
   description: string
@@ -236,6 +271,16 @@ export function formatCost(value: number | undefined): string | undefined {
   return `$${digits ?? value.toFixed(0)}`
 }
 
+/** `12s`, `1m03s`, `1h02m`. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const pad = (value: number) => String(value).padStart(2, "0")
+  if (minutes < 60) return `${minutes}m${pad(seconds % 60)}s`
+  return `${Math.floor(minutes / 60)}h${pad(minutes % 60)}m`
+}
+
 /**
  * Cut `value` to `width` cells with a trailing ellipsis. Counts code points,
  * which is a cell each for the text a task description holds; a wide glyph
@@ -301,6 +346,7 @@ export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
       started: part.start ?? input.now,
     })
   }
+  for (const shell of input.shells ?? []) rows.push(shellRow(shell, input.now))
 
   const running = rows
     .filter((row) => row.state === "running")
@@ -360,6 +406,159 @@ function rowFor(
     ...(cost !== undefined ? { cost } : {}),
     started,
     finished,
+  }
+}
+
+/** `exit 0`, `exit 2`, `timed out`, `killed`, or `ended` when no exit was seen. */
+function shellOutcome(shell: ShellInput): string {
+  if (shell.status === "timeout") return "timed out"
+  if (shell.status === "killed") return "killed"
+  if (shell.status === "exited" && typeof shell.exit === "number") return `exit ${shell.exit}`
+  return "ended"
+}
+
+/**
+ * A background shell's row: `shell` and its command on the first line, how
+ * long it has run (or how it ended and after how long) on the second. Only an
+ * exit code of 0 is a ✓; a shell that left without an exit seen is `ended`,
+ * a ✓ too, because nothing says it failed and the store drops a shell only
+ * when its job ends.
+ */
+function shellRow(shell: ShellInput, now: number): SubagentRow {
+  const started = shell.started
+  if (shell.status === "running") {
+    return {
+      kind: "shell",
+      agent: "shell",
+      description: shell.command,
+      background: true,
+      state: "running",
+      label: formatElapsed(now - started),
+      started,
+    }
+  }
+  const finished = shell.completed ?? now
+  const ok = shell.status === "ended" || (shell.status === "exited" && shell.exit === 0)
+  return {
+    kind: "shell",
+    agent: "shell",
+    description: shell.command,
+    background: true,
+    state: ok ? "done" : "error",
+    label: `${shellOutcome(shell)} · ${formatElapsed(finished - started)}`,
+    started,
+    finished,
+  }
+}
+
+/** One shell as the host's store reports it; `sessionID` is its `metadata.sessionID`. */
+export interface ObservedShell {
+  id: string
+  sessionID?: string
+  command: string
+  status: string
+  exit?: number
+  started?: number
+  completed?: number
+}
+
+interface RememberedShell extends ShellInput {
+  sessionID: string
+  /** The store this shell was read from, so its absence is only read off that store. */
+  scope: string
+  /** Seen running with no running tool part for its command: a background shell. */
+  shown: boolean
+}
+
+/** How many shells the memory holds at most, across every session it has seen. */
+export const SHELL_MEMORY_CAP = 64
+
+/**
+ * What the sidebar knows about a session's shells beyond what the store holds
+ * this instant: which of them ran in the background (and so are rows at all),
+ * and how each one ended after the store let go of it.
+ */
+export interface ShellMemory {
+  /**
+   * The store's shells for one location, and the commands of the session's
+   * tool calls still running: a running shell whose command is not one of them
+   * is a background shell from then on. A remembered running shell of the same
+   * scope that is gone from the list has ended.
+   */
+  observe(scope: string, shells: ObservedShell[], foreground: ReadonlySet<string>, now: number): void
+  /** `shell.exited`: the code and the status, for a shell already seen. */
+  exited(id: string, status: string, exit: number | undefined, now: number): void
+  /** The session's background shells, for `SidebarInput.shells`. */
+  forSession(sessionID: string, now: number): ShellInput[]
+}
+
+export function createShellMemory(): ShellMemory {
+  const shells = new Map<string, RememberedShell>()
+  const prune = (now: number) => {
+    for (const [id, shell] of shells) {
+      if (shell.status !== "running" && now - (shell.completed ?? now) > FINISHED_TTL_MS) shells.delete(id)
+    }
+    // Oldest first, and a running shell only when nothing finished is left to drop.
+    while (shells.size > SHELL_MEMORY_CAP) {
+      const victim =
+        [...shells.values()].find((shell) => shell.status !== "running") ?? shells.values().next().value
+      if (!victim) break
+      shells.delete(victim.id)
+    }
+  }
+  return {
+    observe(scope, observed, foreground, now) {
+      const listed = new Set<string>()
+      for (const shell of observed) {
+        const sessionID = text(shell.sessionID)
+        const command = text(shell.command)
+        if (!sessionID || !command) continue
+        listed.add(shell.id)
+        const known = shells.get(shell.id)
+        const running = shell.status === "running"
+        const entry: RememberedShell = {
+          id: shell.id,
+          sessionID,
+          scope,
+          command,
+          status: shell.status,
+          exit: shell.exit ?? known?.exit,
+          started: known?.started ?? shell.started ?? now,
+          completed: running ? undefined : (shell.completed ?? known?.completed ?? now),
+          shown: (known?.shown ?? false) || (running && !foreground.has(command)),
+        }
+        shells.set(shell.id, entry)
+      }
+      for (const shell of shells.values()) {
+        if (shell.scope !== scope || listed.has(shell.id) || shell.status !== "running") continue
+        shell.status = "ended"
+        shell.completed = now
+      }
+      prune(now)
+    },
+    exited(id, status, exit, now) {
+      const shell = shells.get(id)
+      if (!shell) return
+      shell.status = status === "running" ? "exited" : status
+      if (typeof exit === "number") shell.exit = exit
+      shell.completed ??= now
+    },
+    forSession(sessionID, now) {
+      prune(now)
+      const found: ShellInput[] = []
+      for (const shell of shells.values()) {
+        if (shell.sessionID !== sessionID || !shell.shown) continue
+        found.push({
+          id: shell.id,
+          command: shell.command,
+          status: shell.status,
+          ...(shell.exit !== undefined ? { exit: shell.exit } : {}),
+          started: shell.started,
+          ...(shell.completed !== undefined ? { completed: shell.completed } : {}),
+        })
+      }
+      return found
+    },
   }
 }
 
@@ -431,7 +630,8 @@ export function layoutRow(
   const first: Segment[] = [
     { text: glyph, role: row.state === "running" ? "spinner" : row.state === "done" ? "done" : "error" },
     { text: " ", role: "muted" },
-    { text: agent, role: finished ? "muted" : "agent" },
+    // A shell's name takes the running tool's colour, so it reads apart from a subagent's.
+    { text: agent, role: finished ? "muted" : row.kind === "shell" ? "tool" : "agent" },
   ]
   if (description) {
     first.push({ text: " ", role: "muted" })
@@ -474,7 +674,7 @@ export function layoutRow(
   return { first, second }
 }
 
-/** The collapsed heading's count: `2 running` or `3 done`. */
+/** The collapsed heading's count: `2 running` or `3 done`, shells counted with subagents. */
 export function collapsedSummary(rows: SubagentRow[]): string {
   const running = rows.filter((row) => row.state === "running").length
   return running > 0 ? `${running} running` : `${rows.length} done`
