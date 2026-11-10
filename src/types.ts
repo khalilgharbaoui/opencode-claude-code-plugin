@@ -1225,6 +1225,18 @@ export interface ClaudeStreamMessage {
   /** On a `conversation_reset`: the conversation Claude Code started. */
   new_conversation_id?: string
 
+  /**
+   * On a `system`/`model_refusal_fallback` (Claude Code 2.1.322): the model
+   * that refused, the one that answered instead, whether the swap is the
+   * session's or one side response's, the API's refusal category and the
+   * uuids of what the CLI withdrew. Read by `parseRefusalFallback` (h #g300).
+   */
+  original_model?: string
+  fallback_model?: string
+  scope?: string
+  api_refusal_category?: string | null
+  retracted_message_uuids?: unknown
+
   message?: {
     role?: string
     model?: string

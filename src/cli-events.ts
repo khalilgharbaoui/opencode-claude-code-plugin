@@ -898,6 +898,109 @@ export function reportConversationReset(msg: ClaudeStreamMessage): string | null
 }
 
 // ---------------------------------------------------------------------------
+// model_refusal_fallback
+// ---------------------------------------------------------------------------
+
+export const REFUSAL_FALLBACK_MARKER = "▌ **refusal fallback:**"
+
+export interface RefusalFallback {
+  /**
+   * `session`: the CLI moved its main conversation to `fallbackModel` and keeps
+   * it there for the life of the process. `local`: one side response (a `/btw`
+   * aside, a CLI subagent) came from it and the session model is unchanged.
+   * An absent scope is `session`, as the CLI's own schema says.
+   */
+  scope: "session" | "local"
+  originalModel: string
+  fallbackModel: string
+  /** The refusal category the API gave (`cyber`, `bio`, ...), or null. */
+  category: string | null
+  /** How many already-streamed messages the CLI withdrew from its own transcript. */
+  retracted: number
+}
+
+/**
+ * Claude Code answered a safety refusal on another model. Schema from Claude
+ * Code 2.1.322: `{type: "system", subtype: "model_refusal_fallback", trigger:
+ * "refusal", direction: "retry", scope?, original_model, fallback_model,
+ * api_refusal_category?, retracted_message_uuids?, ...}`. Measured against a
+ * local API that refused Opus 5.5: the CLI retried once on Opus 5.5, then sent
+ * this frame and answered on `claude-opus-4-8`, the `result` a plain success,
+ * and the same process's next message went straight to Opus 4.8. A `--resume`
+ * with `--model claude-opus-5-5` started on Opus 5.5 again. Off by default
+ * (`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK`, `cliHygieneEnv`); this is the
+ * operator who set it back to `0`. (h #g300)
+ */
+export function parseRefusalFallback(msg: ClaudeStreamMessage): RefusalFallback | null {
+  if (msg.type !== "system" || msg.subtype !== "model_refusal_fallback") return null
+  const originalModel = str(msg.original_model)
+  const fallbackModel = str(msg.fallback_model)
+  if (!originalModel || !fallbackModel) return null
+  const retracted = Array.isArray(msg.retracted_message_uuids)
+    ? msg.retracted_message_uuids.filter((uuid: unknown) => typeof uuid === "string").length
+    : 0
+  return {
+    scope: msg.scope === "local" ? "local" : "session",
+    originalModel,
+    fallbackModel,
+    category: str(msg.api_refusal_category) ?? null,
+    retracted,
+  }
+}
+
+/**
+ * Written where the frame arrives, so it sits between whatever the refused
+ * model had streamed and the fallback model's answer. Says which model
+ * answered, that it keeps answering in this process, and how to make a
+ * refusal an error instead.
+ */
+export function formatRefusalFallbackNote(fallback: RefusalFallback): string {
+  const withdrawn =
+    fallback.retracted > 0
+      ? ` Any reply above this note was ${fallback.originalModel}'s and Claude Code withdrew it.`
+      : ""
+  return (
+    `\n${REFUSAL_FALLBACK_MARKER} ${fallback.originalModel}'s safety classifier stopped the reply, ` +
+    `so Claude Code answered on ${fallback.fallbackModel} instead, and keeps using it until this ` +
+    `conversation's claude process restarts.${withdrawn} Unset CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK ` +
+    "(or set it to 1) to have a refusal end the turn instead.\n"
+  )
+}
+
+const reportedRefusalFallbacks = new Set<string>()
+
+/** Test seam. */
+export function _resetRefusalFallbackReports(): void {
+  reportedRefusalFallbacks.clear()
+}
+
+/**
+ * Logs the fallback: WARN once per model pair per process for a session-scope
+ * one, because the operator is billed for a model they did not pick, and INFO
+ * for a local one, which changed nothing after it.
+ */
+export function reportRefusalFallback(fallback: RefusalFallback): void {
+  const data = {
+    scope: fallback.scope,
+    originalModel: fallback.originalModel,
+    fallbackModel: fallback.fallbackModel,
+    category: fallback.category,
+    retracted: fallback.retracted,
+  }
+  if (fallback.scope === "local") {
+    log.info("claude code answered one side response on another model after a refusal", data)
+    return
+  }
+  const identity = `${fallback.originalModel}\n${fallback.fallbackModel}`
+  if (reportedRefusalFallbacks.has(identity)) {
+    log.info("claude code moved the conversation to another model after a refusal", data)
+    return
+  }
+  reportedRefusalFallbacks.add(identity)
+  log.warn("claude code moved the conversation to another model after a refusal", data)
+}
+
+// ---------------------------------------------------------------------------
 // result subtype
 // ---------------------------------------------------------------------------
 

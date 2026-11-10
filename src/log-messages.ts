@@ -54,6 +54,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "claude cli < 2.1.142 detected; Opus 4.7 thinking summaries unavailable. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",
   "claude cli does not support --plugin-dir; opencode skills will not be bridged. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",
   "claude code compacted its own context",
+  "claude code moved the conversation to another model after a refusal",
   "claude code reset its conversation",
   "claude could not compact the conversation; no summary was stored",
   "claude finished the turn without a reply",

@@ -159,6 +159,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   child: "flag",
   countUnreadable: "flag",
   cap: "count",
+  // How many streamed messages a refusal fallback withdrew (h #g300).
+  retracted: "count",
   requested: "count",
   running: "count",
   option: "name",
@@ -241,6 +243,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
 
   // enums: a fixed vocabulary this package or the CLI defines
   apiKeySource: "enum",
+  // The API's refusal category on a refusal fallback (`cyber`, `bio`, ...).
+  category: "enum",
   delivery: "enum",
   // Why a rewound thread replayed instead of forking: one of
   // `RewindForkRefusal`'s kebab tokens (h #g282).
@@ -302,6 +306,10 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   left: "name",
   mappedName: "name",
   model: "name",
+  // The two models of a Claude Code refusal fallback (h #g300): model ids the
+  // CLI published, the same class as `model`.
+  originalModel: "name",
+  fallbackModel: "name",
   name: "name",
   names: "name",
   opencodeAgent: "name",

@@ -15,12 +15,15 @@ import { forgetConversationCheckpoints } from "./conversation-gap.js"
 import { reportFastModeState } from "./fast-mode.js"
 import {
   describeResultFailure,
+  formatRefusalFallbackNote,
   formatResultFailureNote,
   isRateLimitRejected,
   parseCredentialExpiresAt,
   parseRateLimitEvent,
+  parseRefusalFallback,
   reportCompactBoundary,
   reportConversationReset,
+  reportRefusalFallback,
   reportHookEvent,
   reportRateLimitEvent,
   reportSystemInit,
@@ -150,6 +153,12 @@ export interface StreamParserContext {
   /** Whether a refusal on this turn may move to the next model in the chain. */
   modelFallbackArmed: boolean
   attempt?: ModelFallbackAttempt
+  /**
+   * Claude Code moved this child to `model` after a safety refusal, for the
+   * rest of its life (`model_refusal_fallback`, h #g300): the spawn record
+   * names it from here on.
+   */
+  onRefusalFallback?: (model: string) => void
   handleControlRequest: (
     msg: ClaudeStreamMessage,
     proc: import("child_process").ChildProcess,
@@ -262,6 +271,21 @@ export function createLineHandler(
 
       if (outer.type === "stream_event") {
         state.gotPartialEvents = true
+        // Which API messages streamed their content, so an `assistant` frame
+        // for one that did not can be told apart from a duplicate (h #g300).
+        // The envelope names its message (`api_message_id`, 2.1.293 to
+        // 2.1.322, equal to the `assistant` frame's `message.id`); the
+        // `message_start` id stands in where it does not.
+        const envelopeId = (outer as { api_message_id?: unknown }).api_message_id
+        if (msg.type === "message_start") {
+          const id = (msg.message as { id?: unknown } | undefined)?.id
+          state.streamingMessageId = typeof id === "string" && id.length > 0 ? id : undefined
+        } else if (msg.type === "content_block_start") {
+          const id =
+            typeof envelopeId === "string" && envelopeId.length > 0 ? envelopeId : state.streamingMessageId
+          if (id) state.streamedMessageIds.add(id)
+          else state.streamedBlockWithoutId = true
+        }
       }
       // Whether a reply is still streaming, for the drain's read-only hold
       // (h #g289): its read-only calls can still arrive until `message_stop`.
@@ -344,6 +368,34 @@ export function createLineHandler(
           state.textBlockIndices.clear()
           state.controller.enqueue({ type: "text-delta", id: state.startTextBlock(), delta: note })
           state.endTextBlock()
+        }
+        return
+      }
+
+      // Claude Code answered a safety refusal on another model, which only
+      // happens when the operator turned its fallback back on
+      // (`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=0`, h #g300). The swap is
+      // silent everywhere else: the `result` is a plain success and every
+      // model-keyed record names the model the operator picked. So the child
+      // remembers the model it now runs, and the reply says it, between the
+      // refused model's text and the fallback model's answer. Never on a
+      // compaction turn, whose text becomes the stored summary (h #g214).
+      if (msg.type === "system" && msg.subtype === "model_refusal_fallback") {
+        const fallback = parseRefusalFallback(msg)
+        if (fallback) {
+          reportRefusalFallback(fallback)
+          if (fallback.scope === "session") {
+            if (state.activeProcess) state.activeProcess.refusalFallbackModel = fallback.fallbackModel
+            ctx.onRefusalFallback?.(fallback.fallbackModel)
+            if (!ctx.compactionMode) {
+              state.controller.enqueue({
+                type: "text-delta",
+                id: state.startTextBlock(),
+                delta: formatRefusalFallbackNote(fallback),
+              })
+              state.endTextBlock()
+            }
+          }
         }
         return
       }
@@ -754,13 +806,39 @@ export function createLineHandler(
           toolUse: (msg.message?.content ?? []).some((block) => block.type === "tool_use"),
         }
       }
+      // An `assistant` frame Claude Code never streamed, on a turn that did
+      // stream: the CLI fell back to a non-streaming request (a 404 on the
+      // streaming endpoint, or a stream that broke before any output), and
+      // this frame is the only copy of that reply. Measured on 2.1.322 against
+      // a local API: a call after a streamed tool call arrived as `assistant`
+      // alone, or as `message_start`, `message_stop` and then `assistant` under
+      // another id, and the `result` was a plain success, so until this the
+      // answer was dropped with nothing saying so. It takes the whole-message
+      // path below, exactly as a turn that never streamed does. The CLI's own
+      // `<synthetic>` replies keep the path they have always had. (h #g300)
+      const assistantId = (msg.message as { id?: unknown } | undefined)?.id
+      const unstreamedReply =
+        msg.type === "assistant" &&
+        state.gotPartialEvents &&
+        !state.streamedBlockWithoutId &&
+        typeof assistantId === "string" &&
+        assistantId.length > 0 &&
+        msg.message?.model !== "<synthetic>" &&
+        !state.streamedMessageIds.has(assistantId)
+      if (unstreamedReply) {
+        log.info("rendering a reply claude code sent without streaming", {
+          messageId: assistantId,
+          blocks: (msg.message?.content ?? []).map((block) => block.type),
+        })
+      }
       // Fallback: extract thinking from the complete assistant
       // message. opus-4-7's CLI strips thinking_delta from stream
       // events but may include thinking in the final message.
       if (
         msg.type === "assistant" &&
         msg.message?.content &&
-        state.gotPartialEvents
+        state.gotPartialEvents &&
+        !unstreamedReply
       ) {
         const thinkingBlocks = (msg.message.content as any[]).filter(
           (b) => b.type === "thinking",
@@ -800,7 +878,7 @@ export function createLineHandler(
       if (
         msg.type === "assistant" &&
         msg.message?.content &&
-        !state.gotPartialEvents
+        (!state.gotPartialEvents || unstreamedReply)
       ) {
         const hasText = msg.message.content.some(
           (b: any) => b.type === "text" && b.text,

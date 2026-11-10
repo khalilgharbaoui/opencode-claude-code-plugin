@@ -189,6 +189,9 @@ export async function switchLiveProcess(
   child.cliArgs = withFlagValue(child.cliArgs, "--model", target.spawnModelArg)
   if (plan.effortLevel) child.cliArgs = withFlagValue(child.cliArgs, "--effort", plan.effortLevel)
   child.liveSwitch = { ...child.liveSwitch!, model: target.model }
+  // `set_model` replaces the model a refusal fallback moved the session to
+  // (h #g300); an effort-only switch leaves it running.
+  if (plan.setModel) child.refusalFallbackModel = undefined
   log.notice("switched the live claude process to the new model or effort instead of respawning it", {
     sessionKey: target.sessionKey,
     fromKey,

@@ -84,6 +84,16 @@ export interface ActiveProcess {
    * form `apply_flag_settings` beats (h #g278).
    */
   liveSwitch?: { model: string; fast: boolean; effortFlag: boolean }
+  /**
+   * The model Claude Code moved this child's conversation to after a safety
+   * refusal (`model_refusal_fallback`, `scope: "session"`), when the operator
+   * kept that fallback on. Measured on 2.1.322: every later message in the
+   * same process goes to it, and a `--resume` with the requested `--model`
+   * starts on the requested model again, so it lives exactly as long as this
+   * child, is never carried by a respawn, and a live `set_model` clears it.
+   * The spawn record and the turn history name it (h #g300).
+   */
+  refusalFallbackModel?: string
   /** Prompt cache TTL the process was spawned with, so a respawn keeps it. */
   promptCacheTtl?: string
   /** Whether the child was spawned with `enableTodoTools`, so a respawn keeps it. */

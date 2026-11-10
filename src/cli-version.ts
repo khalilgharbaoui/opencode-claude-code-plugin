@@ -133,10 +133,21 @@ function forgetDeadlineKill<T>(
  * network traffic and counts as a second, independent update blocker.
  * Anthropic's own runner sets `DISABLE_AUTOUPDATER: "1"` on the children it
  * spawns, which is the same use we are putting it to here.
+ *
+ * `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK` is the third, for a different reason:
+ * after a safety refusal Claude Code otherwise moves the whole process to
+ * another model (Opus 5.5 to Opus 4.8, measured on 2.1.322) and keeps it
+ * there, while the session key, the spawn record and the operator's picker
+ * all still name the model they chose. With it the refusal ends the turn as
+ * the error it is (`model_refusal_no_fallback`, an `is_error` result), which is
+ * what opencode's built-in Claude provider chose too. An operator who wants the
+ * CLI's fallback sets it to `0`, and the plugin then reports the model that
+ * answered (`reportRefusalFallback`, h #g300). An older CLI ignores it.
  */
 export const CLI_HYGIENE_ENV_VARS = [
   "DISABLE_AUTOUPDATER",
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK",
 ] as const
 
 /**

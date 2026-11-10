@@ -11546,3 +11546,106 @@ model's cache read and both writes against 2.1.322's `pricing_tiers`, copied ver
 - `claude-sonnet-4-5` is retired on the Claude API on 2026-11-30 too (the
   model-deprecations page, replacement `claude-sonnet-5-5`; 2.1.322's own deprecation
   list agrees). Outside this lane; in `TODO.md`.
+
+## Claude Code's refusal and non-streaming fallbacks (2026-11-10)
+
+h #g300. Lane `cli-fallbacks`, approved by the maintainer on 2026-11-10 ("go for it"),
+from Research pass 3 (`opencode-native-claude.md` candidates 3 and 4). opencode's
+built-in Claude provider turned both fallbacks off ([#61069](https://github.com/anomalyco/opencode/pull/61069),
+[#61067](https://github.com/anomalyco/opencode/pull/61067)); the plugin parsed neither.
+
+### Measured
+
+Claude Code 2.1.322, `--print --bare` stream-json with the plugin's own flags
+(`--include-partial-messages --verbose`), against a local Node server set as
+`ANTHROPIC_BASE_URL` with a fake `ANTHROPIC_API_KEY`. No real model call was made, so
+the probes cost nothing.
+
+Read in the binary first. The refusal gate is
+`cj() = !CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK && !CLAUDE_CODE_NO_MODEL_FALLBACK`, and the
+switch also needs a first-party base URL (`ls()`), which
+`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` grants a fake one. The non-streaming switch
+`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` feeds only the mid-stream branch
+(`ib.onStreamFailed(Dd, !Vg)`); a 404 on stream creation goes through
+`onWithRetryGaveUp` to `retryWithoutStreaming`, which it never reads.
+
+| Probe | What the API saw | What stdout carried |
+|---|---|---|
+| 404 on `stream: true`, one call | `stream: true` then `stream: false` | `assistant` (the text), `result` success: no `stream_event` at all |
+| A streamed `Glob` call, then 404 on the next | true, true, false | the streamed call, then `assistant msg_f1kq...` (text) with no stream events, `result` success |
+| The same, the second stream cut after `message_start` | true, true, false | `message_start msg_cnql...`, `message_stop` (`abandoned_blocks`), `assistant msg_fw4e...` under another id, `result` success |
+| The cut, with `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` | true, true | a `<synthetic>` "API Error: Connection to the API was lost (ECONNRESET)" reply, `is_error` result |
+| The 404, with that variable | true, false | the same `assistant` text: the variable does not stop it |
+| Opus 5.5 answering `stop_reason: "refusal"` | 5.5, 5.5, then `claude-opus-4-8` | an `informational` "continuing once with that noted", a retry on 5.5, `system`/`model_refusal_fallback` (`scope: "session"`, `fallback_model: "claude-opus-4-8"`, `retracted_message_uuids`), the answer from 4.8, `result` success with `modelUsage` for both |
+| The same with partial text before each refusal | the same | both refused partials streamed, then the fallback answer carrying `supersedes` |
+| With `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` | 5.5, 5.5 | `model_refusal_no_fallback`, a `<synthetic>` reply (`error: "invalid_request"`, "API Error: Opus 5.5's safeguards flagged this session..."), `is_error` result, exit 1 |
+| With `0`, `false` or `""` | 5.5, 5.5, 4.8 | the fallback, every time: a real boolean parse |
+| Two messages in one process, then a `--resume` with `--model claude-opus-5-5` | 5.5, 5.5, 4.8, **4.8**; resumed: 5.5, 5.5, 4.8 | the swap holds for the process; a restart starts on the requested model |
+
+Every stream event in 2.1.293 to 2.1.322 also carries `api_message_id`, equal to the
+`assistant` frame's `message.id`.
+
+### What the plugin did
+
+Non-streaming: the parser renders an `assistant` frame's content only while
+`gotPartialEvents` is false for the whole turn. A lone non-streamed call rendered; one
+after a streamed call in the same turn (the second and third rows) was dropped, and as
+the result was a success with no error text and the turn had a tool call, neither the
+error path nor the `no reply` note fired. The answer was simply gone.
+
+Refusal: nothing read the frame. The refused partial text stayed in the reply, the
+answer followed with nothing saying another model wrote it, and the spawn record
+(the sidebar), the turn-history key and the prologue of every later turn on that
+process named Opus 5.5 while Opus 4.8 answered.
+
+### Decided
+
+Non-streaming: keep the CLI's fallback and render its reply. The variable would turn a
+recovered answer into an error and leaves the 404 path running anyway. An `assistant`
+frame whose `message.id` never streamed a `content_block_start` (`TurnState.streamedMessageIds`,
+keyed on `api_message_id`, else the `message_start` id) takes the whole-message path a
+non-streamed turn already takes. A frame without an id, a `<synthetic>` one, or any
+frame after a block streamed with no id known keeps today's path, so every existing
+fake is byte-identical (2161 of 2161 passed before the new tests were added to the count).
+
+Refusal: `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK` joins `CLI_HYGIENE_ENV_VARS`, filled
+with `1` unless the operator set it (h #g48's rule), on both transports and the model
+probe. A refusal then ends as the error h #g281 already finishes as an error, which is
+opencode's choice too. For an operator who sets `0`, the plugin reports the model that
+answered: `parseRefusalFallback` and `reportRefusalFallback` in `src/cli-events.ts` (WARN
+once per model pair, INFO for `scope: "local"`), one `▌ **refusal fallback:**` note in its
+own text part where the frame arrives (`REFUSAL_FALLBACK_MARKER`, registered in
+`PLUGIN_NOTE_MARKERS`, never on a compaction turn), and `ActiveProcess.refusalFallbackModel`,
+which the spawn record reads on the event and in every later prologue (`peekActiveProcess`,
+which does not touch LRU order) and the turn-history sample reads at the result. A
+respawn does not carry it, and a live `set_model` clears it (an effort-only switch does
+not), matching the measured resume behaviour. The session key keeps the requested model:
+it is the conversation's identity, and the key a later turn arrives under. The bundle
+allowlist gained `originalModel`, `fallbackModel` (name), `category` (enum) and
+`retracted` (count) for the new WARN.
+
+Not covered: the interactive transport writes no stream frames, so a TUI that falls back
+is only stopped by the variable (which reaches it), never reported. The refusal retry on
+the same model (`CLAUDE_CODE_DISABLE_REFUSAL_RETRY`) is not a model swap and is left as is.
+A non-streamed message after streamed thinking-only output (the CLI's overloaded
+thinking-only branch) would show that thinking twice; not reproduced, accepted over
+losing the answer.
+
+### Tests
+
+`test/cli-fallbacks.test.ts`, a fake CLI with `process.execPath` as its shebang (h #g286)
+replaying the measured frame shapes through a real `doStream`: four fail on master
+(the 404 shape, the cut shape, an unstreamed tool call, the kept refusal fallback), two
+are guards master also passes (a streamed reply not doubled, no note on compaction).
+With only the prologue's `peekActiveProcess` read reverted, the refusal test fails on
+"a later turn on the same process does not put the requested model back". In
+`test/live-model-switch.test.ts`, the `set_model` clearing case fails without its line.
+Unit cases for the parser, the note and the WARN dedup in `test/cli-events.test.ts`; the
+hygiene list and the operator's `0`, `false` and `""` in `test/spawn-env.test.ts`. The new
+file is on `.github/windows-skipped-tests.txt`.
+
+Checks: `npm run typecheck` (0); the focused files `test/cli-fallbacks`, `cli-events`,
+`spawn-env`, `live-model-switch`, `diagnostic-bundle` and `configure-skill` (118 pass,
+0); `npm test` (2161 pass, 0; 2195 pass, 0 after rebasing onto h #g301's and h #g298's merges);
+`npm run build` (0); the site build (0, 39 pages, the new `#claude-codes-own-fallbacks`
+anchor present); `npm run generate:log-messages` for the one new WARN.
