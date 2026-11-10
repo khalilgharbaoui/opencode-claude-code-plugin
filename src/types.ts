@@ -150,6 +150,8 @@ export interface ClaudeCodeConfig {
   usageWarnThresholds?: number[]
   /** Resolved `usageSwitchAt`, in percent, or null for never. */
   usageSwitchAt?: number | null
+  /** Resolved `loginExpiryWarnDays`, in days; 0 for no note and no sidebar line. */
+  loginExpiryWarnDays?: number
   logging?: LoggingConfig
 }
 
@@ -960,6 +962,17 @@ export interface ClaudeCodeProviderSettings {
   usageSwitchAt?: number | false
 
   /**
+   * Days before an account's stored claude.ai login ends at which a served
+   * turn ends with one `▌ **login:**` note naming the account and the command
+   * that logs it in again, and the sidebar's Accounts section shows the date.
+   * Default `10`, Claude Code's own warning window: the date can be up to 3
+   * days early. `false` or `0` turns both off. Read from `credential_expires_at`
+   * on each `result`, Claude Code 2.1.318+, headless transport, claude.ai
+   * logins only (an API key reports no date). See docs/configuration/accounts.md.
+   */
+  loginExpiryWarnDays?: number | false
+
+  /**
    * Routing for Claude's built-in `WebSearch` tool.
    *
    * - `"claude"` (default): Claude CLI runs WebSearch internally via
@@ -1174,6 +1187,11 @@ export interface ClaudeStreamMessage {
   // state and is temporary.
   fast_mode_state?: "on" | "off" | "cooldown"
   fast_mode_disabled_reason?: string
+
+  // On `result` since Claude Code 2.1.318: when the stored claude.ai login's
+  // refresh chain ends, as an ISO 8601 instant. Absent for every other
+  // credential and from older CLIs (h #g301).
+  credential_expires_at?: string
 
   // Present on `stream_event` envelopes when --include-partial-messages is on.
   // The inner event mirrors the same shape (content_block_*, message_*, etc).

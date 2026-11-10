@@ -83,6 +83,7 @@ import {
   formatAccountBlockNote,
   formatAutoFailoverNote,
   formatFailoverNote,
+  formatLoginExpiryNote,
   formatFailoverStopNote,
   formatUsageLimitNote,
   formatUsageNote,
@@ -97,8 +98,13 @@ import {
   type FailoverSpawn,
 } from "./account-failover.js"
 import {
+  DAY_MS,
+  LOGIN_EARLY_END_DAYS,
   accountUsageAtOrOver,
+  markLoginNoted,
   markUsageNoted,
+  pendingLoginNote,
+  resolveLoginExpiryWarnDays,
   resolveUsageSwitchAt,
   resolveUsageWarnThresholds,
   usageCrossings,
@@ -3033,7 +3039,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     ]
     const usageNotesPossible =
       usageNoteThresholds.length > 0 && !compactionMode && mode !== "generate"
-    const usageChildSession = usageNotesPossible ? watchChildSession(affinity) : () => true
+    // The `▌ **login:**` note (h #g301) is kept off the same turns for the
+    // same reasons, and reads the same child lookup.
+    const loginNotesPossible =
+      resolveLoginExpiryWarnDays(this.config.loginExpiryWarnDays) > 0 &&
+      !compactionMode &&
+      mode !== "generate"
+    const usageChildSession =
+      usageNotesPossible || loginNotesPossible ? watchChildSession(affinity) : () => true
 
     // Whether this turn tells the operator that the opencode process they are
     // talking to is running an older plugin build than the one on disk
@@ -4144,6 +4157,35 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           state.endTextBlock()
         }
 
+        // The `▌ **login:**` note (h #g301): this account's stored claude.ai
+        // login ends within `loginExpiryWarnDays`, said once per login (per
+        // date) before a turn fails on `authentication_failed`. Read off the
+        // store the parser has just updated from this turn's own `result`,
+        // so an account whose CLI reports no date says nothing.
+        const writeLoginNote = () => {
+          const record = pendingLoginNote(spawnedAccount)
+          if (!record) return
+          const now = Date.now()
+          log.notice("claude account login ends soon", {
+            sessionKey: sk,
+            account: spawnedAccount,
+            daysLeft: Math.floor((record.expiresAt - now) / DAY_MS),
+          })
+          markLoginNoted(spawnedAccount, record.expiresAt, now)
+          controller.enqueue({
+            type: "text-delta",
+            id: state.startTextBlock(),
+            delta: formatLoginExpiryNote({
+              account: spawnedAccount,
+              configDir: self.skillBridgeSpawn(failover).configDir,
+              expiresAt: record.expiresAt,
+              now,
+              earlyDays: LOGIN_EARLY_END_DAYS,
+            }),
+          })
+          state.endTextBlock()
+        }
+
         const completeResult = (msg: ClaudeStreamMessage) => {
           if (state.controllerClosed) return
           // Which Claude session answered this conversation, for the next
@@ -4489,6 +4531,14 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             usageChildSession() === false
           ) {
             writeUsageNote()
+          }
+          if (
+            loginNotesPossible &&
+            msg.is_error !== true &&
+            !state.resultFailure &&
+            usageChildSession() === false
+          ) {
+            writeLoginNote()
           }
 
           // A failed compaction turn ends on an error, never on text. What

@@ -40,10 +40,15 @@ import {
 import { describeLogFile, log } from "./logger.js"
 import { snapshotCliModelCatalog, type CliModelCatalogSnapshot } from "./cli-model-catalog.js"
 import {
+  DAY_MS,
+  isLoginExpiryDue,
+  isLoginNoted,
   isReadingCurrent,
   snapshotAccountUsage,
+  snapshotLoginExpiries,
   usagePercent,
   type AccountUsage,
+  type LoginExpiries,
 } from "./account-usage.js"
 import { fetchPlanUsage, wantsPlanUsage, type PlanUsage } from "./plan-usage.js"
 import {
@@ -236,6 +241,11 @@ export interface DoctorReport {
    * hand-built report in a test needs no entry; the live report always has one.
    */
   accountUsage?: AccountUsage
+  /**
+   * When each account's stored claude.ai login ends, as the last result on it
+   * said (h #g301). Optional like `accountUsage`.
+   */
+  loginExpiry?: LoginExpiries
   /**
    * How the sidebar's progress estimate has done on this install's own turns
    * (src/turn-model.ts, h #g251). Optional like `accountUsage`, and absent
@@ -540,6 +550,13 @@ export function formatDoctorReport(report: DoctorReport): string {
     lines.push(...formatAccountUsage(report.accountUsage))
   }
 
+  if (report.loginExpiry) {
+    lines.push("")
+    lines.push("**Account logins**")
+    lines.push("")
+    lines.push(...formatLoginExpiries(report.loginExpiry))
+  }
+
   if (report.turnEstimate) {
     lines.push("")
     lines.push("**Progress estimate**")
@@ -784,6 +801,50 @@ function formatAccountUsage(usage: AccountUsage, now: number = Date.now()): stri
     "| account | window | used | status | resets | observed | noted at |",
     "|---|---|---|---|---|---|---|",
     ...rows,
+  ]
+}
+
+/**
+ * When each account's stored claude.ai login ends (h #g301): the date the CLI
+ * put on its last `result`, how long that leaves, and whether the `▌ **login:**`
+ * note is due or already said. A date and a count, nothing of the login.
+ */
+function formatLoginExpiries(logins: LoginExpiries, now: number = Date.now()): string[] {
+  if (logins.size === 0) {
+    return [
+      "No date yet. Claude Code 2.1.318 and later put the date a stored claude.ai login " +
+        "ends on every result; an API key, a token from the environment and an older CLI " +
+        "report none, and the interactive transport has no result to read it from.",
+    ]
+  }
+  const rows = [...logins.keys()].sort().map((account) => {
+    const record = logins.get(account)!
+    const left = record.expiresAt - now
+    const remaining =
+      left <= 0
+        ? "passed, may have ended"
+        : left >= DAY_MS
+          ? `${Math.floor(left / DAY_MS)} days`
+          : formatAge(left)
+    const note =
+      record.warnDays === 0
+        ? "off"
+        : isLoginNoted(record)
+          ? "said"
+          : isLoginExpiryDue(record, now)
+            ? "due on the next served turn"
+            : `from ${record.warnDays} days out`
+    return `| ${account} | ${formatResetsAtLocal(record.expiresAt) ?? "unknown"} | ${remaining} | ${formatAge(
+      Math.max(0, now - record.observedAt),
+    )} ago | ${note} |`
+  })
+  return [
+    "| account | login ends | left | observed | note |",
+    "|---|---|---|---|---|",
+    ...rows,
+    "",
+    "The date is Claude Code's own, and the login can end up to 3 days sooner. " +
+      "Log in again with `claude auth login` (`CLAUDE_CONFIG_DIR=<dir> claude auth login` for a named account).",
   ]
 }
 
@@ -1147,6 +1208,7 @@ export async function gatherDoctorReport(
     hookFailures: snapshotHookFailures(),
     planUsage,
     accountUsage: snapshotAccountUsage(),
+    loginExpiry: snapshotLoginExpiries(),
     turnEstimate: assessTurnEstimate(),
     modelCatalog: snapshotCliModelCatalog(),
     backgroundSubagents: {

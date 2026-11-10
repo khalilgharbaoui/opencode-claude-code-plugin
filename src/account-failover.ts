@@ -319,6 +319,43 @@ export function formatUsageNote(input: {
   return `\n${USAGE_MARKER} the Claude account "${account}" has used ${used}.${then}\n`
 }
 
+/** Leading text of the `▌` note a served turn ends with when the account's login is about to end. */
+export const LOGIN_MARKER = "▌ **login:**"
+
+/**
+ * The one note a served turn ends with when the account's stored claude.ai
+ * login ends within `loginExpiryWarnDays` (h #g301), said BEFORE a turn fails
+ * on `authentication_failed` and gets the `▌ **claude account:**` note.
+ *
+ * Which account, when, in the operator's LOCAL time, and the one command that
+ * fixes it, the same `loginCommandFor` the account-block note names. The date
+ * is the CLI's own `credential_expires_at`, which its schema says can be up to
+ * `earlyDays` late, so the wording never promises the login lasts that long.
+ * Its own text part, registered in `PLUGIN_NOTE_MARKERS`.
+ */
+export function formatLoginExpiryNote(input: {
+  account: string
+  configDir?: string
+  expiresAt: number
+  now?: number
+  earlyDays: number
+}): string {
+  const account = normalizeAccountName(input.account || DEFAULT_ACCOUNT)
+  const now = input.now ?? Date.now()
+  const when = formatResetsAtLocal(input.expiresAt) ?? new Date(input.expiresAt).toISOString()
+  const command = `\`${loginCommandFor(input.configDir)}\``
+  const left = input.expiresAt - now
+  const day = 24 * 60 * 60 * 1000
+  if (left <= 0) {
+    return `\n${LOGIN_MARKER} the Claude account "${account}" was due to be signed out at ${when}. This turn was still served, but the next one may be refused: log in again with ${command}.\n`
+  }
+  if (left <= input.earlyDays * day) {
+    return `\n${LOGIN_MARKER} the Claude account "${account}" can be signed out any day now, by ${when} at the latest. Log in again with ${command} now, so no turn fails on it.\n`
+  }
+  const days = Math.floor(left / day)
+  return `\n${LOGIN_MARKER} the Claude account "${account}" stays signed in until about ${when}, in ${days} days, and the login can end up to ${input.earlyDays} days sooner. Log in again with ${command} before then, so no turn fails on it.\n`
+}
+
 export function isAccountLimitError(input: {
   rateLimit?: RateLimitInfo | null
   resultText?: string | null

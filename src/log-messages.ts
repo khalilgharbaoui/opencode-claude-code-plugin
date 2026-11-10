@@ -48,6 +48,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "claude account cannot serve this turn; continuing it on the next account automatically",
   "claude account is near its usage limit; new turns move to another account until the window resets",
   "claude account is out of usage; the turn ends with a note",
+  "claude account login ends soon",
   "claude account usage crossed a warning threshold",
   "claude already registers a different skill under this name; not bridging ours",
   "claude cli < 2.1.142 detected; Opus 4.7 thinking summaries unavailable. Run `npm i -g @anthropic-ai/claude-code` to upgrade.",

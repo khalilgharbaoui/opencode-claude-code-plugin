@@ -3,8 +3,9 @@
  * h #g266): what is left of each account's five-hour window, the second line a
  * refused or nearly spent weekly window adds under it, how each reads, which
  * colour each piece takes, that every account registered at startup is listed
- * from the first draw, and that an account the store knows nothing about is
- * not.
+ * from the first draw, that an account the store knows nothing about is
+ * not, and the login line an account whose claude.ai login is about to end
+ * gets under it (h #g301).
  *
  * Usage: npx tsx --test test/account-sidebar.test.ts
  */
@@ -13,6 +14,8 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import {
+  LOGIN_ENDED_TEXT,
+  LOGIN_LINE,
   NO_READING_TEXT,
   accountUsageLines,
   formatResetClock,
@@ -23,7 +26,7 @@ import {
   shortWindowName,
   type AccountUsageLine,
 } from "../src/account-sidebar.js"
-import type { AccountUsage, KnownAccounts, WindowUsage } from "../src/account-usage.js"
+import type { AccountUsage, KnownAccounts, LoginExpiries, WindowUsage } from "../src/account-usage.js"
 import { SIDEBAR_ROW_WIDTH } from "../src/subagent-sidebar.js"
 
 const NOW = new Date(2026, 9, 17, 15, 30).getTime()
@@ -347,4 +350,105 @@ test("no line runs past the sidebar's width, a long name's detail line included"
   for (const line of lines) assert.ok(Array.from(lineText(line)).length <= 24, lineText(line))
   // Set in at most twelve cells, so the detail keeps room for its level.
   assert.match(lineText(lines[1]), /^ {12}7d extra/)
+})
+
+// ---------------------------------------------------------------------------
+// The login line (h #g301)
+// ---------------------------------------------------------------------------
+
+const DAY = 24 * 60 * 60 * 1000
+
+function logins(entries: Record<string, { expiresAt: number; warnDays?: number }>): LoginExpiries {
+  return new Map(
+    Object.entries(entries).map(([account, record]) => [
+      account,
+      { expiresAt: record.expiresAt, observedAt: NOW, warnDays: record.warnDays ?? 10 },
+    ]),
+  )
+}
+
+test("an account whose login ends inside its window gets a login line under it, the date in the warning colour", () => {
+  const ends = new Date(2026, 9, 26, 9, 39).getTime()
+  const lines = accountUsageLines(
+    usage({ appical: { five_hour: reading({ utilization: 0.3 }) } }),
+    NOW,
+    SIDEBAR_ROW_WIDTH,
+    known({ appical: {} }),
+    logins({ appical: { expiresAt: ends } }),
+  )
+  assert.equal(lines.length, 2)
+  assert.equal(lineText(lines[0]), "appical · 5h 70% left · resets 18:00")
+  assert.equal(lines[1].window, LOGIN_LINE)
+  assert.equal(lines[1].detail, true)
+  assert.equal(lines[1].state, "warning")
+  // Set in under the level like the weekly line; the year is the part given up.
+  assert.equal(lineText(lines[1]), "          login ends by 10-26 09:39")
+  assert.ok(lineText(lines[1]).length <= SIDEBAR_ROW_WIDTH)
+  assert.equal(roleOf(lines[1], "login ends by "), "muted")
+  assert.equal(roleOf(lines[1], "10-26 09:39"), "effort")
+})
+
+test("a short name leaves room for the year", () => {
+  const ends = new Date(2026, 9, 26, 9, 39).getTime()
+  const lines = accountUsageLines(new Map(), NOW, SIDEBAR_ROW_WIDTH, known({ a: {} }), logins({ a: { expiresAt: ends } }))
+  assert.equal(lineText(lines[1]), "    login ends by 2026-10-26 09:39")
+})
+
+test("a login outside its window, or with the window off, adds nothing", () => {
+  const far = NOW + 20 * DAY
+  assert.equal(
+    accountUsageLines(new Map(), NOW, SIDEBAR_ROW_WIDTH, known({ appical: {} }), logins({ appical: { expiresAt: far } }))
+      .length,
+    1,
+  )
+  const near = NOW + 2 * DAY
+  assert.equal(
+    accountUsageLines(
+      new Map(),
+      NOW,
+      SIDEBAR_ROW_WIDTH,
+      known({ appical: {} }),
+      logins({ appical: { expiresAt: near, warnDays: 0 } }),
+    ).length,
+    1,
+  )
+})
+
+test("a date that has passed says the login may have ended, in the error colour", () => {
+  const lines = accountUsageLines(
+    new Map(),
+    NOW,
+    SIDEBAR_ROW_WIDTH,
+    known({ default: { tier: "Max 20x" } }),
+    logins({ default: { expiresAt: NOW - DAY } }),
+  )
+  assert.equal(lineText(lines[0]), "default · Max 20x · no reading yet")
+  assert.equal(lines[1].state, "limited")
+  assert.equal(lineText(lines[1]).trim(), LOGIN_ENDED_TEXT)
+  assert.equal(roleOf(lines[1], LOGIN_ENDED_TEXT), "error")
+})
+
+test("the login line goes under an account's last line, and an unlisted account gets none", () => {
+  const lines = accountUsageLines(
+    usage({
+      appical: {
+        five_hour: reading({ utilization: 0.3 }),
+        seven_day: reading({ utilization: 0.9, resetsAt: OCT_21 }),
+      },
+      default: { five_hour: reading({ utilization: 0.1 }) },
+    }),
+    NOW,
+    SIDEBAR_ROW_WIDTH,
+    known({ appical: {}, default: {} }),
+    logins({ appical: { expiresAt: NOW + 5 * DAY }, gone: { expiresAt: NOW + DAY } }),
+  )
+  assert.deepEqual(
+    lines.map((line) => [line.account, line.window]),
+    [
+      ["appical", "five_hour"],
+      ["appical", "seven_day"],
+      ["appical", LOGIN_LINE],
+      ["default", "five_hour"],
+    ],
+  )
 })

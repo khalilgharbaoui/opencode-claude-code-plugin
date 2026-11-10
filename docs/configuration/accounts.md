@@ -89,6 +89,28 @@ which resets at 2026-10-17 18:00.
 
 The readings live in `$XDG_STATE_HOME/opencode-claude-code-plugin/account-usage.json` (`0600`): account names, window names, numbers and times, nothing else.
 
+### Before a login ends
+
+A claude.ai login does not last forever: Claude Code renews the short-lived access token on its own, but the login behind it ends on a date fixed when you signed in, and after that every turn on the account fails until you log in again. Claude Code 2.1.318 and later put that date on every answer, so the plugin keeps it per account and tells you **before** the day comes. This works with one account too, where the account is called `default`.
+
+When the date is within `loginExpiryWarnDays` (default 10 days), the next served turn on that account ends with one line after Claude's answer:
+
+```text
+▌ **login:** the Claude account "work" stays signed in until about 2026-11-19 09:39,
+in 9 days, and the login can end up to 3 days sooner. Log in again with
+`CLAUDE_CONFIG_DIR=~/.claude-work claude auth login` before then, so no turn fails on it.
+```
+
+- It is said **once per login**: not again on the next turn, from another opencode session, or after a restart. Logging in again gives a new date, which is warned about in its turn.
+- Inside the last 3 days it says the account can be signed out any day now, and once the date has passed it says the next turn may be refused.
+- Why 10 days: the date is Claude Code's own, either the server's or a 30-day estimate from sign-in, and Claude Code says the real end can be up to 3 days sooner. Ten days out leaves at least a week either way, and it is the same point at which Claude Code's own `claude -p` text output starts warning.
+- Never on a `/compact` turn, a `doGenerate` call or a subagent's session, and never on a failed turn. A login those turns could not announce is said by the next ordinary turn on that account.
+- `"loginExpiryWarnDays": false` (or `0`) turns the line and the sidebar's login line off. The date is still kept for the doctor.
+
+**Where you see it.** The [sidebar](../guides/subagents-sidebar.md) adds a line under the account inside the same window (`login ends by 11-19 09:39`, the date in the warning colour, or `login may have ended` once it has passed), and [`/claude-code-doctor`](../guides/doctor.md) lists every account's date with how long it leaves.
+
+**Limits.** Only a stored claude.ai login has a date: an API key, a token from the environment (`claude setup-token`) and other providers report none, and neither does a Claude Code before 2.1.318, so for those nothing changes. Claude Code does not ask the server, so a login revoked early still shows its date. The [interactive transport](../guides/interactive-transport.md) has no answer frame to read it from. The date is stored beside the usage readings in `account-usage.json`; it is a date, never a token.
+
 ### When an account runs out of usage
 
 By default the turn ends with one line in the conversation and nothing else:

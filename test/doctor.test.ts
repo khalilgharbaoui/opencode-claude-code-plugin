@@ -936,6 +936,36 @@ test("with no reading the account usage section says why, and a bundle withholds
 })
 
 // ---------------------------------------------------------------------------
+// Account logins (h #g301)
+// ---------------------------------------------------------------------------
+
+test("the account logins section lists each login's end, what is left and the note's state", () => {
+  const now = Date.now()
+  const day = 24 * 60 * 60 * 1000
+  const text = formatDoctorReport({
+    ...report,
+    loginExpiry: new Map([
+      ["appical", { expiresAt: now + 9 * day + 60_000, observedAt: now - 90_000, warnDays: 10, notedFor: now + 9 * day + 60_000 }],
+      ["default", { expiresAt: now + 20 * day, observedAt: now - 60_000, warnDays: 10 }],
+      ["old", { expiresAt: now - day, observedAt: now - 2 * day, warnDays: 10 }],
+      ["quiet", { expiresAt: now + 2 * day, observedAt: now, warnDays: 0 }],
+    ]),
+  })
+  assert.match(text, /\*\*Account logins\*\*/)
+  assert.match(text, /\| account \| login ends \| left \| observed \| note \|/)
+  assert.match(text, /\| appical \| \d{4}-\d\d-\d\d \d\d:\d\d \| 9 days \| 1m ago \| said \|/)
+  assert.match(text, /\| default \| .* \| 20 days \| .* \| from 10 days out \|/)
+  assert.match(text, /\| old \| .* \| passed, may have ended \| .* \| due on the next served turn \|/)
+  assert.match(text, /\| quiet \| .* \| 2 days \| .* \| off \|/)
+  assert.match(text, /can end up to 3 days sooner/)
+
+  const empty = formatDoctorReport({ ...report, loginExpiry: new Map() })
+  assert.match(empty, /\*\*Account logins\*\*\n\nNo date yet\. Claude Code 2\.1\.318/)
+  // A hand-built report without the field prints no section.
+  assert.doesNotMatch(formatDoctorReport(report), /Account logins/)
+})
+
+// ---------------------------------------------------------------------------
 // Progress estimate (h #g251)
 // ---------------------------------------------------------------------------
 

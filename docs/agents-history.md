@@ -11399,3 +11399,72 @@ the #172 review found was fixed as PR #174 (h #g296). The same day the local Cla
 went from 2.1.314 to 2.1.322, which knows Fable and Mythos 5.2. Open: whether Claude
 Code 2.1.322's fast mode on Vertex changes `docs/models.md`'s "Bedrock, Vertex, and
 Foundry are excluded" (in `TODO.md`).
+
+## A login's end, said before it lapses (2026-11-10)
+
+h #g301. Lane `login-expiry`, approved by the maintainer on 2026-11-10 ("go
+for it"). Research pass 3 ranked item 3: Claude Code 2.1.318 put the date a
+stored claude.ai login ends on `claude auth status` and on every `result`,
+and the plugin read neither, so a second account's login lapsed silently and
+was found by a turn failing on `authentication_failed` (h #g30, h #g194).
+
+### Measured
+
+Out of the 2.1.322 binary (`rg -a`, never the credentials file):
+
+- `credential_expires_at: o().optional()` sits on both `result` schemas
+  (success and error), beside `fast_mode_state`. Its description: "When the
+  claude.ai credential this process's requests send ends for good, as an ISO
+  8601 instant, read as the result is written. For a stored claude.ai login
+  it is the end of the login's refresh chain as stored at sign-in, which
+  renewing the access token does not move. That date is the server's when it
+  sent one and otherwise a 30-day estimate, and the real end can be up to 3
+  days earlier. The server is not asked, so a login revoked early still shows
+  its date, and a date in the past means the login has probably ended".
+- It is added by the result stamper (`{...s, result_index: n++, ...,
+  ...O9n()}`), so every numbered result carries it, and nothing else does:
+  five occurrences in the binary (two schemas, the CHANGELOG, the helper, the
+  `auth status` field). The helper returns null unless the provider is first
+  party, the login is claude.ai, a refresh token is stored with a numeric
+  `refreshTokenExpiresAt`, and the access token's own expiry is not more than
+  3 days past it.
+- The CLI's own `-p` text warning starts at `u = 7 + d` days with `d = 3`, the
+  early-end slack, and prints "between <date - 3 days> and <date>".
+
+Live on 2.1.322, scratch cwd: the default login's `result` for a free `/cost`
+(`num_turns: 0`, `$0`) and for a Haiku 5.5 turn both carried
+`"credential_expires_at":"2026-11-30T14:43:52.761Z"`, equal to `claude auth
+status`'s `loginExpiresAt`; `system`/`init` had no such key. The appical
+account read `2026-11-19T08:39:02.704Z`. With `ANTHROPIC_API_KEY` set, neither
+the `result` nor `auth status` had a date (`loginExpiresAt: null`). opencode
+2.2.6's binary, its built-in Claude Agent provider included, contains neither
+field name.
+
+### Built
+
+- `account-usage.json` gains `logins` (account -> `{expiresAt, observedAt,
+  warnDays, notedFor}`), merge-on-write with the readings and `known`, every
+  existing writer carrying it through, 30 days' age cutoff (the longest a
+  login was measured to last), written only on a change or once an hour.
+- The stream parser records `parseCredentialExpiresAt(msg)` at every `result`,
+  right after the fast-mode verdict, for `ctx.usageAccount`. A result without
+  the field changes nothing, which is all an older CLI or an API key needs.
+- One `▌ **login:**` note (`LOGIN_MARKER`, `formatLoginExpiryNote`) after the
+  usage note on a served turn whose record is due and not yet noted for that
+  date: three wordings (about a date more than 3 days out, any day now inside
+  the slack, past the date), each naming `loginCommandFor(configDir)`. Same
+  exclusions as the usage note, sharing its child lookup. NOTICE `claude
+  account login ends soon` with `daysLeft` (allowlisted as a count).
+- `loginExpiryWarnDays`, default 10, `false`/`0` off, at most 30. Ten because
+  the date is a 30-day estimate that can be 3 days late: ten days out leaves a
+  week of notice in the worst case, it fires in the last third of a login, and
+  it is where Claude Code's own warning starts.
+- The sidebar's login line and the doctor's `Account logins` section. The
+  record stores its `warnDays` because the TUI cannot read provider options.
+
+### Not done
+
+`claude auth status`'s `loginExpiresAt` is not read by opencode 2's
+`/connect` check (`src/claude-login.ts` reads five fields by rule, h #g277);
+it would give the sidebar a date before an account's first turn, at the cost
+of widening that rule. The interactive transport stays without a date.
