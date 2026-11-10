@@ -11741,6 +11741,8 @@ process, asserting the pings went out as `side_question` control requests,
 no user envelope carries them, one spawn, the same Claude session and no
 rewound note; and a ping with no live process refused with no spawn. With the
 branch disabled both stream tests fail (the ping comes back as `Answer 2`).
+The two stream tests skip on Windows, like every fake-CLI harness, and the
+unit tests run there.
 `test/v2-entrypoint.test.ts` asserts the header.
 
 ### Live, with the fix

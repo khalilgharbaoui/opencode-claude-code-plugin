@@ -29,6 +29,8 @@ const KEEP_ALIVE =
 
 const TURN_HANG_STOP_MS = 30_000
 
+const POSIX_ONLY = process.platform === "win32" ? "the fake-CLI harness is POSIX-only" : false
+
 test("the request kind is read off its header, any case", () => {
   assert.equal(resolveRequestKind({ [OPENCODE_REQUEST_KIND_HEADER]: "generate" }), "generate")
   assert.equal(resolveRequestKind({ "X-Opencode-Request-Kind": "primary" }), "primary")
@@ -172,6 +174,7 @@ function conversation(affinity: string) {
 }
 
 before(async () => {
+  if (POSIX_ONLY) return
   for (let attempt = 1; attempt <= 4; attempt++) {
     if (await detectCliVersion(cliPath)) return
   }
@@ -181,6 +184,7 @@ before(async () => {
 after(() => rmSync(fixture, { recursive: true, force: true }))
 
 test("a warming ping is answered off the conversation and the next turn finds it untouched", {
+  skip: POSIX_ONLY,
   timeout: 60_000,
 }, async () => {
   const chat = conversation("ses_warming")
@@ -221,7 +225,7 @@ test("a warming ping is answered off the conversation and the next turn finds it
   }
 })
 
-test("a generate request with no live claude is refused without a spawn", async () => {
+test("a generate request with no live claude is refused without a spawn", { skip: POSIX_ONLY }, async () => {
   const chat = conversation("ses_warming_cold")
   try {
     const warm = await chat.generate(KEEP_ALIVE)
