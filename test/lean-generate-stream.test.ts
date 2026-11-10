@@ -24,6 +24,8 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { _resetAccountOverrides, setAccountOverride } from "../src/account-failover.js"
+import { _setAccountRuntimePlatform } from "../src/accounts.js"
 import { createClaudeCode } from "../src/index.js"
 import { setOpencodeClient } from "../src/runtime-status.js"
 import {
@@ -339,6 +341,80 @@ test("an abort during the lean run ends the call and spawns nothing else", async
     assert.equal(parts.some((part) => part.type === "finish"), false)
     await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(fake.spawns().length, 1)
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
+  }
+})
+
+/**
+ * The Windows account plan on any platform, with `default` failed over to a
+ * named account. `default` carries no `accountInProcess`, so the override's
+ * own flag is what tells a lean spawn to export the target's dir (h #g293).
+ * Only the plan is Windows'; the fake still spawns the POSIX way.
+ */
+async function withWindowsFailover(run: (configDir: string) => Promise<void>): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), "opencode-lean-home-"))
+  const saved = {
+    HOME: process.env.HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  }
+  process.env.HOME = home
+  process.env.XDG_CACHE_HOME = join(home, "cache")
+  delete process.env.CLAUDE_CONFIG_DIR
+  _setAccountRuntimePlatform("win32")
+  _resetAccountOverrides()
+  setAccountOverride("default", "winwork")
+  try {
+    await run(join(home, ".claude-winwork"))
+  } finally {
+    _resetAccountOverrides()
+    _setAccountRuntimePlatform(null)
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+const WINDOWS_FAILOVER = { account: "default", failoverAccounts: ["default", "winwork"] }
+
+test("on the Windows plan, a lean run failed over from default exports the target account's config dir", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    await withWindowsFailover(async (configDir) => {
+      const result = await modelFor(fake, { leanGenerate: true, ...WINDOWS_FAILOVER }).doStream({
+        prompt: DETACHED_PROMPT,
+        tools: TOOLS,
+      } as any)
+      assert.equal((await collect(result)).text, "lean answer")
+      const spawns = fake.spawns()
+      assert.equal(spawns.length, 1)
+      assert.ok(spawns[0].argv.includes("--setting-sources"))
+      assert.equal(spawns[0].configDir, configDir)
+    })
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
+  }
+})
+
+test("on the Windows plan, a titleModel run failed over from default exports the target account's config dir", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    await withWindowsFailover(async (configDir) => {
+      // No tools on opencode 1.x is a title request (h #g36).
+      const result = await modelFor(fake, { titleModel: "haiku", ...WINDOWS_FAILOVER }).doStream({
+        prompt: DETACHED_PROMPT,
+      } as any)
+      assert.equal((await collect(result)).text, "lean answer")
+      const spawns = fake.spawns()
+      assert.equal(spawns.length, 1)
+      assert.equal(argvValue(spawns[0].argv, "--model"), "haiku")
+      assert.equal(spawns[0].configDir, configDir)
+    })
   } finally {
     await release(fake.cwd)
     fake.cleanup()

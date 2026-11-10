@@ -573,6 +573,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return skillBridgeSpawn(this.config, failover)
   }
 
+  /**
+   * Whether this spawn carries its account itself because no wrapper script
+   * does (`accountInProcess`, Windows only, h #g221): the provider's own
+   * flag, or the flag of the account a failover or a dispatch moved it to,
+   * because the `default` provider has none (h #g293).
+   */
+  private accountInProcess(failover: FailoverSpawn): boolean {
+    return Boolean(this.config.accountInProcess || failover.accountInProcess)
+  }
+
+  /** The `CLAUDE_CONFIG_DIR` such a spawn exports. Undefined on POSIX. */
+  private inProcessConfigDir(failover: FailoverSpawn): string | undefined {
+    return this.accountInProcess(failover) ? this.skillBridgeSpawn(failover).configDir : undefined
+  }
+
   /** Share one lazy registry request within a turn without making it stale. */
   private createLiveToolInfoLoader(): () => Promise<LiveToolInfo> {
     return createLiveToolInfoLoader(this.config, this.modelId)
@@ -1694,9 +1709,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         ? await generateTitleWithModel(options.prompt as readonly any[], {
             cliPath,
             model: parseModelId(stripAccountSuffix(titleModel)).model,
-            configDir: this.config.accountInProcess
-              ? this.skillBridgeSpawn(failover).configDir
-              : undefined,
+            configDir: this.inProcessConfigDir(failover),
             ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
             abortSignal: options.abortSignal,
           })
@@ -1750,10 +1763,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliPath,
         model: parseModelId(stripAccountSuffix(failover.modelId)).model,
         // The config dir of the account this call really runs on, a failover
-        // override's included, where no wrapper carries it (h #g221).
-        configDir: this.config.accountInProcess
-          ? this.skillBridgeSpawn(failover).configDir
-          : undefined,
+        // override's included, where no wrapper carries it (h #g221, h #g293).
+        configDir: this.inProcessConfigDir(failover),
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
         abortSignal: options.abortSignal,
       })
@@ -1870,13 +1881,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           model: forCli.model,
           fast: forCli.fast,
           spawnModelArg: parseModelId(
-            this.config.accountInProcess ? stripAccountSuffix(failover.modelId) : failover.modelId,
+            this.accountInProcess(failover) ? stripAccountSuffix(failover.modelId) : failover.modelId,
           ).model,
           effort: reasoningEffort,
           cliPath,
-          configDir: this.config.accountInProcess
-            ? this.skillBridgeSpawn(failover).configDir
-            : undefined,
+          configDir: this.inProcessConfigDir(failover),
         },
         options.abortSignal ? { abortSignal: options.abortSignal } : {},
       )
@@ -2134,9 +2143,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // only where no wrapper script carries the account (`accountInProcess`,
     // Windows, h #g221). Undefined everywhere else, so every POSIX install is
     // on exactly the path it was before.
-    const spawnConfigDir = this.config.accountInProcess
-      ? this.skillBridgeSpawn(failover).configDir
-      : undefined
+    const accountInProcess = this.accountInProcess(failover)
+    const spawnConfigDir = this.inProcessConfigDir(failover)
     const processForAccount = getActiveProcess(sk)
     if (
       !compactionMode &&
@@ -2718,7 +2726,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // Windows) the marker comes off here on every turn: nothing downstream
     // would strip it and the CLI has no such model (h #g221).
     const { model: spawnModelId, fast: fastMode } = parseModelId(
-      this.config.accountInProcess
+      accountInProcess
         ? stripAccountSuffix(failover.modelId)
         : failover.modelId,
     )
@@ -3826,6 +3834,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // Which account's binary this TUI runs, for the account check
               // in the prologue, exactly as a headless child records it.
               ap.cliPath = cliPath
+              ap.configDir = spawnConfigDir
               setActiveProcess(sk, ap)
               state.proc = ap.proc
               state.lineEmitter = ap.lineEmitter

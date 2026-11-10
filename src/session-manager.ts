@@ -634,10 +634,13 @@ export function peekActiveProcess(key: string): ActiveProcess | undefined {
  *
  * Two signals, because the account is carried differently per platform. On
  * POSIX the per-account wrapper path IS the account, so `cliPath` answers it
- * alone and `configDir` is never recorded. On Windows there is no wrapper, so
- * every account runs the same binary and only `CLAUDE_CONFIG_DIR` separates
- * them (h #g221). Either side being unrecorded means "cannot tell", which
- * keeps the process, exactly as the `cliPath` check alone always has.
+ * alone and `configDir` is never recorded on either side. On Windows there is
+ * no wrapper, so every account runs the same binary and only
+ * `CLAUDE_CONFIG_DIR` separates them (h #g221), and there an unrecorded
+ * `configDir` IS the `default` account: every spawn site records the one it
+ * exported, so a switch from `default` to a named account and back both
+ * replace the child (h #g293). An unrecorded `cliPath` still means "cannot
+ * tell" and keeps the process.
  */
 export function processBelongsToAnotherAccount(
   active: ActiveProcess | undefined,
@@ -646,7 +649,7 @@ export function processBelongsToAnotherAccount(
 ): boolean {
   if (!active) return false
   if (active.cliPath && active.cliPath !== cliPath) return true
-  return !!active.configDir && active.configDir !== configDir
+  return (active.configDir ?? undefined) !== (configDir ?? undefined)
 }
 
 export function setActiveProcess(key: string, ap: ActiveProcess): void {

@@ -602,26 +602,27 @@ export async function resolveDispatchAccountSpawn(input: {
   ensureRuntime?: (
     account: string,
     baseCliPath: string,
-  ) => Promise<{ cliPath: string }>
+  ) => Promise<{ cliPath: string; accountInProcess?: boolean }>
 }): Promise<{
   cliPath: string
   modelId: string
   target: string
   failedOver: true
+  accountInProcess?: boolean
 } | null> {
   const account = normalizeAccountName(input.account || DEFAULT_ACCOUNT)
   try {
-    const cliPath =
+    const runtime =
       account === DEFAULT_ACCOUNT
-        ? input.baseCliPath
-        : (await (input.ensureRuntime ?? ensureAccountRuntime)(account, input.baseCliPath))
-            .cliPath
+        ? { cliPath: input.baseCliPath }
+        : await (input.ensureRuntime ?? ensureAccountRuntime)(account, input.baseCliPath)
     const at = input.modelId.indexOf("@")
     return {
-      cliPath,
+      cliPath: runtime.cliPath,
       modelId: at === -1 ? input.modelId : input.modelId.slice(0, at),
       target: account,
       failedOver: true,
+      ...(runtime.accountInProcess ? { accountInProcess: true } : {}),
     }
   } catch (err) {
     log.error("failed to prepare the dispatched subagent's account; staying put", {

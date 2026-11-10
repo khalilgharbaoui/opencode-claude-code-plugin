@@ -28,7 +28,7 @@ import {
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { ensureAccountRuntime } from "../src/accounts.js"
+import { _setAccountRuntimePlatform, ensureAccountRuntime } from "../src/accounts.js"
 import { MAX_DEADLINE_REPROBES, detectCliSupportsFlag, detectCliVersion } from "../src/cli-version.js"
 import { _resetAgentRegistryForTests, setProviderFallbackModels } from "../src/agent-models.js"
 import { configDirForAccount } from "../src/account-transcript.js"
@@ -2972,4 +2972,72 @@ test("auto: a chain that ends on a second expired login names the second account
     assert.equal(finishes.length, 1)
     assert.equal(finishes[0].finishReason.unified, "error")
   })
+})
+
+// ---------------------------------------------------------------------------
+// Windows, where no wrapper carries the account (h #g221, h #g293)
+// ---------------------------------------------------------------------------
+
+test("on Windows a default-account conversation switched to a named account runs on that account's config dir, and back", async () => {
+  // The Windows plan on any platform: there a switch's runtime is the BASE
+  // binary plus a config dir to export, so the default account's child has the
+  // same `cliPath` as the target's. Before h #g293 the switch kept that child
+  // and, had it spawned, would have exported no config dir at all. Only the
+  // plan is Windows; the fake still spawns the POSIX way.
+  _setAccountRuntimePlatform("win32")
+  process.env.FAKE_CLI_REPEAT = "1"
+  try {
+    await withScriptedAccounts({ default: "ok", winwork: "ok" }, async (fake) => {
+      await warmCliProbes(fake.cliPath)
+      const model = createClaudeCode({
+        cliPath: fake.cliPath,
+        baseCliPath: fake.cliPath,
+        account: "default",
+        failoverAccounts: ["default", "winwork"],
+        cwd: fake.cwd,
+        bridgeOpencodeMcp: false,
+        proxyOpencodeMcpTools: false,
+        proxyTools: [],
+      }).languageModel("claude-test-failover")
+      const secondPrompt = [
+        ...turnOnePrompt,
+        { role: "assistant", content: [{ type: "text", text: "answered by default" }] },
+        { role: "user", content: [{ type: "text", text: "go on" }] },
+      ]
+      const thirdPrompt = [
+        ...secondPrompt,
+        { role: "assistant", content: [{ type: "text", text: "answered by winwork" }] },
+        { role: "user", content: [{ type: "text", text: "and back" }] },
+      ]
+
+      const first = await drain(await model.doStream({ prompt: turnOnePrompt, tools: TOOLS } as any))
+      assert.match(textOf(first), /answered by default/)
+
+      setAccountOverride("default", "winwork")
+      const second = await drain(await model.doStream({ prompt: secondPrompt, tools: TOOLS } as any))
+      assert.match(textOf(second), /answered by winwork/)
+
+      clearAccountOverride("default")
+      const third = await drain(await model.doStream({ prompt: thirdPrompt, tools: TOOLS } as any))
+      assert.match(textOf(third), /answered by default/)
+
+      const spawns = fake.spawns()
+      assert.deepEqual(
+        spawns.map((spawn) => spawn.configDir),
+        [null, join(HOME, ".claude-winwork"), null],
+      )
+      // The account marker never reaches the CLI, and the plan really was
+      // Windows': no wrapper script was written for the named account, whose
+      // name no other test in this file uses.
+      assert.deepEqual(spawns.map((spawn) => modelArg(spawn.argv)), [
+        "claude-test-failover",
+        "claude-test-failover",
+        "claude-test-failover",
+      ])
+      assert.equal(existsSync(join(HOME, "cache", "opencode-claude-code-plugin", "claude-winwork")), false)
+    })
+  } finally {
+    delete process.env.FAKE_CLI_REPEAT
+    _setAccountRuntimePlatform(null)
+  }
 })
