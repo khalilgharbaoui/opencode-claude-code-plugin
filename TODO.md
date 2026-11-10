@@ -212,6 +212,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-10: **done** (v0.70.0, PR #175 to #178, h #g298 to h #g301): Research pass 3's fixes: session
+  warming kept out of the conversation, the login-expiry warning, the refusal and non-streaming fallbacks, the
+  Sonnet 5.5 cache-read price and `claude-opus-4-8-fast` retired before 2026-11-30.
 - 2026-11-10: **done** (v0.69.0, h #g297): the 2026-11-09 fork, PR and issue sweep. PR #168, #171,
   #172, #173 and the follow-up #174 merged; #167 answered and closed, #169 and #170 closed by their PRs.
 - 2026-11-04: **done** (v0.68.2, PR #166, h #g292): a step that answers the session's own parked proxy

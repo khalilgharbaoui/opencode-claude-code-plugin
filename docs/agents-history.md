@@ -11469,6 +11469,11 @@ field name.
 it would give the sidebar a date before an account's first turn, at the cost
 of widening that rule. The interactive transport stays without a date.
 
+Shipped as v0.70.0 on 2026-11-10 (PR #175, PR #176, PR #177, PR #178), a minor: CI green on
+Linux and Windows on the merge commit `0555ceb` before the tag and on the release commit
+`877471e`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`4095625b`), with a GitHub Release.
+
 ## Sonnet 5.5's cache read, and Opus 4.8's fast mode retired (2026-11-10)
 
 h #g298. Lane `catalog-fixes`, approved by the maintainer on 2026-11-10 ("go for it"),
@@ -11546,6 +11551,11 @@ model's cache read and both writes against 2.1.322's `pricing_tiers`, copied ver
 - `claude-sonnet-4-5` is retired on the Claude API on 2026-11-30 too (the
   model-deprecations page, replacement `claude-sonnet-5-5`; 2.1.322's own deprecation
   list agrees). Outside this lane; in `TODO.md`.
+
+Shipped as v0.70.0 on 2026-11-10 (PR #175, PR #176, PR #177, PR #178), a minor: CI green on
+Linux and Windows on the merge commit `0555ceb` before the tag and on the release commit
+`877471e`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`4095625b`), with a GitHub Release.
 
 ## Claude Code's refusal and non-streaming fallbacks (2026-11-10)
 
@@ -11650,6 +11660,11 @@ Checks: `npm run typecheck` (0); the focused files `test/cli-fallbacks`, `cli-ev
 `npm run build` (0); the site build (0, 39 pages, the new `#claude-codes-own-fallbacks`
 anchor present); `npm run generate:log-messages` for the one new WARN.
 
+Shipped as v0.70.0 on 2026-11-10 (PR #175, PR #176, PR #177, PR #178), a minor: CI green on
+Linux and Windows on the merge commit `0555ceb` before the tag and on the release commit
+`877471e`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`4095625b`), with a GitHub Release.
+
 ## Session warming and `/goal` kept out of the conversation (2026-11-10)
 
 h #g299. Lane `warming`, approved by the maintainer on 2026-11-10 ("go for it"),
@@ -11751,3 +11766,8 @@ The same probe on a new session: three pings answered in 1,211 to 1,302 ms
 (`answered a session generate request off the conversation`), no spawn, no
 fork; the Claude transcript holds only the two real exchanges; the next
 message reused the process, carried no note and answered `PELICAN`.
+
+Shipped as v0.70.0 on 2026-11-10 (PR #175, PR #176, PR #177, PR #178), a minor: CI green on
+Linux and Windows on the merge commit `0555ceb` before the tag and on the release commit
+`877471e`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`4095625b`), with a GitHub Release.
