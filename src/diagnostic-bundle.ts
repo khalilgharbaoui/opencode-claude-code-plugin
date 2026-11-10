@@ -123,6 +123,7 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   applied: "flag",
   attached: "flag",
   beforeInit: "flag",
+  betweenTurns: "flag",
   bridgeSkipNativeSkills: "flag",
   channelClosed: "flag",
   compaction: "flag",

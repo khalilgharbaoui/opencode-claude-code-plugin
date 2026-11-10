@@ -513,6 +513,89 @@ test("records left over from the previous turn never end the next one", async ()
   })
 })
 
+// The records Claude Code 2.1.322's TUI wrote when it compacted a 120,019-token
+// conversation 54 minutes after its last request (measured, h #g304): the
+// boundary, then a notice. Ids and paths left out.
+const IDLE_COMPACT_BOUNDARY = {
+  parentUuid: null,
+  isSidechain: false,
+  type: "system",
+  subtype: "compact_boundary",
+  content: "Conversation compacted",
+  isMeta: false,
+  level: "info",
+  compactMetadata: {
+    trigger: "auto",
+    preTokens: 120_019,
+    durationMs: 285,
+    postTokens: 2_855,
+    cumulativeDroppedTokens: 117_164,
+  },
+}
+const IDLE_COMPACT_NOTICE = {
+  type: "system",
+  subtype: "informational",
+  content: 'Compacted while idle, before the prompt cache expired · turn off with "idleCompaction": false in settings.json',
+  isMeta: false,
+  level: "notice",
+}
+
+test("a compaction the TUI wrote between turns reaches the next turn first, marked, and only once", async () => {
+  const dirs = scratch()
+  const sessionId = "0b0b0b0b-1111-4222-8333-444455556666"
+  const transcript = interactiveTranscriptPath({ configDir: dirs.configDir, cwd: dirs.cwd, sessionId })
+  fs.mkdirSync(path.dirname(transcript), { recursive: true })
+  // A resumed conversation's own history: a compaction from before this TUI
+  // started is not news to anyone.
+  fs.writeFileSync(transcript, JSON.stringify({ ...IDLE_COMPACT_BOUNDARY, uuid: "history" }) + "\n")
+  const tui = new FakeTui()
+  tui.turns.push((t) => t.append(assistantRecord("m1", "end_turn", textBlock("one"))))
+  tui.turns.push((t) => t.later(20, () => t.append(assistantRecord("m2", "end_turn", textBlock("two")))))
+  tui.turns.push((t) =>
+    t.later(20, () =>
+      t.append({ ...IDLE_COMPACT_BOUNDARY, uuid: "in-turn" }, assistantRecord("m3", "end_turn", textBlock("three"))),
+    ),
+  )
+  const session = new ClaudeSession({
+    ...FAST,
+    cwd: dirs.cwd,
+    configDir: dirs.configDir,
+    env: {},
+    spawnPty: tui.spawner,
+    resumeSessionId: sessionId,
+  })
+  const boundaries = (lines: string[]) =>
+    lines.filter((line) => line.includes("compact_boundary")).map((line) => JSON.parse(line))
+  try {
+    await session.start()
+    const first: string[] = []
+    await session.tailTurn("one", (raw) => first.push(raw))
+    assert.deepEqual(boundaries(first), [])
+
+    tui.append({ ...IDLE_COMPACT_BOUNDARY, uuid: "idle" }, IDLE_COMPACT_NOTICE)
+    const second: string[] = []
+    const turn = await session.tailTurn("two", (raw) => second.push(raw))
+    assert.equal(turn.end, "stop")
+    const idle = boundaries(second)
+    assert.equal(idle.length, 1)
+    assert.equal(idle[0].uuid, "idle")
+    assert.equal(idle[0].betweenTurns, true)
+    assert.deepEqual(idle[0].compactMetadata, IDLE_COMPACT_BOUNDARY.compactMetadata, "the record is otherwise the TUI's own")
+    assert.equal(second.findIndex((line) => line.includes("compact_boundary")), 0, "ahead of the turn's own records")
+    assert.ok(!second.some((line) => line.includes("Compacted while idle")), "the TUI's notice stays skipped")
+
+    const third: string[] = []
+    await session.tailTurn("three", (raw) => third.push(raw))
+    const inTurn = boundaries(third)
+    assert.equal(inTurn.length, 1, "the idle one is not handed on twice")
+    assert.equal(inTurn[0].uuid, "in-turn")
+    assert.equal(inTurn[0].betweenTurns, undefined, "one written inside a turn is left as it is")
+  } finally {
+    session.dispose()
+    dirs.cleanup()
+  }
+})
+
 test("Esc interrupts a running turn and the session takes the next one", async () => {
   const tui = new FakeTui()
   tui.turns.push((t) => t.append(assistantRecord("m1", "tool_use", toolBlock("toolu_1", "Bash"))))
@@ -1959,6 +2042,73 @@ test("a forked opencode session branches the parent's conversation on the PTY", 
       deleteActiveProcess(keyOf(affinity))
       deleteClaudeSessionId(keyOf(affinity))
     }
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+test("an idle compaction on the PTY leads the next reply with one note", async () => {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const dirs = scratch()
+  const cliPath = path.join(dirs.cwd, "fake-claude")
+  fs.writeFileSync(cliPath, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.322\\n'; exit 0; fi\nexit 1\n", {
+    mode: 0o755,
+  })
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      tui.turns = ["First answer", "Second answer", "Third answer"].map(
+        (answer, index) => (child: FakeTui) => child.append(assistantRecord(`m${index}`, "end_turn", textBlock(answer))),
+      )
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const modelId = "claude-test-pty-idle-compaction"
+  const key = sessionKey(dirs.cwd, `${modelId}::tools::ses_idle::context=["claude-code",null]`)
+  const model = createClaudeCode({
+    transport: "interactive", cliPath, cwd: dirs.cwd, configDir: dirs.configDir,
+    bridgeOpencodeMcp: false, proxyTools: [], resumeAfterRestart: false,
+  }).languageModel(modelId)
+  const history: any[] = []
+  const turn = async (text: string, answer: string) => {
+    history.push({ role: "user", content: [{ type: "text", text }] })
+    const result = await model.doStream({
+      prompt: [...history],
+      headers: { "x-session-affinity": "ses_idle" },
+      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+    } as any)
+    const parts: any[] = []
+    for await (const part of result.stream) parts.push(part)
+    history.push({ role: "assistant", content: [{ type: "text", text: answer }] })
+    return textOf(parts)
+  }
+  try {
+    const first = await turn("The codeword is PELICAN.", "First answer")
+    assert.equal(first, "First answer")
+    // An hour later the TUI compacts on its own, with no turn running.
+    children[0]!.append({ ...IDLE_COMPACT_BOUNDARY, uuid: "idle" }, IDLE_COMPACT_NOTICE)
+    const second = await turn("What was the codeword?", "Second answer")
+    assert.equal(children.length, 1, "the same TUI served both turns")
+    assert.match(
+      second,
+      /^\n▌ \*\*context compacted:\*\* Claude Code compacted its own context while this conversation sat idle, before its prompt cache expired \(120,019 tokens to 2,855\)\./,
+    )
+    assert.match(second, /"idleCompaction": false/)
+    assert.ok(second.endsWith("Second answer"), second)
+    assert.equal(await turn("Anything else?", "Third answer"), "Third answer", "one note, on one turn")
+  } finally {
+    deleteActiveProcess(key)
+    deleteClaudeSessionId(key)
     if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
     else delete (globalThis as any).Bun
     dirs.cleanup()
