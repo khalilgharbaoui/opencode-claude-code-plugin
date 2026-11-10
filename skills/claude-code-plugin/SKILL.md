@@ -253,7 +253,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `CLAUDE_CODE_DISABLE_FAST_MODE` | CLI-owned kill switch, conventionally `1`; plugin does not interpret it or change picker prices. Use the non-fast id if fast mode is disabled. |
 | `CLAUDE_CODE_INTERACTIVE_TRANSPORT` | Fallback when both `transport` and `interactive` are absent: `1` enables; empty/`0`/`false`/`no`/`off` disable (case-insensitive). Explicit `transport` or `interactive: false` wins. |
 | `CLAUDE_CODE_INTERACTIVE_BYPASS` | Deprecated no-op, like `interactiveBypass`. |
-| `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` | Set to `0` for the interactive TUI unless the operator set it, so a proxied call past 120 s stays in the foreground as on headless. |
+| `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` | Set to `0` for the interactive TUI unless the operator set it, so a proxied call past 120 s stays in the foreground as on headless. `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND` is not set: it covers MCP-task servers only, which the proxy never is, and at `0` the CLI asks no server for a task. |
 | `CLAUDE_CODE_START_WATCHDOG_MS` | Positive integer ms before a headless start or proxy-result continuation is considered silent; default 90000 for missing/invalid/nonpositive values. First expiry respawns, second errors. Bookkeeping-only output is not progress. A process that has not sent its first `system`/`init` yet gets at least its `MCP_TIMEOUT` plus 30 s (150 s by default), since the CLI sends `init` only after its MCP servers connect or time out; the log's `beforeInit` says which delay fired. Keep within timer range; do not lower for routine config checks. |
 | `CLAUDE_CODE_LIVE_SWITCH_TIMEOUT_MS` | Positive integer ms one `set_model` or `apply_flag_settings` may take before a live model or effort switch gives up, stops the child and falls back to the respawn; default 10000 for missing/invalid/nonpositive values. Measured answers: 0.5 to 0.7 s and 20 to 140 ms. |
 | `CLAUDE_CODE_RESULT_FALLBACK_MS` | Positive integer ms of stdout silence, after the CLI has produced output, before the turn is closed with no `result`; default 60000 for missing/invalid/nonpositive values. The close is announced in the reply as a `▌ **stream timeout:**` note, which is stripped from any rebuilt transcript. An aborted turn gets no note. |
@@ -1272,7 +1272,7 @@ No manual skill copy/update is needed. Do not publish or release as part of conf
 
 ### Registered model ids
 
-Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
+Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-6`,
 `claude-sonnet-5`, `claude-sonnet-5-5`, `claude-opus-4-5`, `claude-opus-4-6`,
 `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`,
 `claude-opus-5-fast`, `claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`,
@@ -1285,12 +1285,12 @@ this list lacks is registered too, named from the CLI, at an unknown (zero) pric
 
 - Display names end in a `(N×)` list-price multiplier anchored on Haiku 4.5: 0.1× haiku 5.5,
   1× haiku 4.5,
-  2× sonnet 5 and 5.5, 3× sonnet 4.5/4.6, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5
+  2× sonnet 5 and 5.5, 3× sonnet 4.6, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5
   and fable/mythos 5.2, 10× fable, mythos 5 / 5.1 and fast-mode opus 5, 16× fast-mode
   fable/mythos 5.2. It is display only.
 - Reasoning variants are the effort levels Claude Code accepts for that model, because the
   CLI silently runs a level a model lacks as `high` (read out of 2.1.314): none for Haiku
-  4.5 and Sonnet 4.5, `low`/`medium`/`high` for Opus 4.5, `low`/`medium`/`high`/`max` for
+  4.5, `low`/`medium`/`high` for Opus 4.5, `low`/`medium`/`high`/`max` for
   Sonnet 4.6 and Opus 4.6, and all five (`low`, `medium`, `high`, `xhigh`, `max`) for
   everything newer. With `cliModelCatalog` on they follow the installed CLI's own list.
   They are picked in opencode's model selector. A variant becomes
@@ -1314,6 +1314,14 @@ this list lacks is registered too, named from the CLI, at an unknown (zero) pric
   model id is retired`) naming `claude-opus-5-5-fast`. opencode refuses it in an agent's
   `model:` or the top-level `model`: change those to `claude-opus-5-5-fast` or
   `claude-opus-4-8`.
+- `claude-sonnet-4-5` (and its dated `claude-sonnet-4-5-20250929`) is retired and no longer
+  registered: Anthropic retires Sonnet 4.5 on the Claude API on 2026-11-30, after which a
+  request to it fails, and Claude Code's own remap of retired ids covers Opus 4 and 4.1
+  only. Named in `forceModel`, `defaultSubagentModel`, `fallbackModels`,
+  `compactionModel`, `titleModel` or a user-registered model entry, it runs
+  `claude-sonnet-5-5` with one WARN (`claude-sonnet-4-5 is retired on the Claude API`)
+  naming the replacement and both prices ($2/$10 against $3/$15). opencode refuses it in
+  an agent's `model:` or the top-level `model`: change those to `claude-sonnet-5-5`.
 - `claude-sonnet-5-5` is $2/$10 like Sonnet 5, but its cache reads are $0.10 (0.05x
   input, like Opus 5.5) where Sonnet 5's are $0.20; both have 5-minute writes at $2.50
   and 1-hour writes at $4.
@@ -1593,6 +1601,7 @@ Prefer the doctor: it needs no logging change and no restart.
 | 400 `Third-party apps now draw from your extra usage…` | Subscription/account usage gate, including disabled extra usage or an exhausted window | Explain waiting, account choice and billing options; do not enable paid usage, switch auth or change transport without approval |
 | Warning that a fast turn ran at standard speed | Fast mode ineligible (usage credits off, cooldown, not first-party) | Prefer non-fast id; paid usage changes require approval |
 | WARN `this fast-mode model id is retired` | `claude-opus-4-8-fast` named in config; Opus 4.8's fast mode is removed on 2026-11-30 | Nothing breaks (it runs Opus 4.8 at standard speed); replace it with `claude-opus-5-5-fast` to keep fast mode |
+| WARN `claude-sonnet-4-5 is retired on the Claude API` | `claude-sonnet-4-5` named in config; Sonnet 4.5 retires on 2026-11-30 | Nothing breaks (it runs `claude-sonnet-5-5`, $2/$10 instead of $3/$15); replace it with `claude-sonnet-5-5` |
 | `claude --model claude-mythos-*` errors | Limited-availability model | Use the matching `claude-fable-*` (`claude-fable-5`, `claude-fable-5-1` or `claude-fable-5-2`) |
 | Startup warning about `ANTHROPIC_API_KEY` | CLI may prefer env credentials | Confirm billing intent; strip only with approval, without displaying the key |
 | A question form never renders and the turn hangs | Blocking notification/tool hooks, or a pending request not reaching the visible session | Check `GET /question` on the same server/workspace: absent means investigate pre-tool hooks or replacement tools; present means inspect session ownership, permission priority and event delivery. On the maintainer's Mac, awaiting `alerter` dismissal in `tool.execute.before` blocked the tool itself. Native providers load global plugins too. The separate detach/reattach issue #36604 remains open; #36603 closed unmerged. |

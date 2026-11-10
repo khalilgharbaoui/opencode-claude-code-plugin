@@ -6,6 +6,7 @@ import * as fs from "node:fs"
 import {
   decodeUserEnvelope,
   interactiveExtraArgs,
+  interactiveSpawnEnv,
   spawnInteractiveProcess,
   stageImage,
 } from "../src/claude-session-wrapper.js"
@@ -261,4 +262,19 @@ test("the /btw fork never carries the skip flag, whatever the main spawn does", 
   assert.ok(!seen[0]!.includes("--dangerously-skip-permissions"), seen[0]!.join(" "))
   assert.equal(seen[0]![seen[0]!.indexOf("--permission-mode") + 1], "dontAsk")
   ;(active.proc as any).kill()
+})
+
+test("the TUI env keeps proxied calls in the foreground with one variable, and leaves the MCP-task one alone (h #g210, h #g306)", () => {
+  const filled = interactiveSpawnEnv({ PATH: "/bin" })
+  assert.equal(filled.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, "0")
+  // 0 above already keeps the CLI from asking any server for an MCP task, and
+  // the proxy never answers with one, so this adds nothing and is not filled.
+  assert.equal("CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND" in filled, false)
+  // The operator's values are theirs, both of them.
+  const mine = interactiveSpawnEnv({
+    CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "300000",
+    CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND: "1",
+  })
+  assert.equal(mine.CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, "300000")
+  assert.equal(mine.CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND, "1")
 })

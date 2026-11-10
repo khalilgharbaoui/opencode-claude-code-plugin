@@ -240,6 +240,12 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
 
   costUsd: "money",
   turnCostUsd: "money",
+  // A retired model's list price and its replacement's, per million tokens,
+  // from `RETIRED_MODELS` and the catalog (h #g302).
+  inputUsd: "money",
+  outputUsd: "money",
+  insteadInputUsd: "money",
+  insteadOutputUsd: "money",
 
   // enums: a fixed vocabulary this package or the CLI defines
   apiKeySource: "enum",
@@ -268,6 +274,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   // The day a retired fast id's fast mode was removed, from
   // `RETIRED_FAST_MODELS`: a constant this package defines (h #g298).
   removedOn: "enum",
+  // The day a retired model retires, from `RETIRED_MODELS` (h #g302).
+  retiredOn: "enum",
   scope: "enum",
   signal: "enum",
   source: "enum",

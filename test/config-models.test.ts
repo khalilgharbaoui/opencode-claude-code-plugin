@@ -344,9 +344,9 @@ test("configModelsForProvider reports the published context and output limits", 
   const models = configModelsForProvider({}, "claude-code")
   const limitOf = (id: string) => (models[id] as Record<string, unknown>).limit
 
-  // 4.5 generation: 200k context, 64k output. Not 1M.
+  // 4.5 generation: 200k context, 64k output. Not 1M. (Sonnet 4.5 is retired
+  // and no longer registered, h #g302.)
   assert.deepEqual(limitOf("claude-haiku-4-5"), { context: 200_000, output: 64_000 })
-  assert.deepEqual(limitOf("claude-sonnet-4-5"), { context: 200_000, output: 64_000 })
   assert.deepEqual(limitOf("claude-opus-4-5"), { context: 200_000, output: 64_000 })
 
   // The 4.6 generation: 128k output, but Claude Code runs the bare id in a 200k
