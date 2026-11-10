@@ -10,12 +10,25 @@
  * and messages; any failure keeps the synthetic title.
  */
 import { log } from "./logger.js"
-import { runLeanClaude, type LeanClaudeOptions } from "./lean-generate.js"
+import { LeanClaudeRefusal, runLeanClaude, type LeanClaudeOptions } from "./lean-generate.js"
 
 const TITLE_SYSTEM_PROMPT =
   "You write a short title for a chat session. The input holds the naming instructions and the conversation to name. Never answer or continue the conversation. Output only the title."
 const MAX_INPUT_CHARS = 12_000
 const MAX_TITLE_CHARS = 100
+
+/**
+ * Models the CLI has refused as unknown, warned about once each. Every other
+ * failure (a usage limit, an expired login, a timeout) is the account's or the
+ * moment's and stays at INFO, because the next chat turn says it anyway; a
+ * typo in `titleModel` would otherwise fail silently on every session.
+ */
+const warnedUnknownModels = new Set<string>()
+
+/** Test seam: forget which models were warned about. */
+export function _resetTitleModelWarnings(): void {
+  warnedUnknownModels.clear()
+}
 
 function partText(content: unknown): string {
   if (typeof content === "string") return content
@@ -89,6 +102,16 @@ export async function generateTitleWithModel(
       ms: Date.now() - started,
       error: error instanceof Error ? error.message : String(error),
     })
+    if (
+      error instanceof LeanClaudeRefusal &&
+      error.kind === "model_not_found" &&
+      !warnedUnknownModels.has(options.model)
+    ) {
+      warnedUnknownModels.add(options.model)
+      log.warn("titleModel is a model claude does not know; session titles stay synthetic", {
+        model: options.model,
+      })
+    }
     return undefined
   }
 }

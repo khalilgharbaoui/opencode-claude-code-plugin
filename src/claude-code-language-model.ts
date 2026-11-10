@@ -1687,12 +1687,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       })
       // `titleModel` (#169): a real model names the session; the synthetic
       // title stays the default and the fallback.
+      // It runs on this provider's account, a failover override's included:
+      // the wrapper in `cliPath` carries it, or on Windows the config dir.
       const titleModel = this.config.titleModel
       const modelTitle = titleModel
         ? await generateTitleWithModel(options.prompt as readonly any[], {
             cliPath,
-            model: titleModel,
-            configDir: this.config.accountInProcess ? this.config.configDir : undefined,
+            model: parseModelId(stripAccountSuffix(titleModel)).model,
+            configDir: this.config.accountInProcess
+              ? this.skillBridgeSpawn(failover).configDir
+              : undefined,
             ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
             abortSignal: options.abortSignal,
           })
@@ -1715,7 +1719,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
             providerMetadata: {
               "claude-code": {
-                synthetic: true,
+                synthetic: modelTitle === undefined,
                 path: "no-tools",
               },
             },
