@@ -12378,3 +12378,19 @@ and the third has none. `test/cli-events.test.ts`: the wording with and
 without `postTokens`, and a `betweenTurns` that is not `true` ignored. With
 the session-reader change reverted the `doStream` test fails on
 `'Second answer'`.
+
+### Live, through the plugin
+
+A Bun script driving `createClaudeCode({transport: "interactive"})` against
+the real 2.1.322 TUI and the same local API, two turns 57 minutes apart, once
+on this branch's `dist` and once on a build of master. Both TUIs compacted on
+their own 54 min 54 s after the first request (the plugin's TUI went from
+120,019 to 3,002 tokens) and both second requests carried two messages. This
+branch's second reply began with the note, "Claude Code compacted its own
+context while this conversation sat idle, before its prompt cache expired
+(120,019 tokens to 3,002)", and logged the NOTICE with `betweenTurns: true`;
+master's was `Reply 3: noted.` and nothing else. A probe trap on the way: a
+driver started with `nohup` from a tool shell died with the shell 20 seconds
+in, because the plugin's exit cleanup installs its own signal handlers, which
+undo `nohup`'s ignore. Start such a driver in its own session
+(`start_new_session`).
