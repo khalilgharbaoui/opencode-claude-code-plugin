@@ -76,7 +76,8 @@
   offers the model no `background` flag (Haiku 5.5: "takes only command, description, and timeout"),
   although `src/host-tools.ts` passes `background` through to opencode 2's `shell`. So through this
   plugin only the operator (`ctrl+b`) can put a shell in the background. Decide whether to expose it on
-  opencode 2, gated on the live `shell` schema the way `task`'s `background` is (h #g173).
+  opencode 2, gated on the live `shell` schema the way `task`'s `background` is (h #g173). Maintainer: later
+  (2026-11-10).
 
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
