@@ -487,6 +487,14 @@ export function interactiveResultFrame(opts: {
  * session, which is why headless never does it, and reads
  * `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` otherwise; 0 there turns off both
  * triggers. Fills a gap only: a value the operator set is theirs.
+ *
+ * `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND` is deliberately not set (read and
+ * measured on 2.1.322, h #g306). It governs MCP tasks only, a server that
+ * advertises `tasks` and answers `tools/call` with a task, which the proxy
+ * never does, and at 0 here the CLI never asks any server for one: both of its
+ * task-routing branches need the timer above zero. A plain queued message no
+ * longer moves a call on 2.1.322 either way (both arms answered in the same
+ * turn); only the TUI's own "send now" action does, which nothing here types.
  */
 export function interactiveSpawnEnv(
   env: Record<string, string | undefined>,

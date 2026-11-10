@@ -207,6 +207,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-10: **done** (lane `small-two`, h #g306, unreleased): `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND` read and
+  measured on Claude Code 2.1.322, and not set: it covers MCP-task servers only, the proxy is never one, and
+  the interactive transport's `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` already stops the CLI asking any server
+  for a task. A plain queued message no longer moves a call on 2.1.322 (both arms answered in the same turn).
 - 2026-11-10: **done** (lane `small-two`, h #g302, unreleased): `claude-sonnet-4-5` retired before
   2026-11-30. No longer registered; a config that still names it (`forceModel`, `defaultSubagentModel`,
   `fallbackModels`, `compactionModel`, `titleModel`, a user model entry) runs `claude-sonnet-5-5` with one

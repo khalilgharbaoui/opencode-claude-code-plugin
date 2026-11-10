@@ -11861,3 +11861,74 @@ out of the registered set), `test/diagnostic-bundle.test.ts` (the pinned message
   fake-CLI argv proves the spawn never asks for it.
 - A per-call subagent `model` naming `claude-code/claude-sonnet-4-5` on opencode 2 is
   refused by opencode as unknown, as h #g298's fast id is.
+
+## `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND`: read, measured, not set (2026-11-10)
+
+h #g306. Lane `small-two`, approved by the maintainer on 2026-11-10 ("go forth with the
+recommended"), from `Research pass 3/agents.md` in the vault: should the interactive
+transport also set `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND=1`, beside the
+`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` it has set since h #g210, in case the latter
+covers the 120 s timer and not the move a queued message makes?
+
+### Read (Claude Code 2.1.322)
+
+- **What the variable is.** The 2.1.319 CHANGELOG: "Added support for MCP tasks in the
+  terminal: when an MCP server runs a tool call as a task, Claude Code moves it to the
+  background right away and tells Claude the result when it finishes", and "Added the
+  `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND` environment variable to make Claude Code wait
+  for an MCP task inside its tool call instead of moving it to the background right
+  away". An `H.bool()`; its reader `JEs()` is used only to decide whether to route a call
+  as a task. A call becomes one only when the server's capabilities carry
+  `tasks.requests.tools.call` (`isToolTask`) and it answers with a task
+  (`registerOrAdoptSep2663Task`, "Tool '<name>' returned task ...; backgrounded as ...").
+  The plugin's proxy answers `initialize` with `capabilities: { tools: {} }` and every
+  `tools/call` with a result, so a proxied call can never be one.
+- **The two task-routing branches both need the timer.** In the MCP tool wrapper:
+  `_t = getMcpAutoBackgroundMs(...)`, `Vt = _t === 0 && isMcpCallMovableWithoutTimer(...)`;
+  if `_t > 0 || Vt` the call goes through `callMcpToolWithAutoBackground`, with task
+  routing only when `!Vt && OA() && !JEs()`; otherwise task routing is set only when
+  `... && !JEs() && CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS !== 0 && ...`.
+  `getMcpAutoBackgroundMs` returns the variable when set (an `H.int()`, so `"0"` is the
+  number 0), and `isMcpCallMovableWithoutTimer` requires
+  `getMcpAutoBackgroundMs(...) > 0`. So at `0` the wrapper is never entered and no server,
+  bridged or proxied, is asked to run a call as a task: the variable adds nothing.
+- **What moves a call when a message arrives.** The `foregroundCalls` registry whose
+  `backgroundNow()` moves a call is filled only inside `callMcpToolWithAutoBackground`,
+  and it is drained by the low-latency-submit scheduler, which runs from `sendQueuedNow`
+  (`input_send_queued_now`, `input_send_now_key`, `input_send_now_responsive_enter`): the
+  TUI's "send now" action on a queued message, not the Enter that queues it. Its decision
+  function backgrounds movable holders, else waits two ticks and then interrupts (or
+  cancels with backgrounding off). The plugin's `queueInput` types the text and one
+  Enter, which queues it.
+
+### Measured (Claude Code 2.1.322, Bun 1.4.4, `ClaudeSession`)
+
+A scratch stdio MCP server with one tool, `slow_wait`, that answers `SLOW_DONE` after 40
+seconds; Haiku 4.5 asked to call it once and repeat its text; `queueInput("When you are
+done, also add the word QUEUED on its own line.")` four seconds after the call started;
+the plugin's hygiene env, `--dangerously-skip-permissions` with
+`skipDangerousModePermissionPrompt`, `--strict-mcp-config`.
+
+- Control, `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` unset: the enqueue and remove were
+  recorded, the call returned `SLOW_DONE` with the message attached to its result as a
+  `<system-reminder>` ("The user sent a new message while you were working"), and the
+  turn ended `end_turn` after 47.8 s. Nothing moved to the background.
+- At `0`: the same, 45.7 s, the reply `SLOW_DONE\nQUEUED`.
+
+So on 2.1.322 a plain queued message moves nothing either way; h #g210's "or as soon as a
+queued message arrives" was 2.1.288's TUI, and `0` still covers the 120 s timer (h #g210,
+h #g222 live).
+
+### Decided
+
+Not filled. It would change behaviour only when an operator set a nonzero timer
+themselves, and only for a bridged server that runs calls as MCP tasks, which is
+overriding a choice the operator made. The wrapper's comment, the interactive transport
+guide (no longer saying a message moves a call), the SKILL.md env row and AGENTS.md rule 16 say so, and `test/claude-session-wrapper.test.ts` pins that
+`interactiveSpawnEnv` fills only `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` and keeps the
+operator's values of both.
+
+### Not done
+
+- The "send now" action was not measured: nothing the plugin does presses it.
+- A bridged MCP-task server with an operator's nonzero timer was not measured.
