@@ -11862,6 +11862,11 @@ out of the registered set), `test/diagnostic-bundle.test.ts` (the pinned message
 - A per-call subagent `model` naming `claude-code/claude-sonnet-4-5` on opencode 2 is
   refused by opencode as unknown, as h #g298's fast id is.
 
+Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: CI green on
+Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
+`30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`d5e5647b`), with a GitHub Release.
+
 ## `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND`: read, measured, not set (2026-11-10)
 
 h #g306. Lane `small-two`, approved by the maintainer on 2026-11-10 ("go forth with the
@@ -11932,6 +11937,11 @@ operator's values of both.
 
 - The "send now" action was not measured: nothing the plugin does presses it.
 - A bridged MCP-task server with an operator's nonzero timer was not measured.
+
+Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: CI green on
+Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
+`30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`d5e5647b`), with a GitHub Release.
 
 ## A forked session continues its parent's Claude session at the fork (2026-11-10)
 
@@ -12066,6 +12076,11 @@ pass after rebasing onto h #g302 and h #g306; a first run at a load average of
 47 lost two `test/process-lifecycle.test.ts` timeouts, and that file passed 3
 of 3 alone); `npm run build` (0); the site build (0, 39 pages);
 `npm run generate:log-messages` for the one new NOTICE.
+
+Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: CI green on
+Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
+`30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`d5e5647b`), with a GitHub Release.
 
 ## Instruction updates mid-session, and instruction files sent twice (2026-11-10)
 
@@ -12214,6 +12229,11 @@ native `AGENTS.md`, the control's did. A resume from the store (opencode had
 re-imported the plugin, h #g269) kept the exclude and answered `OSPREY`; after
 editing the file to `KESTREL` the next resume carried no `--settings` and
 answered `KESTREL`.
+
+Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: CI green on
+Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
+`30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`d5e5647b`), with a GitHub Release.
 
 ## Claude Code's idle compaction, headless and in the TUI (2026-11-10)
 
@@ -12394,3 +12414,8 @@ driver started with `nohup` from a tool shell died with the shell 20 seconds
 in, because the plugin's exit cleanup installs its own signal handlers, which
 undo `nohup`'s ignore. Start such a driver in its own session
 (`start_new_session`).
+
+Shipped as v0.71.0 on 2026-11-10 (PR #179, PR #180, PR #181, PR #182), a minor: CI green on
+Linux and Windows on the merge commit `cc1cd8e` before the tag and on the release commit
+`30c9fc6`, the publish confirmed by the Publish step's tail and the version document's
+shasum (`d5e5647b`), with a GitHub Release.

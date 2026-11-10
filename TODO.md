@@ -207,6 +207,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-10: **done** (v0.71.0, PR #179 to #182, h #g302 to h #g306): fork from here off the
+  saved checkpoint, AGENTS.md no longer loaded twice, `claude-sonnet-4-5` retired before 2026-11-30, the
+  interactive transport's idle-compaction note, and the MCP-foreground check (no change needed).
 - 2026-11-10: **done** (lane `small-two`, h #g306, unreleased): `CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND` read and
   measured on Claude Code 2.1.322, and not set: it covers MCP-task servers only, the proxy is never one, and
   the interactive transport's `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` already stops the CLI asking any server
