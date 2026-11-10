@@ -274,9 +274,10 @@ export interface TurnState {
    * newest `assistant` frame that was Claude's own (not the CLI's error
    * reply), the session it was written in, and whether it was a tool call.
    * The `result` records it as the turn's checkpoint, which an undo or edit
-   * later cuts a copy of the session at (h #g282).
+   * later cuts a copy of the session at (h #g282), with the frame's last text
+   * block, which a fork into another opencode session is matched on (h #g305).
    */
-  lastReplyEntry: { uuid: string; sessionId?: string; toolUse: boolean } | undefined
+  lastReplyEntry: { uuid: string; sessionId?: string; toolUse: boolean; text?: string } | undefined
   /** Subtype of a failing `result`, so the finish reports an error not a stop. */
   resultFailure: string | undefined
   /**

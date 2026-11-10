@@ -19,10 +19,12 @@ import {
   filterSideQuestionHistory,
   getClaudeUserMessage,
   getTrailingUserMessages,
+  lastReplyText,
 } from "./message-builder.js"
 import { userEnvelope } from "./user-envelope.js"
 import {
   classifyConversationChange,
+  findForkCheckpoint,
   formatConversationRewoundNote,
   recordServedConversation,
   restoreConversationCheckpoints,
@@ -2442,6 +2444,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // the system prompt recorded on the PARENT's first request, which is the
     // one thing here the replay does differently.
     let forkFromClaudeSessionId: string | undefined
+    let forkAtMessageUuid: string | undefined
     if (
       this.config.forkSessions === true &&
       includeHistoryContext &&
@@ -2638,6 +2641,65 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       }
     }
 
+    // A new opencode session forked from a turn a sibling key served ("fork
+    // from here", h #g305). Nothing has answered this key, and its history
+    // ends exactly where that turn's reply ended in the sibling's Claude
+    // transcript, so a copy of that session cut there holds this whole thread:
+    // the rewind's cut (h #g282) with another key's checkpoint. Only where the
+    // turn was still about to replay, so this key's own session, its resume
+    // record, a model-or-effort sibling and `forkSessions` all come first.
+    if (
+      this.config.forkFromCheckpoint !== false &&
+      includeHistoryContext &&
+      !compactionMode &&
+      !forkFromClaudeSessionId &&
+      failoverAnswer?.kind !== "switch"
+    ) {
+      const thread = filterSideQuestionHistory(options.prompt)
+      const found = findForkCheckpoint({
+        sessionKey: sk,
+        prompt: thread,
+        cliPath,
+        replyText: lastReplyText(thread),
+        // `claudeSessionIsWriting`, not `getActiveProcess`, for the reason the
+        // fork lookup above gives.
+        isBusy: claudeSessionIsWriting,
+      })
+      if (found) {
+        const spawnTranscriptDir = join(
+          resolveConfigDir(this.skillBridgeSpawn(failover).configDir),
+          "projects",
+          encodeCwd(cwd),
+        )
+        const plan = await planRewindFork({
+          change: { checkpoint: found.checkpoint },
+          enabled: true,
+          interactive: useInteractive,
+          cliVersion: () =>
+            Promise.race([detectCliVersion(cliPath), turnAbort.whenAborted.then(() => null)]),
+          transcriptPath: (id) => join(spawnTranscriptDir, `${id}.jsonl`),
+        })
+        if (turnAbort.aborted) {
+          return abortedBeforeWork("checking where to fork the forked conversation")
+        }
+        if (plan.kind === "fork") {
+          forkFromClaudeSessionId = plan.claudeSessionId
+          forkAtMessageUuid = plan.messageUuid
+          includeHistoryContext = false
+          // The parent's checkpoints up to the cut come along, so an undo in
+          // this session to before the fork point is a cut too, not a replay.
+          restoreConversationCheckpoints(sk, plan.kept)
+          log.notice("forking the claude session of the turn this conversation was forked from instead of replaying it", {
+            sessionKey: sk,
+            parentKey: found.parentKey,
+            keptMessages: plan.keptMessages,
+          })
+        } else {
+          replayReason = `fork-${plan.reason}`
+        }
+      }
+    }
+
     // A turn that is about to resend the whole thread as text. It is lossy
     // (per-message text and tool results are clipped, images and reasoning are
     // dropped) and it is the expensive path, so it says so once, at NOTICE,
@@ -2725,7 +2787,6 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // now, replayed into a fresh session by the bounded replay this turn
     // already has (h #g238).
     let rewoundNote: string | null = null
-    let forkAtMessageUuid: string | undefined
     if (conversationChange?.kind === "rewound") {
       await deleteActiveProcessAndWait(sk)
       deleteClaudeSessionId(sk)
@@ -4316,7 +4377,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               reply !== undefined &&
               !reply.toolUse &&
               (reply.sessionId === undefined || reply.sessionId === msg.session_id)
-                ? { claudeSessionId: msg.session_id, messageUuid: reply.uuid }
+                ? {
+                    claudeSessionId: msg.session_id,
+                    messageUuid: reply.uuid,
+                    cliPath,
+                    ...(reply.text !== undefined ? { replyText: reply.text } : {}),
+                  }
                 : undefined
             recordServedConversation(sk, filterSideQuestionHistory(options.prompt), checkpoint)
           }

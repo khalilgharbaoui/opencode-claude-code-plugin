@@ -111,6 +111,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "finishing the turn in progress under its original settings",
   "forkSessions is on but this claude CLI has no --fork-session; replaying the conversation instead",
   "forking the claude session at the last turn the edited thread still has",
+  "forking the claude session of the turn this conversation was forked from instead of replaying it",
   "forking the parent conversation's claude session instead of replaying it",
   "holding a subagent dispatch for the operator's answer",
   "ignoring a failover reset time that is not in the future",

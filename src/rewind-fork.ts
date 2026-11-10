@@ -43,7 +43,8 @@ export type RewindForkRefusal =
   | "entry-gone"
 
 export async function planRewindFork(options: {
-  change: RewoundConversation
+  /** A rewind's verdict, or a fork's found checkpoint (h #g305) in the same shape. */
+  change: Pick<RewoundConversation, "checkpoint">
   /** `forkOnRewind`. */
   enabled: boolean
   /**
