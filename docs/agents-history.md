@@ -11293,3 +11293,73 @@ does not exist there.
 The fast-mode docs still say Vertex is excluded. 2.1.322's CHANGELOG adds
 fast mode on Vertex in three regions, and the catalog gives Fable and Mythos
 5.2 `vertex_fast_mode`, but nothing here was measured on Vertex.
+
+## The synthetic title reads the user's message on opencode 2 (2026-11-10)
+
+h #g296. Lane `default-title`, approved by the maintainer on 2026-11-10
+("yes"). The default title (no `titleModel`) of every opencode 2 session was
+"Here First Message Conversation Message ...": the stub title-cased the first
+six non-stop words of the latest user text, and on opencode 2 that text opens
+with a lead-in. Logged in `TODO.md` on 2026-10-30, explained by
+[#169](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/issues/169),
+left open by h #g294.
+
+### Measured
+
+A probe copy of `dist` wrote `options.prompt` to a file at the title stub;
+`opencode run` in scratch XDG dirs, model and `small_model`
+`claude-code/claude-haiku-5-5`, Claude Code 2.1.322, the same first message
+on both majors.
+
+- opencode 2.2.6: scope `tools`, header `x-opencode-agent: title`, a system
+  message (the title agent's prompt: "You name conversations so the user can
+  find them later ...") and ONE user message with ONE text part,
+  `Here is the first message of the conversation:\n\n<message>\n{text}\n</message>\n\nReply with only the title.`
+  No separate part, no other structure. The session was titled
+  "Here First Message Conversation Message Why".
+- opencode 1.19.4: scope `no-tools`, `opencodeAgent: "title"` in the provider
+  options, a system message ("You are a title generator ..."), then two user
+  messages: `Generate a title for this conversation:\n` and the user's
+  message (quoted, as opencode stored it). `latestUserText` reads the second,
+  so the title was "Why My Rust Borrow Checker Reject". Not affected.
+- opencode 2's other shape, read out of the 2.2.6 binary
+  (`SessionTitle.generate`): when a session's title is not the default one
+  (a regeneration, `PATCH /api/session/:id` with `{"title": ""}`), the text
+  is `Here is the conversation so far:\n<conversation>\nOriginal request:\n{first 2,000 chars}\nRecent conversation:\nUser: ...\nAssistant: ...\n</conversation>\nReply with only the title.`
+  Not captured live: on a private `serve` the PATCH answered 204 and no
+  title request reached the provider. The binary's template shows single
+  newlines around `<message>` where the live request had blank lines, so the
+  parse tolerates either.
+- OpenChamber replaces the title agent's system prompt, not the user
+  message (#169's report has the same lead-in title), so it needs nothing
+  of its own here.
+
+### Fix
+
+`titleSubject` (`src/title.ts`), applied by `synthesizeTitle` to the latest
+user text: at most one line of lead-in containing no `<`, then `<message>`
+or `<conversation>`, closed by its last closing tag, yields the text inside;
+for `<conversation>` an `Original request:` label is stripped (cut at
+`Recent conversation:`), and the whole element is kept without it. Anything
+else is returned unchanged, which keeps opencode 1 and any unknown shape on
+the old behaviour. The element is the cue rather than opencode's sentence,
+which it can reword. An empty element gives `New Session`. Zero spawns as
+before; `titleModel` still sends the full request to its model.
+
+### Tests
+
+`test/default-title.test.ts`: the captured 2.2.6 and 1.19.4 requests
+(verbatim user text, system prompts cut to their first sentence, session id
+redacted), the regenerate shape, a message quoting the tag, a conversation
+without the label, shapes left alone, an empty message, and a V2 title
+request through a real `doStream` with a fake CLI that records any launch.
+With `titleSubject` made the identity, 6 of 8 fail ("Here First Message
+Conversation Message Why", "Here Conversation So Far Conversation
+Original").
+
+### Live
+
+The worktree's built `dist`, fresh scratch XDG dirs, the same first message:
+opencode 2.2.6 titled the session "Why My Rust Borrow Checker Reject" (was
+"Here First Message Conversation Message Why"), and opencode 1.19.4 the
+same, unchanged. `plugin ready` once in each log.

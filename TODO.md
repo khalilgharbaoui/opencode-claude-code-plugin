@@ -128,7 +128,10 @@ checks and suspected defects found in passing.
   (@army113): the V2 title request's user text opens with "Here is the first message of
   the conversation: <message>...", and the stub keeps those words. `titleModel` (h #g294)
   names sessions with a real model as an opt-in; the default stub still reads the lead-in.
-  Open: teach `synthesizeTitle` to skip it (take the text inside `<message>`), or leave it.
+  2026-11-10: **done** (lane `default-title`, approved "yes"; h #g296): `synthesizeTitle`
+  now titles the text inside the request's `<message>` (or `<conversation>`) element.
+  Measured on 2.2.6 and 1.19.4; live, a new 2.2.6 session is "Why My Rust Borrow Checker
+  Reject" where it was "Here First Message Conversation Message Why", and 1.19.4 is unchanged.
 
 ## Deferred decisions
 
