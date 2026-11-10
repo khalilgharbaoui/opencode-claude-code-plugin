@@ -3,6 +3,9 @@ import type { LanguageModelV3 } from "@ai-sdk/provider"
 import {
   continuesRecordedConversation,
   conversationDigests,
+  forkSiblingSignature,
+  shapeOfChain,
+  splitForkHistory,
   type ForkMessageDigest,
 } from "./session-fork.js"
 import { log } from "./logger.js"
@@ -47,7 +50,8 @@ type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
  * Every served turn also leaves a CHECKPOINT: where its reply ended in
  * Claude's transcript. That is what lets a rewound thread continue a copy of
  * the session cut at the last turn both versions still share, rather than
- * replaying the thread as text (h #g282).
+ * replaying the thread as text (h #g282), and what lets a new opencode session
+ * forked from one of those turns continue a copy cut there (h #g305).
  */
 
 /**
@@ -57,6 +61,21 @@ type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
  * entries and then that turn's own reply, nothing else.
  */
 export interface ConversationCheckpoint {
+  /**
+   * A digest of the same `anchor` entries with every assistant message by
+   * CONTENT. The shape `prefix` is right for this key's own thread, whose
+   * replies it already holds; another opencode session sharing only the
+   * user messages must never match, so a fork compares this (h #g305).
+   */
+  strictPrefix: string
+  /** The binary that served the turn: `--resume` never crosses accounts (h #g98). */
+  cliPath?: string
+  /**
+   * A digest of the reply's last text block as Claude wrote it, which is what
+   * opencode stores as the last text of that reply. Absent when the reply
+   * ended on anything else; such a checkpoint never serves a fork.
+   */
+  replyTail?: string
   /**
    * The length of the chain up to and including the last USER message the
    * turn answered. Not the whole chain the turn was asked to continue: a turn
@@ -108,6 +127,11 @@ function prefixDigest(entries: ReadonlyArray<{ role: string; digest: string }>, 
   return hash.digest("hex")
 }
 
+/** The digest a reply's last text block is compared by, trimmed both sides. */
+function replyTailDigest(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex")
+}
+
 /** One past the chain's last user entry, or 0 when it has none. */
 function anchorOf(entries: ReadonlyArray<{ role: string }>): number {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -120,15 +144,20 @@ function anchorOf(entries: ReadonlyArray<{ role: string }>): number {
  * Remember the conversation `sessionKey`'s Claude session was just asked to
  * continue. With `checkpoint`, also where the turn's reply ended in that
  * session's transcript: the caller passes one only for a turn that was
- * served, and only with the uuid of the reply's last entry.
+ * served, and only with the uuid of the reply's last entry. `cliPath` and
+ * `replyText` (the reply's last text block) are what a fork into another
+ * opencode session is matched on (h #g305).
  */
 export function recordServedConversation(
   sessionKey: string,
   prompt: Prompt,
-  checkpoint?: { claudeSessionId: string; messageUuid: string },
+  checkpoint?: { claudeSessionId: string; messageUuid: string; cliPath?: string; replyText?: string },
 ): void {
-  const chain = conversationDigests(prompt, { assistantContent: false })
-  if (chain.length === 0) return
+  // One strict pass; the shape chain is derived from it rather than hashed
+  // again, so the checkpoint's strict prefix costs the assistant bytes only.
+  const strict = conversationDigests(prompt)
+  if (strict.length === 0) return
+  const chain = shapeOfChain(strict)
   const checkpoints = [...(served.get(sessionKey)?.checkpoints ?? [])]
   const anchor = anchorOf(chain)
   if (checkpoint && anchor > 0) {
@@ -137,7 +166,15 @@ export function recordServedConversation(
     while (checkpoints.length > 0 && checkpoints[checkpoints.length - 1].anchor >= anchor) {
       checkpoints.pop()
     }
-    checkpoints.push({ anchor, prefix: prefixDigest(chain, anchor), ...checkpoint })
+    const { replyText, cliPath, ...where } = checkpoint
+    checkpoints.push({
+      anchor,
+      prefix: prefixDigest(chain, anchor),
+      strictPrefix: prefixDigest(strict, anchor),
+      ...(cliPath ? { cliPath } : {}),
+      ...(replyText && replyText.trim() ? { replyTail: replyTailDigest(replyText) } : {}),
+      ...where,
+    })
     while (checkpoints.length > MAX_CONVERSATION_CHECKPOINTS) checkpoints.shift()
   }
   // Re-inserting moves the key to the back, so the cap sheds the conversation
@@ -203,6 +240,82 @@ export function findServedConversation(
     if (continuesRecordedConversation(record.chain, prompt, { assistantContent: false })) return key
   }
   return undefined
+}
+
+/** A turn another opencode session served that this one was forked from. */
+export interface ForkCheckpoint {
+  /** The session key that served it. */
+  parentKey: string
+  /** Where to cut, and that key's checkpoints up to it to carry over. */
+  checkpoint: RewindCheckpoint
+}
+
+/**
+ * The checkpoint a NEW opencode session's thread was forked from, or null
+ * (h #g305). opencode's "fork from here" copies a session's history up to a
+ * message into a new session, which arrives here as a new session key with
+ * nothing to resume. When that history ends exactly on a turn a sibling key
+ * served, a copy of that key's Claude session cut at the turn's checkpoint
+ * holds exactly this thread, as it does for a rewind (h #g282).
+ *
+ * Every refusal `findForkParent` makes holds here too (h #g187): a sibling key
+ * only (same cwd, model, scope, provider, agent, spawn settings and effort,
+ * `forkSiblingSignature`), served by the same binary, not busy, and no tool
+ * result past the last reply. And the match is STRICT where the rewind's is
+ * not: a rewind compares a thread with its own past, so the shape chain
+ * suffices, while two opencode sessions can share every user message and
+ * differ in the replies. So the history up to the turn's user message is
+ * compared with assistant content included, and the reply the thread ends on
+ * by its last text block (`replyText`, the caller reads it off the prompt),
+ * against the digest of the block Claude wrote. Newest record first.
+ */
+export function findForkCheckpoint(opts: {
+  sessionKey: string
+  prompt: Prompt
+  cliPath: string
+  /** The last text of the reply the history ends on, plugin notes left out. */
+  replyText: string | undefined
+  /** True while a key's transcript may still be written to. */
+  isBusy: (key: string) => boolean
+}): ForkCheckpoint | null {
+  const signature = forkSiblingSignature(opts.sessionKey)
+  if (!signature || !opts.replyText?.trim()) return null
+  const { history, forkable } = splitForkHistory(opts.prompt)
+  if (!forkable) return null
+  const anchor = anchorOf(history)
+  // A reply has to follow the anchor: a cut keeps the turn's whole reply.
+  if (anchor === 0 || anchor >= history.length) return null
+  const strictPrefix = prefixDigest(history, anchor)
+  const replyTail = replyTailDigest(opts.replyText)
+
+  const records = [...served.entries()].sort((a, b) => b[1].seq - a[1].seq)
+  for (const [key, record] of records) {
+    if (key === opts.sessionKey) continue
+    if (forkSiblingSignature(key) !== signature) continue
+    for (let i = record.checkpoints.length - 1; i >= 0; i--) {
+      const checkpoint = record.checkpoints[i]
+      if (checkpoint.anchor !== anchor) continue
+      if (checkpoint.strictPrefix !== strictPrefix || checkpoint.replyTail !== replyTail) continue
+      if (checkpoint.cliPath !== opts.cliPath) continue
+      if (opts.isBusy(key)) break
+      log.info("found the turn this forked conversation was cut from", {
+        sessionKey: opts.sessionKey,
+        parentKey: key,
+        keptMessages: anchor,
+        historyMessages: history.length,
+      })
+      return {
+        parentKey: key,
+        checkpoint: {
+          claudeSessionId: checkpoint.claudeSessionId,
+          messageUuid: checkpoint.messageUuid,
+          anchor,
+          kept: record.checkpoints.slice(0, i + 1).filter((kept) => kept.anchor <= anchor),
+        },
+      }
+    }
+  }
+  return null
 }
 
 /** Drop what was remembered for a key whose Claude session is gone. */

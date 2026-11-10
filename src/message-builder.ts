@@ -110,6 +110,28 @@ export function filterSideQuestionHistory(prompt: Prompt): Prompt {
 }
 
 /**
+ * The last text of the reply a prompt's history ends on: the last assistant
+ * message's last text part, plugin notes left out. A fork into a new opencode
+ * session is matched on it against the last text block Claude wrote for that
+ * turn (h #g305), because the plugin streams each block as one text part.
+ */
+export function lastReplyText(prompt: Prompt): string | undefined {
+  for (let i = prompt.length - 1; i >= 0; i--) {
+    const message = prompt[i]
+    if (message.role !== "assistant") continue
+    if (typeof message.content === "string") return message.content
+    for (let j = message.content.length - 1; j >= 0; j--) {
+      const part = message.content[j] as { type?: string; text?: unknown }
+      if (part?.type === "reasoning" || isPluginNote(part)) continue
+      // A reply that ended on a tool call recorded no checkpoint to match.
+      return part?.type === "text" && typeof part.text === "string" ? part.text : undefined
+    }
+    return undefined
+  }
+  return undefined
+}
+
+/**
  * opencode-dcp anchors its nudges into message text as
  * `<dcp-system-reminder>` blocks (its `lib/messages/inject/utils.ts` appends
  * one to an existing text part, or splices in a synthetic part), and the

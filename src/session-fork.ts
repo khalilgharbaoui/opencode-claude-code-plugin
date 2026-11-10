@@ -307,6 +307,16 @@ export interface ConversationDigestOptions {
   version?: number
 }
 
+/**
+ * The shape chain (`assistantContent: false`) of a strict one, with no second
+ * hashing pass: user and tool messages are digested the same way in both.
+ */
+export function shapeOfChain(entries: readonly ForkMessageDigest[]): ForkMessageDigest[] {
+  return entries.map((entry) =>
+    entry.role === "assistant" ? { role: entry.role, digest: ASSISTANT_TURN_DIGEST } : entry,
+  )
+}
+
 /** The conversation messages of a prompt, reduced to a digest chain. */
 export function conversationDigests(
   prompt: Prompt,

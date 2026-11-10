@@ -11932,3 +11932,137 @@ operator's values of both.
 
 - The "send now" action was not measured: nothing the plugin does presses it.
 - A bridged MCP-task server with an operator's nonzero timer was not measured.
+
+## A forked session continues its parent's Claude session at the fork (2026-11-10)
+
+h #g305. Lane `fork-here`, approved by the maintainer on 2026-11-10 ("go forth
+with the recommended"), from Research pass 3's ranked item 5
+(`opencode-native-claude.md`, "Fork from here").
+
+### What a fork looks like to the plugin
+
+opencode 2.2.6 as a private password-protected `serve` under scratch XDG dirs,
+the worktree's `dist`, Claude Code 2.1.322 on the default login, Haiku 5.5. The
+route is `POST /api/session/:sessionID/fork {before?: messageID}` ("Create a
+child session by copying projected history before a message. Omit before to
+copy the full history"), read out of the binary. The new session answers
+`fork: {sessionID, boundary: {type: "before", messageID}}`, no `parentID`,
+title `<parent title> (fork #1)`. Its first prompt reaches the plugin as a new
+session key holding the parent's messages before the boundary, then the new
+message. opencode 1.19.4 (`POST /session/:id/fork {messageID}`): the same
+content, the same title, `parentID` null. On master both were replayed:
+`replaying the conversation as text`, `reason: no-sibling-recorded`.
+
+A sibling fork (same cwd, model, agent, effort) gets the same appended system
+prompt: the file the plugin wrote for the parent's first spawn and for the
+fork's spawn was byte-identical (62,634 bytes, same sha1). Its dynamic parts
+are `Today's date`, the working directory and whether it is a git repo.
+
+### The snapshot caveat, again
+
+Claude Code 2.1.322, `claude -p` directly: a session started under
+`--append-system-prompt-file` "codename ZEBRA", a second turn, then a cut at
+the first reply with `--resume-session-at --fork-session` under "codename
+QUAIL": answered ZEBRA. So h #g187's caveat holds for a cut too. What it
+can carry between siblings is what a sibling key does not pin: the date line
+and an instruction file edited since the parent's first turn.
+
+### Numbers
+
+Session A: a 22 KB, 220-line document ("Reply with only: OK"), two codewords,
+a third (MARLIN). Fork before the third; in the fork, "List every codeword I
+have given you, then quote item 41 of the document exactly." A unique document
+and codewords per run from R3 on, because R2, a byte-identical repeat of R1,
+read R1's replay from the cache (0 written) and is discarded; F1 and F2 share
+R1's content, which a cut cannot gain from (it reads the parent's own cache). Each row is the fork's
+first turn.
+
+| run | opencode | arm | written | read | cost | quoted the item |
+|---|---|---|---|---|---|---|
+| R1 | 2.2.6 | replay | 25,077 | 34,806 | $0.00555 | no |
+| R3 | 2.2.6 | replay | 25,024 | 34,806 | $0.00554 | no |
+| R4 | 2.2.6 | replay | 25,071 | 34,806 | $0.00559 | no |
+| F1 | 2.2.6 | cut | 39 | 64,109 | $0.00075 | yes |
+| F2 | 2.2.6 | cut | 30 | 64,041 | $0.00081 | yes |
+| F3 | 2.2.6 | cut | 32 | 64,158 | $0.00075 | yes |
+| F4 | 2.2.6 | cut | 30 | 64,089 | $0.00076 | yes |
+| F5 | 2.2.6 | cut | 32 | 64,125 | $0.00075 | yes |
+| V1 replay | 1.19.4 | replay | 25,063 | 39,644 | $0.00560 | no |
+| V1 cut | 1.19.4 | cut | 1,033 | 68,967 | $0.00103 | yes |
+
+7.3 times cheaper on 2.2.6, 5.4 on 1.19.4. Every replay said the item fell in
+the `…[N chars omitted]…` part of the clipped document; every cut quoted it
+exactly and named only the first two codewords. In F5 the fork's next turn
+reused its own process and recalled its codeword, the parent's next turn
+reused the parent's process and still answered MARLIN, and no rewound or
+missed note fired on either.
+
+On 2.1.322 the fork's first `total_cost_usd` was its own turn only ($0.00075
+against the parent's $0.0026), where h #g282 measured it carrying the
+parent's running total on 2.1.314. The ledger reads a total below its
+baseline as a fresh total, so `turnCostUsd` and the footer were right either
+way; nothing changed.
+
+### Built
+
+`forkFromCheckpoint`, default on. `findForkCheckpoint` (`src/conversation-gap.ts`)
+scans the in-memory checkpoints `forkOnRewind` already records, newest record
+first, for a sibling key (`forkSiblingSignature`) whose checkpoint sits at
+this history's last user message. The rewind compares a thread with its own
+past, so the shape chain is enough there; two opencode sessions can share
+every user message and differ in the replies, so a fork compares two new
+checkpoint fields: `strictPrefix` (the history up to the turn's user message
+with assistant content; `recordServedConversation` now hashes the prompt once
+strict and derives the shape chain from it) and `replyTail` (the reply's last
+text block, from `lastReplyEntry.text` off the frame), against `lastReplyText`
+of the fork's filtered prompt. Each checkpoint also keeps its `cliPath`. Every
+h #g187 refusal stands: a sibling key only, the same binary, not busy
+(`claudeSessionIsWriting`), no tool result past the last reply. The prologue
+asks only where the turn was still about to replay (after `forkSessions`,
+`findResumePoint` and the sibling carry), hands the checkpoint to
+`planRewindFork` (interactive, `cli-too-old`, `transcript-gone`,
+`entry-gone`), and on a refusal sets the replay NOTICE's `reason` to
+`fork-<token>`. The parent's checkpoints up to the cut are restored onto the
+fork's key, so an undo in the fork past the fork point cuts the parent's
+session rather than replaying.
+
+Strict hashing costs 10 to 14 ms more per served turn on a synthetic
+8,400-message, 16.7 MB conversation (shape 16 to 29 ms, strict 30 to 38 ms
+per pass), and nothing measurable on an ordinary one.
+
+### Decided
+
+Default on, against h #g187's reason for keeping `forkSessions` off. That
+reason is measured and still true, but it was measured with two deliberately
+different prompts, which a sibling key cannot produce: the agent, the cwd and
+the model are in the key, and the measured prompts were identical. What
+remains is the date line and instruction edits, which `resumeAfterRestart`
+and `forkOnRewind` already accept by default for the same reason. The cut is
+strictly cheaper and was the only arm that answered correctly. `forkSessions`
+stays off and keeps its role for a parent whose turn left no checkpoint and
+for the interactive transport's tail fork.
+
+V2's `Session.fork` field is still not read: it names a session, not a key,
+and a fork of a fork names the middle session while the checkpoint can sit in
+the first one's. Content works the same on both majors.
+
+### Tests
+
+`test/fork-from-checkpoint.test.ts`: the match at the first, a middle and the
+newest turn, the strict refusals (an earlier reply, the last reply, an edited
+user message), every h #g187 refusal on its own, a checkpoint without reply
+text or binary, a busy parent skipped, `lastReplyText`; a fake CLI driving
+real `doStream` turns over two opencode sessions for the cut's argv, nothing
+replayed, the parent's transcript unchanged, both sessions continuing, an
+undo in the fork past the fork point cutting the parent, and the replays
+(a reply nobody served, the option off, a gone transcript). The e2e tests
+skip on Windows like every fake-CLI harness.
+
+### Checks
+
+`npm run typecheck` (0); `npx tsx --test test/fork-from-checkpoint.test.ts` (0,
+10 pass) and the rewind, gap and fork files (0, 67 pass); `npm test` (0, 2,219
+pass after rebasing onto h #g302 and h #g306; a first run at a load average of
+47 lost two `test/process-lifecycle.test.ts` timeouts, and that file passed 3
+of 3 alone); `npm run build` (0); the site build (0, 39 pages);
+`npm run generate:log-messages` for the one new NOTICE.

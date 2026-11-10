@@ -126,6 +126,8 @@ export interface ClaudeCodeConfig {
   forkSessions?: boolean
   /** Continue a copy of the Claude session cut where an undone or edited thread still matches. Default true. */
   forkOnRewind?: boolean
+  /** Continue a forked opencode session's Claude session from the turn it was forked at. Default true. */
+  forkFromCheckpoint?: boolean
   /** Run `/compact` inside a fork of the conversation's own Claude session. Default false. */
   forkCompaction?: boolean
   /** Resume a conversation's Claude session after opencode restarts. Default true. */
@@ -849,6 +851,34 @@ export interface ClaudeCodeProviderSettings {
    * `accountGroups` group, and a compaction.
    */
   forkOnRewind?: boolean
+
+  /**
+   * When a new opencode session is forked from another one ("fork from
+   * here", `/fork`), continue a copy of the parent's Claude session cut at the
+   * turn the fork was taken from, instead of replaying the inherited thread
+   * as text into a fresh one. Default `true`.
+   *
+   * The fork is recognised by content, on both opencode majors: its history
+   * up to the last reply has to match a turn a sibling session served (same
+   * directory, model, agent and effort) with every reply included, and end
+   * on that turn's reply. The cut is the one `forkOnRewind` takes,
+   * `--resume <id> --resume-session-at <uuid> --fork-session`, and the
+   * parent's transcript is left untouched. Measured through opencode 2.2.6
+   * and Claude Code 2.1.322 on Haiku 5.5: the replay wrote about 25,000
+   * tokens to the prompt cache and could not quote the document the thread
+   * started with, the cut wrote 30 to 39 and could, 7.3 times cheaper (5.4 on
+   * opencode 1.19.4).
+   *
+   * Like a resumed session, the copy answers under the system prompt
+   * recorded on the parent's first request. A sibling session runs the same
+   * agent in the same directory, so that prompt was byte-identical in the
+   * measurement; what can differ is the date line and any instruction file
+   * edited since. Every refusal replays as before: no served turn the thread
+   * ends on (an opencode restart since, a reply that ended on a tool call),
+   * the parent busy, another binary or account, a transcript or entry that
+   * is gone, the interactive transport, a `claude` older than 2.1.288.
+   */
+  forkFromCheckpoint?: boolean
 
   /**
    * Resume a conversation's Claude session after opencode restarts, instead

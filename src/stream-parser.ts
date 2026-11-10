@@ -800,10 +800,18 @@ export function createLineHandler(
         typeof msg.error !== "string" &&
         msg.message?.model !== "<synthetic>"
       ) {
+        const blocks = msg.message?.content ?? []
+        // The frame's last text block, which is the text opencode stores last
+        // for this reply: what a fork into another session is matched on
+        // (h #g305). One frame is one content block, so this is that block.
+        const lastText = [...blocks]
+          .reverse()
+          .find((block) => block.type === "text" && typeof block.text === "string")
         state.lastReplyEntry = {
           uuid: msg.uuid,
           sessionId: msg.session_id,
-          toolUse: (msg.message?.content ?? []).some((block) => block.type === "tool_use"),
+          toolUse: blocks.some((block) => block.type === "tool_use"),
+          ...(lastText ? { text: lastText.text as string } : {}),
         }
       }
       // An `assistant` frame Claude Code never streamed, on a turn that did
