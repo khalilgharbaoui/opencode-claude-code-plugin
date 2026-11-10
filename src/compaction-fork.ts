@@ -3,6 +3,7 @@ import { join } from "node:path"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { findServedConversation } from "./conversation-gap.js"
 import { log } from "./logger.js"
+import { recheckNativeMemoryExcludes, type NativeMemoryExclude } from "./native-memory.js"
 import {
   deleteActiveProcessAndWait,
   deleteClaudeSessionId,
@@ -120,6 +121,8 @@ function keyParts(sessionKey: string): { cwd: string; scope: string; affinity: s
 export interface ConversationProcessView {
   cliPath?: string
   cliArgs?: string[]
+  /** What those args told Claude Code not to load itself (h #g303). */
+  nativeMemoryExcludes?: NativeMemoryExclude[]
 }
 
 /**
@@ -189,7 +192,12 @@ export async function planCompactionFork(opts: {
       sourceKey,
       claudeSessionId,
       model,
-      cliArgs: compactionForkArgs(process.cliArgs, claudeSessionId),
+      // The conversation's flag settings ride along, so an instruction file
+      // edited since its spawn comes off their exclude list (h #g303).
+      cliArgs: recheckNativeMemoryExcludes(
+        compactionForkArgs(process.cliArgs, claudeSessionId),
+        process.nativeMemoryExcludes,
+      ).args,
     },
   }
 }

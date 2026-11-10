@@ -315,6 +315,22 @@ export function buildAppendedSystemPrompt(
   extraSystemContent: string[] = [],
   options: AppendedSystemPromptOptions = {},
 ): string | undefined {
+  return writeAppendedSystemPrompt(
+    composeAppendedSystemPrompt(cwd, includeMultiStepHint, extraSystemContent, options),
+  )
+}
+
+/**
+ * The text `buildAppendedSystemPrompt` writes, for a caller that also needs
+ * to know what the model will see (h #g303 compares Claude Code's own memory
+ * files against it).
+ */
+export function composeAppendedSystemPrompt(
+  cwd: string,
+  includeMultiStepHint = true,
+  extraSystemContent: string[] = [],
+  options: AppendedSystemPromptOptions = {},
+): string | undefined {
   const parts: string[] = []
   // First, so it reads as prior context for everything that follows.
   if (options.compressionSummary?.trim()) {
@@ -362,8 +378,12 @@ export function buildAppendedSystemPrompt(
   if (includeMultiStepHint) parts.push(MULTI_STEP_TASK_HINT)
 
   const content = parts.join("\n\n")
-  if (!content) return undefined
+  return content || undefined
+}
 
+/** Writes an appended system prompt to its own file and returns the path. */
+export function writeAppendedSystemPrompt(content: string | undefined): string | undefined {
+  if (!content) return undefined
   // Inside the plugin's own 0700 scratch directory and 0600, not loose in the
   // OS tmpdir world-readable: this file is the whole forwarded system prompt,
   // AGENTS.md and every instruction block opencode sent us included.
