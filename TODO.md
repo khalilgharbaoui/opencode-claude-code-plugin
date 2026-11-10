@@ -151,6 +151,13 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-11-10: a cache keep-alive for headless sessions (h #g304): build it opt-in and capped at 2 pings
+  per idle stretch, or hold? Measured: all 253 headless calls after an hour's idle in 30 days rewrote the
+  cache; capped at 2 pings it nets at most about $166 at API prices, 8+ pings loses money, and every ping
+  uses the usage window. Recommendation: hold.
+- 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
+  model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
+  `claude` session in opencode): pick any, or hold.
 - 2026-10-08: subagent startup (~25 s). Maintainer: "do 1 but not fully just comment it out, 2 pin it, 3 lets
   try 1 and 2 and see if 3 is needed". Done: `slack` parked under `_parkedMcpServers` in both Claude accounts'
   `.claude.json` (pinned 1.3.0), opencode's slack pinned to 1.3.0 (backups `*.bak-slack-20261008-214042`).
@@ -185,6 +192,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 - With the next compatibility sweep, still not measured on opencode 2.2.x (h #g287 ran the headless and
   interactive lists only): the account-switch and dispatch forms, the MCP bridge with a real server and
   background subagents.
+- From v0.69.0 (PR #168, h #g293): the Windows account switch off `default` has not run on a real
+  Windows machine with two logins. Its four `doStream` tests use POSIX fakes, so the Windows CI job
+  skips them.
 - Next fork sweep: late November.
 
 ## Parked
