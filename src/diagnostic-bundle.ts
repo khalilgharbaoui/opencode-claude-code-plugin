@@ -217,6 +217,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   // and the thresholds it crossed, numbers only.
   utilization: "count",
   crossed: "count",
+  // Whole days until an account's stored login ends (h #g301); negative once
+  // the date has passed. A number, never the date or anything of the login.
+  daysLeft: "count",
   stderrBytes: "count",
   textLength: "count",
   tools: "count",

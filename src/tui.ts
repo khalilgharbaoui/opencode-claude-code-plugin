@@ -80,7 +80,12 @@ import { createSpawnRecordReader, type SpawnRecord } from "./spawn-record-store.
 import { createTurnHistoryReader, promptChars, sessionTag, turnHistoryKey, type TurnHistory } from "./turn-history.js"
 import { buildTurnModel, type TurnModel } from "./turn-model.js"
 import { createTurnProgressReader, type TurnProgress } from "./turn-progress-store.js"
-import { createAccountUsageReader, type AccountUsage, type KnownAccounts } from "./account-usage.js"
+import {
+  createAccountUsageReader,
+  type AccountUsage,
+  type KnownAccounts,
+  type LoginExpiries,
+} from "./account-usage.js"
 import { accountUsageLines, type AccountUsageLine } from "./account-sidebar.js"
 import { TOAST_DURATION_MS, TOAST_TITLE, createNoticeToaster } from "./plugin-notice.js"
 
@@ -263,6 +268,7 @@ function createSidebar(host: SidebarHost) {
   const usageReader = createAccountUsageReader()
   const [usage, setUsage] = createSignal<AccountUsage>(attempt(() => usageReader.read(), new Map()))
   const [known, setKnown] = createSignal<KnownAccounts>(attempt(() => usageReader.known(), new Map()))
+  const [logins, setLogins] = createSignal<LoginExpiries>(attempt(() => usageReader.logins(), new Map()))
   const [usageNow, setUsageNow] = createSignal(Date.now())
 
   // One spinner clock and one refresh clock for every mounted section, each
@@ -295,6 +301,7 @@ function createSidebar(host: SidebarHost) {
     // an idle tick re-lays nothing out.
     setUsage(attempt(() => usageReader.read(), usage()))
     setKnown(attempt(() => usageReader.known(), known()))
+    setLogins(attempt(() => usageReader.logins(), logins()))
     const minute = Math.floor(Date.now() / 60_000) * 60_000
     if (minute !== usageNow()) setUsageNow(minute)
   }
@@ -580,7 +587,7 @@ function createSidebar(host: SidebarHost) {
       return attempt(() => buildSection(current, expanded, setExpanded), null)
     })
     const accountLines = createMemo(() =>
-      attempt(() => accountUsageLines(usage(), usageNow(), SIDEBAR_ROW_WIDTH, known()), [] as AccountUsageLine[]),
+      attempt(() => accountUsageLines(usage(), usageNow(), SIDEBAR_ROW_WIDTH, known(), logins()), [] as AccountUsageLine[]),
     )
     insert(accountsBox, () => {
       const lines = accountLines()

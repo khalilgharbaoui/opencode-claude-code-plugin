@@ -31,6 +31,11 @@
  * utilization, which is how a CLI without `unifiedWindows` reports
  * headroom, and never `100% left`.
  *
+ * Under an account whose stored claude.ai login ends within the warning
+ * window the server half recorded with it (h #g301), one more detail line:
+ * `login ends by 11-19 09:39` with the date in the warning colour, or, once
+ * that date has passed, `login may have ended` in the error colour.
+ *
  * Colours, by segment: the name in the text colour; the level in its state's
  * (`limited` in the error colour, 75% used and up in the warning colour, else
  * the success colour at full strength, `ok` included: the `ok` role, never
@@ -40,10 +45,13 @@
  * (`tier`, the secondary colour).
  */
 import {
+  isLoginExpiryDue,
   isReadingCurrent,
   usagePercent,
   type AccountUsage,
   type KnownAccounts,
+  type LoginExpiries,
+  type LoginExpiry,
   type WindowUsage,
 } from "./account-usage.js"
 import { SIDEBAR_ROW_WIDTH, truncate, type Segment } from "./subagent-sidebar.js"
@@ -70,6 +78,13 @@ export const NO_READING_TEXT = "no reading yet"
 
 /** The window an account's first line is about whenever the store has one. */
 export const FIVE_HOUR_WINDOW = "five_hour"
+
+/** The `window` a login line carries, so a caller can tell it from a usage line. */
+export const LOGIN_LINE = "login"
+/** The words ahead of a login's end, muted while the date takes the warning colour. */
+const LOGIN_WORD = "login ends by "
+/** What a login line says once its date has passed: the CLI's schema says "probably ended". */
+export const LOGIN_ENDED_TEXT = "login may have ended"
 
 /** The word ahead of a reset time, muted while the time takes its own colour. */
 const RESET_WORD = "resets "
@@ -309,6 +324,38 @@ function accountDrafts(
 }
 
 /**
+ * The login line under an account (h #g301), set in like the account's other
+ * detail line. The date is spelt with the year when the line has room for it
+ * and without it otherwise; a login is at most weeks away, so the year is the
+ * part to give up.
+ */
+function loginLine(account: string, record: LoginExpiry, now: number, width: number): AccountUsageLine {
+  const name = truncate(account, Math.max(1, Math.floor(width / 2)))
+  const indent = " ".repeat(Math.min(MAX_DETAIL_INDENT, cells(name) + cells(SEPARATOR)))
+  const budget = Math.max(0, width - cells(indent))
+  const ended = record.expiresAt <= now
+  let tail: Segment[]
+  if (ended) {
+    tail = [{ text: LOGIN_ENDED_TEXT, role: "error" }]
+  } else {
+    const full = formatResetClock(record.expiresAt, now)
+    const short = formatResetClock(record.expiresAt, now, false)
+    const date = cells(LOGIN_WORD) + cells(full) <= budget ? full : short
+    tail = [
+      { text: LOGIN_WORD, role: "muted" },
+      { text: date, role: "effort" },
+    ]
+  }
+  return {
+    account,
+    window: LOGIN_LINE,
+    state: ended ? "limited" : "warning",
+    detail: true,
+    segments: [{ text: indent, role: "muted" }, ...fitSegments(tail, budget)],
+  }
+}
+
+/**
  * Every account with a reading or a registration, alphabetically, each laid out
  * for `width`. The reset is spelt the same way on every line, the widest
  * spelling in `resetSpellings` that fits all of them, so the column reads
@@ -320,6 +367,7 @@ export function accountUsageLines(
   now: number,
   width: number = SIDEBAR_ROW_WIDTH,
   known: KnownAccounts = new Map(),
+  logins: LoginExpiries = new Map(),
 ): AccountUsageLine[] {
   const drafts: LineDraft[] = []
   const names = [...new Set([...usage.keys(), ...known.keys()])].sort()
@@ -336,7 +384,7 @@ export function accountUsageLines(
   ) {
     spelling += 1
   }
-  return drafts.map((draft) => {
+  const lines: AccountUsageLine[] = drafts.map((draft) => {
     const full = tailSegments(draft, spelling, true)
     const tail = segmentsCells(full) <= budget(draft) ? full : tailSegments(draft, spelling, false)
     return {
@@ -347,6 +395,17 @@ export function accountUsageLines(
       segments: [{ text: draft.name, role: draft.detail ? "muted" : "agent" }, ...fitSegments(tail, budget(draft))],
     }
   })
+  if (logins.size === 0) return lines
+  // A login line goes under the last line of an account that is listed; an
+  // account no other line lists (one removed from the config) gets none.
+  const out: AccountUsageLine[] = []
+  lines.forEach((line, index) => {
+    out.push(line)
+    if (lines[index + 1]?.account === line.account) return
+    const record = logins.get(line.account)
+    if (record && isLoginExpiryDue(record, now)) out.push(loginLine(line.account, record, now, width))
+  })
+  return out
 }
 
 /** The plain text of a line, for tests and the collapsed summary. */

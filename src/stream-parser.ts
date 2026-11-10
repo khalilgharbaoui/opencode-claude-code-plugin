@@ -17,6 +17,7 @@ import {
   describeResultFailure,
   formatResultFailureNote,
   isRateLimitRejected,
+  parseCredentialExpiresAt,
   parseRateLimitEvent,
   reportCompactBoundary,
   reportConversationReset,
@@ -26,7 +27,12 @@ import {
   reportToolProgress,
   resetsAtToMs,
 } from "./cli-events.js"
-import { recordRateLimitObservation, recordUsageReading } from "./account-usage.js"
+import {
+  recordLoginExpiry,
+  recordRateLimitObservation,
+  recordUsageReading,
+  resolveLoginExpiryWarnDays,
+} from "./account-usage.js"
 import {
   accountBlockKind,
   formatAccountBlockNote,
@@ -1183,6 +1189,16 @@ export function createLineHandler(
         // standard speed (h #g221). See `reportFastModeState` for why only
         // this one may say the request was honoured.
         reportFastModeState(msg, ctx.fastMode, "result")
+
+        // When the account's stored claude.ai login ends, on every result
+        // since 2.1.318 (h #g301). Recorded on every turn, compaction and
+        // subagents included, because it is a fact about the account; only
+        // the `▌ **login:**` note is kept to the turns that can speak
+        // (`completeResult`). A result without the field changes nothing.
+        const loginEnds = parseCredentialExpiresAt(msg)
+        if (loginEnds !== undefined) {
+          recordLoginExpiry(ctx.usageAccount, loginEnds, resolveLoginExpiryWarnDays(ctx.config.loginExpiryWarnDays))
+        }
 
         // A rewound thread's fork that never started (its cut was not in the
         // parent's transcript) reports the id it would have had, and nothing

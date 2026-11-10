@@ -140,6 +140,23 @@ export function resetsAtToMs(resetsAt: number | undefined): number | undefined {
   return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt
 }
 
+/**
+ * When the account's stored claude.ai login ends, off a `result` frame, in
+ * epoch ms (Claude Code 2.1.318+, h #g301). Read out of 2.1.322's own schema:
+ * `credential_expires_at`, an optional ISO 8601 string on both `result`
+ * variants, stamped on every numbered result (a free `/cost` included) and on
+ * no other frame. It is the end of the login's REFRESH chain as stored at
+ * sign-in, which the CLI's own access-token refresh does not move: the
+ * server's date, or a 30-day estimate, and the real end can be up to 3 days
+ * earlier. Absent for an API key, a token from the environment, any other
+ * provider and an older CLI, which is `undefined` here and changes nothing.
+ */
+export function parseCredentialExpiresAt(msg: ClaudeStreamMessage): number | undefined {
+  if (msg.type !== "result" || typeof msg.credential_expires_at !== "string") return undefined
+  const ms = Date.parse(msg.credential_expires_at)
+  return Number.isFinite(ms) ? ms : undefined
+}
+
 export function formatResetsAt(resetsAt: number | undefined): string | undefined {
   const ms = resetsAtToMs(resetsAt)
   if (ms === undefined) return undefined

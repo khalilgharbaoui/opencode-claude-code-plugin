@@ -56,6 +56,19 @@
  * each startup, because it is the configured set and not an observation, and
  * the readings are never touched by it.
  *
+ * ## When each account's login ends
+ *
+ * Since Claude Code 2.1.318 every numbered `result` carries
+ * `credential_expires_at`, an ISO 8601 instant: the end of the stored
+ * claude.ai login's REFRESH chain, which renewing the access token does not
+ * move (h #g301). Absent for an API key, a token from the environment and
+ * any other provider, and from an older CLI. `logins` keeps the newest one
+ * per account, beside the readings, so the sidebar and `/claude-code-doctor`
+ * can show it and a `▌ **login:**` note can say it once, BEFORE a turn fails
+ * on `authentication_failed`. A result without the field changes nothing.
+ * `notedFor` is the date a note was already written for: a new login is a
+ * new date, which may be warned about again.
+ *
  * ## File and failure
  *
  * `$XDG_STATE_HOME/opencode-claude-code-plugin/account-usage.json`, the fifth
@@ -64,7 +77,7 @@
  * not erase each other, atomic rename, `0600` in a `0700` directory, bounded,
  * and an unreadable or half-written file is an empty store. It holds account
  * NAMES, window names, plan tier labels (`Max 20x`), numbers and times, and
- * nothing else.
+ * nothing else: a login's end is a date, never a token.
  *
  * Imports nothing that logs, because the TUI bundle reads it on the terminal's
  * own thread (h #g193): every function here is silent and never throws.
@@ -109,6 +122,25 @@ export interface KnownAccount {
 /** account -> what the server half registered about it at startup. */
 export type KnownAccounts = Map<string, KnownAccount>
 
+/** What the CLI last said about when an account's stored claude.ai login ends. */
+export interface LoginExpiry {
+  /** Epoch ms of the CLI's `credential_expires_at`. */
+  expiresAt: number
+  /** Epoch ms a result last reported it. */
+  observedAt: number
+  /**
+   * `loginExpiryWarnDays` as the server half that recorded this resolved it,
+   * so the sidebar (which cannot read provider options) shows the line from
+   * the same day the note is due. 0 is off.
+   */
+  warnDays: number
+  /** The `expiresAt` a `▌ **login:**` note was already written for. */
+  notedFor?: number
+}
+
+/** account -> its login's end. */
+export type LoginExpiries = Map<string, LoginExpiry>
+
 export const DEFAULT_USAGE_WARN_THRESHOLDS: readonly number[] = [50, 75, 90, 95]
 export const DEFAULT_USAGE_SWITCH_AT = 90
 
@@ -123,6 +155,29 @@ export const UNTIMED_READING_TTL_MS = 5 * 60 * 60 * 1000
 /** A reading not refreshed in this long is dropped: past every window's reset. */
 export const USAGE_READING_MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000
 
+/**
+ * How many days before a login's end the note is due and the sidebar line
+ * shows, by default. Claude Code's own `-p` text warning starts here too
+ * (`7 + 3` days in 2.1.322): the date is the server's, or a 30-day estimate
+ * from sign-in, and the real end can be up to `LOGIN_EARLY_END_DAYS` sooner,
+ * so ten days out leaves at least a week of notice (h #g301).
+ */
+export const DEFAULT_LOGIN_EXPIRY_WARN_DAYS = 10
+
+/** How much sooner than its date a login may really end, per the CLI's own schema. */
+export const LOGIN_EARLY_END_DAYS = 3
+
+/** The longest a stored login was measured to last: past this, a record says nothing current. */
+export const LOGIN_RECORD_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * How long an unchanged login record goes without a write: a result per turn
+ * would otherwise rewrite the file the TUI re-parses on every change.
+ */
+export const LOGIN_RECORD_REFRESH_MS = 60 * 60 * 1000
+
+export const DAY_MS = 24 * 60 * 60 * 1000
+
 export const MAX_USAGE_ACCOUNTS = 32
 export const MAX_USAGE_WINDOWS = 8
 
@@ -134,6 +189,7 @@ const MAX_RESETS_TEXT = 80
 
 let pathOverride: string | null = null
 let cache: { path: string; usage: AccountUsage } | null = null
+let loginCache: { path: string; logins: LoginExpiries } | null = null
 
 export function accountUsageStorePath(): string {
   if (pathOverride) return pathOverride
@@ -177,9 +233,10 @@ function validEntry(value: unknown): WindowUsage | null {
 interface StoreFile {
   usage: AccountUsage
   known: KnownAccounts
+  logins: LoginExpiries
 }
 
-const emptyStore = (): StoreFile => ({ usage: new Map(), known: new Map() })
+const emptyStore = (): StoreFile => ({ usage: new Map(), known: new Map(), logins: new Map() })
 
 function readKnown(parsed: Record<string, unknown>): KnownAccounts {
   const out: KnownAccounts = new Map()
@@ -196,12 +253,48 @@ function readKnown(parsed: Record<string, unknown>): KnownAccounts {
   return out
 }
 
+function validLogin(value: unknown): LoginExpiry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (!finite(record.expiresAt) || !finite(record.observedAt)) return null
+  const warnDays = finite(record.warnDays) && record.warnDays >= 0 ? record.warnDays : DEFAULT_LOGIN_EXPIRY_WARN_DAYS
+  return {
+    expiresAt: record.expiresAt,
+    observedAt: record.observedAt,
+    warnDays,
+    ...(finite(record.notedFor) ? { notedFor: record.notedFor } : {}),
+  }
+}
+
+function readLogins(parsed: Record<string, unknown>, now: number): LoginExpiries {
+  const out: LoginExpiries = new Map()
+  const logins = parsed.logins
+  if (!logins || typeof logins !== "object" || Array.isArray(logins)) return out
+  for (const [account, raw] of Object.entries(logins as Record<string, unknown>)) {
+    if (out.size >= MAX_USAGE_ACCOUNTS) break
+    if (!NAME.test(account)) continue
+    const record = validLogin(raw)
+    if (record && record.observedAt >= now - LOGIN_RECORD_MAX_AGE_MS) out.set(account, record)
+  }
+  return out
+}
+
+function boundedLogins(logins: LoginExpiries, now: number): LoginExpiries {
+  return new Map(
+    [...logins.entries()]
+      .filter(([, record]) => record.observedAt >= now - LOGIN_RECORD_MAX_AGE_MS)
+      .sort((a, b) => a[1].observedAt - b[1].observedAt)
+      .slice(-MAX_USAGE_ACCOUNTS),
+  )
+}
+
 function parseStore(file: string, now: number): StoreFile {
   const out = emptyStore()
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"))
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out
     out.known = readKnown(parsed as Record<string, unknown>)
+    out.logins = readLogins(parsed as Record<string, unknown>, now)
     const accounts = (parsed as Record<string, unknown>).accounts
     if (!accounts || typeof accounts !== "object" || Array.isArray(accounts)) return out
     const cutoff = now - USAGE_READING_MAX_AGE_MS
@@ -248,12 +341,15 @@ function bounded(usage: AccountUsage, now: number): AccountUsage {
   return new Map(accounts)
 }
 
-function writeStore(file: string, usage: AccountUsage, known: KnownAccounts): boolean {
+function writeStore(file: string, usage: AccountUsage, known: KnownAccounts, logins: LoginExpiries): boolean {
   const accounts: Record<string, Record<string, WindowUsage>> = {}
   for (const [account, windows] of usage) accounts[account] = Object.fromEntries(windows)
-  // `known` is written once something registered; a file no startup touched
-  // keeps its old shape.
-  const registered = known.size > 0 ? { known: Object.fromEntries(known) } : {}
+  // `known` is written once something registered, and `logins` once a result
+  // carried a login's end; a file neither touched keeps its old shape.
+  const registered = {
+    ...(known.size > 0 ? { known: Object.fromEntries(known) } : {}),
+    ...(logins.size > 0 ? { logins: Object.fromEntries(logins) } : {}),
+  }
   try {
     mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 })
     const tmp = `${file}.${process.pid}.tmp`
@@ -377,7 +473,7 @@ export function recordUsageReading(
   merged.set(account, windows)
   const kept = bounded(merged, now)
   cache = { path: file, usage: kept }
-  return writeStore(file, kept, store.known) ? entry : null
+  return writeStore(file, kept, store.known, store.logins) ? entry : null
 }
 
 /**
@@ -459,7 +555,7 @@ export function recordRateLimitObservation(
   merged.set(account, windows)
   const kept = bounded(merged, now)
   cache = { path: file, usage: kept }
-  return writeStore(file, kept, store.known)
+  return writeStore(file, kept, store.known, store.logins)
 }
 
 /** Mark thresholds announced, on the window's newest reading. */
@@ -484,7 +580,7 @@ export function markUsageNoted(
   merged.set(account, windows)
   const kept = bounded(merged, now)
   cache = { path: file, usage: kept }
-  return writeStore(file, kept, store.known)
+  return writeStore(file, kept, store.known, store.logins)
 }
 
 /** Whether two registrations name the same accounts with the same tiers. */
@@ -521,7 +617,7 @@ export function registerKnownAccounts(
     known.set(entry.account, { ...(tier ? { tier } : {}), at: now })
   }
   if (sameKnown(store.known, known)) return true
-  return writeStore(file, bounded(store.usage, now), known)
+  return writeStore(file, bounded(store.usage, now), known, store.logins)
 }
 
 /** The accounts registered at startup, read fresh off disk. For `/claude-code-doctor`. */
@@ -584,6 +680,117 @@ export function snapshotAccountUsage(now: number = Date.now()): AccountUsage {
 }
 
 /**
+ * `loginExpiryWarnDays`: days before a login's end, above 0 and at most the
+ * longest login measured (30). Unset or unusable is the default; `false` and
+ * `0` turn the note and the sidebar line off.
+ */
+export function resolveLoginExpiryWarnDays(value: unknown): number {
+  if (value === false || value === 0) return 0
+  if (finite(value) && value > 0 && value <= 30) return value
+  return DEFAULT_LOGIN_EXPIRY_WARN_DAYS
+}
+
+/** This process's view of the logins, loaded once and kept current by its own writes. */
+function cachedLogins(now: number): LoginExpiries {
+  const file = accountUsageStorePath()
+  if (!loginCache || loginCache.path !== file) loginCache = { path: file, logins: parseStore(file, now).logins }
+  return loginCache.logins
+}
+
+function refreshedLogins(now: number): LoginExpiries {
+  const file = accountUsageStorePath()
+  loginCache = { path: file, logins: parseStore(file, now).logins }
+  return loginCache.logins
+}
+
+/**
+ * Record the login end a `result` reported for `account` (epoch ms), with the
+ * warning window the turn's provider resolved. A note already written for the
+ * same date carries over. An unchanged record is rewritten at most once per
+ * `LOGIN_RECORD_REFRESH_MS`, so a turn costs no write. Returns the record, or
+ * null for an unusable name or date.
+ */
+export function recordLoginExpiry(
+  account: string,
+  expiresAt: number,
+  warnDays: number,
+  now: number = Date.now(),
+): LoginExpiry | null {
+  if (!NAME.test(account) || !finite(expiresAt) || !finite(warnDays) || warnDays < 0) return null
+  const seen = cachedLogins(now).get(account)
+  if (
+    seen &&
+    seen.expiresAt === expiresAt &&
+    seen.warnDays === warnDays &&
+    now - seen.observedAt < LOGIN_RECORD_REFRESH_MS
+  ) {
+    return seen
+  }
+  const file = accountUsageStorePath()
+  const store = parseStore(file, now)
+  const previous = store.logins.get(account) ?? seen
+  const record: LoginExpiry = {
+    expiresAt,
+    observedAt: now,
+    warnDays,
+    ...(previous?.notedFor !== undefined ? { notedFor: previous.notedFor } : {}),
+  }
+  store.logins.set(account, record)
+  const logins = boundedLogins(store.logins, now)
+  loginCache = { path: file, logins }
+  writeStore(file, bounded(store.usage, now), store.known, logins)
+  return record
+}
+
+/** Whether a login is inside its warning window: from `warnDays` before its end, and after it. */
+export function isLoginExpiryDue(record: LoginExpiry, now: number = Date.now()): boolean {
+  return record.warnDays > 0 && record.expiresAt - now <= record.warnDays * DAY_MS
+}
+
+/**
+ * Whether a note was already written for this login. The date is the one
+ * stored at sign-in, so it does not move; an hour's slack keeps a rounding
+ * difference from reading as a new login, which is weeks apart.
+ */
+export function isLoginNoted(record: LoginExpiry): boolean {
+  return record.notedFor !== undefined && Math.abs(record.notedFor - record.expiresAt) < LOGIN_RECORD_REFRESH_MS
+}
+
+/**
+ * The login record of `account` when a `▌ **login:**` note is due: inside its
+ * warning window and not yet said for this date. Answered from this process's
+ * view, which costs no I/O on an ordinary turn; only when one looks due is
+ * the file re-read, so a note another opencode process already wrote is not
+ * written twice.
+ */
+export function pendingLoginNote(account: string, now: number = Date.now()): LoginExpiry | undefined {
+  const due = (logins: LoginExpiries) => {
+    const record = logins.get(account)
+    return record && isLoginExpiryDue(record, now) && !isLoginNoted(record) ? record : undefined
+  }
+  if (!due(cachedLogins(now))) return undefined
+  return due(refreshedLogins(now))
+}
+
+/** Mark the login ending at `expiresAt` announced for `account`. */
+export function markLoginNoted(account: string, expiresAt: number, now: number = Date.now()): boolean {
+  if (!NAME.test(account) || !finite(expiresAt)) return false
+  const file = accountUsageStorePath()
+  const store = parseStore(file, now)
+  const record = store.logins.get(account) ?? cachedLogins(now).get(account)
+  if (!record) return false
+  store.logins.set(account, { ...record, notedFor: expiresAt })
+  const logins = boundedLogins(store.logins, now)
+  loginCache = { path: file, logins }
+  return writeStore(file, bounded(store.usage, now), store.known, logins)
+}
+
+/** Every account's login end, read fresh off disk. For `/claude-code-doctor`. */
+export function snapshotLoginExpiries(now: number = Date.now()): LoginExpiries {
+  return refreshedLogins(now)
+}
+
+/**
  * A reader that re-parses the file only when it changed, for the TUI's
  * refresh clock: an unchanged file costs one `stat`. The `ino` is read
  * exactly: as a number, an NTFS file id above 2^53 loses its low bits, and
@@ -620,6 +827,11 @@ export function createAccountUsageReader(
       refresh()
       return store.known
     },
+    /** Each account's login end, as the last result on it said: the same map while the file is unchanged. */
+    logins(): LoginExpiries {
+      refresh()
+      return store.logins
+    },
   }
 }
 
@@ -627,4 +839,5 @@ export function createAccountUsageReader(
 export function _setAccountUsageStorePathForTests(path: string | null): void {
   pathOverride = path
   cache = null
+  loginCache = null
 }
