@@ -11533,10 +11533,11 @@ the two catalog items of `Research pass 3/agents.md` in the vault (candidates 1 
 
 ### Tests
 
-`test/retired-fast-model.test.ts` (new: the registry, `parseModelId`,
-`retiredFastModel`, the one WARN, the three config resolvers, and a fake CLI through a
-real `doStream` giving `--model claude-opus-4-8` with no fast-mode settings against
-`claude-opus-5-5-fast` keeping them), `test/interactive-usage.test.ts` (every standard
+`test/retired-fast-model.test.ts` (new, portable: the registry, `parseModelId`,
+`retiredFastModel`, the one WARN, the three config resolvers),
+`test/retired-fast-model-stream.test.ts` (new, POSIX only, in the Windows skip list: a
+fake CLI through a real `doStream` giving `--model claude-opus-4-8` with no fast-mode
+settings against `claude-opus-5-5-fast` keeping them), `test/interactive-usage.test.ts` (every standard
 model's cache read and both writes against 2.1.322's `pricing_tiers`, copied verbatim),
 `test/config-models.test.ts`, `test/cli-args.test.ts`, `test/cli-model-catalog.test.ts`.
 
