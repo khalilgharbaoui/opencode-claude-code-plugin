@@ -308,6 +308,7 @@ import {
   requestScope,
   synthesizeTitle,
 } from "./title.js"
+import { generateDetachedText, isDetachedGenerateRequest } from "./lean-generate.js"
 import {
   lastCallContextUsage,
   toFinishReason,
@@ -1713,6 +1714,53 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       return {
         stream,
         request: { body: { text: "" } },
+      }
+    }
+
+    // `leanGenerate` (#170): a detached generate call (opencode 2
+    // `experimental.generate.text`: no session, no agent) is answered by one
+    // lean `claude -p` on the requested model. A failure falls through to a
+    // normal turn, which is what every such call got before.
+    if (
+      this.config.leanGenerate === true &&
+      isDetachedGenerateRequest({
+        affinity,
+        opencodeAgent: this.getOpencodeAgent(options),
+        compactionMode,
+      })
+    ) {
+      const leanText = await generateDetachedText(options.prompt as readonly any[], {
+        cliPath,
+        model: parseModelId(stripAccountSuffix(failover.modelId)).model,
+        // The config dir of the account this call really runs on, a failover
+        // override's included, where no wrapper carries it (h #g221).
+        configDir: this.config.accountInProcess
+          ? this.skillBridgeSpawn(failover).configDir
+          : undefined,
+        ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
+        abortSignal: options.abortSignal,
+      })
+      // A stop is not a failure to fall back from: nothing else may spawn.
+      if (turnAbort.aborted) return abortedBeforeWork("answering a detached generate call")
+      if (leanText !== undefined) {
+        turnAbort.dispose()
+        const textId = generateId()
+        const stream = new ReadableStream<LanguageModelV3StreamPart>({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings })
+            controller.enqueue({ type: "text-start", id: textId } as any)
+            controller.enqueue({ type: "text-delta", id: textId, delta: leanText })
+            controller.enqueue({ type: "text-end", id: textId })
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason("stop"),
+              usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+              providerMetadata: { "claude-code": { path: "lean-generate", usageUnavailable: true } },
+            })
+            controller.close()
+          },
+        })
+        return { stream, request: { body: { text: "" } } }
       }
     }
 
