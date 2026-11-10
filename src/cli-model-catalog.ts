@@ -55,7 +55,12 @@
  * variant it does not accept is a picker choice that changes nothing). A
  * model the CLI does not know (its row's display name is the raw id, and its
  * window is the 200k fallback) is left exactly as the catalog has it, because
- * that is `reportUnrecognizedModel`'s case, fixed by `claude update`. Prices
+ * that is `reportUnrecognizedModel`'s case, fixed by `claude update`. So is a
+ * model whose CHANGELOG floor (`modelCliFloor`) is above the probed version,
+ * whatever its row says: 2.1.314 files any `claude-fable-*` id under its Fable
+ * picker family, so `claude-fable-5-2` comes back named "Fable" (described as
+ * Fable 5.1) with the 200k fallback window, which the display-name test reads
+ * as known (h #g295). Prices
  * are not in the CLI, so costs and `(N×)` labels stay the catalog's. A model
  * the CLI's own picker resolves to that the catalog lacks is ADDED, on the
  * pass-through template (`passthroughModel`, zero cost meaning unknown).
@@ -74,6 +79,7 @@ import {
 import { homedir } from "node:os"
 import { delimiter, join, resolve } from "node:path"
 import { createInterface } from "node:readline"
+import { modelCliFloor } from "./cli-events.js"
 import { cliHygieneEnv, detectCliVersion } from "./cli-version.js"
 import { log } from "./logger.js"
 import {
@@ -237,6 +243,40 @@ export function factFromProbe(
     fact.name = row.displayName
   }
   return fact
+}
+
+/** True when `version` is older than `floor`, both `major.minor.patch`. */
+function versionBelow(version: string, floor: string): boolean {
+  const a = version.split(".").map(Number)
+  const b = floor.split(".").map(Number)
+  for (let index = 0; index < 3; index++) {
+    if (a[index] !== b[index]) return a[index]! < b[index]!
+  }
+  return false
+}
+
+/**
+ * The facts with every model whose CHANGELOG floor is above `cliVersion`
+ * marked unknown, because a picker family can claim an id its catalog lacks:
+ * 2.1.314 names `claude-fable-5-2` "Fable" at the 200k fallback window
+ * (h #g295). Pure; with no version, or no floor for a model, the fact is kept.
+ */
+export function applyCliFloors(
+  models: Record<string, CliModelFact>,
+  cliVersion: string | undefined,
+): Record<string, CliModelFact> {
+  if (!cliVersion || !/^\d+\.\d+\.\d+$/.test(cliVersion)) return models
+  const out: Record<string, CliModelFact> = {}
+  for (const [id, fact] of Object.entries(models)) {
+    const floor = modelCliFloor(id)
+    if (fact.known && floor && versionBelow(cliVersion, floor)) {
+      const { name: _name, ...rest } = fact
+      out[id] = { ...rest, known: false }
+    } else {
+      out[id] = fact
+    }
+  }
+  return out
 }
 
 /** The model ids the CLI's own picker resolves to, `[1m]` removed, first-party names only. */
@@ -668,7 +708,7 @@ export async function probeCliCatalog(
     ...identity,
     ...(cliVersion && /^\d+\.\d+\.\d+$/.test(cliVersion) ? { cliVersion } : {}),
     probedAt: (options.now ?? Date.now)(),
-    models,
+    models: applyCliFloors(models, cliVersion),
     added,
   }
   return { ok: true, entry, spawns, ms: Date.now() - started }

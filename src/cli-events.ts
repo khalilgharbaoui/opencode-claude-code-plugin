@@ -1046,6 +1046,11 @@ const MODEL_CLI_FLOORS: Record<string, string> = {
   // "Added Claude Haiku 5.5 (`claude-haiku-5-5`), now the default Haiku model
   // on the Anthropic API" (CHANGELOG, 2.1.293). Absent from 2.1.288's catalog.
   "claude-haiku-5-5": "2.1.293",
+  // "Added Claude Fable 5.2 (`claude-fable-5-2`), now the default Fable model"
+  // (CHANGELOG, 2.1.321). Absent from 2.1.314's catalog. Mythos 5.2 is in
+  // 2.1.322's catalog too, but the CHANGELOG does not name it, so it has no
+  // floor here.
+  "claude-fable-5-2": "2.1.321",
 }
 
 /**

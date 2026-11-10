@@ -11123,3 +11123,90 @@ closed #170 and #169. Not released here; it ships in the next release.
   `default`, or a title), not the turn history, and its finish reports zero
   usage, as the title stub always did.
 - On the interactive transport a lean run is still `claude -p`.
+
+## Fable and Mythos 5.2, their fast mode, and a probe that believed a family name (2026-11-10)
+
+h #g295. Lane `pr173`, the review of PR #173 by @broskees (Joseph Roberts),
+which registered `claude-fable-5-2` and `claude-mythos-5-2` on the day
+Anthropic released them (2026-11-09).
+
+### What was checked, and against what
+
+Every number in the PR was read again off Anthropic's own pages, fetched as
+markdown on 2026-11-10: the pricing page, the models overview, both models'
+overview pages, the fast-mode page and the effort page. All agree with the
+PR: $8/M input, $40/M output, 5-minute cache write $10, cache read $0.20
+(0.025x input, as on 5.1), 1M context, 128K output, adaptive thinking always
+on, all five effort levels, Mythos 5.2 the same model limited to
+organizations in Anthropic's verification programs. The 1-hour write is $16,
+exactly twice the input, which is what `apiCallCostUsd` already charges.
+The long-context section names Haiku 5.5 as the only prompt-length tier, so
+`LONG_PROMPT_COSTS` gets nothing.
+
+Claude Code's CHANGELOG puts Fable 5.2 at 2.1.321 ("Added Claude Fable 5.2
+(`claude-fable-5-2`), now the default Fable model") and does not mention
+Mythos 5.2. The installed CLI was 2.1.314, which knows neither, so 2.1.322
+was fetched from Anthropic's release bucket into a scratch directory and
+checked against the manifest's sha256; the maintainer's own update to
+2.1.322 later that morning installed the byte-identical binary. Its baked
+catalog gives both ids `window: 1e6`, `max_output_tokens` 128,000, pricing
+`tier_8_40_cache_read_0_20` (`{8, 40, 5m 10, 1h 16, read 0.2}`, no
+`long_prompt`), `effort`, `max_effort`, `xhigh_effort` and `fast_mode`. Its
+fast price function returns `{16, 80, 20, 32 (1h), 0.4}` for both ids, which
+is the pricing page's fast table with the caching multipliers on top.
+
+The plugin's own free probe (h #g279) on 2.1.322: both known, 1M, all five
+efforts, `fast` true, no difference from the catalog. A free `/cost` in the
+plugin's argv shape on the maintainer's login: both ids accepted, no
+`[claude-code:unrecognized_model]` line, `num_turns` 0, $0.
+
+### What changed beyond the PR
+
+- **Fast twins.** `claude-fable-5-2-fast` and `claude-mythos-5-2-fast` at
+  `fable52FastCost` ($16/$80, read 0.4, write 20), `(16×)`. 2.1.322's fast
+  gate asks the catalog's `fast_mode` capability first on the Anthropic API
+  (`Gk = {firstParty: "fast_mode", vertex: "vertex_fast_mode"}`) and only
+  falls back to the `opus-4-8`/`opus-5` name test for a model it lacks, and
+  the two 5.2 ids are in its opt-in set, which the `--settings
+  {"fastMode":true}` flag layer satisfies. Not measured as a live fast turn:
+  the only login on hand has usage credits off, and the CLI reports
+  `extra_usage_disabled` before any model check (Fable 5.1, which has no
+  `fast_mode`, gives the same reason), so a free run cannot tell the models
+  apart and a paid one was not authorised.
+- **`MODEL_CLI_FLOORS["claude-fable-5-2"] = "2.1.321"`**, from the CHANGELOG
+  line. Mythos 5.2 gets none, because the CHANGELOG does not name it.
+- **The probe misread a new Fable as known.** On 2.1.314 the `initialize`
+  row for `--model claude-fable-5-2` is
+  `{"value":"claude-fable-5-2","displayName":"Fable","description":"Fable 5.1
+  · Most capable ...","supportsThinkingOff":true}` with `rawMaxTokens`
+  200,000: the CLI files any `claude-fable-*` id under its Fable picker
+  family. h #g279's test (display name equals the id means unknown) read
+  that as a known model with a 200k window, so a fresh probe would have
+  overlaid Fable 5.2 at 200k, and the doctor would have listed a context
+  change instead of "needs 2.1.321". `claude-mythos-5-2` came back with
+  `displayName` equal to the id and was read correctly. `applyCliFloors`
+  now marks a model unknown when the probed version is below its CHANGELOG
+  floor, applied in `probeCliCatalog` once `initialize` or `claude
+  --version` has supplied the version. A stored entry for an unchanged
+  binary is not re-probed on a plugin upgrade, so an existing store holds
+  no 5.2 facts at all and leaves the catalog's 1M alone, which is the safe
+  direction.
+
+### Tests
+
+`test/config-models.test.ts` (the fast twins and the fast-capable list),
+`test/cli-args.test.ts` (`parseModelId` on both), `test/interactive-usage.test.ts`
+(a fast Fable 5.2 call and a fast Mythos 5.2 1-hour write priced as the CLI
+does), `test/cli-events.test.ts` (the WARN names 2.1.321),
+`test/cli-model-catalog.test.ts` (2.1.314's verbatim row read as known by
+`factFromProbe`, then unknown through `applyCliFloors`, the overlay keeping
+1M), `test/cli-model-probe.test.ts` (a fake 2.1.314 naming Fable 5.2 "Fable"
+stored as unknown, a fake 2.1.322 believed). With `src/` reverted they fail:
+six tests by name, and the catalog file at import, because `applyCliFloors`
+does not exist there.
+
+### Not done
+
+The fast-mode docs still say Vertex is excluded. 2.1.322's CHANGELOG adds
+fast mode on Vertex in three regions, and the catalog gives Fable and Mythos
+5.2 `vertex_fast_mode`, but nothing here was measured on Vertex.

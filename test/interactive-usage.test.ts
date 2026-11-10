@@ -344,6 +344,16 @@ test("a 5-minute write, a fast call and a web search are priced as published", (
   )
   close(apiCallCostUsd("claude-opus-5-5", { output_tokens: 1_000_000, speed: "fast" }), 40)
   close(apiCallCostUsd("claude-opus-5-5", { output_tokens: 1_000_000, speed: "standard" }), 20)
+  // Fable 5.2's fast mode, and its 1-hour write at twice the fast input: the
+  // CLI's own table says 32 (2.1.322).
+  close(apiCallCostUsd("claude-fable-5-2", { output_tokens: 1_000_000, speed: "fast" }), 80)
+  close(
+    apiCallCostUsd("claude-mythos-5-2", {
+      speed: "fast",
+      cache_creation: { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 },
+    }),
+    32,
+  )
   close(apiCallCostUsd("claude-haiku-4-5", { server_tool_use: { web_search_requests: 3 } }), 0.03)
 })
 

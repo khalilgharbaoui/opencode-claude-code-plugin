@@ -204,6 +204,39 @@ test("each probe spawn is --bare with no credential, is sent two control request
   assert.equal(added["claude-opus-9"]!.fast, true)
 })
 
+// 2.1.314 names `claude-fable-5-2` "Fable" at the 200k fallback window, though
+// only 2.1.321 added it; the probe must store it as unknown so the catalog's
+// 1M stands and the doctor names the floor (h #g295).
+test("a model the CLI's version is below the CHANGELOG floor for is stored as unknown", async () => {
+  const all = ["low", "medium", "high", "xhigh", "max"]
+  const old = createFakeCli({
+    version: "2.1.314",
+    known: { ...KNOWN, "claude-fable-5-2": { name: "Fable", efforts: all, window: 200_000 } },
+  })
+  const before = await probeCliCatalog(old.cliPath, binaryIdentity(old.cliPath)!, {
+    ids: ["claude-fable-5-2", "claude-opus-5-5"],
+    deadlineMs: HANG_STOP_MS,
+  })
+  assert.equal(before.ok, true)
+  if (!before.ok) return
+  assert.equal(before.entry.cliVersion, "2.1.314")
+  assert.equal(before.entry.models["claude-fable-5-2"]!.known, false)
+  assert.equal(before.entry.models["claude-opus-5-5"]!.known, true)
+
+  const current = createFakeCli({
+    version: "2.1.322",
+    known: { ...KNOWN, "claude-fable-5-2": { name: "Fable", efforts: all, window: 1_000_000 } },
+  })
+  const after = await probeCliCatalog(current.cliPath, binaryIdentity(current.cliPath)!, {
+    ids: ["claude-fable-5-2"],
+    deadlineMs: HANG_STOP_MS,
+  })
+  assert.equal(after.ok, true)
+  if (!after.ok) return
+  assert.equal(after.entry.models["claude-fable-5-2"]!.known, true)
+  assert.equal(after.entry.models["claude-fable-5-2"]!.window, 1_000_000)
+})
+
 test("one spawn that never answers writes nothing, and a dead first one costs one spawn", async () => {
   const fake = createFakeCli({ known: KNOWN, fail: ["claude-opus-5-5"] })
   const identity = binaryIdentity(fake.cliPath)!
