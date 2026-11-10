@@ -224,6 +224,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-11: **done** (v0.72.0, PR #183, h #g307): background shells (ctrl+b-moved calls and
+  `!commands`) listed in the sidebar's Subagents section on opencode 2.2.6+, with their exit code; a
+  foreground model shell call never gets a row.
 - 2026-11-10: **done** (v0.71.0, PR #179 to #182, h #g302 to h #g306): fork from here off the
   saved checkpoint, AGENTS.md no longer loaded twice, `claude-sonnet-4-5` retired before 2026-11-30, the
   interactive transport's idle-compaction note, and the MCP-foreground check (no change needed).

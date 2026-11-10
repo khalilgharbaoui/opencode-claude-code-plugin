@@ -12497,3 +12497,8 @@ bash tool "takes only command, description, and timeout, with no background opti
 and ran nothing. `src/host-tools.ts` passes `background` through to opencode 2's
 `shell`, but the proxied `bash` definition never offers the field, so through this
 plugin only the operator can put a shell in the background. Recorded in `TODO.md`.
+
+Shipped as v0.72.0 on 2026-11-11 (PR #183), a minor: CI green on Linux and Windows on the PR
+head `295b061`, on the merge commit `d6758aa` before the tag and on the release commit `e9a6ce5`,
+the publish confirmed by the `Publish package` step's tail and the version document's shasum
+(`3d5d8241`), with a GitHub Release.
