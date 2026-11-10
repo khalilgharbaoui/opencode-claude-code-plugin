@@ -52,7 +52,7 @@ function defineModel(opts: {
   // List-price multiplier relative to Haiku (the cheapest model). Derived
   // exactly from published per-token pricing: input AND output ratios both come
   // out to haiku 1, sonnet 3 (sonnet 5 and 5.5: 2), opus 5 (opus 5.5: 4),
-  // fable/mythos 10 (fable 5.2: 8). Rendered
+  // fable/mythos 10 (fable/mythos 5.2: 8, their fast mode 16). Rendered
   // as an `(N×)` suffix so it surfaces in opencode's model picker, which has no
   // dedicated multiplier field.
   // Display-only: model resolution keys off `id`.
@@ -167,6 +167,12 @@ const fable51Cost = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 }
 // ($0.20/M) and 5-minute cache writes the standard 1.25x ($10/M). Both
 // models' overview pages publish this exact table, 2026-11-09.
 const fable52Cost = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 }
+// Their fast mode is exactly double the base input and output ($16/M in, $80/M
+// out), with the caching multipliers applied on top: cache read 0.4 (0.025x),
+// 5-minute write 20. The pricing page's fast-mode table and Claude Code
+// 2.1.322's own fast table for both ids (`{16, 80, 20, 32 (1h), 0.4}`) agree.
+// Verified 2026-11-10.
+const fable52FastCost = { input: 16, output: 80, cacheRead: 0.4, cacheWrite: 20 }
 // Fast mode bills the same per-token rates as the Mythos-class tier: $10/M in,
 // $50/M out, cache read 1, cache write 12.5. Not an inference; this is the
 // exact table the CLI itself applies for `speed: "fast"` on Opus 4.8 / Opus 5
@@ -402,12 +408,14 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   // `--settings {"fastMode":true}` on the spawn. Retired `-fast` model strings
   // (`claude-opus-4-6-fast`) are a different thing and are not registered here.
   //
-  // Only Opus 4.8, Opus 5 and Opus 5.5 qualify: the CLI gates fast mode on
-  // the resolved model name containing `opus-4-8` or `opus-5` (which
-  // `claude-opus-5-5` satisfies too, and 2.1.280's model catalog lists
-  // `fast_mode` for it outright), so registering a fast entry for any other
-  // model would produce a picker option that silently runs at standard speed
-  // while displaying the fast price.
+  // Only Opus 4.8, Opus 5, Opus 5.5, Fable 5.2 and Mythos 5.2 qualify. On the
+  // Anthropic API the CLI asks its own catalog first (`fast_mode`, which
+  // 2.1.280 lists for `claude-opus-5-5` and 2.1.322 for both 5.2 models) and
+  // falls back to the name containing `opus-4-8` or `opus-5` for a model the
+  // catalog does not know. A fast entry for any other model would produce a
+  // picker option that runs at standard speed while displaying the fast price.
+  // The 5.2 pair needs Claude Code 2.1.321+, the release that added them;
+  // older, the name test refuses them and `reportFastModeState` warns.
   "claude-opus-4-8-fast": defineModel({
     id: "claude-opus-4-8-fast",
     name: "Claude Opus 4.8 Fast",
@@ -490,6 +498,9 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 10,
     releaseDate: "2026-09-01",
   }),
+  // Fable 5.2 and Mythos 5.2 need Claude Code 2.1.321+, the release that added
+  // them; an older CLI runs them on fallback limits. 2.1.322's catalog gives
+  // both all five effort levels and `fast_mode`.
   "claude-fable-5-2": defineModel({
     id: "claude-fable-5-2",
     name: "Claude Fable 5.2",
@@ -501,10 +512,22 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 8,
     releaseDate: "2026-11-09",
   }),
+  "claude-fable-5-2-fast": defineModel({
+    id: "claude-fable-5-2-fast",
+    name: "Claude Fable 5.2 Fast",
+    family: "fable",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: fable52FastCost,
+    multiplier: 16,
+    releaseDate: "2026-11-09",
+  }),
   // Mythos 5, 5.1 and 5.2 share the corresponding Fable models' capabilities
-  // and pricing without the safety classifiers; limited availability via
-  // Project Glasswing (5.2: Anthropic's verification programs). `claude --model` simply errors for accounts without access, so
-  // they are safe to register unconditionally.
+  // and pricing without the safety classifiers. 5 and 5.1 are limited
+  // availability via Project Glasswing, 5.2 to organizations verified through
+  // Anthropic's verification programs. `claude --model` simply errors for
+  // accounts without access, so they are safe to register unconditionally.
   "claude-mythos-5": defineModel({
     id: "claude-mythos-5",
     name: "Claude Mythos 5",
@@ -536,6 +559,17 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     output: 128_000,
     cost: fable52Cost,
     multiplier: 8,
+    releaseDate: "2026-11-09",
+  }),
+  "claude-mythos-5-2-fast": defineModel({
+    id: "claude-mythos-5-2-fast",
+    name: "Claude Mythos 5.2 Fast",
+    family: "mythos",
+    reasoning: true,
+    context: 1_000_000,
+    output: 128_000,
+    cost: fable52FastCost,
+    multiplier: 16,
     releaseDate: "2026-11-09",
   }),
 }

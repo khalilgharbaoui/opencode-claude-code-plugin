@@ -21,6 +21,7 @@ import {
   MAX_CATALOG_ENTRIES,
   _resetCliModelCatalogForTests,
   activateCliModelCatalog,
+  applyCliFloors,
   binaryIdentity,
   catalogProbeIds,
   cliModelStorePath,
@@ -181,6 +182,49 @@ test("Mythos says `Custom model (...)` and is still known, because its display n
   assert.equal(fact?.known, true)
 })
 
+// 2.1.314 has no catalog entry for `claude-fable-5-2` (added in 2.1.321) but
+// files it under its Fable picker family: the row below is verbatim, named
+// "Fable", described as Fable 5.1, at the 200k fallback window. The display
+// name test reads that as known, so the CHANGELOG floor decides (h #g295).
+test("a model below its CHANGELOG floor is unknown whatever its row says", () => {
+  const fable52On2_1_314 = {
+    value: "claude-fable-5-2",
+    resolvedModel: "claude-fable-5-2",
+    displayName: "Fable",
+    description: "Fable 5.1 · Most capable for your hardest and longest-running tasks",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    supportsAdaptiveThinking: true,
+    supportsAutoMode: true,
+    supportsThinkingOff: true,
+  }
+  const fact = factFromProbe("claude-fable-5-2", init(fable52On2_1_314), usage(200_000))!
+  assert.equal(fact.known, true, "the row alone reads as known: that is the defect")
+  assert.equal(fact.window, 200_000)
+
+  const mythos = { known: true, window: 1_000_000 }
+  const floored = applyCliFloors({ "claude-fable-5-2": fact, "claude-mythos-5-2": mythos }, "2.1.314")
+  assert.deepEqual(floored["claude-fable-5-2"], {
+    known: false,
+    window: 200_000,
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+  })
+  assert.equal(floored["claude-mythos-5-2"], mythos, "no floor, no change")
+
+  const overlaid = overlayCliCatalog(defaultModels, entry(floored))
+  assert.equal(overlaid["claude-fable-5-2"], defaultModels["claude-fable-5-2"], "the catalog's 1M stays")
+  assert.equal(overlaid["claude-fable-5-2-fast"], defaultModels["claude-fable-5-2-fast"])
+  const differences = describeCatalogDifferences(defaultModels, entry(floored))
+  assert.deepEqual(differences.unknown, ["claude-fable-5-2"])
+  assert.deepEqual(differences.changed, [])
+
+  // At or past the floor the row is believed, and without a version nothing changes.
+  assert.equal(applyCliFloors({ "claude-fable-5-2": fact }, "2.1.321")["claude-fable-5-2"], fact)
+  assert.equal(applyCliFloors({ "claude-fable-5-2": fact }, "2.1.322")["claude-fable-5-2"], fact)
+  const models = { "claude-fable-5-2": fact }
+  assert.equal(applyCliFloors(models, undefined), models)
+})
+
 test("an unknown effort level, a nonsense window and a missing model list are refused", () => {
   const fact = factFromProbe(
     "claude-opus-4-6",
@@ -231,7 +275,7 @@ test("the probe asks about every catalog id but our own -fast markers", () => {
   const ids = catalogProbeIds()
   assert.ok(ids.includes("claude-opus-5"))
   assert.ok(!ids.some((id) => id.endsWith("-fast")))
-  assert.equal(ids.length, Object.keys(defaultModels).length - 3)
+  assert.equal(ids.length, Object.keys(defaultModels).length - 5)
 })
 
 test("the probe argv is --bare, never a prompt, and its env holds no Anthropic credential", () => {

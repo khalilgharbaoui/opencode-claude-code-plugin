@@ -101,6 +101,31 @@ test("configModelsForProvider registers Fable and Mythos 5.2 at their $8/$40 pri
   }
 })
 
+// Fast mode on the 5.2 pair is exactly double the base input and output, with
+// the caching multipliers on top: Anthropic's pricing page and Claude Code
+// 2.1.322's own fast table (`{16, 80, 20, 32 (1h), 0.4}`) agree.
+test("configModelsForProvider registers the Fable and Mythos 5.2 fast entries at $16/$80", () => {
+  const models = configModelsForProvider({}, "claude-code")
+
+  for (const [id, name, family] of [
+    ["claude-fable-5-2-fast", "Claude Fable 5.2 Fast (16×)", "fable"],
+    ["claude-mythos-5-2-fast", "Claude Mythos 5.2 Fast (16×)", "mythos"],
+  ] as const) {
+    const model = models[id] as Record<string, unknown>
+    assert.ok(model, `${id} should be present`)
+    assert.equal(model.name, name)
+    assert.equal(model.family, family)
+    assert.equal(model.release_date, "2026-11-09")
+    assert.deepEqual(model.limit, { context: 1_000_000, output: 128_000 })
+    assert.deepEqual(
+      model.cost,
+      { input: 16, output: 80, cache_read: 0.4, cache_write: 20 },
+      id,
+    )
+    assert.ok("max" in (model.variants as Record<string, unknown>), id)
+  }
+})
+
 test("configModelsForProvider registers Fable and Mythos 5.1 metadata", () => {
   const models = configModelsForProvider({}, "claude-code")
 
@@ -279,11 +304,13 @@ test("configModelsForProvider registers fast entries only for fast-capable model
   const models = configModelsForProvider({}, "claude-code")
   const fastIds = Object.keys(models).filter((id) => id.endsWith("-fast"))
 
-  // The CLI gates fast mode on the model name containing `opus-4-8` or
-  // `opus-5` (which `claude-opus-5-5` satisfies too; 2.1.280's catalog also
-  // lists `fast_mode` for it outright). Anything else would render a fast
-  // price tag on a model that silently runs at standard speed.
+  // The CLI asks its catalog's `fast_mode` capability first (2.1.280 lists it
+  // for `claude-opus-5-5`, 2.1.322 for both 5.2 models) and falls back to the
+  // name containing `opus-4-8` or `opus-5`. Anything else would render a fast
+  // price tag on a model that runs at standard speed.
   assert.deepEqual(fastIds.sort(), [
+    "claude-fable-5-2-fast",
+    "claude-mythos-5-2-fast",
     "claude-opus-4-8-fast",
     "claude-opus-5-5-fast",
     "claude-opus-5-fast",
