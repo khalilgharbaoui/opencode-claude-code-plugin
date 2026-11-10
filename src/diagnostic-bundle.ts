@@ -261,6 +261,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   rateLimitType: "enum",
   reason: "enum",
   reasoningEffort: "enum",
+  // The day a retired fast id's fast mode was removed, from
+  // `RETIRED_FAST_MODELS`: a constant this package defines (h #g298).
+  removedOn: "enum",
   scope: "enum",
   signal: "enum",
   source: "enum",
@@ -293,6 +296,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   excluded: "name",
   excludeServers: "name",
   from: "name",
+  // The fast id that replaces a retired one: a catalog id (h #g298).
+  instead: "name",
   joined: "name",
   left: "name",
   mappedName: "name",

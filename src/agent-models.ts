@@ -39,7 +39,7 @@ import { readFile, readdir } from "node:fs/promises"
 import path from "node:path"
 import { log } from "./logger.js"
 import { isCliAddedModel } from "./cli-model-catalog.js"
-import { defaultModels } from "./models.js"
+import { defaultModels, retiredFastModel } from "./models.js"
 
 /** Directory names opencode reads agent markdown from, current form first. */
 export const AGENT_DIR_NAMES = ["agents", "agent"]
@@ -203,20 +203,28 @@ function withoutAccountMarker(modelId: string): string {
  * Shared with `src/model-fallback.ts`: a fallback chain entry has exactly the
  * same two requirements as a `forceModel`, and one of them failing silently
  * in only one of the two places is how they would drift.
+ *
+ * A retired fast id (`claude-opus-4-8-fast`, h #g298) is accepted although it
+ * is no longer registered: the spawn runs its model at standard speed with
+ * one WARN, which is the honest outcome for a config written before the
+ * retirement, where refusing it would silently run some other model.
  */
 export function qualifyModelName(
   wanted: string,
   referenceModelId: string,
 ): string | null {
   const base = withoutAccountMarker(wanted.trim())
-  if (!isRegisteredModelName(base)) return null
+  if (!isRegisteredModelName(base) && !retiredFastModel(base)) return null
   return `${base}${accountMarker(referenceModelId)}`
 }
 
 /**
  * Whether the plugin registers this bare model id. The one registry check, so
  * a name `forceModel` accepts and a name a per-call subagent `model` is
- * completed from (h #g255) can never disagree.
+ * completed from (h #g255) can never disagree. The one exception is a retired
+ * fast id, which `qualifyModelName` still takes and this does not: completing
+ * it to this provider would only trade opencode's own error for a "model not
+ * found", because opencode no longer has it.
  */
 export function isRegisteredModelName(name: string): boolean {
   return name.length > 0 && (Object.hasOwn(defaultModels, name) || isCliAddedModel(name))

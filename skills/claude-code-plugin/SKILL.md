@@ -1262,7 +1262,7 @@ No manual skill copy/update is needed. Do not publish or release as part of conf
 
 Registered ids: `claude-haiku-4-5`, `claude-haiku-5-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`,
 `claude-sonnet-5`, `claude-sonnet-5-5`, `claude-opus-4-5`, `claude-opus-4-6`,
-`claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-4-8-fast`, `claude-opus-5`,
+`claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`,
 `claude-opus-5-fast`, `claude-opus-5-5`, `claude-opus-5-5-fast`, `claude-fable-5`,
 `claude-fable-5-1`, `claude-fable-5-2`, `claude-fable-5-2-fast`, `claude-mythos-5`,
 `claude-mythos-5-1`, `claude-mythos-5-2`, `claude-mythos-5-2-fast`. With
@@ -1274,7 +1274,7 @@ this list lacks is registered too, named from the CLI, at an unknown (zero) pric
 - Display names end in a `(N×)` list-price multiplier anchored on Haiku 4.5: 0.1× haiku 5.5,
   1× haiku 4.5,
   2× sonnet 5 and 5.5, 3× sonnet 4.5/4.6, 4× opus 5.5, 5× other opus, 8× fast-mode opus 5.5
-  and fable/mythos 5.2, 10× fable, mythos 5 / 5.1 and fast-mode opus 5 / 4.8, 16× fast-mode
+  and fable/mythos 5.2, 10× fable, mythos 5 / 5.1 and fast-mode opus 5, 16× fast-mode
   fable/mythos 5.2. It is display only.
 - Reasoning variants are the effort levels Claude Code accepts for that model, because the
   CLI silently runs a level a model lacks as `high` (read out of 2.1.314): none for Haiku
@@ -1294,6 +1294,17 @@ this list lacks is registered too, named from the CLI, at an unknown (zero) pric
   Switch to a non-fast id rather than silently enabling paid usage credits.
   Review eligibility/billing with the user; the enabled state needs live verification
   on their account. CLI floors are gates, not proof of model access.
+- `claude-opus-4-8-fast` is retired and no longer registered: Anthropic removes Opus 4.8's
+  fast mode on 2026-11-30, after which a fast request on it is an API error with no
+  fallback (Claude Code 2.1.316's changelog), and the CLI still sends it. Named in
+  `forceModel`, `defaultSubagentModel`, `fallbackModels` or a user-registered model entry,
+  it runs `claude-opus-4-8` at standard speed and price with one WARN (`this fast-mode
+  model id is retired`) naming `claude-opus-5-5-fast`. opencode refuses it in an agent's
+  `model:` or the top-level `model`: change those to `claude-opus-5-5-fast` or
+  `claude-opus-4-8`.
+- `claude-sonnet-5-5` is $2/$10 like Sonnet 5, but its cache reads are $0.10 (0.05x
+  input, like Opus 5.5) where Sonnet 5's are $0.20; both have 5-minute writes at $2.50
+  and 1-hour writes at $4.
 - `claude-sonnet-5-5` needs Claude Code 2.1.284+ to run on its real limits. An older CLI
   still serves it on fallback limits (200k context, an estimated cost), and the plugin
   logs a WARN naming the model and the floor: the fix is `claude update`.
@@ -1569,6 +1580,7 @@ Prefer the doctor: it needs no logging change and no restart.
 | Under `opencode serve` or the web UI every project spawns Claude in the server's launch dir | Plugin older than 0.16.0 | Upgrade, or pin `cwd` |
 | 400 `Third-party apps now draw from your extra usage…` | Subscription/account usage gate, including disabled extra usage or an exhausted window | Explain waiting, account choice and billing options; do not enable paid usage, switch auth or change transport without approval |
 | Warning that a fast turn ran at standard speed | Fast mode ineligible (usage credits off, cooldown, not first-party) | Prefer non-fast id; paid usage changes require approval |
+| WARN `this fast-mode model id is retired` | `claude-opus-4-8-fast` named in config; Opus 4.8's fast mode is removed on 2026-11-30 | Nothing breaks (it runs Opus 4.8 at standard speed); replace it with `claude-opus-5-5-fast` to keep fast mode |
 | `claude --model claude-mythos-*` errors | Limited-availability model | Use the matching `claude-fable-*` (`claude-fable-5`, `claude-fable-5-1` or `claude-fable-5-2`) |
 | Startup warning about `ANTHROPIC_API_KEY` | CLI may prefer env credentials | Confirm billing intent; strip only with approval, without displaying the key |
 | A question form never renders and the turn hangs | Blocking notification/tool hooks, or a pending request not reaching the visible session | Check `GET /question` on the same server/workspace: absent means investigate pre-tool hooks or replacement tools; present means inspect session ownership, permission priority and event delivery. On the maintainer's Mac, awaiting `alerter` dismissal in `tool.execute.before` blocked the tool itself. Native providers load global plugins too. The separate detach/reattach issue #36604 remains open; #36603 closed unmerged. |

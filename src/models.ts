@@ -145,13 +145,22 @@ const haikuCost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }
 const haiku55Cost = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
 const haiku55LongPromptCost = { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }
 const sonnetCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
-// Sonnet 5 and Sonnet 5.5 are $2/M in, $10/M out, cache read $0.20, 5-minute
-// cache write $2.50. For Sonnet 5 that was announced as introductory pricing
-// through 2026-08-31, and the increase to $3/$15 scheduled for 2026-09-01 was
-// cancelled: Anthropic's pricing page footnote reads "is now the standard
-// price ... will not occur". Sonnet 5.5 launched at the same rates on
-// 2026-09-28. Verified against the pricing page 2026-09-30.
+// Sonnet 5 is $2/M in, $10/M out, cache read $0.20, 5-minute cache write
+// $2.50. That was announced as introductory pricing through 2026-08-31, and
+// the increase to $3/$15 scheduled for 2026-09-01 was cancelled: Anthropic's
+// pricing page footnote reads "is now the standard price ... will not occur".
+// Verified against the pricing page 2026-09-30.
 const sonnet5Cost = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
+// Sonnet 5.5 shares Sonnet 5's input, output and cache-write rates but reads
+// the cache at $0.10/M, 0.05x input like Opus 5.5, not 0.1x. Until h #g298 it
+// shared `sonnet5Cost` and every cache read was priced at twice the bill. The
+// pricing page (footnote 2: "Cache hits and refreshes on Claude Opus 5.5 and
+// Claude Sonnet 5.5 are priced at 0.05x the base input price") and Claude
+// Code 2.1.322's own table for the model (`tier_2_10_cache_read_0_10`:
+// `{input: 2, output: 10, cache_write_5m: 2.5, cache_write_1h: 4,
+// cache_read: 0.1}`, where Sonnet 5 is `tier_2_10` with 0.2) agree.
+// Verified 2026-11-10.
+const sonnet55Cost = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }
 // Opus 4.5+ standard pricing is $5/M in, $25/M out (the price cut at 4.5; held
 // through 4.6/4.7/4.8/5). Cache read 0.1x input, cache write 1.25x input.
 const opusCost = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }
@@ -349,7 +358,7 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     reasoning: true,
     context: 1_000_000,
     output: 128_000,
-    cost: sonnet5Cost,
+    cost: sonnet55Cost,
     multiplier: 2,
     releaseDate: "2026-09-28",
   }),
@@ -408,25 +417,18 @@ export const defaultModels: Record<string, OpenCodeModel> = {
   // `--settings {"fastMode":true}` on the spawn. Retired `-fast` model strings
   // (`claude-opus-4-6-fast`) are a different thing and are not registered here.
   //
-  // Only Opus 4.8, Opus 5, Opus 5.5, Fable 5.2 and Mythos 5.2 qualify. On the
-  // Anthropic API the CLI asks its own catalog first (`fast_mode`, which
-  // 2.1.280 lists for `claude-opus-5-5` and 2.1.322 for both 5.2 models) and
-  // falls back to the name containing `opus-4-8` or `opus-5` for a model the
-  // catalog does not know. A fast entry for any other model would produce a
-  // picker option that runs at standard speed while displaying the fast price.
-  // The 5.2 pair needs Claude Code 2.1.321+, the release that added them;
-  // older, the name test refuses them and `reportFastModeState` warns.
-  "claude-opus-4-8-fast": defineModel({
-    id: "claude-opus-4-8-fast",
-    name: "Claude Opus 4.8 Fast",
-    family: "opus",
-    reasoning: true,
-    context: 1_000_000,
-    output: 128_000,
-    cost: opusFastCost,
-    multiplier: 10,
-    releaseDate: "2026-05-28",
-  }),
+  // Only Opus 5, Opus 5.5, Fable 5.2 and Mythos 5.2 qualify. On the Anthropic
+  // API the CLI asks its own catalog first (`fast_mode`, which 2.1.280 lists
+  // for `claude-opus-5-5` and 2.1.322 for both 5.2 models) and falls back to
+  // the name containing `opus-4-8` or `opus-5` for a model the catalog does
+  // not know. A fast entry for any other model would produce a picker option
+  // that runs at standard speed while displaying the fast price. The 5.2 pair
+  // needs Claude Code 2.1.321+, the release that added them; older, the name
+  // test refuses them and `reportFastModeState` warns.
+  //
+  // Opus 4.8 qualified too until Anthropic removed its fast mode on
+  // 2026-11-30, so `claude-opus-4-8-fast` is no longer registered: see
+  // `RETIRED_FAST_MODELS` below for what still happens to the id (h #g298).
   "claude-opus-5": defineModel({
     id: "claude-opus-5",
     name: "Claude Opus 5",
@@ -578,6 +580,46 @@ export const defaultModels: Record<string, OpenCodeModel> = {
 const FAST_SUFFIX = "-fast"
 
 /**
+ * `-fast` ids this plugin registered once and no longer does, because
+ * Anthropic removed that model's fast mode. Each names the day it was removed
+ * and the fast id that replaces it.
+ *
+ * Opus 4.8's fast mode was deprecated on 2026-10-30 and removed on 2026-11-30.
+ * Claude Code 2.1.316's CHANGELOG: "After removal, fast mode requests on Opus
+ * 4.8 return an error and do not fall back to standard Opus 4.8. Migrate to
+ * Opus 5.5 to keep the speedup", and the fast-mode docs say the same of a
+ * `speed: "fast"` request. The CLI itself does nothing about it: 2.1.322
+ * still lists `fast_mode` for `claude-opus-4-8`, its name test still passes
+ * it, and `--settings '{"fastMode":true}'` on it reads exactly like Opus 5.5
+ * at init (measured 2026-11-10), so after the date every such turn is an API
+ * error.
+ *
+ * So the id stays out of the catalog (the picker no longer offers it), and an
+ * id still named somewhere the plugin resolves itself (`forceModel`,
+ * `fallbackModels`, `defaultSubagentModel`, a user-registered model entry)
+ * runs the same model at standard speed and standard price, with one WARN
+ * (`reportRetiredFastModel`), from the day this ships rather than from the
+ * removal date, so no turn depends on a clock or on a removal that lands a
+ * few hours early. opencode's own model resolution (an agent's `model:`, the
+ * top-level `model`) refuses an unregistered id before the plugin sees it.
+ */
+export const RETIRED_FAST_MODELS: Readonly<
+  Record<string, { readonly removedOn: string; readonly instead: string }>
+> = {
+  "claude-opus-4-8-fast": { removedOn: "2026-11-30", instead: "claude-opus-5-5-fast" },
+}
+
+/** The retirement record for this id (account marker allowed), or null. */
+export function retiredFastModel(
+  modelId: string,
+): { model: string; removedOn: string; instead: string } | null {
+  const at = modelId.indexOf("@")
+  const base = at === -1 ? modelId : modelId.slice(0, at)
+  const entry = Object.hasOwn(RETIRED_FAST_MODELS, base) ? RETIRED_FAST_MODELS[base] : undefined
+  return entry ? { model: base, ...entry } : null
+}
+
+/**
  * Split an opencode model id into the name the Claude CLI actually accepts
  * and whether fast mode was requested.
  *
@@ -596,6 +638,10 @@ const FAST_SUFFIX = "-fast"
  * we registered are treated as fast markers, so a user-defined model that
  * happens to end in `-fast` is passed through untouched rather than being
  * silently rewritten into a model name that does not exist.
+ *
+ * A retired fast id (`RETIRED_FAST_MODELS`) keeps its marker stripped, since
+ * the CLI has no model by that name either, but asks for no fast mode: that
+ * model's fast mode is an API error now.
  */
 export function parseModelId(modelId: string): { model: string; fast: boolean } {
   const at = modelId.indexOf("@")
@@ -603,9 +649,11 @@ export function parseModelId(modelId: string): { model: string; fast: boolean } 
   const account = at === -1 ? "" : modelId.slice(at)
 
   if (!base.endsWith(FAST_SUFFIX)) return { model: modelId, fast: false }
+  const standard = base.slice(0, -FAST_SUFFIX.length) + account
+  if (Object.hasOwn(RETIRED_FAST_MODELS, base)) return { model: standard, fast: false }
   if (!Object.hasOwn(defaultModels, base)) return { model: modelId, fast: false }
 
-  return { model: base.slice(0, -FAST_SUFFIX.length) + account, fast: true }
+  return { model: standard, fast: true }
 }
 
 /** Anthropic's published price of one web search, in dollars. */
@@ -622,7 +670,9 @@ const WEB_SEARCH_USD = 0.01
  * calls this equals, to the last digit, the `costUSD` the CLI's own
  * `cost-state` gives that model. A 1-hour cache write is twice the input
  * price, a 5-minute one is the catalog's `cache.write`, and a fast-mode call
- * (`usage.speed === "fast"`) is priced from its `-fast` entry. `model` is the
+ * (`usage.speed === "fast"`) is priced from its `-fast` entry, so one on a
+ * model with no registered fast entry (Opus 4.8, since h #g298) is priced at
+ * the standard rate; the plugin never asks for one there. `model` is the
  * transcript's own field (`claude-haiku-4-5-20251001`), so a dated, `[1m]` or
  * `@account` spelling resolves to its catalog entry; a model the catalog does
  * not know returns null rather than a guess.
