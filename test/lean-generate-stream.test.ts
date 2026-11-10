@@ -347,11 +347,13 @@ test("an abort during the lean run ends the call and spawns nothing else", async
   }
 })
 
-test("on the Windows plan, a lean run failed over from default exports the target account's config dir", async () => {
-  // `default` carries no `accountInProcess`, so the override's own flag is
-  // what tells the lean spawn to export the target's dir (h #g293). The plan
-  // is Windows'; the fake still spawns the POSIX way.
-  const fake = createFakeCli("answer")
+/**
+ * The Windows account plan on any platform, with `default` failed over to a
+ * named account. `default` carries no `accountInProcess`, so the override's
+ * own flag is what tells a lean spawn to export the target's dir (h #g293).
+ * Only the plan is Windows'; the fake still spawns the POSIX way.
+ */
+async function withWindowsFailover(run: (configDir: string) => Promise<void>): Promise<void> {
   const home = mkdtempSync(join(tmpdir(), "opencode-lean-home-"))
   const saved = {
     HOME: process.env.HOME,
@@ -365,17 +367,7 @@ test("on the Windows plan, a lean run failed over from default exports the targe
   _resetAccountOverrides()
   setAccountOverride("default", "winwork")
   try {
-    const result = await modelFor(fake, {
-      leanGenerate: true,
-      account: "default",
-      failoverAccounts: ["default", "winwork"],
-    }).doStream({ prompt: DETACHED_PROMPT, tools: TOOLS } as any)
-    const { text } = await collect(result)
-    assert.equal(text, "lean answer")
-    const spawns = fake.spawns()
-    assert.equal(spawns.length, 1)
-    assert.ok(spawns[0].argv.includes("--setting-sources"))
-    assert.equal(spawns[0].configDir, join(home, ".claude-winwork"))
+    await run(join(home, ".claude-winwork"))
   } finally {
     _resetAccountOverrides()
     _setAccountRuntimePlatform(null)
@@ -383,9 +375,49 @@ test("on the Windows plan, a lean run failed over from default exports the targe
       if (value === undefined) delete process.env[name]
       else process.env[name] = value
     }
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+const WINDOWS_FAILOVER = { account: "default", failoverAccounts: ["default", "winwork"] }
+
+test("on the Windows plan, a lean run failed over from default exports the target account's config dir", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    await withWindowsFailover(async (configDir) => {
+      const result = await modelFor(fake, { leanGenerate: true, ...WINDOWS_FAILOVER }).doStream({
+        prompt: DETACHED_PROMPT,
+        tools: TOOLS,
+      } as any)
+      assert.equal((await collect(result)).text, "lean answer")
+      const spawns = fake.spawns()
+      assert.equal(spawns.length, 1)
+      assert.ok(spawns[0].argv.includes("--setting-sources"))
+      assert.equal(spawns[0].configDir, configDir)
+    })
+  } finally {
     await release(fake.cwd)
     fake.cleanup()
-    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("on the Windows plan, a titleModel run failed over from default exports the target account's config dir", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    await withWindowsFailover(async (configDir) => {
+      // No tools on opencode 1.x is a title request (h #g36).
+      const result = await modelFor(fake, { titleModel: "haiku", ...WINDOWS_FAILOVER }).doStream({
+        prompt: DETACHED_PROMPT,
+      } as any)
+      assert.equal((await collect(result)).text, "lean answer")
+      const spawns = fake.spawns()
+      assert.equal(spawns.length, 1)
+      assert.equal(argvValue(spawns[0].argv, "--model"), "haiku")
+      assert.equal(spawns[0].configDir, configDir)
+    })
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
   }
 })
 

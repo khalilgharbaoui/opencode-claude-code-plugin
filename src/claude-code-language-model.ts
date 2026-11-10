@@ -573,6 +573,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     return skillBridgeSpawn(this.config, failover)
   }
 
+  /**
+   * Whether this spawn carries its account itself because no wrapper script
+   * does (`accountInProcess`, Windows only, h #g221): the provider's own
+   * flag, or the flag of the account a failover or a dispatch moved it to,
+   * because the `default` provider has none (h #g293).
+   */
+  private accountInProcess(failover: FailoverSpawn): boolean {
+    return Boolean(this.config.accountInProcess || failover.accountInProcess)
+  }
+
+  /** The `CLAUDE_CONFIG_DIR` such a spawn exports. Undefined on POSIX. */
+  private inProcessConfigDir(failover: FailoverSpawn): string | undefined {
+    return this.accountInProcess(failover) ? this.skillBridgeSpawn(failover).configDir : undefined
+  }
+
   /** Share one lazy registry request within a turn without making it stale. */
   private createLiveToolInfoLoader(): () => Promise<LiveToolInfo> {
     return createLiveToolInfoLoader(this.config, this.modelId)
@@ -1694,9 +1709,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         ? await generateTitleWithModel(options.prompt as readonly any[], {
             cliPath,
             model: parseModelId(stripAccountSuffix(titleModel)).model,
-            configDir: this.config.accountInProcess
-              ? this.skillBridgeSpawn(failover).configDir
-              : undefined,
+            configDir: this.inProcessConfigDir(failover),
             ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
             abortSignal: options.abortSignal,
           })
@@ -1750,12 +1763,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliPath,
         model: parseModelId(stripAccountSuffix(failover.modelId)).model,
         // The config dir of the account this call really runs on, a failover
-        // override's included, where no wrapper carries it (h #g221). The
-        // override's own flag counts: `default` has none (h #g293).
-        configDir:
-          this.config.accountInProcess || failover.accountInProcess
-            ? this.skillBridgeSpawn(failover).configDir
-            : undefined,
+        // override's included, where no wrapper carries it (h #g221, h #g293).
+        configDir: this.inProcessConfigDir(failover),
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
         abortSignal: options.abortSignal,
       })
@@ -1866,22 +1875,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       this.config.resumeAcrossModelChanges !== false
     ) {
       const forCli = parseModelId(stripAccountSuffix(failover.modelId))
-      const liveAccountInProcess = Boolean(
-        this.config.accountInProcess || failover.accountInProcess,
-      )
       await switchLiveProcess(
         {
           sessionKey: sk,
           model: forCli.model,
           fast: forCli.fast,
           spawnModelArg: parseModelId(
-            liveAccountInProcess ? stripAccountSuffix(failover.modelId) : failover.modelId,
+            this.accountInProcess(failover) ? stripAccountSuffix(failover.modelId) : failover.modelId,
           ).model,
           effort: reasoningEffort,
           cliPath,
-          configDir: liveAccountInProcess
-            ? this.skillBridgeSpawn(failover).configDir
-            : undefined,
+          configDir: this.inProcessConfigDir(failover),
         },
         options.abortSignal ? { abortSignal: options.abortSignal } : {},
       )
@@ -2139,12 +2143,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // only where no wrapper script carries the account (`accountInProcess`,
     // Windows, h #g221). Undefined everywhere else, so every POSIX install is
     // on exactly the path it was before.
-    const accountInProcess = Boolean(
-      this.config.accountInProcess || failover.accountInProcess,
-    )
-    const spawnConfigDir = accountInProcess
-      ? this.skillBridgeSpawn(failover).configDir
-      : undefined
+    const accountInProcess = this.accountInProcess(failover)
+    const spawnConfigDir = this.inProcessConfigDir(failover)
     const processForAccount = getActiveProcess(sk)
     if (
       !compactionMode &&
