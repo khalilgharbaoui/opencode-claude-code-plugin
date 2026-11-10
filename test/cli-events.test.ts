@@ -18,7 +18,9 @@ import { test } from "node:test"
 import {
   API_KEY_SOURCES,
   COMPACT_BOUNDARY_MARKER,
+  REFUSAL_FALLBACK_MARKER,
   RESULT_ERROR_MARKER,
+  _resetRefusalFallbackReports,
   _resetRateLimitReports,
   _resetSystemInitReports,
   _resetHookEventReports,
@@ -29,6 +31,9 @@ import {
   describeRateLimitWindow,
   describeResultFailure,
   formatCompactBoundaryNote,
+  formatRefusalFallbackNote,
+  parseRefusalFallback,
+  reportRefusalFallback,
   formatLocalMinute,
   formatResetsAt,
   formatResetsAtLocal,
@@ -862,4 +867,77 @@ test("a subagent retry says what failed and repeats itself only in the log", () 
   assert.equal(captured.lines.length, 0, captured.lines.join("\n"))
   _resetToolProgressReports()
   _resetLoggerForTests()
+})
+
+// ---------------------------------------------------------------------------
+// model_refusal_fallback (h #g300)
+// ---------------------------------------------------------------------------
+
+const refusalFallbackFrame = {
+  type: "system",
+  subtype: "model_refusal_fallback",
+  trigger: "refusal",
+  direction: "retry",
+  scope: "session",
+  original_model: "claude-opus-5-5",
+  fallback_model: "claude-opus-4-8",
+  request_id: "req_1",
+  api_refusal_category: "cyber",
+  retracted_message_uuids: ["f44b2162-b4d3-4e4f-99a8-ad4b2a67d725"],
+  content: "Opus 5.5's safeguards flagged this session.",
+}
+
+test("parseRefusalFallback reads 2.1.322's frame", () => {
+  assert.deepEqual(parseRefusalFallback(refusalFallbackFrame as any), {
+    scope: "session",
+    originalModel: "claude-opus-5-5",
+    fallbackModel: "claude-opus-4-8",
+    category: "cyber",
+    retracted: 1,
+  })
+})
+
+test("parseRefusalFallback reads an absent scope as session, as the CLI's schema says", () => {
+  const { scope: _scope, retracted_message_uuids: _gone, api_refusal_category: _category, ...older } = refusalFallbackFrame
+  assert.deepEqual(parseRefusalFallback(older as any), {
+    scope: "session",
+    originalModel: "claude-opus-5-5",
+    fallbackModel: "claude-opus-4-8",
+    category: null,
+    retracted: 0,
+  })
+  assert.equal(parseRefusalFallback({ ...refusalFallbackFrame, scope: "local" } as any)?.scope, "local")
+})
+
+test("parseRefusalFallback refuses anything else", () => {
+  assert.equal(parseRefusalFallback({ ...refusalFallbackFrame, subtype: "model_fallback" } as any), null)
+  assert.equal(parseRefusalFallback({ ...refusalFallbackFrame, fallback_model: "" } as any), null)
+  assert.equal(parseRefusalFallback({ ...refusalFallbackFrame, original_model: 5 } as any), null)
+  assert.equal(parseRefusalFallback({ type: "system", subtype: "model_refusal_no_fallback", original_model: "x" } as any), null)
+})
+
+test("the refusal-fallback note names both models and how to turn the fallback off", () => {
+  const info = parseRefusalFallback(refusalFallbackFrame as any)!
+  const note = formatRefusalFallbackNote(info)
+  assert.ok(note.trimStart().startsWith(REFUSAL_FALLBACK_MARKER))
+  assert.match(note, /claude-opus-5-5's safety classifier stopped the reply/)
+  assert.match(note, /answered on claude-opus-4-8/)
+  assert.match(note, /withdrew it/)
+  assert.match(note, /CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK/)
+  assert.doesNotMatch(note, /\u2014/)
+  assert.doesNotMatch(formatRefusalFallbackNote({ ...info, retracted: 0 }), /withdrew/, "nothing was withdrawn, so it says nothing about it")
+})
+
+test("reportRefusalFallback warns once per model pair and only for the session", () => {
+  _resetRefusalFallbackReports()
+  try {
+    const info = parseRefusalFallback(refusalFallbackFrame as any)!
+    const warned = (run: () => void) => captureStderr(run).lines.filter((line) => line.includes("WARN")).length
+    assert.equal(warned(() => reportRefusalFallback(info)), 1, "the first swap is the operator's to know about")
+    assert.equal(warned(() => reportRefusalFallback(info)), 0, "the same pair again is logged, not warned")
+    assert.equal(warned(() => reportRefusalFallback({ ...info, scope: "local" })), 0, "one side response changed nothing after it")
+    assert.equal(warned(() => reportRefusalFallback({ ...info, fallbackModel: "claude-sonnet-5-5" })), 1)
+  } finally {
+    _resetRefusalFallbackReports()
+  }
 })

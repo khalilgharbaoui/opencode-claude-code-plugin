@@ -1913,17 +1913,24 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // telling it. One write per session per process, more only on change.
     // Not on a turn served on a busy variant: its child still runs as the
     // last record says, and the new settings are recorded when they spawn.
+    // The record names the model the child really runs: the requested one,
+    // or the one a refusal fallback moved it to, which it keeps for its life
+    // (`ActiveProcess.refusalFallbackModel`, h #g300).
+    const spawnRecordFor = (model: string) => ({
+      model,
+      effort: reasoningEffort,
+      account:
+        (this.config.failoverAccounts?.length ?? 0) > 1
+          ? (failover.target ?? sourceAccount)
+          : undefined,
+      agent: this.getOpencodeAgent(options),
+    })
     if (!compactionMode && affinity !== "default") {
       if (!busyVariant) {
-        recordSessionSpawn(affinity, {
-          model: stripAccountSuffix(failover.modelId),
-          effort: reasoningEffort,
-          account:
-            (this.config.failoverAccounts?.length ?? 0) > 1
-              ? (failover.target ?? sourceAccount)
-              : undefined,
-          agent: this.getOpencodeAgent(options),
-        })
+        recordSessionSpawn(
+          affinity,
+          spawnRecordFor(peekActiveProcess(sk)?.refusalFallbackModel ?? stripAccountSuffix(failover.modelId)),
+        )
       }
       // A fresh user message starts the turn the sidebar's estimate is fed
       // from (h #g247): its start and its prompt's length wait here, keyed
@@ -4456,7 +4463,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             const start = takeTurnStart(sk)
             if (start) {
               const endedAt = Date.now()
-              recordTurnSample(turnHistoryKey(self.getOpencodeAgent(options), stripAccountSuffix(failover.modelId)), {
+              // A refusal fallback answered on another model (h #g300).
+              const answeredAs =
+                state.activeProcess?.refusalFallbackModel ?? stripAccountSuffix(failover.modelId)
+              recordTurnSample(turnHistoryKey(self.getOpencodeAgent(options), answeredAs), {
                 ms: endedAt - start.at,
                 chars: start.chars,
                 effort: reasoningEffort,
@@ -4642,6 +4652,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           budget,
           modelFallbackArmed,
           attempt,
+          onRefusalFallback: (model) => {
+            if (!compactionMode && affinity !== "default") recordSessionSpawn(affinity, spawnRecordFor(model))
+          },
           handleControlRequest,
           completeResult,
         })

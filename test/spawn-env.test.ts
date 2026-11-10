@@ -146,15 +146,32 @@ test("the subagent-only cache TTL var is never written", () => {
   })
 })
 
-// CLI hygiene. Both names were verified against the Claude Code 2.1.263 bundle;
-// the point is to stop the CLI autoupdating out from under the version
-// `detectCliVersion` cached, which several flag gates are keyed on.
+// CLI hygiene. The first two names were verified against the Claude Code
+// 2.1.263 bundle; the point is to stop the CLI autoupdating out from under the
+// version `detectCliVersion` cached, which several flag gates are keyed on. The
+// third, read out of 2.1.322, stops a refusal moving the process to another
+// model (h #g300).
 
-test("the hygiene list is the two vars verified against the CLI bundle", () => {
+test("the hygiene list is the three vars verified against the CLI bundle", () => {
   assert.deepEqual(
     [...CLI_HYGIENE_ENV_VARS],
-    ["DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"],
+    ["DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK"],
   )
+})
+
+test("claudeSpawnEnv turns off the CLI's refusal fallback unless the operator chose (h #g300)", () => {
+  withEnv(noHygieneVars, () => {
+    assert.equal(claudeSpawnEnv().CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK, "1")
+    assert.equal(interactiveSpawnEnv({}).CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK, "1")
+  })
+  // "0", "false" and "" all keep the CLI's fallback (measured on 2.1.322), so
+  // each is the operator's own choice and is passed through as written.
+  for (const value of ["0", "false", ""]) {
+    withEnv({ CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: value }, () => {
+      assert.equal(claudeSpawnEnv().CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK, value)
+      assert.equal(interactiveSpawnEnv({}).CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK, value)
+    })
+  }
 })
 
 test("claudeSpawnEnv disables the autoupdater and non-essential traffic", () => {
@@ -214,14 +231,17 @@ test("cliHygieneEnv fills only the vars missing from the inherited env", () => {
   assert.deepEqual(cliHygieneEnv({}), {
     DISABLE_AUTOUPDATER: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1",
   })
   assert.deepEqual(cliHygieneEnv({ DISABLE_AUTOUPDATER: "0" }), {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "1",
   })
   assert.deepEqual(
     cliHygieneEnv({
       DISABLE_AUTOUPDATER: "1",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: "0",
     }),
     {},
   )

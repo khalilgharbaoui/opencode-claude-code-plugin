@@ -444,6 +444,30 @@ test("a model and effort change together are both applied to the one child", { t
   }
 })
 
+test("a refusal fallback's model survives an effort switch and is cleared by set_model (h #g300)", {
+  timeout: 60_000,
+}, async () => {
+  const fake = createLiveCli()
+  try {
+    await fake.warm()
+    await fake.turn("claude-live-first", BEFORE, "high")
+    // What the parser records when Claude Code moved the child after a refusal.
+    getActiveProcess(fake.key("claude-live-first", "high"))!.refusalFallbackModel = "claude-live-fallback"
+
+    await fake.turn("claude-live-first", AFTER, "low")
+    const sameModel = getActiveProcess(fake.key("claude-live-first", "low"))!
+    assert.equal(sameModel.refusalFallbackModel, "claude-live-fallback", "apply_flag_settings leaves the CLI on the fallback model")
+
+    await fake.turn("claude-live-second", [...AFTER, assistantText("MARLIN"), userText("Again?")], "low")
+    assert.equal(fake.spawns().length, 1, "every change applied to the one child")
+    const switched = getActiveProcess(fake.key("claude-live-second", "low"))!
+    assert.equal(switched.proc.pid, sameModel.proc.pid)
+    assert.equal(switched.refusalFallbackModel, undefined, "set_model replaced the fallback model")
+  } finally {
+    await fake.cleanup()
+  }
+})
+
 test("a refused set_model falls back to today's respawn with --resume", { timeout: 60_000 }, async () => {
   const fake = createLiveCli({ control: "refuse" })
   try {

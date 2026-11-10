@@ -302,6 +302,41 @@ opencode stores) or to title stubs. It works on both transports: the
 refused model as the same `model_not_found` reply headless streams. A title
 stub never reaches the CLI, so there is nothing there to fall back from.
 
+
+### Claude Code's own fallbacks
+
+Claude Code has two fallbacks of its own, separate from this chain, and the
+plugin handles each one so that nothing changes silently.
+
+**A safety refusal does not arm the chain, and Claude Code's refusal fallback is
+off.** When a safety classifier stops a reply, Claude Code first retries once on
+the same model. If that is refused too, it would answer on another model (Opus
+5.5 to Opus 4.8, measured on 2.1.322) and keep that model for the rest of the
+process. The plugin sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` on every spawn
+unless you set it yourself, so the turn ends as an error carrying Claude Code's
+own sentence, and the next model is your choice. With
+`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=0` in opencode's environment the fallback
+runs, and the reply carries a note between the refused text and the answer:
+
+```
+▌ **refusal fallback:** claude-opus-5-5's safety classifier stopped the reply,
+so Claude Code answered on claude-opus-4-8 instead, and keeps using it until
+this conversation's claude process restarts.
+```
+
+From then on the sidebar's model line and the progress estimate name the model
+that answered, not the one you picked. A restarted process (`--resume`) starts
+on your model again, and so does a model change applied to the live process.
+
+**A reply Claude Code fetched without streaming is shown.** When a streaming
+request fails (a proxy that answers 404 on the streaming endpoint, or a stream
+cut before any output), Claude Code resends the call with streaming off and
+writes the reply as one whole message. After a streamed call in the same turn
+that message used to be dropped, so the turn ended with no answer and no error.
+The plugin now shows it. Claude Code's own `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK`
+is left alone: it turns a recovered answer into an error and does not cover the
+404 case at all.
+
 ## Subagent todos
 
 When Claude works through a multi-step task it emits `TaskCreate` / `TaskUpdate` calls. The plugin translates those into opencode's full-list `todowrite` so the todo panel populates. Inside a **subagent** that translation is blocked unless you say otherwise: opencode's task tool injects `todowrite: false` into the tools dict for any subagent without an explicit rule, so the plugin's synthetic emissions surface as `⚙ invalid todowrite` rows instead of todos. The built-in `general` subagent denies it by default.

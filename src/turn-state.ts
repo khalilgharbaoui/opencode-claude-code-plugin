@@ -180,6 +180,18 @@ export interface TurnState {
   hasReceivedProgress: boolean
   /** A `stream_event` envelope was seen, so the whole `assistant` frame is a duplicate. */
   gotPartialEvents: boolean
+  /**
+   * The API message ids whose content was streamed in this turn
+   * (`content_block_start` under that id's `message_start`). An `assistant`
+   * frame with an id outside it was never streamed: Claude Code fell back to a
+   * non-streaming request, and that frame is the only copy of the reply
+   * (h #g300). `streamingMessageId` is the id the next content block belongs
+   * to; `streamedBlockWithoutId` is set when a block streamed with no id known,
+   * after which no frame can be told apart and every one is a duplicate again.
+   */
+  streamedMessageIds: Set<string>
+  streamingMessageId: string | undefined
+  streamedBlockWithoutId: boolean
 
   // ---- The auto-continue window -------------------------------------------
   // `resetAutoContinueWindow` clears these on every nudge, which is why they
@@ -450,6 +462,9 @@ export function createTurnState(init: TurnStateInit): TurnState {
     hasReceivedContent: false,
     hasReceivedProgress: false,
     gotPartialEvents: false,
+    streamedMessageIds: new Set(),
+    streamingMessageId: undefined,
+    streamedBlockWithoutId: false,
 
     visibleTextSinceContinue: "",
     lastVisibleTextSinceContinue: "",

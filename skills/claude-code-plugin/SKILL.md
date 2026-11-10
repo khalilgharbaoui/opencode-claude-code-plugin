@@ -269,6 +269,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `ANTHROPIC_AUTH_TOKEN` | CLI auth-token input; same strip/warning rule. Never display it. |
 | `DISABLE_AUTOUPDATER` | Set to `1` on every spawned `claude`, and only when the user has not set it. Keeps the CLI from updating mid-session, which would invalidate the cached version that gates `--thinking-display summarized`, `--plugin-dir` and fast mode. Not a provider option: a user-set value (including `0`, meaning keep updating) is never overwritten, which is the intended escape hatch. Tell a user who wants CLI autoupdates to export `DISABLE_AUTOUPDATER=0`, not to look for a config key. |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | Set to `1` on every spawned `claude` under the same never-overwrite rule. Suppresses non-essential CLI network traffic and independently blocks auto-update. An empty string counts as user-set and is left alone; the CLI reads it as off. |
+| `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK` | Set to `1` on every spawned `claude` (both transports) under the same never-overwrite rule, so a reply a safety classifier stops twice ends the turn as an error instead of Claude Code silently answering on another model and keeping it for the process. `0`, `false` or an empty string keeps Claude Code's fallback (measured on 2.1.322); the plugin then writes a `▌ **refusal fallback:**` note naming both models and the sidebar and turn history name the model that answered. A user who wants the fallback exports `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=0`; there is no config key. The non-streaming fallback is not turned off: its reply is rendered. |
 | `MCP_TIMEOUT` | Set to `120000` on every spawned `claude` (both transports), only when the user has not set it. Claude Code's 30 s default let a subagent give up on the plugin's in-process proxy while opencode was busy, and run with no tools ("no shell tool"). A subagent that reports no tools, or a slow first reply in a very long session, points here. |
 | `OPENCODE_CONFIG` | Explicit config file, also read by the disk MCP bridge before project layers. |
 | `OPENCODE_CONFIG_DIR` | Additional `.opencode`-style config/skill root. The plugin's direct agent-file fallback does not use it; agents must reach the config hook or a supported agent directory. |
@@ -913,6 +914,17 @@ replays, and a `▌ **model fallback:**` note names the failed model, the reason
 serving model. The failed attempt's output is discarded entirely. Each model is tried
 at most once per turn; an exhausted chain surfaces the original error unchanged.
 Never on compaction turns, title stubs, or the interactive transport.
+
+Claude Code's own two fallbacks are separate (h #g300). A safety refusal never arms the
+chain, and Claude Code's refusal fallback (answer on another model, Opus 5.5 to Opus 4.8,
+and keep it for the process) is off through `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`,
+filled in unless the user set it: the turn ends as an error with Claude Code's sentence.
+With the user's `0` it runs, a `▌ **refusal fallback:**` note names both models, and the
+spawn record (sidebar) and turn history name the model that answered until the process
+restarts or a model change is applied live. A reply Claude Code resent without streaming
+(404 on the streaming endpoint, or a stream cut before output) arrives as an `assistant`
+frame with no stream events of its own and is rendered; `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK`
+is not set, because it turns that answer into an error and does not cover the 404 case.
 
 ### Route a tool through opencode, or switch one off
 
