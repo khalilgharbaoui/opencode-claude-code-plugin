@@ -47,6 +47,15 @@ The fork runs with no MCP servers and `--permission-mode dontAsk`, so it cannot 
 
 It falls back to the transcript, silently apart from one `INFO` line naming why, when the chat has no live `claude` process, a turn or a proxied tool call is still running, the chat moved to another account, its transcript is gone, or the CLI lacks `--fork-session` or `dontAsk`. The [interactive transport](interactive-transport.md) always uses its own compaction.
 
+### Claude Code's own idle compaction
+
+Claude Code (2.1.299 and later) compacts a long conversation by itself when it has sat idle for most of its prompt cache's hour: 54 minutes after the last request, when the conversation holds at least 200,000 tokens (`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` moves that, never below 100,000), the cache lifetime is one hour and the account is not near a limit. Your next message then starts from a summary instead of writing the whole conversation into the cache again.
+
+- **On the default headless transport it never runs.** Claude Code arms it only in its own TUI and for a fixed list of host apps (VS Code, Desktop and others), and a plugin spawn is none of those. Measured on Claude Code 2.1.322 over a 54-minute idle: a headless child sent nothing and wrote nothing between turns, and its next message carried the whole conversation. A chat idle for more than an hour writes its prompt cache again on its next message.
+- **On the [interactive transport](interactive-transport.md) it runs.** Measured: the TUI compacted a 120,019-token conversation to 2,855 tokens 54 minutes after its last request, with no turn running. The plugin starts your next reply with a `▌ **context compacted:**` note saying the conversation was compacted while it sat idle, with the before and after token counts.
+- **To turn it off**, put `"idleCompaction": false` in Claude Code's own `settings.json` (the account's config directory, `~/.claude` by default). Measured: the TUI then keeps the whole conversation. The plugin leaves the choice to Claude Code: compacting costs one read of the cached conversation and a short summary, where letting the cache expire costs writing the whole conversation again.
+- The compaction's own API call is in Claude Code's usage but in no turn, so `turnStats`, `maxBudgetUsd` and the sidebar's spend leave it out.
+
 ### Picking a different compaction model
 
 | Source | How | Wins over |

@@ -183,6 +183,33 @@ test("skipToEnd hands on nothing that is already written", () => {
   }
 })
 
+test("skipToEnd shows what it skips, queued lines first, and nothing handed on before", () => {
+  const { dir, file } = scratchFile()
+  try {
+    const cursor = new TranscriptCursor(() => file)
+    fs.writeFileSync(file, "taken\n")
+    assert.deepEqual(cursor.pending(), ["taken"])
+    cursor.take(1)
+    fs.appendFileSync(file, "queued\n")
+    assert.deepEqual(cursor.pending(), ["queued"], "read, not handed on")
+    fs.appendFileSync(file, "unread\nhalf")
+    const seen: string[] = []
+    cursor.skipToEnd((line) => seen.push(line))
+    assert.deepEqual(seen, ["queued", "unread"], "an incomplete line is not skipped yet")
+    assert.deepEqual(cursor.pending(), [])
+
+    // A file replaced under the cursor is re-read from zero; the lines it had
+    // already handed on are not shown again.
+    fs.writeFileSync(file + ".new", "taken\nqueued\nunread\nhalf-done\nlater\n")
+    fs.renameSync(file + ".new", file)
+    const again: string[] = []
+    cursor.skipToEnd((line) => again.push(line))
+    assert.deepEqual(again, ["half-done", "later"])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // The same cases through a real session and its poll loop.
 // ---------------------------------------------------------------------------

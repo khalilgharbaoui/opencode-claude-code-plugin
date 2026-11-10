@@ -688,6 +688,24 @@ export function isTurnDurationRecord(rec: any): boolean {
 }
 
 /**
+ * A `compact_boundary` record the TUI wrote while no turn was running, marked
+ * `betweenTurns` for the stream parser's note; null for any other line. The
+ * TUI's idle compaction (Claude Code 2.1.299 and later) writes it with
+ * `trigger: "auto"`, which alone cannot tell it from a compaction inside a
+ * turn (h #g304).
+ */
+export function markCompactedBetweenTurns(line: string): string | null {
+  if (!line.includes('"compact_boundary"')) return null
+  try {
+    const rec = JSON.parse(line)
+    if (rec?.type !== "system" || rec.subtype !== "compact_boundary") return null
+    return JSON.stringify({ ...rec, betweenTurns: true })
+  } catch {
+    return null
+  }
+}
+
+/**
  * How much of the transcript one `read` syscall takes. Growth between two
  * polls is a record or two, so this only bounds the single full pass an
  * already-written transcript costs when the session first looks at it.
@@ -784,17 +802,19 @@ export class TranscriptCursor {
   }
 
   /** Hand on nothing of what is in the file now: the records written before a
-   *  turn started belong to the turn before it. */
-  skipToEnd(): void {
+   *  turn started belong to the turn before it. `inspect` sees every line
+   *  skipped, oldest first, and keeps none of them. */
+  skipToEnd(inspect?: (line: string) => void): void {
+    if (inspect) for (const line of this.queue) inspect(line)
     // Counted, not collected: an already-written transcript is read once here
     // and there is no reason to hold its millions of characters in memory.
-    this.poll(false)
+    this.poll(false, inspect)
     this.taken = Math.max(this.taken, this.seen)
     this.queue.length = 0
   }
 
   /** Read whatever was appended since the last look. */
-  private poll(collect: boolean): void {
+  private poll(collect: boolean, inspect?: (line: string) => void): void {
     this.stats.polls++
     const filePath = this.resolvePath()
     let stat: fs.Stats
@@ -831,7 +851,7 @@ export class TranscriptCursor {
         if (read <= 0) break
         this.offset += read
         this.stats.bytes += read
-        this.ingest(this.decoder.write(buffer.subarray(0, read)), collect)
+        this.ingest(this.decoder.write(buffer.subarray(0, read)), collect, inspect)
       }
     } catch {
       // A failed read leaves the offset where the last good one put it, so the
@@ -846,7 +866,7 @@ export class TranscriptCursor {
   }
 
   /** Split decoded text into complete lines, keeping the unterminated tail. */
-  private ingest(text: string, collect: boolean): void {
+  private ingest(text: string, collect: boolean, inspect?: (line: string) => void): void {
     if (!text) return
     this.partial += text
     let start = 0
@@ -855,8 +875,9 @@ export class TranscriptCursor {
       if (newline === -1) break
       // A line below the cursor is one a reset re-read; it was handed on once
       // already and must not be handed on again.
-      if (collect && this.seen >= this.taken) {
-        this.queue.push(this.partial.slice(start, newline))
+      if (this.seen >= this.taken) {
+        if (collect) this.queue.push(this.partial.slice(start, newline))
+        else inspect?.(this.partial.slice(start, newline))
       }
       this.seen++
       start = newline + 1
@@ -1422,8 +1443,14 @@ export class ClaudeSession {
     this.turnDenied = []
     this.abandonTurn = false
     // Records written between turns (a late `turn_duration`, an interrupt
-    // marker) belong to the turn before, never to this one.
-    this.transcript.skipToEnd()
+    // marker) belong to the turn before, never to this one. A compaction is
+    // the exception: the TUI compacts a long conversation on its own while it
+    // sits idle (h #g304), and that changes what this turn's Claude remembers.
+    const compactedBetweenTurns: string[] = []
+    this.transcript.skipToEnd((line) => {
+      const marked = markCompactedBetweenTurns(line)
+      if (marked) compactedBetweenTurns.push(marked)
+    })
     // A reply from an earlier turn may still be in the window; nothing this
     // turn raises has been drawn yet.
     this.screen = ""
@@ -1438,6 +1465,8 @@ export class ClaudeSession {
         this.proc.terminal.write(prompt)
       }
       await this.submitTurn()
+      // Ahead of the turn's own records, so the note leads the reply.
+      for (const line of compactedBetweenTurns) onRecord(line, JSON.parse(line))
 
       const scan: TurnScan = {
         onRecord,

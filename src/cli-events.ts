@@ -800,6 +800,8 @@ export interface CompactBoundary {
   trigger: string
   preTokens?: number
   postTokens?: number
+  /** Written while no turn ran: the interactive transport's idle compaction. */
+  betweenTurns?: true
 }
 
 /**
@@ -824,16 +826,27 @@ export function parseCompactBoundary(msg: ClaudeStreamMessage): CompactBoundary 
     trigger: str(meta?.trigger) ?? "unknown",
     preTokens: num(meta?.pre_tokens) ?? num(meta?.preTokens),
     postTokens: num(meta?.post_tokens) ?? num(meta?.postTokens),
+    ...(raw.betweenTurns === true ? { betweenTurns: true as const } : {}),
   }
 }
 
 export function formatCompactBoundaryNote(boundary: CompactBoundary): string {
-  const how = boundary.trigger === "auto" ? "on its own" : `on a ${boundary.trigger} request`
+  const how = boundary.betweenTurns
+    ? "while this conversation sat idle, before its prompt cache expired"
+    : boundary.trigger === "auto"
+      ? "on its own"
+      : `on a ${boundary.trigger} request`
+  const fmt = (tokens: number) => tokens.toLocaleString("en-US")
   const sizes =
     boundary.preTokens !== undefined && boundary.postTokens !== undefined
-      ? ` (${boundary.preTokens.toLocaleString("en-US")} tokens to ${boundary.postTokens.toLocaleString("en-US")})`
-      : ""
-  return `\n${COMPACT_BOUNDARY_MARKER} Claude Code compacted its own context ${how}${sizes}. Earlier detail in this conversation is now a summary.\n`
+      ? ` (${fmt(boundary.preTokens)} tokens to ${fmt(boundary.postTokens)})`
+      : boundary.preTokens !== undefined && boundary.betweenTurns
+        ? ` (from ${fmt(boundary.preTokens)} tokens)`
+        : ""
+  const off = boundary.betweenTurns
+    ? ' `"idleCompaction": false` in Claude Code\'s settings.json turns this off.'
+    : ""
+  return `\n${COMPACT_BOUNDARY_MARKER} Claude Code compacted its own context ${how}${sizes}. Earlier detail in this conversation is now a summary.${off}\n`
 }
 
 /** Logs the boundary and returns the transcript note, or null when not one. */
@@ -844,6 +857,7 @@ export function reportCompactBoundary(msg: ClaudeStreamMessage): string | null {
     trigger: boundary.trigger,
     preTokens: boundary.preTokens ?? null,
     postTokens: boundary.postTokens ?? null,
+    betweenTurns: boundary.betweenTurns === true,
   })
   return formatCompactBoundaryNote(boundary)
 }

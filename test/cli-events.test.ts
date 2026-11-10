@@ -456,6 +456,33 @@ test("compact_boundary is parsed from either spelling of its metadata", () => {
   assert.equal(parseCompactBoundary({ type: "system", subtype: "init" }), null)
 })
 
+test("a compaction written between turns says it happened while the conversation sat idle", () => {
+  // Claude Code 2.1.322's TUI writes its idle compaction with `trigger: "auto"`
+  // (h #g304); the interactive transport marks it `betweenTurns` when it
+  // skips it. The measured record carries `postTokens`; one without still
+  // says how large the conversation was.
+  assert.match(
+    formatCompactBoundaryNote({ trigger: "auto", preTokens: 120_019, postTokens: 2_855, betweenTurns: true }),
+    /sat idle, before its prompt cache expired \(120,019 tokens to 2,855\)\./,
+  )
+  const boundary = parseCompactBoundary({
+    type: "system",
+    subtype: "compact_boundary",
+    compactMetadata: { trigger: "auto", preTokens: 245_000 },
+    betweenTurns: true,
+  } as any)
+  assert.deepEqual(boundary, { trigger: "auto", preTokens: 245_000, postTokens: undefined, betweenTurns: true })
+  const note = formatCompactBoundaryNote(boundary!)
+  assert.match(note, /while this conversation sat idle, before its prompt cache expired \(from 245,000 tokens\)\./)
+  assert.match(note, /`"idleCompaction": false` in Claude Code's settings\.json turns this off\./)
+  // Not a marker a model reply could carry: only the plugin's field counts.
+  assert.equal(
+    parseCompactBoundary({ type: "system", subtype: "compact_boundary", betweenTurns: "yes" } as any)?.betweenTurns,
+    undefined,
+  )
+  assert.doesNotMatch(formatCompactBoundaryNote({ trigger: "auto", preTokens: 245_000 }), /idle|245,000/)
+})
+
 test("a compaction the CLI did on its own is announced in the transcript", () => {
   _resetLoggerForTests()
   configureLogger({ file: false, mode: "silent", level: "info" })

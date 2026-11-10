@@ -12214,3 +12214,183 @@ native `AGENTS.md`, the control's did. A resume from the store (opencode had
 re-imported the plugin, h #g269) kept the exclude and answered `OSPREY`; after
 editing the file to `KESTREL` the next resume carried no `--settings` and
 answered `KESTREL`.
+
+## Claude Code's idle compaction, headless and in the TUI (2026-11-10)
+
+h #g304. Lane `idle-compaction`, approved by the maintainer on 2026-11-10 ("go
+forth with the recommended"). Research pass 3 (`agents.md` candidate 5):
+Claude Code's CHANGELOG (2.1.299, 2.1.302, 2.1.314, 2.1.318) says a
+conversation of 200K tokens or more that sits idle about 54 minutes is
+compacted before its 1-hour prompt cache expires, extended to SDK hosts and to
+telemetry-off subscribers, with `idleCompaction: false` and
+`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`. The suspicion was that the plugin's
+long-lived headless children get compacted with nobody noticing. The answer
+also decides the pass-2 "cost-aware keepalive" item.
+
+### Read out of the binary
+
+Claude Code 2.1.322, `rg -a`:
+
+- The timer is `class Lgn`, one per session, armed by `QOn` at the end of every
+  main-thread query. Its `#t` returns unless `mN()` holds, the last main-thread
+  cache TTL is one hour and the last request's `ttl` is `"1h"`; it fires at
+  `lastActivityAt + 0.9 * (expiresAt - lastActivityAt)`, 54 minutes, `unref`'d.
+- `mN()` is false for `CLAUDE_CODE_SESSION_KIND` `bg`/`daemon`, true for an
+  interactive session, and otherwise true only for a non-child session whose
+  entrypoint is in a fixed set: `claude-vscode`, `claude-desktop`,
+  `claude-desktop-3p`, `local-agent`, `local_agent`, `remote`,
+  `remote_desktop`, `remote_mobile`, `remote_projects`, `remote_cowork`,
+  `ssh-remote`, `claude-in-slack`, `claude_in_slack`, `claude-in-teams`,
+  `claude-coworker`, `claude-coworker-terminal`. `--print` sets
+  `CLAUDE_CODE_ENTRYPOINT=sdk-cli` unless it is already set (every plugin
+  request's billing header says `cc_entrypoint=sdk-cli`), and `sdk-cli` is not
+  in the set.
+- The gate (`Ukr`), in order: `compaction_off` (`DISABLE_COMPACT`,
+  `DISABLE_AUTO_COMPACT`, `autoCompactEnabled: false`), `idle_compaction_off`,
+  for a host with no TUI `precompute_compaction_off` and `swap_unsupported`,
+  `prefix_changed`, `not_one_hour`, `lapsed` (cache not warm, or the timer
+  more than 60 s late, as after a sleep), `small` (context under
+  `max(100000, CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS ?? 200000)`, so the
+  variable cannot go below 100,000), `newer_request`, `near_limit` (rate-limit
+  status not `allowed`). The TUI's host also refuses when the operator touched
+  it in the last 60 s or a turn is running.
+- The TUI compacts with `compactConversation({instructions: ""})`, so its
+  boundary says `trigger: "auto"`, then appends the notice "Compacted while
+  idle, before the prompt cache expired · turn off with "idleCompaction": false
+  in settings.json". A host with no TUI precomputes a summary instead and
+  swaps it in at the next prompt ("Compacted using a summary written while you
+  were away").
+- A neighbour, tool-result clearing after 65 idle minutes, is a server flag
+  (`tengu_jiggly_blossom`): `unknown` with feature flags unfetched (off unless
+  the server already cleared once) and cached `off` in this machine's default
+  config. Not followed further.
+
+### Measured
+
+A local Node server as `ANTHROPIC_BASE_URL`
+(`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1`, a fake API key, a scratch
+`CLAUDE_CONFIG_DIR`) answered every request with a streamed reply whose usage
+was a 120,000-token 1-hour cache write; `CLAUDE_CODE_PROMPT_CACHE_TTL=1h`,
+`CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000`, the plugin's
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_AUTOUPDATER=1`,
+`claude-opus-5-5`. One message, 57 idle minutes with stdin or the PTY held
+open, then a second message. The timer cannot be shortened (it is a fraction
+of the 1-hour TTL and the gate refuses any other), so the runs went
+concurrently, once.
+
+| Run | Between the turns | Second turn sent |
+|---|---|---|
+| headless, the plugin's flags, `sdk-cli` | nothing on stdout, no request | 4 messages |
+| headless, `CLAUDE_CODE_ENTRYPOINT=claude-vscode` | nothing, no request | 4 messages |
+| the same with `--settings '{"idleCompaction":false}'` | nothing | 4 messages |
+| TUI | a compaction request at 54:00.3 after the last one; `compact_boundary` with `trigger: "auto"`, `preTokens: 120019`, `postTokens: 2855`, `durationMs: 285`; an `informational` notice; same transcript file and session id | 2 messages (the summary and the new prompt) |
+| TUI, `--settings '{"idleCompaction":false}'` | nothing | 4 messages |
+| TUI, `idleCompaction: false` in the config dir's `settings.json`, beside the plugin's own `--settings` layer | nothing | 4 messages |
+
+The `claude-vscode` headless control did not compact either, and why its
+precompute path did not fire under `--print` was not traced: the headless
+verdict rests on `sdk-cli` being outside `mN()`'s set and on the measurement,
+not on that path being dead. No headless run emitted `system`/`status`
+`compacting` or `compact_boundary` between turns, so `parseCompactBoundary` is
+never reached by this. The TUI's `cost-state` counted the compaction call as
+one of its three; no turn's records carry it.
+
+### What the plugin did with it
+
+Headless: nothing happens, so nothing to handle. Interactive transport: the
+records land while no turn runs, and the next turn's `skipToEnd` (records
+written between turns belong to the turn before, h #g196) dropped them, so the
+parser's `compact_boundary` branch never ran, no note was written and the
+reply simply knew less. The usage a finish reports was already right (the
+last call's context is the compacted one). The control: a two-turn fake-PTY
+`doStream` with the measured records returned `Second answer` and nothing
+else.
+
+### Fix
+
+- `TranscriptCursor.skipToEnd(inspect?)` shows an inspector every line it
+  skips, queued ones first, keeping none (it counts rather than collects
+  because a resumed transcript can be millions of characters).
+- `runTurnLoop` collects skipped `compact_boundary` records
+  (`markCompactedBetweenTurns`, which adds `betweenTurns: true`) and hands them
+  to the turn's `onRecord` right after the prompt is accepted, ahead of the
+  turn's own records. Only the turn-start skip inspects; the boot skip is a
+  resumed conversation's own history.
+- `parseCompactBoundary` reads `betweenTurns`, and the note says the
+  conversation was compacted "while this conversation sat idle, before its
+  prompt cache expired", with the sizes (or "from N tokens" when there is no
+  `postTokens`), and that `"idleCompaction": false` in Claude Code's
+  settings.json turns it off. The existing branch drops the key's checkpoints
+  as for any compaction (h #g282). The NOTICE gains `betweenTurns`, a `flag`
+  in the bundle allowlist.
+- Not done, each on purpose: no fill-in of `idleCompaction: false`, because
+  the default does not hurt by the numbers (compacting reads the cached
+  conversation once and writes a short summary, where an expired cache
+  rewrites all of it) and the choice is Claude Code's; no option, because
+  Claude Code's own switch reaches the TUI (measured); no headless
+  equivalent, because it would take relabelling `CLAUDE_CODE_ENTRYPOINT`,
+  the declined billing workaround; and the compaction's own cost stays out of
+  `turnStats`, `maxBudgetUsd` and the sidebar, because no record the plugin
+  reads carries it.
+
+### The keepalive question, with numbers
+
+Thirty days of `sdk-cli` transcripts on this machine, both config dirs, read
+for usage and timestamps only (`idle_gaps.py` in the lane's scratch dir):
+1,137 sessions, 44,055 main-thread API calls, 42,765 of the 42,918
+consecutive pairs following a 1-hour write. 253 calls came after an hour or
+more of idle (123 within one to four hours, 130 later), 214 of them on 200K
+tokens or more; all 253 wrote more than they read. Median context before the
+gap 307,773 tokens, largest 873,529; 87,787,698 tokens rewritten, $708.78 at
+API prices above a warm read. A `side_question` ping (h #g299: 28,555 read,
+16 written, no spawn) every 54 minutes, at most `k` per idle stretch, with
+every session's last call charged `k` pings as an upper bound for sessions
+that never came back:
+
+| k | Rebuilds avoided | Pings, returning | Pings, abandoned (bound) | Net, at most |
+|---|---|---|---|---|
+| 1 | $187.28 | $18.77 | $49.66 | $118.85 |
+| 2 | $297.16 | $32.16 | $99.32 | $165.69 |
+| 3 | $333.54 | $42.70 | $148.98 | $141.86 |
+| 4 | $377.23 | $52.27 | $198.64 | $126.32 |
+| 6 | $419.28 | $68.65 | $297.96 | $52.67 |
+| 8 | $465.98 | $83.01 | $397.27 | -$14.31 |
+| 12 | $556.09 | $103.19 | $595.91 | -$143.01 |
+
+Verdict: Claude Code does not do this job for headless children, so the
+keepalive stays worth building, opt-in and capped at two pings per idle
+stretch (warm for up to about 2 h 48 min of idle), never on a busy process.
+API prices are notional on a subscription; what a ping costs in the 5-hour
+window is the one number left to measure, in the lane that builds it, and a
+side question refreshing a 1-hour cache is inferred from h #g299's 5-minute
+measurement.
+
+### Tests
+
+`test/transcript-cursor.test.ts`: the inspector sees queued lines first,
+then the unread ones, never an incomplete line, and after a replaced file
+only the lines not already handed on. `test/interactive-pty.test.ts`: a
+session resumed over a transcript holding an old boundary, one written
+between turns and one inside a turn; only the between-turns one is marked
+and it comes first; and a real `doStream` over three turns where the
+second reply leads with the note, worded and sized from the measured record,
+and the third has none. `test/cli-events.test.ts`: the wording with and
+without `postTokens`, and a `betweenTurns` that is not `true` ignored. With
+the session-reader change reverted the `doStream` test fails on
+`'Second answer'`.
+
+### Live, through the plugin
+
+A Bun script driving `createClaudeCode({transport: "interactive"})` against
+the real 2.1.322 TUI and the same local API, two turns 57 minutes apart, once
+on this branch's `dist` and once on a build of master. Both TUIs compacted on
+their own 54 min 54 s after the first request (the plugin's TUI went from
+120,019 to 3,002 tokens) and both second requests carried two messages. This
+branch's second reply began with the note, "Claude Code compacted its own
+context while this conversation sat idle, before its prompt cache expired
+(120,019 tokens to 3,002)", and logged the NOTICE with `betweenTurns: true`;
+master's was `Reply 3: noted.` and nothing else. A probe trap on the way: a
+driver started with `nohup` from a tool shell died with the shell 20 seconds
+in, because the plugin's exit cleanup installs its own signal handlers, which
+undo `nohup`'s ignore. Start such a driver in its own session
+(`start_new_session`).
