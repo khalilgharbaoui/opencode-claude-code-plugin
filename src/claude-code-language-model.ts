@@ -1745,11 +1745,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       const leanText = await generateDetachedText(options.prompt as readonly any[], {
         cliPath,
         model: parseModelId(stripAccountSuffix(failover.modelId)).model,
-        configDir: this.config.accountInProcess ? this.config.configDir : undefined,
+        // The config dir of the account this call really runs on, a failover
+        // override's included, where no wrapper carries it (h #g221).
+        configDir: this.config.accountInProcess
+          ? this.skillBridgeSpawn(failover).configDir
+          : undefined,
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
         abortSignal: options.abortSignal,
       })
+      // A stop is not a failure to fall back from: nothing else may spawn.
+      if (turnAbort.aborted) return abortedBeforeWork("answering a detached generate call")
       if (leanText !== undefined) {
+        turnAbort.dispose()
         const textId = generateId()
         const stream = new ReadableStream<LanguageModelV3StreamPart>({
           start(controller) {

@@ -38,10 +38,11 @@ opencode 2 gives a plugin no way to ask whether a session is busy and no toast o
 
 opencode 2.2.3 and later ship their own **Claude Agent** provider (id `claude-agent`). It and this plugin share no provider id, model id, setting or `/connect` entry, and both can be used in one opencode (measured on 2.2.5). Moving a chat from one to the other replays the conversation to the new one as text, because neither can continue the other's Claude session.
 
-opencode 2 also has two things 1.x has no counterpart for:
+opencode 2 also has three things 1.x has no counterpart for:
 
 - **`/connect` checks the Claude Code login.** Each provider (**Claude Code**, or one per account) is listed under its own name with one method, *Claude Code login*. Connecting stores nothing, not even a token: the plugin runs `claude auth status` the way a turn would run `claude`, and a toast says how Claude Code is logged in (a Claude subscription, an API key, Amazon Bedrock, Google Vertex AI, ...) or gives the one command that fixes it, `claude auth login`, or `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login` for an account named `work`. A missing or logged-out CLI also marks the connection *Sign in required*; log in in a terminal, then connect again. Connecting is optional, the models work without it, and every connect adds one entry to that provider's list of connections, which you can delete from the same dialog. A connection made earlier is checked again when opencode starts.
 - **A failed turn is not retried.** opencode 2 runs a turn that failed again, up to ten more times. For this provider each retry started a new `claude`, resumed the conversation and sent your message again: one CLI killed mid-turn cost eleven API requests and left the message in the conversation twelve times. The plugin declines those retries, so the error shows once and you resend when you are ready. The Claude CLI already retries API errors (overloaded, server errors, rate limits) itself, and a usage limit was never retried.
+- **One-shot generate calls can skip the turn.** opencode 2's `experimental.generate.text` sends one prompt with no session and no agent; OpenChamber uses it for its AI session rename, walkthroughs and dictation clean-up. By default the plugin runs it as a full turn, tools and `CLAUDE.md` included, where the model tends to answer the material instead of doing the job. With [`leanGenerate`](configuration/options.md) on it gets one lean `claude -p` instead, and any failure falls back to the full turn.
 
 Differences from 1.x:
 
