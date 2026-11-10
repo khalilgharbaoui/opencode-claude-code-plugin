@@ -124,6 +124,11 @@ checks and suspected defects found in passing.
   title stub (`src/title.ts`, h #g36) may be reading the wrong part of a V2 title request.
   Seen while recording the launch demo (vault `Launch/Demo recording.md`); covered over in
   that clip. Check what a V2 title request carries before changing anything.
+  2026-11-10: cause confirmed by [#169](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/issues/169)
+  (@army113): the V2 title request's user text opens with "Here is the first message of
+  the conversation: <message>...", and the stub keeps those words. `titleModel` (h #g294)
+  names sessions with a real model as an opt-in; the default stub still reads the lead-in.
+  Open: teach `synthesizeTitle` to skip it (take the text inside `<message>`), or leave it.
 
 ## Deferred decisions
 
