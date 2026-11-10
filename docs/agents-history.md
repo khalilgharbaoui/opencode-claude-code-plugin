@@ -11003,6 +11003,89 @@ Windows on the merge commit `da5e1e9` before the tag and on the release commit
 `f41cb3b`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`ebde42f9`), with a GitHub Release.
 
+## Windows account switches off `default` (2026-11-10)
+
+h #g293. [PR #168](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/168)
+by @effectustasi (a first PR here), reviewed in lane `pr168` of the PR sweep the
+maintainer asked for on 2026-11-09. Merged as `dfcf80d`.
+
+### The defect
+
+On Windows every account runs the same `claude` and only `CLAUDE_CONFIG_DIR`
+tells them apart (h #g221). The `default` provider has neither
+`accountInProcess` nor `configDir`, because its runtime is the bare binary. A
+switch from it onto a named account went wrong twice:
+
+- `resolveFailoverSpawn` (a usage-limit or by-hand override) and
+  `resolveDispatchAccountSpawn` (a subagent the dispatch form sent to another
+  account) kept only `cliPath` from `ensureAccountRuntime` and dropped
+  `accountInProcess`. `doStream` read `this.config.accountInProcess` to decide
+  whether to export the config dir and strip the marker, so the spawn exported
+  nothing and ran on the default login.
+- `processBelongsToAnotherAccount` compared `configDir` only when the live child
+  had one, so the default account's child (none) matched the named account's
+  turn (same `cliPath`) and was reused. The other direction already worked: a
+  named child has a `configDir` and a default turn has none.
+
+The interactive TUI recorded `cliPath` and never `configDir`, so on Windows its
+account check could not fire in either direction.
+
+### The PR
+
+Both resolvers return the target runtime's `accountInProcess`; `doStream`
+honours `config.accountInProcess || failover.accountInProcess` at the spawn's
+config dir, the marker strip and the live model switch; the comparison is
+symmetric, `(active.configDir ?? undefined) !== (configDir ?? undefined)`, so an
+unrecorded `configDir` means the `default` account; and the interactive spawn
+records `ap.configDir`. That last line is what makes the symmetric comparison
+safe: every place a child is created now records the dir it exported
+(`spawnClaudeProcess`, `respawnActiveProcess` off the old child, the TUI), so a
+named account's own child is never read as `default` and replaced on every
+turn. On POSIX neither side is ever recorded (the wrapper carries the account),
+so the term is false there and `test/account-wrapper.test.ts` passes unmodified.
+
+The commit is dated 2026-11-03 but sat on master `72085ac`, so it was already
+on top of #158 (h #g285). CI had never run on it.
+
+### What review added
+
+- **A test through the model.** The PR's tests called the two resolvers and
+  `processBelongsToAnotherAccount` directly and re-implemented the model's
+  decision inline, so reverting the `doStream` half alone left the suite green.
+  `_setAccountRuntimePlatform` (`src/accounts.ts`) plans every account runtime
+  as win32 on any platform, and a fake CLI (`test/account-failover.test.ts`)
+  and a fake PTY (`test/interactive-pty.test.ts`) now drive the real model
+  through `default` -> named -> `default`, asserting the config dir each spawn
+  got. Each of the PR's pieces reverted alone fails one of them: the failover
+  resolver, the `doStream` change, the comparison, and the TUI's
+  `ap.configDir`, which shows only on the way back, which is why that test goes
+  both ways. The dispatch resolver's propagation fails the PR's own unit test.
+  The fake-CLI test uses an account name no other test in that file uses,
+  because earlier tests write the `appical` wrapper under the file's shared
+  HOME and this one asserts that no wrapper was written.
+- **Two more readers with the old condition.** #171 (`leanGenerate`) and #172
+  (`titleModel`) merged while this was in review, and each added a spawn that
+  read `this.config.accountInProcess` alone, so a detached call or a title on
+  `default` failed over to a named account would have run on the default login.
+  All five readers now go through `accountInProcess(failover)` and
+  `inProcessConfigDir(failover)` on the model, and
+  `test/lean-generate-stream.test.ts` has a Windows-plan case for each lean
+  spawn, both failing with their site reverted. The live switch's use has no
+  test of its own; it shares the helper the others pin.
+- The `processBelongsToAnotherAccount` comment still said an unrecorded side
+  means "cannot tell"; it now says what the code does.
+
+### Checks
+
+On the branch merged with master `4f2e96b`: `npm run typecheck` 0, `npm test`
+2140/2140 (EXIT 0), `npm run build` 0, and CI green on Linux and Windows on
+`d26d071` before the merge. Master moved three times during review (#171, #172,
+#173), and the branch was merged with it and re-run each time. Not run on a
+real Windows machine with two logins: the Windows job runs
+`test/account-windows.test.ts`, while the four `doStream` tests use POSIX fakes
+and are in files the Windows job skips. No release here; one release follows the
+sweep.
+
 ## A lean `claude -p` for detached generate calls and titles (2026-11-10)
 
 h #g294. Two opt-in options from @army113, [#171](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/171)
