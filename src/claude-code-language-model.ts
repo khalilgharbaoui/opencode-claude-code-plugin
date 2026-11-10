@@ -316,6 +316,12 @@ import {
   synthesizeTitle,
 } from "./title.js"
 import { generateDetachedText, isDetachedGenerateRequest } from "./lean-generate.js"
+import {
+  isSessionGenerateRequest,
+  resolveRequestKind,
+  sessionGenerateQuestion,
+  sessionGenerateRefusal,
+} from "./session-generate.js"
 import { generateTitleWithModel } from "./title-model.js"
 import {
   lastCallContextUsage,
@@ -1697,6 +1703,69 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         },
       })
       return { stream, request: { body: { text: aside.question } } }
+    }
+
+    // opencode 2's `session.generate` (session warming, the `/goal` judge):
+    // a question about this conversation that opencode never stores. Served as
+    // a turn it lands in the live Claude conversation, and the next request
+    // reads that conversation as rewound and forks it (h #g299). The CLI's
+    // `side_question` answers it with the conversation's context and its
+    // prompt cache, and writes nothing to the transcript.
+    if (
+      isSessionGenerateRequest({
+        requestKind: resolveRequestKind(options.headers),
+        affinity,
+        compactionMode,
+      })
+    ) {
+      turnAbort.dispose()
+      const question = sessionGenerateQuestion(options.prompt as readonly any[])
+      const active = question ? getActiveProcess(sk) : undefined
+      const answerGenerate = async (): Promise<string> => {
+        if (!question) throw new Error(sessionGenerateRefusal("no-question"))
+        if (!active) throw new Error(sessionGenerateRefusal("no-live-session"))
+        const answer = await requestSideQuestion(active, question, {
+          cliVersion: await detectCliVersion(cliPath),
+          interactive: useInteractive,
+          abortSignal: options.abortSignal,
+        })
+        return answer.response
+      }
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+        async start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          const started = Date.now()
+          try {
+            const text = await answerGenerate()
+            log.info("answered a session generate request off the conversation", {
+              sessionKey: sk,
+              questionChars: question?.length ?? 0,
+              answerChars: text.length,
+              ms: Date.now() - started,
+            })
+            const id = generateId()
+            controller.enqueue({ type: "text-start", id })
+            controller.enqueue({ type: "text-delta", id, delta: text })
+            controller.enqueue({ type: "text-end", id })
+            controller.enqueue({
+              type: "finish",
+              finishReason: toFinishReason("stop"),
+              usage: toUsage({}),
+              providerMetadata: { "claude-code": { path: "session-generate", usageUnavailable: true } },
+            })
+          } catch (error) {
+            log.info("declined a session generate request", {
+              sessionKey: sk,
+              reason: !question ? "no-question" : !active ? "no-live-session" : "side-question-failed",
+              error: error instanceof Error ? error.message : String(error),
+            })
+            controller.enqueue({ type: "error", error })
+          } finally {
+            controller.close()
+          }
+        },
+      })
+      return { stream, request: { body: { text: question ?? "" } } }
     }
 
     if (this.isTitleRequest(scope, options) && !compactionMode) {

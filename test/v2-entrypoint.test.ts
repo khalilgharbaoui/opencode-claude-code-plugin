@@ -7,6 +7,7 @@
  * Usage: npx tsx --test test/v2-entrypoint.test.ts
  */
 import "./isolate.js"
+import { OPENCODE_REQUEST_KIND_HEADER } from "../src/session-generate.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { accountProviderId, resolveAccounts } from "../src/accounts.js"
@@ -255,6 +256,8 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
     await hooks["model.request"][0](request)
     assert.equal(request.headers[SESSION_AFFINITY_HEADER], "ses_abc")
     assert.equal(request.headers[OPENCODE_AGENT_HEADER], "compaction")
+    // The kind travels too, so a `generate` request can be kept out of the conversation (h #g299).
+    assert.equal(request.headers[OPENCODE_REQUEST_KIND_HEADER], "compaction")
 
     const foreign: any = { ...request, model: { providerID: "openai", id: "gpt" }, headers: {} }
     await hooks["model.request"][0](foreign)

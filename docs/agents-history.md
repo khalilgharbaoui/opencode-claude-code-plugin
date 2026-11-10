@@ -11649,3 +11649,103 @@ Checks: `npm run typecheck` (0); the focused files `test/cli-fallbacks`, `cli-ev
 0); `npm test` (2161 pass, 0; 2195 pass, 0 after rebasing onto h #g301's and h #g298's merges);
 `npm run build` (0); the site build (0, 39 pages, the new `#claude-codes-own-fallbacks`
 anchor present); `npm run generate:log-messages` for the one new WARN.
+
+## Session warming and `/goal` kept out of the conversation (2026-11-10)
+
+h #g299. Lane `warming`, approved by the maintainer on 2026-11-10 ("go for it"),
+from Research pass 3's ranked item 1 (`opencode-native-claude.md`).
+
+### What opencode sends
+
+Read out of the 2.2.6 binary (`~/.opencode/bin/opencode`, `opencode.warming`):
+warming is off by default and turned on by a top-level `warming: true |
+{prompt, interval, duration}` or a model's `settings.cache.warming`; the
+defaults are a 4-minute interval and a 30-minute duration after the session's
+last real request, `interval: "auto"` is 90% of the model's `cache.ttl` and
+skips a model without one, and child sessions are skipped. Each ping is
+`session.generate({sessionID, prompt})` with the prompt "This is a keep-alive
+request. Do not perform any work or use tools. Reply with exactly: OK", and
+`SessionGenerate.generate` sends the session's history, its agent, its full
+tool set, an `Instructions updated` system message when one is due and the
+prompt as a trailing user message, through the `model.request` hook with
+`kind: "generate"`, no `maxTokens`, and `x-session-affinity` set to the
+session. opencode discards the reply and stores nothing. The built-in `/goal`
+judge (`opencode.goal`, `GoalPlugin.judge`) uses the same call on every idle of
+a goal session and parses a JSON verdict out of the answer, so it needs a real
+answer with the conversation's context. opencode's own Claude provider runs a
+`generate` request with no `sessionID` and `sourceID` set to the session:
+`ClaudeSessions.snapshot` forks the source Claude session and removes the
+fork's transcript afterwards.
+
+### What it did to the plugin, measured
+
+opencode 2.2.6 as a private password-protected `serve` under scratch XDG dirs,
+the worktree's `dist`, Claude Code 2.1.322 on the default login, Haiku 5.5,
+`warming: {interval: "30 seconds", duration: "3 minutes"}`. The plugin's hook
+mapped only `compaction` and `title`, so a ping was an ordinary turn on the
+conversation's key:
+
+- Ping 1 reused the process and wrote the keep-alive and its `OK` into the
+  live Claude transcript (37,269 read, 17,611 written).
+- Every later ping read the conversation as `rewound`
+  (`sharedMessages 2, removedMessages 1, removedUserMessages 1`), because
+  `classifyConversationChange` compares the recorded chain with the history up
+  to the last reply and the history never holds the previous ping. Each one
+  ended the child (exit 143), forked it at the checkpoint (`--resume ...
+  --fork-session --resume-session-at f210e97a`), took a new Claude session id
+  and a ~470 KB transcript copy, and read 54,880 from the cache.
+- The operator's next message forked once more and its reply opened with
+  `▌ **conversation rewound:** this conversation was edited or undone ...`.
+
+### What keeps the cache warm
+
+Three arms on Claude Code 2.1.322 directly, `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`,
+two turns, a ping four minutes later, a third turn four minutes after that:
+
+| ping | third turn read | written |
+|---|---|---|
+| none | 11,287 | 17,334 |
+| `--resume <id> --fork-session` turn (read 28,580, wrote 619) | 28,580 | 35 |
+| `side_question` on the idle process | 28,602 | 15 |
+
+A side question keeps the conversation's cache warm exactly as a forked turn
+does, with no spawn. Its own usage, from the session's cumulative
+`modelUsage` with no wait: 28,555 read, 16 written, 439 uncached input
+tokens. The account's default TTL is one hour
+(`cacheCreationEphemeral1hInputTokens`), so at opencode's default interval a
+ping changes nothing the next message reads during the first idle hour.
+
+### Fix
+
+The `model.request` hook also sets `x-opencode-request-kind` to the request's
+`kind`, and `src/session-generate.ts` reads it. A `generate` request with a
+session affinity (`isSessionGenerateRequest`; `default` stays
+`leanGenerate`'s, compaction is out) is answered in the prologue, beside the
+`/btw` branch and before anything records a turn, by `requestSideQuestion` on
+the conversation's live process with the trailing user message as the
+question; the interactive transport takes the aside fork as `/btw` does. No
+user envelope, no served chain, checkpoint, turn-history sample or spawn
+record. With no live process, or no text, the request ends on an `error` part
+(INFO `declined a session generate request`, kebab `reason`) and nothing
+spawns; opencode logs `failed to warm session` and the next message resumes as
+usual. Declined rather than spawned: with no live process there are no spawn
+arguments to copy, and the cache is keyed on them (h #g284), so a ping would
+be a cold full turn, which is the cost warming exists to avoid. No option: warming is opencode's opt-in, and this is
+what opencode intended.
+
+### Tests
+
+`test/session-generate.test.ts`: the header read, the gate and the question;
+a fake CLI driving real `doStream` turns, a turn, two pings and a turn on one
+process, asserting the pings went out as `side_question` control requests,
+no user envelope carries them, one spawn, the same Claude session and no
+rewound note; and a ping with no live process refused with no spawn. With the
+branch disabled both stream tests fail (the ping comes back as `Answer 2`).
+`test/v2-entrypoint.test.ts` asserts the header.
+
+### Live, with the fix
+
+The same probe on a new session: three pings answered in 1,211 to 1,302 ms
+(`answered a session generate request off the conversation`), no spawn, no
+fork; the Claude transcript holds only the two real exchanges; the next
+message reused the process, carried no note and answered `PELICAN`.

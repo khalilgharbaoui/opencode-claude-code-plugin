@@ -76,6 +76,7 @@ import {
   type PluginCopyTurn,
 } from "./plugin-copies.js"
 import { resolveSessionAffinity } from "./call-options.js"
+import { OPENCODE_REQUEST_KIND_HEADER } from "./session-generate.js"
 import { staleBuildWatch } from "./stale-build.js"
 import { readBundledSkillInfos } from "./skill-bridge.js"
 import { logStartupDiagnostics } from "./startup-diagnostics.js"
@@ -812,6 +813,9 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
         if (!isClaudeCodeProviderId(event.model.providerID)) return
         event.headers[SESSION_AFFINITY_HEADER] = event.sessionID
         event.headers[OPENCODE_AGENT_HEADER] = agentForRequest(event.kind, event.agent)
+        // A `generate` request carries the session's own agent, so the kind
+        // is the only thing that keeps it out of the conversation (h #g299).
+        event.headers[OPENCODE_REQUEST_KIND_HEADER] = event.kind
       }),
     )
 
