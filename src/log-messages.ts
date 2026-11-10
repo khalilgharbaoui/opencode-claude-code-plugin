@@ -182,6 +182,7 @@ export const PLUGIN_LOG_MESSAGES: ReadonlySet<string> = new Set([
   "the plugin build chosen for this turn could not take it; running it on this one",
   "this opencode process is running an older plugin build than the one on disk",
   "timed out pending proxy call",
+  "titleModel is a model claude does not know; session titles stay synthetic",
   "turn abort listener threw",
   "two different skills share a name; bridging the one the nearest root claimed",
   "unknown permissionPreset; no preset applied and every permission setting is left exactly as configured",
