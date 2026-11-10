@@ -112,12 +112,23 @@ export interface AccountRuntimeDeps {
   platform?: string
 }
 
+let runtimePlatformForTests: string | null = null
+
+/**
+ * Test seam: `null` restores `process.platform`. Lets a fake-CLI test drive a
+ * real `doStream` through the Windows account plan on macOS or Linux, where
+ * the callers that resolve a switch's runtime pass no platform of their own.
+ */
+export function _setAccountRuntimePlatform(platform: string | null): void {
+  runtimePlatformForTests = platform
+}
+
 export async function ensureAccountRuntime(
   account: string,
   baseCliPath: string,
   deps: AccountRuntimeDeps = {},
 ): Promise<AccountRuntime> {
-  const platform = deps.platform ?? process.platform
+  const platform = deps.platform ?? runtimePlatformForTests ?? process.platform
   const configDir = accountConfigDir(account)
 
   if (!configDir) return { cliPath: baseCliPath }

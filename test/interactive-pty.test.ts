@@ -64,8 +64,13 @@ import {
 import { _resetForkFingerprints } from "../src/session-fork.js"
 import { _setResumeStorePath } from "../src/session-resume-store.js"
 import { _resetAgentRegistryForTests, setProviderFallbackModels } from "../src/agent-models.js"
-import { _resetAccountLimitMemory, _resetAccountOverrides } from "../src/account-failover.js"
-import { ensureAccountRuntime } from "../src/accounts.js"
+import {
+  _resetAccountLimitMemory,
+  _resetAccountOverrides,
+  clearAccountOverride,
+  setAccountOverride,
+} from "../src/account-failover.js"
+import { _setAccountRuntimePlatform, ensureAccountRuntime } from "../src/accounts.js"
 import { setOpencodeClient } from "../src/runtime-status.js"
 import { armStartWatchdog } from "../src/turn-controller.js"
 import { createClaudeCode } from "../src/index.js"
@@ -2066,6 +2071,92 @@ test("a by-hand account switch carries the conversation on the PTY", async () =>
       deleteClaudeSessionId(keyOf(account))
     }
     _setResumeStorePath(null)
+    if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
+    else delete (globalThis as any).Bun
+    dirs.cleanup()
+  }
+})
+
+// On Windows no wrapper carries the account, so every account's TUI runs the
+// same binary and only the config dir it was given tells them apart (h #g293).
+// The plan is Windows' here; the PTY is the fake one.
+test("on the Windows plan, a switch from default to a named account and back replaces the TUI each way", async () => {
+  const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
+  const previousHome = process.env.HOME
+  const previousCache = process.env.XDG_CACHE_HOME
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+  const dirs = scratch()
+  process.env.HOME = dirs.root
+  process.env.XDG_CACHE_HOME = path.join(dirs.root, "cache")
+  delete process.env.CLAUDE_CONFIG_DIR
+  _setAccountRuntimePlatform("win32")
+  _resetAccountOverrides()
+  const baseCli = path.join(dirs.root, "fake-claude")
+  fs.writeFileSync(baseCli, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf '2.1.288\\n'; exit 0; fi\nexit 1\n", { mode: 0o755 })
+  const children: FakeTui[] = []
+  Object.defineProperty(globalThis, "Bun", { configurable: true, value: {
+    Terminal: function Terminal() {},
+    which: (command: string) => command,
+    spawn: (argv: string[], options: {
+      cwd: string; env: Record<string, string | undefined>
+      terminal: { cols: number; rows: number; data: (terminal: unknown, data: Uint8Array) => void }
+    }) => {
+      const tui = new FakeTui()
+      tui.configDir = path.join(dirs.root, ".claude")
+      const index = children.length
+      // A script for every turn, so a TUI kept across the switch answers
+      // rather than hanging, and the text says which child it was.
+      tui.turns = [0, 1, 2].map((turn) => (child: FakeTui) => {
+        child.append(assistantRecord(`m-${index}-${turn}`, "end_turn", textBlock(`child ${index}`)))
+        child.append({ type: "system", subtype: "turn_duration", durationMs: 40 })
+      })
+      children.push(tui)
+      return tui.spawner(argv, { ...options, ...options.terminal,
+        onData: (text) => options.terminal.data(undefined, Buffer.from(text)),
+      })
+    },
+  } })
+  const modelId = "claude-test-pty-windows"
+  const sk = sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] })
+  const reply = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] })
+  try {
+    const model = createClaudeCode({
+      transport: "interactive", cliPath: baseCli, baseCliPath: baseCli, account: "default",
+      failoverAccounts: ["default", "appical"], cwd: dirs.cwd, bridgeOpencodeMcp: false,
+      proxyTools: [], resumeAfterRestart: false,
+    }).languageModel(modelId)
+    const turn = async (prompt: any[]) => {
+      const parts: any[] = []
+      const tools = [{ type: "function", name: "read", inputSchema: { type: "object" } }]
+      for await (const part of (await model.doStream({ prompt, tools } as any)).stream) parts.push(part)
+      return textOf(parts)
+    }
+
+    assert.equal(await turn([user("one")]), "child 0")
+    setAccountOverride("default", "appical")
+    assert.equal(await turn([user("one"), reply("child 0"), user("two")]), "child 1")
+    clearAccountOverride("default")
+    assert.equal(
+      await turn([user("one"), reply("child 0"), user("two"), reply("child 1"), user("three")]),
+      "child 2",
+    )
+
+    assert.equal(children.length, 3)
+    assert.deepEqual(
+      children.map((child) => child.env.CLAUDE_CONFIG_DIR),
+      [undefined, path.join(dirs.root, ".claude-appical"), undefined],
+    )
+    assert.ok(children.every((child) => child.argv[0] === baseCli), "every account runs the base binary")
+  } finally {
+    deleteActiveProcess(sk)
+    _resetAccountOverrides()
+    _setAccountRuntimePlatform(null)
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    if (previousConfigDir !== undefined) process.env.CLAUDE_CONFIG_DIR = previousConfigDir
     if (previousBun) Object.defineProperty(globalThis, "Bun", previousBun)
     else delete (globalThis as any).Bun
     dirs.cleanup()
