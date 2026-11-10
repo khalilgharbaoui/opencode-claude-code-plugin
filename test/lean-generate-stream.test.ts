@@ -1,10 +1,11 @@
 /**
- * `leanGenerate`, driven through a real `doStream` against a fake `claude`.
+ * `leanGenerate` and `titleModel`, driven through a real `doStream` against a
+ * fake `claude`.
  *
- * What the unit file cannot show: which calls take the lean path and which
- * keep the full turn, the argv and the stdin a lean spawn really gets, the
- * directory it runs in, and what a refusal, an abort and an old CLI each do
- * to the turn that follows (h #g294).
+ * What the unit files cannot show: which calls take the lean path and which
+ * keep the full turn or the synthetic title, the argv and the stdin a lean
+ * spawn really gets, the directory it runs in, and what a refusal, an abort
+ * and an old CLI each do to the call that follows (h #g294).
  *
  * Usage: npx tsx --test test/lean-generate-stream.test.ts
  */
@@ -34,13 +35,15 @@ import {
   sessionKey,
 } from "../src/session-manager.js"
 import { pluginTmpDir } from "../src/tmp.js"
+import { synthesizeTitle } from "../src/title.js"
+import { _resetTitleModelWarnings } from "../src/title-model.js"
 
 setOpencodeClient({ tool: { list: async () => ({ data: [] }) } })
 
 const MODEL = "claude-haiku-4-5"
 const SESSION = "fake-session-id"
 
-type LeanMode = "answer" | "refuse" | "hang"
+type LeanMode = "answer" | "refuse" | "unknown-model" | "hang"
 
 /**
  * A fake `claude` that records every spawn (argv, cwd, the cwd's mode and
@@ -78,6 +81,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   out({ type: "system", subtype: "init", session_id: ${JSON.stringify(SESSION)}, tools: [] })
   // Stays alive with nothing written, as a wedged run would.
   if (lean && ${JSON.stringify(mode)} === "hang") { setInterval(() => {}, 1 << 30); return }
+  if (lean && ${JSON.stringify(mode)} === "unknown-model") {
+    out({ type: "assistant", error: "model_not_found", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "There's an issue with the selected model" }] } })
+    out({ type: "result", subtype: "success", is_error: true, result: "There's an issue with the selected model", api_error_status: 404 })
+    process.exitCode = 1
+    return
+  }
   if (lean && ${JSON.stringify(mode)} === "refuse") {
     out({ type: "assistant", error: "authentication_failed", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "Not logged in · Please run /login" }] } })
     out({ type: "result", subtype: "success", is_error: true, result: "Not logged in · Please run /login" })
@@ -377,5 +386,100 @@ test("on the Windows plan, a lean run failed over from default exports the targe
     await release(fake.cwd)
     fake.cleanup()
     rmSync(home, { recursive: true, force: true })
+  }
+})
+
+/** Warnings go to stderr outside a TUI; collect the plugin's own lines. */
+async function captureWarnings<T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> {
+  const original = console.error
+  const lines: string[] = []
+  console.error = (line: unknown) => {
+    lines.push(String(line))
+  }
+  try {
+    return { value: await run(), lines }
+  } finally {
+    console.error = original
+  }
+}
+
+const UNKNOWN_TITLE_MODEL = /titleModel is a model claude does not know/
+
+test("titleModel names a title request with one lean run on that model", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    // No tools on opencode 1.x is a title request (h #g36).
+    const result = await modelFor(fake, { titleModel: "haiku" }).doStream({
+      prompt: DETACHED_PROMPT,
+    } as any)
+    const { text, parts } = await collect(result)
+    assert.equal(text, "lean answer")
+    const meta = parts.find((part) => part.type === "finish").providerMetadata["claude-code"]
+    assert.deepEqual(meta, { synthetic: false, path: "no-tools" })
+
+    const spawns = fake.spawns()
+    assert.equal(spawns.length, 1)
+    assert.equal(argvValue(spawns[0].argv, "--model"), "haiku")
+    assert.equal(argvValue(spawns[0].argv, "--setting-sources"), "")
+    const envelope = JSON.parse(spawns[0].stdin)
+    assert.equal(envelope.client_composed, true)
+    // The title agent's own instructions are read, which the stub never did.
+    assert.match(envelope.message.content[0].text, /^<instructions>\nYou name chat sessions\.\n<\/instructions>\n<conversation>\n<user>\n/)
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
+  }
+})
+
+test("titleModel names an opencode 2 title request, which carries the tool set", async () => {
+  const fake = createFakeCli("answer")
+  try {
+    const result = await modelFor(fake, { titleModel: "haiku", hostApi: "v2" }).doStream({
+      prompt: DETACHED_PROMPT,
+      tools: TOOLS,
+      headers: { "x-session-affinity": "ses_lean", "x-opencode-agent": "title" },
+    } as any)
+    const { text } = await collect(result)
+    assert.equal(text, "lean answer")
+    assert.equal(fake.spawns().length, 1)
+    assert.equal(argvValue(fake.spawns()[0].argv, "--model"), "haiku")
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
+  }
+})
+
+test("an unknown titleModel keeps the synthetic title and warns once", async () => {
+  _resetTitleModelWarnings()
+  const fake = createFakeCli("unknown-model")
+  try {
+    const model = modelFor(fake, { titleModel: "claude-haikoo-9" })
+    const { value: texts, lines } = await captureWarnings(async () => [
+      (await collect(await model.doStream({ prompt: DETACHED_PROMPT } as any))).text,
+      (await collect(await model.doStream({ prompt: DETACHED_PROMPT } as any))).text,
+    ])
+    assert.deepEqual(texts, [synthesizeTitle(DETACHED_PROMPT as any), synthesizeTitle(DETACHED_PROMPT as any)])
+    assert.equal(lines.filter((line) => UNKNOWN_TITLE_MODEL.test(line)).length, 1)
+    // Each title tried its model once; nothing else was started.
+    assert.equal(fake.spawns().length, 2)
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
+  }
+})
+
+test("a logged-out titleModel keeps the synthetic title without a warning", async () => {
+  _resetTitleModelWarnings()
+  const fake = createFakeCli("refuse")
+  try {
+    const { value, lines } = await captureWarnings(async () =>
+      collect(await modelFor(fake, { titleModel: "haiku" }).doStream({ prompt: DETACHED_PROMPT } as any)),
+    )
+    assert.equal(value.text, synthesizeTitle(DETACHED_PROMPT as any))
+    assert.equal(lines.filter((line) => UNKNOWN_TITLE_MODEL.test(line)).length, 0)
+    assert.equal(fake.spawns().length, 1)
+  } finally {
+    await release(fake.cwd)
+    fake.cleanup()
   }
 })

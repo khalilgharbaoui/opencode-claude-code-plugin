@@ -123,6 +123,16 @@ export async function cliSupportsLeanClaude(cliPath: string): Promise<boolean> {
   return answers.every(Boolean)
 }
 
+/** A lean run the CLI refused; `kind` is the reply's `error` kind when it named one. */
+export class LeanClaudeRefusal extends Error {
+  readonly kind: string | undefined
+  constructor(kind: string | undefined, message: string) {
+    super(message)
+    this.name = "LeanClaudeRefusal"
+    this.kind = kind
+  }
+}
+
 /**
  * The answer in a lean run's stream-json output. A refusal throws with the
  * CLI's own reason (the assistant frame's `error` kind and the result's
@@ -147,7 +157,7 @@ export function leanResultText(stdout: string): string {
   if (result.is_error || typeof result.result !== "string") {
     const sentence = typeof result.result === "string" ? result.result.slice(0, 200) : ""
     const reason = [refusal ?? result.subtype ?? "unknown", sentence].filter(Boolean).join(": ")
-    throw new Error(`claude refused: ${reason}`)
+    throw new LeanClaudeRefusal(refusal, `claude refused: ${reason}`)
   }
   return result.result
 }
