@@ -23,6 +23,8 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { _resetAccountOverrides, setAccountOverride } from "../src/account-failover.js"
+import { _setAccountRuntimePlatform } from "../src/accounts.js"
 import { createClaudeCode } from "../src/index.js"
 import { setOpencodeClient } from "../src/runtime-status.js"
 import {
@@ -333,5 +335,47 @@ test("an abort during the lean run ends the call and spawns nothing else", async
   } finally {
     await release(fake.cwd)
     fake.cleanup()
+  }
+})
+
+test("on the Windows plan, a lean run failed over from default exports the target account's config dir", async () => {
+  // `default` carries no `accountInProcess`, so the override's own flag is
+  // what tells the lean spawn to export the target's dir (h #g293). The plan
+  // is Windows'; the fake still spawns the POSIX way.
+  const fake = createFakeCli("answer")
+  const home = mkdtempSync(join(tmpdir(), "opencode-lean-home-"))
+  const saved = {
+    HOME: process.env.HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  }
+  process.env.HOME = home
+  process.env.XDG_CACHE_HOME = join(home, "cache")
+  delete process.env.CLAUDE_CONFIG_DIR
+  _setAccountRuntimePlatform("win32")
+  _resetAccountOverrides()
+  setAccountOverride("default", "winwork")
+  try {
+    const result = await modelFor(fake, {
+      leanGenerate: true,
+      account: "default",
+      failoverAccounts: ["default", "winwork"],
+    }).doStream({ prompt: DETACHED_PROMPT, tools: TOOLS } as any)
+    const { text } = await collect(result)
+    assert.equal(text, "lean answer")
+    const spawns = fake.spawns()
+    assert.equal(spawns.length, 1)
+    assert.ok(spawns[0].argv.includes("--setting-sources"))
+    assert.equal(spawns[0].configDir, join(home, ".claude-winwork"))
+  } finally {
+    _resetAccountOverrides()
+    _setAccountRuntimePlatform(null)
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    await release(fake.cwd)
+    fake.cleanup()
+    rmSync(home, { recursive: true, force: true })
   }
 })

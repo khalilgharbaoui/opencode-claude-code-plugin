@@ -1733,10 +1733,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         cliPath,
         model: parseModelId(stripAccountSuffix(failover.modelId)).model,
         // The config dir of the account this call really runs on, a failover
-        // override's included, where no wrapper carries it (h #g221).
-        configDir: this.config.accountInProcess
-          ? this.skillBridgeSpawn(failover).configDir
-          : undefined,
+        // override's included, where no wrapper carries it (h #g221). The
+        // override's own flag counts: `default` has none (h #g293).
+        configDir:
+          this.config.accountInProcess || failover.accountInProcess
+            ? this.skillBridgeSpawn(failover).configDir
+            : undefined,
         ignoreAnthropicApiKey: this.config.ignoreAnthropicApiKey === true,
         abortSignal: options.abortSignal,
       })
