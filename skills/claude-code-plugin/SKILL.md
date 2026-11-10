@@ -1168,6 +1168,16 @@ rows fold behind a `▼` heading. Setup: nothing on opencode 2; on opencode 1 th
 `tui.json` line under Minimum install. If the section never appears on 1.x, that line is
 missing or opencode was not fully restarted.
 
+On opencode 2.2.6+ the same section also lists the session's **background shells**: a
+command moved to the background with `ctrl+b` while it ran, and a `!command` typed in the
+prompt. Row: `shell` (info colour), the command, `bg`; second line the elapsed time, then
+`exit 0` (✓), `exit N` / `timed out` / `killed` (✗) or `ended` (✓, no exit code seen) and
+how long it ran. A foreground call the model makes never gets a row (it is the running
+tool on the progress line); the rule is a running shell whose command matches no running
+`shell` tool part. Not clickable, no option, nothing written. Note the proxied `bash` tool
+offers the model no `background` flag, so through this plugin only the operator puts a
+shell in the background. opencode's footer `↓ N shell` counts foreground ones too.
+
 ### Let Claude load the user's opencode skills
 
 ```json

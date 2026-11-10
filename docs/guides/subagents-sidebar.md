@@ -1,6 +1,6 @@
 ---
 title: 'Subagents in the sidebar'
-description: 'A progress line for the session, and a live list of its subagents: what each really runs as, what it has spent, and one click to open it.'
+description: 'A progress line for the session, and a live list of its subagents and background shells: what each really runs as, what it has spent, and one click to open it.'
 sidebar:
   order: 9
 ---
@@ -28,7 +28,28 @@ Subagents
 - **Click a row** to open that subagent's session. opencode's own keys take you back: `up` returns to the parent, `left` and `right` step through the siblings. opencode routes to a session, never to a message, so the click opens the child session itself rather than scrolling the parent to the task.
 - **Order and fading**: running rows oldest first, then the last three finished rows newest first; a finished row drops off after ten minutes. With more than two rows the heading gets a `▼` you can click to fold the list into `▶ Subagents (2 running)`, the same way opencode's own MCP and Todo sections fold. With no subagents the section is not there at all.
 
-There is no option for any of it: it is always on, and it costs nothing while nothing runs. The spinner and the one-second tick behind the progress lines run only while a turn or a subagent is running; with only finished rows listed the sidebar rechecks them every 1.5 seconds.
+There is no option for any of it: it is always on, and it costs nothing while nothing runs. The spinner and the one-second tick behind the progress lines run only while a turn, a subagent or a background shell is running; with only finished rows listed the sidebar rechecks them every 1.5 seconds.
+
+## Background shells
+
+On opencode 2.2.6 and later, a shell command running in the background gets a row in the same section, beside the subagents:
+
+```
+Subagents
+⠧ shell sleep 40; echo moved-done bg
+ 8s
+✗ shell sh -c 'sleep 4; exit 2'   bg
+ exit 2 · 4s
+✓ shell sleep 90                  bg
+ exit 0 · 1m30s
+```
+
+- **What counts as background**: a command you moved there with `ctrl+b` (opencode's "Background blocking session tools") while it was running, and a `!command` typed in the prompt. A command the model runs in the foreground never gets a row: while it runs it is already the tool named on the [progress line](#progress), and listing every one would bury the rows you care about.
+- **The first line** is `shell` in the theme's info colour (the colour of the running tool on the progress line, so it reads apart from an agent type), the command cut to fit, and the `bg` marker.
+- **The second line** is how long it has run, from the shell's own start rather than from when it was moved. Once it ends, it says how: `exit 0` and a ✓, a non-zero `exit 2`, `timed out` or `killed` and a ✗, then how long it ran. `ended` with a ✓ means opencode let go of the shell before the plugin saw its exit code.
+- **Rows sort and fade like subagents'**: running ones by when they started, finished ones for ten minutes. A shell row has no session behind it, so clicking it does nothing.
+
+opencode's own footer counts the same shells (`↓ 1 shell`), foreground ones included; this section names them and keeps the background ones in view after they end. opencode 1.x and opencode 2 before 2.2.6 hand a TUI plugin no shell list, so there the section shows subagents only.
 
 ## Progress
 
@@ -96,5 +117,7 @@ Use the same spec you have in `opencode.json`, a `file://` checkout path include
 ## What it reads
 
 The list is built from opencode's own state in the TUI: the current session's child sessions, its `task` (1.x) or `subagent` (2.x) tool calls, and the message opencode adds to the parent when a background subagent ends. The model, effort and account line comes from a small file the provider half writes, `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json` (`~/.local/state/...` by default): one entry per session holding a model id, an effort level, an account name and a time, and nothing else. It is rewritten only when what a session spawns as changes, and bounded to the newest 256 sessions of the last seven days.
+
+The shell rows read opencode 2's own shell list for the session's directory, which tags each shell with the session that started it, the session's running shell calls (a shell with the same command as one of them is in the foreground), and opencode's `shell.exited` event for the exit code. The sidebar keeps the last 64 shells it has seen in memory, and writes nothing.
 
 The progress lines read the session's messages from your last one on, their tool parts, the todo list opencode 1's TUI keeps per session, and opencode's own busy state; a subagent's spend is the `cost` on opencode's session record. The estimate reads two files the provider half writes: the turn history above, and `turn-progress.json` beside it, which holds one record per running turn (when it started, the output tokens it has generated so far, and a time, under the session's hash), rewritten as each of the turn's API calls ends. That count is the one thing the TUI cannot see in opencode's own state, because opencode reports a step's usage only once the turn's reply is in. The progress lines write nothing.
