@@ -11002,3 +11002,211 @@ Shipped as v0.68.2 on 2026-11-04 (PR #166), a patch: CI green on Linux and
 Windows on the merge commit `da5e1e9` before the tag and on the release commit
 `f41cb3b`, the publish confirmed by the Publish step's tail and the version
 document's shasum (`ebde42f9`), with a GitHub Release.
+
+## A lean `claude -p` for detached generate calls and titles (2026-11-10)
+
+h #g294. Two opt-in options from @army113, [#171](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/171)
+(`leanGenerate`, fixing [#170](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/issues/170))
+and [#172](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/172)
+(`titleModel`, fixing [#169](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/issues/169)),
+reviewed in lane `pr171-172` of the 2026-11-09 PR sweep. Both off by default.
+
+### What each does
+
+opencode 2's `experimental.generate.text` runs "one stateless model generation"
+(its own description, read out of the 2.2.6 binary): one prompt, no session,
+no agent. OpenChamber uses it for its AI session rename, walkthroughs and
+dictation clean-up. The plugin served it as a full turn, tools, the proxy, the
+CLI's system prompt and the user's `CLAUDE.md` included, and the model answered
+the material instead of doing the job (577 to 658 characters back for a
+one-line title, in the contributor's log). With `leanGenerate` such a call
+(affinity `default`, no opencode agent, not compaction) gets one lean
+`claude -p` on the requested model and falls back to the full turn on any
+failure.
+
+On opencode 1.x the detection matches almost nothing: 1.19.4's LLM stream sets
+`x-session-affinity` on every session call, so the one call without it is
+`Agent.generate` (`opencode agent create`), which builds its messages itself.
+
+`titleModel` answers a title request (h #g36) with the same lean run on the
+named model, with the title agent's system prompt as instructions and the
+conversation's last 12,000 characters, cleaned to one line. #169 also
+explained the TODO entry of 2026-10-30: opencode 2's title request opens its
+user text with "Here is the first message of the conversation: <message>",
+and the synthetic stub keeps those words. Unset, the stub is unchanged and
+spawns nothing.
+
+### Measured on 2.1.314, Haiku 5.5
+
+In an empty directory below a parent holding a `CLAUDE.md` with a codeword,
+with the PR's flags:
+
+- One line of JSON on `--output-format json`; 836 tokens of context in all.
+- `--setting-sources project` read the parent's `CLAUDE.md` (the model gave
+  the codeword). `--setting-sources ""` read none (653 tokens, `NONE`) and
+  still ran logged in, on 2.1.288, 2.1.293 and 2.1.314. The PR's working
+  directory was `<os.tmpdir()>/opencode-claude-code-lean`, shared and
+  predictable; on Linux its parent is `/tmp`, where any local user can
+  create a `CLAUDE.md`.
+- Plain `-p` text is read as typing: `@/abs/secret.txt` in the input attached
+  the file with `--tools ""` (774 tokens against 664 with the `@` removed, and
+  the model quoted the file). The same text in a stream-json envelope marked
+  `client_composed` was not attached (641 tokens, `NO`), which is the mark
+  the main turn has carried since h #g276. `--input-format stream-json`
+  requires `--output-format stream-json` (the CLI refuses otherwise).
+- Logged out (an empty `CLAUDE_CONFIG_DIR`): exit 1, a `<synthetic>` reply
+  with `error: "authentication_failed"`, and a result with `subtype: success`,
+  `is_error: true`, `result: "Not logged in · Please run /login"`. An unknown
+  model: the same shape with `model_not_found` and `api_error_status: 404`.
+  The PR's error text kept only the subtype, so the log said
+  `claude returned no text (success)`.
+- `--tools`, `--setting-sources`, `--disable-slash-commands` and
+  `--no-session-persistence` are all in `--help` on 2.1.288, 2.1.293 and
+  2.1.314. `--system-prompt-file` is not listed.
+
+### Fix-ups, as maintainer commits on the contributor's branches
+
+`7a91c03` on #171: the input goes in as a `client_composed` envelope over
+stream-json (`--verbose`, the `result` frame parsed); `--setting-sources ""`;
+the run gets a `mkdtemp` directory inside `pluginTmpDir()` (`0700`, h #g158),
+removed afterwards; the four flags are checked with `detectCliSupportsFlag`
+before the first run, so an older CLI keeps the full turn; stdin has its own
+`error` listener (h #g61); an abort that landed before the spawn is seen
+(h #g182) and an abort ends the call rather than falling back; a refusal
+carries the reply's `error` kind and sentence; on Windows the config dir is
+`skillBridgeSpawn(failover).configDir`, so a failover override's account is
+used (h #g221).
+
+`e64082b` on #172, after merging master into the branch (the options and
+skill tables conflicted on adjacent rows): the same config dir rule for the
+title, `@account` and `-fast` stripped off `titleModel`, `LeanClaudeRefusal`
+so a `model_not_found` refusal (a typo) WARNs once per model while every
+other failure stays INFO, and `synthetic: false` on a model's title.
+
+Not changed: the Windows path. Both system prompts are single-line constants
+on argv, and the input (the title agent's prompt included) goes on stdin, so
+nothing reaches `quoteBatchArgument`'s newline refusal; an empty argument
+quotes as `""`.
+
+### Tests
+
+`test/lean-generate-stream.test.ts` drives a real `doStream` against a fake
+CLI (POSIX-only, on the Windows skip list). Against #171's original source it
+failed 2 of 7: the envelope, the setting sources and the scratch directory,
+and the missing version gate. The abort case passed on both, because the
+prologue's existing abort checkpoint already stopped the fallback spawn; the
+new early return makes the log name the stage. Against #172's original source
+the model title's metadata and the unknown-model WARN failed. Full suite
+2130/2130 on the merged branch, typecheck and build clean, both CI jobs green
+on both PRs.
+
+### Live
+
+Through the patched `doStream` on the real CLI: a detached call with a
+planted `@path` answered "Build failure diagnosis" in 3.0 s with the file's
+marker absent. A V2 title request carrying #169's lead-in was titled
+"Opencode Title Placeholder Fix" in 3.4 s with `titleModel:
+"claude-haiku-5-5"`, and "Here First Message Conversation Message How" in
+4 ms with no spawn without it. Not run through a live opencode or
+OpenChamber here; the contributor's own run was opencode 2.2.5 in
+OpenChamber 2.6.1 on Windows 11.
+
+Merged as `b6d2e72` (#171) and `a91147b` (#172), both with `--merge`, which
+closed #170 and #169. Not released here; it ships in the next release.
+
+### Open
+
+- The default stub still titles every opencode 2 session from the lead-in.
+  Taking the text inside `<message>` would fix it without a spawn; left for
+  the maintainer (`TODO.md`).
+- A lean run's cost reaches no ledger: not the budget (its affinity is
+  `default`, or a title), not the turn history, and its finish reports zero
+  usage, as the title stub always did.
+- On the interactive transport a lean run is still `claude -p`.
+
+## Fable and Mythos 5.2, their fast mode, and a probe that believed a family name (2026-11-10)
+
+h #g295. Lane `pr173`, the review of PR #173 by @broskees (Joseph Roberts),
+which registered `claude-fable-5-2` and `claude-mythos-5-2` on the day
+Anthropic released them (2026-11-09).
+
+### What was checked, and against what
+
+Every number in the PR was read again off Anthropic's own pages, fetched as
+markdown on 2026-11-10: the pricing page, the models overview, both models'
+overview pages, the fast-mode page and the effort page. All agree with the
+PR: $8/M input, $40/M output, 5-minute cache write $10, cache read $0.20
+(0.025x input, as on 5.1), 1M context, 128K output, adaptive thinking always
+on, all five effort levels, Mythos 5.2 the same model limited to
+organizations in Anthropic's verification programs. The 1-hour write is $16,
+exactly twice the input, which is what `apiCallCostUsd` already charges.
+The long-context section names Haiku 5.5 as the only prompt-length tier, so
+`LONG_PROMPT_COSTS` gets nothing.
+
+Claude Code's CHANGELOG puts Fable 5.2 at 2.1.321 ("Added Claude Fable 5.2
+(`claude-fable-5-2`), now the default Fable model") and does not mention
+Mythos 5.2. The installed CLI was 2.1.314, which knows neither, so 2.1.322
+was fetched from Anthropic's release bucket into a scratch directory and
+checked against the manifest's sha256; the maintainer's own update to
+2.1.322 later that morning installed the byte-identical binary. Its baked
+catalog gives both ids `window: 1e6`, `max_output_tokens` 128,000, pricing
+`tier_8_40_cache_read_0_20` (`{8, 40, 5m 10, 1h 16, read 0.2}`, no
+`long_prompt`), `effort`, `max_effort`, `xhigh_effort` and `fast_mode`. Its
+fast price function returns `{16, 80, 20, 32 (1h), 0.4}` for both ids, which
+is the pricing page's fast table with the caching multipliers on top.
+
+The plugin's own free probe (h #g279) on 2.1.322: both known, 1M, all five
+efforts, `fast` true, no difference from the catalog. A free `/cost` in the
+plugin's argv shape on the maintainer's login: both ids accepted, no
+`[claude-code:unrecognized_model]` line, `num_turns` 0, $0.
+
+### What changed beyond the PR
+
+- **Fast twins.** `claude-fable-5-2-fast` and `claude-mythos-5-2-fast` at
+  `fable52FastCost` ($16/$80, read 0.4, write 20), `(16×)`. 2.1.322's fast
+  gate asks the catalog's `fast_mode` capability first on the Anthropic API
+  (`Gk = {firstParty: "fast_mode", vertex: "vertex_fast_mode"}`) and only
+  falls back to the `opus-4-8`/`opus-5` name test for a model it lacks, and
+  the two 5.2 ids are in its opt-in set, which the `--settings
+  {"fastMode":true}` flag layer satisfies. Not measured as a live fast turn:
+  the only login on hand has usage credits off, and the CLI reports
+  `extra_usage_disabled` before any model check (Fable 5.1, which has no
+  `fast_mode`, gives the same reason), so a free run cannot tell the models
+  apart and a paid one was not authorised.
+- **`MODEL_CLI_FLOORS["claude-fable-5-2"] = "2.1.321"`**, from the CHANGELOG
+  line. Mythos 5.2 gets none, because the CHANGELOG does not name it.
+- **The probe misread a new Fable as known.** On 2.1.314 the `initialize`
+  row for `--model claude-fable-5-2` is
+  `{"value":"claude-fable-5-2","displayName":"Fable","description":"Fable 5.1
+  · Most capable ...","supportsThinkingOff":true}` with `rawMaxTokens`
+  200,000: the CLI files any `claude-fable-*` id under its Fable picker
+  family. h #g279's test (display name equals the id means unknown) read
+  that as a known model with a 200k window, so a fresh probe would have
+  overlaid Fable 5.2 at 200k, and the doctor would have listed a context
+  change instead of "needs 2.1.321". `claude-mythos-5-2` came back with
+  `displayName` equal to the id and was read correctly. `applyCliFloors`
+  now marks a model unknown when the probed version is below its CHANGELOG
+  floor, applied in `probeCliCatalog` once `initialize` or `claude
+  --version` has supplied the version. A stored entry for an unchanged
+  binary is not re-probed on a plugin upgrade, so an existing store holds
+  no 5.2 facts at all and leaves the catalog's 1M alone, which is the safe
+  direction.
+
+### Tests
+
+`test/config-models.test.ts` (the fast twins and the fast-capable list),
+`test/cli-args.test.ts` (`parseModelId` on both), `test/interactive-usage.test.ts`
+(a fast Fable 5.2 call and a fast Mythos 5.2 1-hour write priced as the CLI
+does), `test/cli-events.test.ts` (the WARN names 2.1.321),
+`test/cli-model-catalog.test.ts` (2.1.314's verbatim row read as known by
+`factFromProbe`, then unknown through `applyCliFloors`, the overlay keeping
+1M), `test/cli-model-probe.test.ts` (a fake 2.1.314 naming Fable 5.2 "Fable"
+stored as unknown, a fake 2.1.322 believed). With `src/` reverted they fail:
+six tests by name, and the catalog file at import, because `applyCliFloors`
+does not exist there.
+
+### Not done
+
+The fast-mode docs still say Vertex is excluded. 2.1.322's CHANGELOG adds
+fast mode on Vertex in three regions, and the catalog gives Fable and Mythos
+5.2 `vertex_fast_mode`, but nothing here was measured on Vertex.

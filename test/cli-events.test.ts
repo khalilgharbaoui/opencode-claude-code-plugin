@@ -526,6 +526,11 @@ test("an unrecognized model warns once per model per process, with the fix", () 
   assert.match(other.lines[0], /claude update/, "an unknown floor still says how to fix it")
   assert.doesNotMatch(other.lines[0], /2\.1\.284/)
 
+  const fable = captureStderr(() =>
+    reportUnrecognizedModel('[claude-code:unrecognized_model] {"model":"claude-fable-5-2"}'),
+  )
+  assert.match(fable.lines[0], /2\.1\.321/, "Fable 5.2's floor is the CHANGELOG's")
+
   const unrelated = captureStderr(() => reportUnrecognizedModel("some other stderr"))
   assert.equal(unrelated.lines.length, 0)
   _resetLoggerForTests()
