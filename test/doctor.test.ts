@@ -946,9 +946,11 @@ test("the account logins section lists each login's end, what is left and the no
     ...report,
     loginExpiry: new Map([
       ["appical", { expiresAt: now + 9 * day + 60_000, observedAt: now - 90_000, warnDays: 10, notedFor: now + 9 * day + 60_000 }],
-      ["default", { expiresAt: now + 20 * day, observedAt: now - 60_000, warnDays: 10 }],
+      // A minute over each whole day: the formatter reads its own clock a
+      // little later than this test's, and the days shown are floored.
+      ["default", { expiresAt: now + 20 * day + 60_000, observedAt: now - 60_000, warnDays: 10 }],
       ["old", { expiresAt: now - day, observedAt: now - 2 * day, warnDays: 10 }],
-      ["quiet", { expiresAt: now + 2 * day, observedAt: now, warnDays: 0 }],
+      ["quiet", { expiresAt: now + 2 * day + 60_000, observedAt: now, warnDays: 0 }],
     ]),
   })
   assert.match(text, /\*\*Account logins\*\*/)

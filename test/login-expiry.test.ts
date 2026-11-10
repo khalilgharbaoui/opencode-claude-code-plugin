@@ -38,7 +38,7 @@ import {
   resolveLoginExpiryWarnDays,
   snapshotLoginExpiries,
 } from "../src/account-usage.js"
-import { LOGIN_MARKER, formatLoginExpiryNote } from "../src/account-failover.js"
+import { LOGIN_MARKER, formatLoginExpiryNote, loginCommandFor } from "../src/account-failover.js"
 import { parseCredentialExpiresAt } from "../src/cli-events.js"
 import { filterSideQuestionHistory } from "../src/message-builder.js"
 
@@ -112,8 +112,10 @@ test("a login's end is recorded per account, as a date and nothing else", () => 
   assert.deepEqual(record, { expiresAt: IN_9_DAYS, observedAt: NOW, warnDays: 10 })
   const file = onDisk()
   assert.deepEqual(file.logins, { appical: { expiresAt: IN_9_DAYS, observedAt: NOW, warnDays: 10 } })
-  assert.equal(statSync(storeFile).mode & 0o777, 0o600)
-  assert.equal(statSync(join(storeFile, "..")).mode & 0o777, 0o700)
+  if (process.platform !== "win32") {
+    assert.equal(statSync(storeFile).mode & 0o777, 0o600)
+    assert.equal(statSync(join(storeFile, "..")).mode & 0o777, 0o700)
+  }
   assert.deepEqual([...snapshotLoginExpiries(NOW).keys()], ["appical"])
   // An unusable name or date records nothing.
   assert.equal(recordLoginExpiry("../etc", IN_9_DAYS, 10, NOW), null)
@@ -238,19 +240,22 @@ const localMinute = (ms: number) => {
 }
 
 test("the note names the account, the local date, the early end and the login command", () => {
+  const configDir = join(homedir(), ".claude-appical")
   const note = formatLoginExpiryNote({
     account: "appical",
-    configDir: join(homedir(), ".claude-appical"),
+    configDir,
     expiresAt: IN_9_DAYS,
     now: NOW,
     earlyDays: LOGIN_EARLY_END_DAYS,
   })
   assert.ok(note.trimStart().startsWith(LOGIN_MARKER))
+  // The account-block note's own command, whatever the platform spells it as.
+  const command = loginCommandFor(configDir)
+  if (process.platform !== "win32") assert.equal(command, "CLAUDE_CONFIG_DIR=~/.claude-appical claude auth login")
   assert.equal(
     note,
     `\n${LOGIN_MARKER} the Claude account "appical" stays signed in until about ${localMinute(IN_9_DAYS)}, in 9 days, ` +
-      "and the login can end up to 3 days sooner. Log in again with " +
-      "`CLAUDE_CONFIG_DIR=~/.claude-appical claude auth login` before then, so no turn fails on it.\n",
+      `and the login can end up to 3 days sooner. Log in again with \`${command}\` before then, so no turn fails on it.\n`,
   )
   assert.doesNotMatch(note, /\u2014/)
 })
