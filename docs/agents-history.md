@@ -11771,3 +11771,93 @@ Shipped as v0.70.0 on 2026-11-10 (PR #175, PR #176, PR #177, PR #178), a minor: 
 Linux and Windows on the merge commit `0555ceb` before the tag and on the release commit
 `877471e`, the publish confirmed by the Publish step's tail and the version document's
 shasum (`4095625b`), with a GitHub Release.
+
+## Sonnet 4.5 retired: it runs as Sonnet 5.5 (2026-11-10)
+
+h #g302. Lane `small-two`, approved by the maintainer on 2026-11-10 ("go forth with the
+recommended"), the `TODO.md` item h #g298's lane found and left.
+
+### Measured
+
+- **The date and what follows it.** Anthropic's model-deprecations page (fetched as
+  markdown 2026-11-10): `claude-sonnet-4-5-20250929` is Deprecated since 2026-09-30,
+  retirement **November 30, 2026**, recommended replacement `claude-sonnet-5-5`; and
+  "Retired: The model is no longer available for use. Requests to retired models fail."
+  Claude Code 2.1.322's own list (the chunk that scans a project for old model ids) says
+  `{family:"sonnet-4-5", ids:["claude-sonnet-4-5","claude-sonnet-4-5-20250929"],
+  status:"deprecated", date:"2026-11-30", current:"SONNET_ID"}`. Neither the CHANGELOG nor
+  the binary has a Sonnet 4.5 removal note of the Opus 4.8 fast-mode kind (h #g298); the
+  only Sonnet 4.5 code beyond the list is an old settings migration from
+  `sonnet-4-5-20250929` to `sonnet`.
+- **The CLI does not remap it.** 2.1.322 has a legacy remap (`zw`, `q$`, gated by
+  `CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP`) whose id list is exactly
+  `claude-opus-4-20250514`, `claude-opus-4-1-20250805`, `claude-opus-4-0`,
+  `claude-opus-4-1`, each "remapped to the latest Opus" with a TUI notice; Sonnet 4.5 is
+  in neither that list nor its retirement table. Measured with `claude -p "say hi"
+  --output-format stream-json --verbose --no-session-persistence --tools ""` on this
+  Mac's login: `--model claude-opus-4-1` (retired 2026-08-05) answered with `init.model`
+  and the reply both `claude-opus-5-5`, a plain `success` billed at $0.617 (the
+  measurement's whole cost); `--model claude-sonnet-4-20250514` (retired 2026-06-15)
+  ended on a `<synthetic>` reply, `error: "model_not_found"`, `is_api_error_message`,
+  "There's an issue with the selected model (claude-sonnet-4-20250514). It may not exist
+  or you may not have access to it", and a result with `is_error: true`,
+  `terminal_reason: "api_error"`, `api_error_status: 404`, cost 0. So after 2026-11-30
+  every turn on the plugin's `claude-sonnet-4-5` would be that error (h #g281 already
+  finishes it as an error, and `fallbackModels`, off by default, would catch it as a
+  `model_not_found`, h #g161).
+- **The price differs, downwards.** Sonnet 4.5 is $3/$15 (`sonnetCost`); Sonnet 5.5 is
+  $2/$10 with a $0.10 cache read (`sonnet55Cost`, h #g298). Sonnet 5.5 also takes
+  effort levels (Sonnet 4.5 took none, h #g279) and has a 1M window.
+- **The probe store holds nothing to undo.** This Mac's `cli-models.json` (2.1.314 and
+  2.1.322) records `claude-sonnet-4-5` as a known catalog model and adds nothing from the
+  picker, but `pickerModelIds` would add any first-party id a picker lists that the
+  catalog lacks, at a zero price, which an unregistered `claude-sonnet-4-5` now is.
+
+### Decided
+
+Run it as `claude-sonnet-5-5` with one WARN, rather than refuse it. Refusing
+unconditionally would break a working config twenty days before the date, refusing from
+the date would make a turn depend on the clock (h #g298's rule), and the CLI's own answer
+for a retired Opus is the same remap. The WARN names the replacement and both prices
+because the operator picked the old model by name and is billed for the new one.
+
+### Fix
+
+- `claude-sonnet-4-5` is no longer registered. `RETIRED_MODELS` (beside
+  `RETIRED_FAST_MODELS`) holds it and the dated `claude-sonnet-4-5-20250929` with the
+  retirement date, the replacement and its own list price; `retiredModel` reads through
+  the account marker and prices the replacement off the catalog.
+- `servedModelId` maps a retired id to its replacement with the marker kept, and
+  `parseModelId` applies it first, so every spawn path hands the CLI `claude-sonnet-5-5`:
+  the main spawn, a `compactionModel`, `titleModel`, `leanGenerate` and the live switch.
+  The session key keeps the requested id; the spawn record (the sidebar's model line) and
+  the turn-history key name the replacement, because both mean the model that runs.
+- `qualifyModelName` takes a retired id (so `forceModel`, `defaultSubagentModel` and
+  `fallbackModels` keep working); `isRegisteredModelName` does not (h #g255).
+- `addableId` refuses a retired id, so the CLI catalog can never add it back.
+- `reportRetiredModel` (`src/agent-models.ts`) WARNs once per id per process on every
+  spawn, compaction included (a `compactionModel` can name it), and on a title or lean
+  generate call: "claude-sonnet-4-5 is retired on the Claude API on 2026-11-30, so it runs
+  as claude-sonnet-5-5 ($2/$10, against $3/$15 per million input/output tokens)". The text
+  is built at runtime so a toast says it, and pinned as a known dynamic message in
+  `test/diagnostic-bundle.test.ts`; a bundle keeps `model`, `instead`, `retiredOn` (enum)
+  and the four prices (`inputUsd`, `outputUsd`, `insteadInputUsd`, `insteadOutputUsd`,
+  money).
+
+### Tests
+
+`test/retired-model.test.ts` (new, portable: the registry, `parseModelId`,
+`servedModelId`, `retiredModel`'s prices, the one WARN and its data, the three config
+resolvers, the picker and the overlay), `test/retired-model-stream.test.ts` (new, POSIX
+only, in the Windows skip list: a fake CLI through a real `doStream` given `--model
+claude-sonnet-5-5` on two turns with one WARN, the spawn record naming
+`claude-sonnet-5-5`, a live model as the control, and a `compactionModel` naming the
+retired id), `test/config-models.test.ts`, `test/interactive-usage.test.ts` (Sonnet 4.5
+out of the registered set), `test/diagnostic-bundle.test.ts` (the pinned message).
+
+### Not done
+
+- No live turn on `claude-sonnet-4-5` itself: it still answers until the date, and the
+  fake-CLI argv proves the spawn never asks for it.
+- A per-call subagent `model` naming `claude-code/claude-sonnet-4-5` on opencode 2 is
+  refused by opencode as unknown, as h #g298's fast id is.

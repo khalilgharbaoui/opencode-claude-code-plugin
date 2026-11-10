@@ -141,6 +141,10 @@ test("a log message built at runtime is a known, pinned exception", () => {
   assert.deepEqual(bundled, [
     "account-failover.ts:notice:template",
     "account-failover.ts:warn:template",
+    // The retired-model WARN (h #g302): its text names the model, its
+    // replacement and both prices so a toast says so. Accepted, because all
+    // of them are in `data` as well.
+    "agent-models.ts:warn:template",
     "claude-code-language-model.ts:warn:template",
     "claude-code-language-model.ts:warn:template",
     // The failed-hook WARN and the subagent-retry NOTICE (#g185). Accepted:

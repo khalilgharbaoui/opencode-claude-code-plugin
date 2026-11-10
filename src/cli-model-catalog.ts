@@ -89,6 +89,7 @@ import {
   effortVariants,
   parseModelId,
   passthroughModel,
+  retiredModel,
 } from "./models.js"
 import type { OpenCodeModel } from "./opencode-types.js"
 import { planClaudeSpawn, resolveWindowsCommand } from "./windows-spawn.js"
@@ -153,8 +154,12 @@ const ADDABLE_ID = /^claude-[a-z]+(?:-[a-z0-9]+)+$/
  */
 const DATED_ID = /-\d{8}$/
 
+/**
+ * A retired model (`RETIRED_MODELS`, h #g302) is never added back, even if a
+ * CLI's picker still lists it: it runs as its replacement.
+ */
 function addableId(id: string): boolean {
-  return ADDABLE_ID.test(id) && !DATED_ID.test(id)
+  return ADDABLE_ID.test(id) && !DATED_ID.test(id) && !retiredModel(id)
 }
 
 /**

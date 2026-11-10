@@ -376,7 +376,7 @@ const CLI_2_1_322_TIERS: Record<string, { cache_write_5m: number; cache_write_1h
 const CLI_2_1_322_MODEL_TIERS: Record<string, string> = {
   "claude-haiku-4-5": "haiku_45",
   "claude-haiku-5-5": "haiku_55",
-  "claude-sonnet-4-5": "tier_3_15",
+  // `claude-sonnet-4-5` (`tier_3_15`) is retired and no longer registered (h #g302).
   "claude-sonnet-4-6": "tier_3_15",
   "claude-sonnet-5": "tier_2_10",
   "claude-sonnet-5-5": "tier_2_10_cache_read_0_10",

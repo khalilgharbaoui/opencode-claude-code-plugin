@@ -72,11 +72,6 @@
 
 ## Backlog
 
-- 2026-11-10, found by the catalog-fixes lane (h #g298), not acted on: `claude-sonnet-4-5` is retired on
-  the Claude API on 2026-11-30 (Anthropic's model-deprecations page, replacement `claude-sonnet-5-5`;
-  Claude Code 2.1.322's own deprecation list says the same). The plugin still registers it; after the
-  date a turn on it fails. Decide whether to unregister it (and what a `forceModel` naming it does).
-
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
   setup before changing the docs.
@@ -212,6 +207,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-10: **done** (lane `small-two`, h #g302, unreleased): `claude-sonnet-4-5` retired before
+  2026-11-30. No longer registered; a config that still names it (`forceModel`, `defaultSubagentModel`,
+  `fallbackModels`, `compactionModel`, `titleModel`, a user model entry) runs `claude-sonnet-5-5` with one
+  WARN naming the replacement and both prices. Measured: Claude Code 2.1.322 remaps only retired Opus 4.0
+  and 4.1 ids; any other retired id is a 404 `model_not_found`.
 - 2026-11-10: **done** (v0.70.0, PR #175 to #178, h #g298 to h #g301): Research pass 3's fixes: session
   warming kept out of the conversation, the login-expiry warning, the refusal and non-streaming fallbacks, the
   Sonnet 5.5 cache-read price and `claude-opus-4-8-fast` retired before 2026-11-30.

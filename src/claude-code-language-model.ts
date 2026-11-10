@@ -35,6 +35,7 @@ import {
   resolveAgentCacheTtl,
   resolveAgentCliCaps,
   resolveAgentEffort,
+  reportRetiredModel,
   resolveAgentModel,
 } from "./agent-models.js"
 import {
@@ -116,7 +117,7 @@ import {
   parseDoctorCommand,
 } from "./doctor.js"
 import { claudeConfigDir, resolveSkillPluginDirs } from "./skill-bridge.js"
-import { parseModelId } from "./models.js"
+import { parseModelId, servedModelId } from "./models.js"
 import { reportRetiredFastModel } from "./fast-mode.js"
 import {
   consumeExitPlanModeQuestionResult,
@@ -1781,6 +1782,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // It runs on this provider's account, a failover override's included:
       // the wrapper in `cliPath` carries it, or on Windows the config dir.
       const titleModel = this.config.titleModel
+      if (titleModel) reportRetiredModel(titleModel)
       const modelTitle = titleModel
         ? await generateTitleWithModel(options.prompt as readonly any[], {
             cliPath,
@@ -1835,6 +1837,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         compactionMode,
       })
     ) {
+      reportRetiredModel(failover.modelId)
       const leanText = await generateDetachedText(options.prompt as readonly any[], {
         cliPath,
         model: parseModelId(stripAccountSuffix(failover.modelId)).model,
@@ -1982,8 +1985,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // telling it. One write per session per process, more only on change.
     // Not on a turn served on a busy variant: its child still runs as the
     // last record says, and the new settings are recorded when they spawn.
-    // The record names the model the child really runs: the requested one,
-    // or the one a refusal fallback moved it to, which it keeps for its life
+    // The record names the model the child really runs: the requested one
+    // (a retired one's replacement, h #g302), or the one a refusal fallback
+    // moved it to, which it keeps for its life
     // (`ActiveProcess.refusalFallbackModel`, h #g300).
     const spawnRecordFor = (model: string) => ({
       model,
@@ -1998,7 +2002,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       if (!busyVariant) {
         recordSessionSpawn(
           affinity,
-          spawnRecordFor(peekActiveProcess(sk)?.refusalFallbackModel ?? stripAccountSuffix(failover.modelId)),
+          spawnRecordFor(
+            peekActiveProcess(sk)?.refusalFallbackModel ?? servedModelId(stripAccountSuffix(failover.modelId)),
+          ),
         )
       }
       // A fresh user message starts the turn the sidebar's estimate is fed
@@ -2816,6 +2822,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     // A retired fast id runs its model at standard speed (h #g298); say so
     // once. Compaction spawns its own model, so it has nothing to say.
     if (!compactionMode) reportRetiredFastModel(failover.modelId)
+    // A retired model runs as its replacement (h #g302); say so once. A
+    // `compactionModel` can name one too, so compaction asks as well.
+    reportRetiredModel(failover.modelId)
 
     // `forkCompaction` (h #g284): summarise inside a fork of the
     // conversation's own Claude session, which reads that session's prompt
@@ -4532,9 +4541,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             const start = takeTurnStart(sk)
             if (start) {
               const endedAt = Date.now()
-              // A refusal fallback answered on another model (h #g300).
+              // A refusal fallback answered on another model (h #g300), and a
+              // retired model runs as its replacement (h #g302).
               const answeredAs =
-                state.activeProcess?.refusalFallbackModel ?? stripAccountSuffix(failover.modelId)
+                state.activeProcess?.refusalFallbackModel ?? servedModelId(stripAccountSuffix(failover.modelId))
               recordTurnSample(turnHistoryKey(self.getOpencodeAgent(options), answeredAs), {
                 ms: endedAt - start.at,
                 chars: start.chars,

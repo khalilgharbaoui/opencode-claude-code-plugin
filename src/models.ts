@@ -303,21 +303,10 @@ export const defaultModels: Record<string, OpenCodeModel> = {
     multiplier: 0.1,
     releaseDate: "2026-10-07",
   }),
-  // Sonnet 4.5 thinks but takes no effort level: Claude Code reports no
-  // `supportedEffortLevels` for it and drops any it is given (2.1.288 to
-  // 2.1.314, h #g279), so it carries no variants.
-  "claude-sonnet-4-5": defineModel({
-    id: "claude-sonnet-4-5",
-    name: "Claude Sonnet 4.5",
-    family: "sonnet",
-    reasoning: true,
-    context: 200_000,
-    output: 64_000,
-    cost: sonnetCost,
-    multiplier: 3,
-    releaseDate: "2025-09-29",
-    efforts: [],
-  }),
+  // Sonnet 4.5 is retired on the Claude API on 2026-11-30 and is no longer
+  // registered: see `RETIRED_MODELS` below for what still happens to the id
+  // (h #g302).
+  //
   // Claude Code runs the 4.6 generation in a 200k window: its catalog says
   // `context:{window:200000,maximum_window:1e6,supports_1m_suffix:true}`, and
   // `--model claude-sonnet-4-6` reports `rawMaxTokens` 200,000 (2.1.288 to
@@ -620,6 +609,90 @@ export function retiredFastModel(
 }
 
 /**
+ * Model ids this plugin registered once and no longer does, because Anthropic
+ * retires the model on the Claude API. Each names the day it retires, the
+ * model Anthropic recommends instead, and its own list price in dollars per
+ * million tokens (the replacement's is in `defaultModels`).
+ *
+ * Sonnet 4.5 is retired on 2026-11-30 (Anthropic's model-deprecations page,
+ * replacement `claude-sonnet-5-5`; Claude Code 2.1.322's own deprecation list
+ * says `status: "deprecated", date: "2026-11-30"`). After that a request to it
+ * fails, and the CLI does nothing about it: its legacy remap
+ * (`CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP`) covers only Opus 4.0 and 4.1,
+ * which it runs as the latest Opus, while a retired id outside it is an API
+ * error. Measured on 2.1.322 (h #g302): `--model claude-opus-4-1` answered on
+ * `claude-opus-5-5`, `--model claude-sonnet-4-20250514` ended on a
+ * `<synthetic>` reply with `error: "model_not_found"`, a 404 and no cost.
+ *
+ * So the id stays out of the catalog (the picker no longer offers it), and an
+ * id still named somewhere the plugin resolves itself (`forceModel`,
+ * `defaultSubagentModel`, `fallbackModels`, `compactionModel`, `titleModel`,
+ * a user-registered model entry) runs as the replacement, the CLI's own answer
+ * for Opus 4.1, with one WARN naming it and both prices
+ * (`reportRetiredModel`). From the day this ships rather than from the
+ * retirement date, so no turn depends on a clock (h #g298's rule).
+ */
+export const RETIRED_MODELS: Readonly<
+  Record<
+    string,
+    {
+      readonly retiredOn: string
+      readonly instead: string
+      readonly price: { readonly input: number; readonly output: number }
+    }
+  >
+> = {
+  "claude-sonnet-4-5": {
+    retiredOn: "2026-11-30",
+    instead: "claude-sonnet-5-5",
+    price: { input: 3, output: 15 },
+  },
+  // The dated id is the API's own name for it, and the one the
+  // deprecations page lists.
+  "claude-sonnet-4-5-20250929": {
+    retiredOn: "2026-11-30",
+    instead: "claude-sonnet-5-5",
+    price: { input: 3, output: 15 },
+  },
+}
+
+/** The retirement record for this id (account marker allowed), or null. */
+export function retiredModel(modelId: string): {
+  model: string
+  retiredOn: string
+  instead: string
+  price: { input: number; output: number }
+  insteadPrice: { input: number; output: number } | null
+} | null {
+  const at = modelId.indexOf("@")
+  const base = at === -1 ? modelId : modelId.slice(0, at)
+  const entry = Object.hasOwn(RETIRED_MODELS, base) ? RETIRED_MODELS[base] : undefined
+  if (!entry) return null
+  const replacement = defaultModels[entry.instead]
+  return {
+    model: base,
+    retiredOn: entry.retiredOn,
+    instead: entry.instead,
+    price: { ...entry.price },
+    insteadPrice: replacement
+      ? { input: replacement.cost.input, output: replacement.cost.output }
+      : null,
+  }
+}
+
+/**
+ * The model id a child really runs as: a retired id's replacement, with the
+ * account marker kept, or the id unchanged. What `parseModelId` hands the CLI,
+ * and what the spawn record and the turn history name (h #g302).
+ */
+export function servedModelId(modelId: string): string {
+  const at = modelId.indexOf("@")
+  const base = at === -1 ? modelId : modelId.slice(0, at)
+  if (!Object.hasOwn(RETIRED_MODELS, base)) return modelId
+  return RETIRED_MODELS[base]!.instead + (at === -1 ? "" : modelId.slice(at))
+}
+
+/**
  * Split an opencode model id into the name the Claude CLI actually accepts
  * and whether fast mode was requested.
  *
@@ -642,8 +715,12 @@ export function retiredFastModel(
  * A retired fast id (`RETIRED_FAST_MODELS`) keeps its marker stripped, since
  * the CLI has no model by that name either, but asks for no fast mode: that
  * model's fast mode is an API error now.
+ *
+ * A retired model (`RETIRED_MODELS`) is handed over as its replacement, the
+ * account marker kept (h #g302).
  */
 export function parseModelId(modelId: string): { model: string; fast: boolean } {
+  modelId = servedModelId(modelId)
   const at = modelId.indexOf("@")
   const base = at === -1 ? modelId : modelId.slice(0, at)
   const account = at === -1 ? "" : modelId.slice(at)

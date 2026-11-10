@@ -39,7 +39,7 @@ import { readFile, readdir } from "node:fs/promises"
 import path from "node:path"
 import { log } from "./logger.js"
 import { isCliAddedModel } from "./cli-model-catalog.js"
-import { defaultModels, retiredFastModel } from "./models.js"
+import { defaultModels, retiredFastModel, retiredModel } from "./models.js"
 
 /** Directory names opencode reads agent markdown from, current form first. */
 export const AGENT_DIR_NAMES = ["agents", "agent"]
@@ -207,15 +207,59 @@ function withoutAccountMarker(modelId: string): string {
  * A retired fast id (`claude-opus-4-8-fast`, h #g298) is accepted although it
  * is no longer registered: the spawn runs its model at standard speed with
  * one WARN, which is the honest outcome for a config written before the
- * retirement, where refusing it would silently run some other model.
+ * retirement, where refusing it would silently run some other model. A
+ * retired model (`claude-sonnet-4-5`, h #g302) is accepted for the same
+ * reason: the spawn runs its named replacement, with one WARN that says so.
  */
 export function qualifyModelName(
   wanted: string,
   referenceModelId: string,
 ): string | null {
   const base = withoutAccountMarker(wanted.trim())
-  if (!isRegisteredModelName(base) && !retiredFastModel(base)) return null
+  if (!isRegisteredModelName(base) && !retiredFastModel(base) && !retiredModel(base)) return null
   return `${base}${accountMarker(referenceModelId)}`
+}
+
+/** Retired model ids already reported this process. */
+const warnedRetiredModels = new Set<string>()
+
+function formatPrice(price: { input: number; output: number }): string {
+  return `$${price.input}/$${price.output}`
+}
+
+/**
+ * Say, once per id per process, that a retired model runs as its replacement
+ * (`RETIRED_MODELS`, h #g302), naming the replacement and both list prices,
+ * because the operator picked the old model by name and is billed for the new
+ * one. Every spawn asks, compaction included, since a `compactionModel` can
+ * name it too; the dedup keeps it to one toast. Returns whether the id was a
+ * retired one.
+ */
+export function reportRetiredModel(modelId: string): boolean {
+  const retired = retiredModel(modelId)
+  if (!retired) return false
+  if (warnedRetiredModels.has(retired.model)) return true
+  warnedRetiredModels.add(retired.model)
+  const insteadPrice = retired.insteadPrice ? `${formatPrice(retired.insteadPrice)}, against ` : ""
+  log.warn(
+    `${retired.model} is retired on the Claude API on ${retired.retiredOn}, so it runs as ${retired.instead} (${insteadPrice}${formatPrice(retired.price)} per million input/output tokens). Pick ${retired.instead} or another model to stop this warning.`,
+    {
+      model: retired.model,
+      retiredOn: retired.retiredOn,
+      instead: retired.instead,
+      inputUsd: retired.price.input,
+      outputUsd: retired.price.output,
+      ...(retired.insteadPrice
+        ? { insteadInputUsd: retired.insteadPrice.input, insteadOutputUsd: retired.insteadPrice.output }
+        : {}),
+    },
+  )
+  return true
+}
+
+/** Test-only. */
+export function _resetRetiredModelReports(): void {
+  warnedRetiredModels.clear()
 }
 
 /**

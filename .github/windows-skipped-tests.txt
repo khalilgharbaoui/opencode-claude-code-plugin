@@ -42,6 +42,7 @@ respawn.test.ts
 restart-sibling-carry.test.ts
 result-fallback.test.ts
 retired-fast-model-stream.test.ts
+retired-model-stream.test.ts
 session-fork.test.ts
 session-model-switch.test.ts
 session-resume.test.ts
