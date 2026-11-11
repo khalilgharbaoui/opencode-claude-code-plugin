@@ -1011,7 +1011,7 @@ Names below become `mcp__opencode_proxy__<name>`; input config is case-insensiti
 
 | Tool | Selection and behavior |
 |---|---|
-| `bash` | `"Bash"`, default; replaces CLI Bash with opencode execution. |
+| `bash` | `"Bash"`, default; replaces CLI Bash with opencode execution. On opencode 2 only it also takes `background: true` (opencode 2's `shell` has it in every 2.x release; 1.x's `bash` has none, so the field is not offered there and the def is unchanged): the call returns at once with `Command moved to the background (shell ID: sh_...)` and the output file's path, and when the command ends opencode adds `<shell id="..." state="..." command="...">` with its output to the session and starts a turn on it. No option. A proxy deadline covers only the starting call; opencode gives the command no timeout unless one is passed. The sidebar lists it as a `bg` row. |
 | `edit` | `"Edit"`, default; replaces CLI Edit. |
 | `write` | `"Write"`, default; replaces CLI Write. |
 | `webfetch` | `"WebFetch"`, default; replaces CLI WebFetch. |

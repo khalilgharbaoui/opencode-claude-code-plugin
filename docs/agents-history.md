@@ -12502,3 +12502,128 @@ Shipped as v0.72.0 on 2026-11-11 (PR #183), a minor: CI green on Linux and Windo
 head `295b061`, on the merge commit `d6758aa` before the tag and on the release commit `e9a6ce5`,
 the publish confirmed by the `Publish package` step's tail and the version document's shasum
 (`3d5d8241`), with a GitHub Release.
+
+## The proxied bash tool runs a command in the background on opencode 2 (2026-11-11)
+
+h #g308. The backlog entry h #g307 left ("the proxied `bash` tool offers the model no
+`background` flag"), approved by the maintainer on 2026-11-11 with this scope: "opencode 2,
+on by default (Recommended)", and for `workdir` "Leave it out (Recommended)". `workdir` went
+to `TODO.md` as its own item.
+
+### Read out of the binaries
+
+- opencode 2's `shell` tool has `background` in every release checked (the orchestrator read
+  `@opencode/core` 2.0.22, 2.0.31, 2.1.2, 2.2.0, 2.2.5 and 2.2.6 out of curl'd tarballs; this
+  lane re-read the installed 2.2.6 binary). Its description: "Run the command in the
+  background and return immediately (useful for dev servers and long-running builds). You do
+  not need to use '&' at the end of the command when using this parameter. You will be
+  notified when it completes. DO NOT poll for completion."
+- The timeout: `let U=T.background===!0?T.timeout??0:T.timeout??_3`, so a background command
+  has none unless the call passes one.
+- The immediate answer (`h3`): `` `Command moved to the background (shell ID: ${e}).\nOutput is
+  streaming to: ${a}` ``, `status: "running"`.
+- The completion (`Sae`): `` `<shell id="${e.jobID??e.shellID}" state="${e.state}"
+  command="${e.command}">\n${e.text}\n</shell>` ``, a synthetic session message with
+  `metadata.source: "shell"`.
+- opencode 1.19.4's `bash` (`~/.opencode1/bin/opencode`) has no such field: no "Run the command
+  in the background" string at all, and its schema is `command`, `timeout`, `workdir`.
+
+### Design
+
+`applyShellBackgroundSupport(tools, dialect)` in `src/proxy-mcp.ts` adds
+`SHELL_BACKGROUND_PROPERTY` to the `bash` def on `"v2"` and returns the list unchanged on
+`"v1"` or with no `bash`. It is keyed on the dialect, not on the live schema, because the V1
+client shim reports `parameters: {}` for every V2 tool, which is why `liveTaskSupportsBackground`
+answers V2 without the registry too, and because no 2.x release lacks the field. It runs in
+`resolveProxyWiring`, from the same `hostDialect` the task overlays use, so the headless and
+interactive spawns cannot disagree, and it builds a new def rather than touching
+`DEFAULT_PROXY_TOOLS`. `src/host-tools.ts` already passed `background` through to `shell`
+(h #g34). No option: the maintainer chose on by default.
+
+The field's description says what comes back at once (the shell ID and a file the model can
+read), that a `<shell id="..." state="..." command="...">` message with the output arrives on
+its own, and not to sleep, poll or loop: 349 characters, front-loaded because Claude Code
+truncates long MCP descriptions.
+
+### Tests
+
+`test/shell-background.test.ts`, 5 tests: the overlay on V2 (the four properties in order,
+`required` unchanged, every other def the same object, the shared defs untouched), the list
+returned as is on V1 and with no `bash`, the description's claims and length, and through one
+shared fake `claude` (probes warmed in `before`, `process.execPath` shebang, h #g286) and a real
+`doStream`: a V2 model's `tools/list` serves the field and a `background: true` call leaves as a
+`shell` tool call with `{command, background: true}`; a V1 model's `bash` def equals the shared
+default. Against master the file does not load (`SHELL_BACKGROUND_PROPERTY` is not exported);
+with only the call in `resolveProxyWiring` removed, the V2 `doStream` test fails on the served
+properties and the other four pass.
+
+### Live, opencode 2.2.6 + Claude Code 2.1.322, Claude Haiku 5.5
+
+A private `serve` of the installed 2.2.6 with a server password, every XDG dir and `TMPDIR`
+under the session's temp dir, the real `HOME` (Claude's default login), the plugin from this
+worktree's `dist`, the plugin log in the scratch dir. `plugin ready` once.
+
+- **Asked to run `sleep 15; echo bg-done` in the background.** Claude's transcript holds one
+  tool call, `mcp__opencode_proxy__bash {"command": "sleep 15; echo bg-done", "description":
+  ..., "background": true}`, and no `ToolSearch` before it (`bash` is always loaded, h #g276, so
+  the field is visible from the first call). opencode ran it as `shell {"command": "sleep 15;
+  echo bg-done", "background": true}`; the tool part was created at 08:26:31.553Z and completed
+  12 ms later with two text blocks: "Command moved to the background (shell ID:
+  sh_1c9b73d0a001FhdHcZz0t62VyQ).\nOutput is streaming to:
+  <data>/opencode/shell/global/sh_1c9b73d0a001FhdHcZz0t62VyQ.out", then opencode's own
+  paragraph ("You will be notified automatically when the command finishes ... DO NOT poll for
+  completion ... If you have nothing else to do, end your response; you will be resumed
+  automatically when the command finishes."). Claude said in one line that it had started and
+  the turn ended. At 08:26:46.584Z, 15.0 s after the start, the session got a synthetic
+  message: `<shell id="sh_1c9b73d0a001FhdHcZz0t62VyQ" state="completed" command="sleep 15; echo
+  bg-done">\nbg-done\n\n</shell>` (`metadata: {source: "shell", state: "completed", exit: 0}`).
+  opencode started a turn on it by itself; the plugin's `doStream` began 21 ms later on the same
+  `claude` process (one spawn, one Claude session id across all three streams), the envelope
+  carried the `<shell>` text, and Claude answered "The background command finished and printed:
+  `bg-done`". No `rewound` or `missed` verdict, no replay.
+- **Asked to start a dev server, the word "background" never used** (a new session: "Start a dev
+  server for this folder with `python3 -m http.server 47932` so I can browse it"). Claude chose
+  `background: true` on its own, then checked it with a foreground `curl -sI` and gave the URL.
+  It did not poll.
+- **The interactive transport** (`CLAUDE_CODE_INTERACTIVE_TRANSPORT=1`, a new session, the
+  first prompt with `pty-bg-done`): the same call with `background: true`, the same immediate
+  answer resolved inside the same TUI turn, the `<shell>` message 15 s later, and opencode's turn
+  on it typed into the same TUI (`doStream` 48 ms after the message), one Claude session, answered
+  `pty-bg-done`. The only WARN was the expected one for a CLI newer than
+  `INTERACTIVE_MEASURED_CLI` (2.1.314).
+- **The sidebar** (h #g307's method: a scratch `--standalone` TUI in its own tmux socket, 210
+  columns, read with `capture-pane`), asked for `sleep 40; echo sidebar-done` in the background:
+  4 s after the start the turn had already ended (`✓ ▰▰▰▰▰▰▰▰▰▰  8s · 1 call`) and the section
+  read `⠇ shell sleep 40; echo sidebar-d… bg` / `4s`, counting up to `25s`; it ended `✓ shell
+  sleep 40; echo sidebar-d… bg` / `exit 0 · 40s`. opencode drew the call as `$ sleep 40; echo
+  sidebar-done` / `Background`, then `↳ Shell finished · sleep 40; echo sidebar-done` and Claude's
+  answer. So a model-backgrounded shell needs nothing new in the sidebar: its tool part completes
+  at once, which is the `ctrl+b` case h #g307 already handles.
+
+**No system hint was needed.** With only the field description Claude set the field when asked
+and unprompted for a dev server, ended its turn after starting the command, never slept or
+polled, and reported the output when the notification came.
+
+### Checked, unchanged
+
+- **The proxy deadline** (h #g83): it covers the starting call only, which completes in
+  milliseconds; `resolveProxyCallTimeoutMs`'s `max(resolved, input.timeout)` for `bash` is
+  unchanged and moot here. A `timeout` passed with `background` is opencode's limit on the
+  command itself.
+- **`permissionPreset: "read-only"`**: `bash` is filtered out of the proxy defs before this
+  overlay runs, so nothing is added (the unit test's no-`bash` case).
+- **Plan mode**: read from the code, not measured. Headless plan mode drops the skip flag and the
+  CLI's plan mode refuses a proxied `bash` with or without the field (it is not read-only);
+  the interactive transport's plan mode filters only `write`/`edit`, so `bash` is served with
+  the field and the TUI asks before it runs, as before.
+- **`alwaysLoadProxyTools`**: `bash` is always loaded by default, so the field is in every
+  request; with `bash` deferred it arrives with the def when `ToolSearch` loads it.
+
+### Found on the way, not fixed
+
+Stopping the dev server through opencode's own `DELETE /api/shell/:id` (204) ended it as
+`<shell id="sh_1c9b8bfe10012jKincL50NQE7M" state="error" command="python3 -m http.server
+47932">\nShell.NotFoundError\n</shell>`, and opencode started a turn on that. Haiku read it as a
+crash, found the port closed, and started the server again detached with `nohup` (stopped by
+hand afterwards). The state is opencode's and the choice is the model's; `docs/guides/tool-proxy.md`
+tells the operator to say so when they stop a shell on purpose.

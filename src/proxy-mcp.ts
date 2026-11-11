@@ -836,6 +836,54 @@ export function applyBackgroundSubagentSupport(
   return supported ? [...adjusted, ...BACKGROUND_TASK_TOOL_DEFS] : adjusted
 }
 
+/**
+ * The `background` field the proxied `bash` def offers on opencode 2 (h #g308).
+ * Every 2.x `shell` tool takes it (2.0.22 to 2.2.6, read out of the published
+ * `@opencode/core` and the installed binary) and runs a background command
+ * with no timeout unless one is given. What it says is read off 2.2.6: the call
+ * returns at once with `Command moved to the background (shell ID: <id>).
+ * Output is streaming to: <file>`, and when the command ends opencode pushes
+ * `<shell id="..." state="..." command="...">` with its output into the
+ * session, through the path that delivers a background subagent's result.
+ * Front-loaded and short, because Claude Code truncates long MCP descriptions.
+ */
+export const SHELL_BACKGROUND_PROPERTY = {
+  type: "boolean",
+  description:
+    "Run the command in the background (dev servers, long builds; no trailing" +
+    " `&`). Returns at once with its shell ID and `Output is streaming to:" +
+    " <file>`, a file you can read. When the command ends, a" +
+    ' `<shell id="..." state="..." command="...">` message with its output' +
+    " arrives in this conversation on its own. Do NOT sleep, poll or loop" +
+    " waiting for it.",
+} as const
+
+/**
+ * The proxied `bash` def as this host can run it: on opencode 2 it gains
+ * `SHELL_BACKGROUND_PROPERTY`, on opencode 1 (whose `bash` has no such field,
+ * 1.19.4) the list comes back as it went in. Keyed on the dialect rather than
+ * the live schema, as `liveTaskSupportsBackground` answers V2: the V1 client
+ * shim reports `parameters: {}` for every V2 tool. Returns new objects for the
+ * changed def and leaves the shared defs untouched.
+ */
+export function applyShellBackgroundSupport(
+  tools: ProxyToolDef[],
+  dialect: "v1" | "v2",
+): ProxyToolDef[] {
+  if (dialect !== "v2" || !tools.some((tool) => tool.name === "bash")) return tools
+  return tools.map((tool) => {
+    if (tool.name !== "bash") return tool
+    const properties = (tool.inputSchema.properties ?? {}) as Record<string, unknown>
+    return {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: { ...properties, background: SHELL_BACKGROUND_PROPERTY },
+      },
+    }
+  })
+}
+
 /** `background` removed from a `task` schema, or from each `task_batch` item. */
 function stripBackgroundFromSchema(
   toolName: string,

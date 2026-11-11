@@ -256,6 +256,7 @@ import {
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
   applyBackgroundSubagentSupport,
+  applyShellBackgroundSupport,
   applyTaskModelSupport,
   liveTaskSupportsBackground,
   liveTaskSupportsModel,
@@ -3647,6 +3648,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // neither envelope is the same on the two majors (h #g176, #g230).
             const hostDialect: "v1" | "v2" =
               self.config.hostApi === "v2" ? "v2" : "v1"
+            // opencode 2's `shell` runs a command in the background on
+            // request and tells the session when it ends; 1.x's `bash` cannot
+            // (h #g308). Picked with the same dialect, here, so both
+            // transports serve the same def.
+            if (enrichedProxy) {
+              enrichedProxy = applyShellBackgroundSupport(enrichedProxy, hostDialect)
+            }
             if (enrichedProxy && taskProxyEnabled) {
               enrichedProxy = overlayTaskProxyDescription(
                 enrichedProxy,
