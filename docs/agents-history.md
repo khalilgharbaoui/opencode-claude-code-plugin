@@ -12627,3 +12627,8 @@ Stopping the dev server through opencode's own `DELETE /api/shell/:id` (204) end
 crash, found the port closed, and started the server again detached with `nohup` (stopped by
 hand afterwards). The state is opencode's and the choice is the model's; `docs/guides/tool-proxy.md`
 tells the operator to say so when they stop a shell on purpose.
+
+Shipped as v0.73.0 on 2026-11-11 (PR #184), a minor: CI green on Linux and Windows on the PR
+head `e6286c0`, on the merge commit `e2159ad` before the tag and on the release commit `b97bae9`,
+the publish confirmed by the `Publish package` step's tail and the version document's shasum
+(`fd228422`), with a GitHub Release.

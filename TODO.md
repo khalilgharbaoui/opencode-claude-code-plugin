@@ -221,6 +221,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-11: **done** (v0.73.0, PR #184, h #g308): on opencode 2 the proxied `bash` tool offers
+  `background: true`; the `<shell>` completion message starts a turn the plugin serves on the same process.
+  opencode 1.x unchanged. `workdir` stays its own backlog item.
 - 2026-11-11: **done** (lane `shell-background`, PR #184, h #g308, unreleased): the backlog entry of 2026-11-10
   ("the proxied `bash` tool offers the model no `background` flag"). On opencode 2 the proxied `bash` def
   offers `background: true`, on by default with no option; opencode 1.x's def is unchanged. Measured live
