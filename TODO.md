@@ -72,12 +72,9 @@
 
 ## Backlog
 
-- 2026-11-10, found by the sidebar-shells work (h #g307), measured, not fixed: the proxied `bash` tool
-  offers the model no `background` flag (Haiku 5.5: "takes only command, description, and timeout"),
-  although `src/host-tools.ts` passes `background` through to opencode 2's `shell`. So through this
-  plugin only the operator (`ctrl+b`) can put a shell in the background. Decide whether to expose it on
-  opencode 2, gated on the live `shell` schema the way `task`'s `background` is (h #g173). Maintainer: later
-  (2026-11-10).
+- 2026-11-11: `workdir`: both majors' shell/bash tools have it (opencode 1.19.4 `bash`, opencode 2.x
+  `shell`) and `src/host-tools.ts` passes it through, but the proxied `bash` def does not offer it.
+  Maintainer: its own item, not in the background-flag PR (2026-11-11).
 
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
@@ -224,6 +221,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-11: **done** (lane `shell-background`, h #g308, unreleased): the backlog entry of 2026-11-10
+  ("the proxied `bash` tool offers the model no `background` flag"). On opencode 2 the proxied `bash` def
+  offers `background: true`, on by default with no option; opencode 1.x's def is unchanged. Measured live
+  on 2.2.6 with Haiku 5.5: the call returns at once, the `<shell ...>` message arrives on its own and opencode
+  starts a turn on it, no system hint needed.
 - 2026-11-11: **done** (v0.72.0, PR #183, h #g307): background shells (ctrl+b-moved calls and
   `!commands`) listed in the sidebar's Subagents section on opencode 2.2.6+, with their exit code; a
   foreground model shell call never gets a row.

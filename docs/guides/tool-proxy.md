@@ -183,6 +183,31 @@ Nothing else changes:
 
 `"parallelWebfetch": false` serves `webfetch` without the annotation, which is the behaviour before this release. Full numbers: `docs/agents-history.md` under `#g289`.
 
+## Background shells (opencode 2)
+
+On opencode 2 the proxied `bash` tool takes `background: true`, the field opencode 2's own `shell` tool has in every 2.x release. Claude uses it for a dev server or a long build, and the call returns at once with opencode's answer:
+
+```
+Command moved to the background (shell ID: sh_...).
+Output is streaming to: <opencode data dir>/shell/<project>/sh_....out
+```
+
+followed by opencode's instruction not to poll. Claude can read that file while the command runs. When the command ends, opencode adds its output to the session and starts a turn on it, so Claude reports the result without being asked:
+
+```
+<shell id="sh_..." state="completed" command="sleep 15; echo bg-done">
+bg-done
+</shell>
+```
+
+Nothing waits in between. The turn that started the command ends as usual, and a [proxy deadline](#per-tool-proxy-timeouts) covers only the call that started it, which returns in milliseconds. opencode gives a background command no timeout unless the call passes one. The [sidebar](./subagents-sidebar.md#background-shells) lists it as a `bg` row while it runs and shows how it ended.
+
+Measured on opencode 2.2.6 and Claude Code 2.1.322 with `claude-haiku-5-5`, on both transports: asked to run `sleep 15; echo bg-done` in the background, Claude set the field, said in one line that the command had started and ended its turn. 15 seconds later the `<shell>` message arrived and Claude answered with `bg-done`, on the same `claude` process. Asked only to start a dev server, Claude chose the background on its own and checked the server with `curl`.
+
+- **opencode 1.x**: its `bash` tool has no such field, so the plugin does not offer it there.
+- **`permissionPreset: "read-only"`** serves no `bash` at all.
+- **Stopping a background shell** reaches the session too, and Claude may act on it: on opencode 2.2.6 a shell stopped through opencode's HTTP API arrives as `state="error"` with `Shell.NotFoundError`, and Claude Haiku 5.5 read that as a crash and started the server again. Tell Claude when you stop one on purpose.
+
 ## Per-tool proxy timeouts
 
 Read [How a proxied call ends](../internals/how-a-proxied-call-ends.md) first: a deadline is a

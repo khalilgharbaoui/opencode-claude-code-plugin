@@ -44,7 +44,7 @@ Subagents
  exit 0 · 1m30s
 ```
 
-- **What counts as background**: a command you moved there with `ctrl+b` (opencode's "Background blocking session tools") while it was running, and a `!command` typed in the prompt. A command the model runs in the foreground never gets a row: while it runs it is already the tool named on the [progress line](#progress), and listing every one would bury the rows you care about.
+- **What counts as background**: a command you moved there with `ctrl+b` (opencode's "Background blocking session tools") while it was running, a `!command` typed in the prompt, and a command Claude started in the background itself, which the proxied `bash` tool lets it do on opencode 2 (see [Background shells](./tool-proxy.md#background-shells-opencode-2)). A command the model runs in the foreground never gets a row: while it runs it is already the tool named on the [progress line](#progress), and listing every one would bury the rows you care about.
 - **The first line** is `shell` in the theme's info colour (the colour of the running tool on the progress line, so it reads apart from an agent type), the command cut to fit, and the `bg` marker.
 - **The second line** is how long it has run, from the shell's own start rather than from when it was moved. Once it ends, it says how: `exit 0` and a ✓, a non-zero `exit 2`, `timed out` or `killed` and a ✗, then how long it ran. `ended` with a ✓ means opencode let go of the shell before the plugin saw its exit code.
 - **Rows sort and fade like subagents'**: running ones by when they started, finished ones for ten minutes. A shell row has no session behind it, so clicking it does nothing.
