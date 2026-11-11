@@ -221,7 +221,7 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
-- 2026-11-11: **done** (lane `shell-background`, h #g308, unreleased): the backlog entry of 2026-11-10
+- 2026-11-11: **done** (lane `shell-background`, PR #184, h #g308, unreleased): the backlog entry of 2026-11-10
   ("the proxied `bash` tool offers the model no `background` flag"). On opencode 2 the proxied `bash` def
   offers `background: true`, on by default with no option; opencode 1.x's def is unchanged. Measured live
   on 2.2.6 with Haiku 5.5: the call returns at once, the `<shell ...>` message arrives on its own and opencode
