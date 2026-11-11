@@ -137,7 +137,9 @@ readline.createInterface({ input: process.stdin }).on("line", async () => {
 )
 
 // Resolved up front so no test races the probe deadline (h #g181, h #g286).
+// Not on Windows, where the shebang shim cannot run and its tests are skipped.
 before(async () => {
+  if (process.platform === "win32") return
   assert.equal((await detectCliVersion(cliPath))?.raw, "2.1.322")
 })
 
