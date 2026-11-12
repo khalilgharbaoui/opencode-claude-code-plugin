@@ -155,6 +155,11 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-11-12: PR #185 (a re-dispatched subagent keeps its sidebar row, h #g309) is merged and NOT
+  released. Decide: a patch release now, or with the next batch.
+- 2026-11-12: the main checkout's `dist` was NOT rebuilt after PR #185, because another session had
+  video lanes running through the plugin (the backlog's stranded `task` call after rebuilds, h #g292).
+  Rebuild once the maintainer says the lanes are done; the sidebar fix shows after a TUI restart.
 - 2026-11-10: a cache keep-alive for headless sessions (h #g304): build it opt-in and capped at 2 pings
   per idle stretch, or hold? Measured: all 253 headless calls after an hour's idle in 30 days rewrote the
   cache; capped at 2 pings it nets at most about $166 at API prices, 8+ pings loses money, and every ping
