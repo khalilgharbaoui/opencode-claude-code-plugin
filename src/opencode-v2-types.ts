@@ -117,6 +117,18 @@ export interface V2SessionRetryEvent {
   decision: { retry: false } | { retry: true; delay: number }
 }
 
+/**
+ * The `session.hook("context")` event, measured on opencode 2.2.6: the
+ * request's own copy of the history, editable before opencode converts it
+ * for the target provider. Replayed tool parts carry `id` but no
+ * `providerMetadata`. Only the fields this plugin reads are listed.
+ */
+export interface V2SessionContextEvent {
+  readonly sessionID: string
+  readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+  messages: Array<{ id?: string; role: string; content: unknown }>
+}
+
 /** One way to connect an integration (`IntegrationMethod`); only `type` is always there. */
 export interface V2IntegrationMethod {
   readonly type: string
@@ -232,6 +244,11 @@ export interface V2Context {
     hook(
       name: "retry",
       callback: (event: V2SessionRetryEvent) => Promise<void> | void,
+      options?: V2ModelHookOptions,
+    ): Promise<V2Registration>
+    hook(
+      name: "context",
+      callback: (event: V2SessionContextEvent) => Promise<void> | void,
       options?: V2ModelHookOptions,
     ): Promise<V2Registration>
     prompt?(input: V2Prompt & { sessionID: string; delivery?: V2Delivery }): Promise<unknown>

@@ -76,6 +76,7 @@ import {
   type PluginCopyTurn,
 } from "./plugin-copies.js"
 import { resolveSessionAffinity } from "./call-options.js"
+import { flattenCliToolParts } from "./portable-history.js"
 import { OPENCODE_REQUEST_KIND_HEADER } from "./session-generate.js"
 import { staleBuildWatch } from "./stale-build.js"
 import { readBundledSkillInfos } from "./skill-bridge.js"
@@ -843,6 +844,29 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
       )
     } catch (err) {
       log.debug("opencode 2 has no retry hook here; failed turns may be retried", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // A session that used Claude CLI tools and then switches to another
+    // provider replays those tools as provider-executed parts, which an
+    // OpenAI-compatible provider refuses. Flatten only the CLI's own tool
+    // parts, only in the request copy (src/portable-history.ts).
+    try {
+      registrations.push(
+        await ctx.session.hook("context", (event) => {
+          if (isClaudeCodeProviderId(event.model?.providerID)) return
+          const flattened = flattenCliToolParts(event.messages)
+          if (flattened > 0) {
+            log.debug("flattened Claude CLI tool parts for another provider", {
+              providerID: event.model?.providerID,
+              flattened,
+            })
+          }
+        }),
+      )
+    } catch (err) {
+      log.debug("opencode 2 has no context hook here; Claude CLI tools stay provider-executed", {
         error: err instanceof Error ? err.message : String(err),
       })
     }

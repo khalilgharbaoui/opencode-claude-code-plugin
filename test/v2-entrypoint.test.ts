@@ -263,10 +263,27 @@ test("setup publishes the provider, supplies the SDK, tags requests and cleans u
     await hooks["model.request"][0](foreign)
     assert.deepEqual(foreign.headers, {})
 
+    const cliTurn = () => [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", id: "toolu_01A", name: "read", input: {}, providerExecuted: true },
+          { type: "text", text: "done" },
+        ],
+      },
+    ]
+    const toClaude: any = { sessionID: "ses_abc", model: { providerID: "claude-code-work", id: "opus" }, messages: cliTurn() }
+    await hooks.context[0](toClaude)
+    assert.deepEqual(toClaude.messages, cliTurn(), "a request to this provider keeps the structured parts")
+    const toOther: any = { sessionID: "ses_abc", model: { providerID: "bonsai", id: "b" }, messages: cliTurn() }
+    await hooks.context[0](toOther)
+    assert.deepEqual(toOther.messages[0].content.map((part: any) => part.type), ["text", "text"])
+
     await cleanup()
     assert.deepEqual(disposed.sort(), [
       "aisdk.sdk",
       "provider.transform",
+      "session.context",
       "session.model.request",
       "session.retry",
     ])
