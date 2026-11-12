@@ -243,6 +243,109 @@ test("a background child runs until its completion envelope, whatever its part s
   assert.equal(cancelled[0].state, "error")
 })
 
+test("a background child dispatched again after it reported runs until its next envelope", () => {
+  const base = {
+    children: [child("ses_bg", "Survey docs", "explore", NOW - 3_600_000)],
+    // Dispatched an hour ago, reported fifty minutes ago, dispatched again a minute ago.
+    parts: [
+      backgroundPart("ses_bg", "Survey docs", "explore", NOW - 3_600_000),
+      backgroundPart("ses_bg", "Survey the guides too", "explore", NOW - 60_000),
+    ],
+    completions: [{ sessionID: "ses_bg", state: "completed", at: NOW - 3_000_000 }],
+  }
+  const resumed = deriveSubagentRows(input({ ...base, statuses: { ses_bg: "busy" } }))
+  assert.equal(resumed.length, 1)
+  assert.equal(resumed[0].state, "running")
+  assert.equal(resumed[0].description, "Survey the guides too")
+  assert.equal(resumed[0].started, NOW - 60_000)
+
+  // Its second report ends it again, at that report's time.
+  const done = deriveSubagentRows(
+    input({
+      ...base,
+      statuses: { ses_bg: "idle" },
+      completions: [...base.completions, { sessionID: "ses_bg", state: "completed", at: NOW - 1000 }],
+    }),
+  )
+  assert.equal(done[0].state, "done")
+  assert.equal(done[0].finished, NOW - 1000)
+
+  // A report with no time on it still ends the row: nothing says it is older.
+  const untimed = deriveSubagentRows(
+    input({ ...base, statuses: { ses_bg: "idle" }, completions: [{ sessionID: "ses_bg", state: "completed" }] }),
+  )
+  assert.equal(untimed[0].state, "done")
+})
+
+test("a child resumed in the foreground is one running row, matched by the id its input names", () => {
+  // opencode 1: a running part has no metadata, so only `task_id` names the child.
+  const resumedPart: TaskPartInput = {
+    status: "running",
+    input: { description: "Now the tests", prompt: "x", subagent_type: "general", task_id: "ses_fg" },
+    start: NOW - 30_000,
+  }
+  const rows = deriveSubagentRows(
+    input({
+      children: [child("ses_fg", "Fix the form", "general", NOW - 3_600_000)],
+      parts: [finishedPart("ses_fg", "Fix the form", "general", NOW - 3_600_000, NOW - 3_000_000), resumedPart],
+      statuses: { ses_fg: "busy" },
+    }),
+  )
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].sessionID, "ses_fg")
+  assert.equal(rows[0].state, "running")
+  assert.equal(rows[0].description, "Now the tests")
+  assert.equal(rows[0].started, NOW - 30_000)
+
+  // opencode 2 names the child as `sessionID`.
+  const v2 = deriveSubagentRows(
+    input({
+      children: [child("ses_fg", "Fix the form", "general", NOW - 3_600_000)],
+      parts: [
+        finishedPart("ses_fg", "Fix the form", "general", NOW - 3_600_000, NOW - 3_000_000),
+        { status: "running", input: { description: "Now the tests", prompt: "x", agent: "general", sessionID: "ses_fg" }, start: NOW - 30_000 },
+      ],
+      statuses: { ses_fg: "busy" },
+    }),
+  )
+  assert.equal(v2.length, 1)
+  assert.equal(v2[0].state, "running")
+})
+
+test("a background child resumed in the foreground after it reported runs until that call ends", () => {
+  const base = {
+    children: [child("ses_mix", "Survey docs", "explore", NOW - 3_600_000)],
+    completions: [{ sessionID: "ses_mix", state: "completed", at: NOW - 3_000_000 }],
+  }
+  const waiting = deriveSubagentRows(
+    input({
+      ...base,
+      parts: [
+        backgroundPart("ses_mix", "Survey docs", "explore", NOW - 3_600_000),
+        { status: "running", input: { description: "One more pass", prompt: "x", subagent_type: "explore", task_id: "ses_mix" }, start: NOW - 60_000 },
+      ],
+      statuses: { ses_mix: "busy" },
+    }),
+  )
+  assert.equal(waiting.length, 1)
+  assert.equal(waiting[0].sessionID, "ses_mix")
+  assert.equal(waiting[0].state, "running")
+  assert.equal(waiting[0].background, false)
+
+  const done = deriveSubagentRows(
+    input({
+      ...base,
+      parts: [
+        backgroundPart("ses_mix", "Survey docs", "explore", NOW - 3_600_000),
+        finishedPart("ses_mix", "One more pass", "explore", NOW - 60_000, NOW - 2000),
+      ],
+      statuses: { ses_mix: "idle" },
+    }),
+  )
+  assert.equal(done[0].state, "done")
+  assert.equal(done[0].finished, NOW - 2000)
+})
+
 test("a background child that has not been marked busy yet keeps its spinner", () => {
   const started = NOW - (STARTING_GRACE_MS - 1000)
   const fresh = deriveSubagentRows(
