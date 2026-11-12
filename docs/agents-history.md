@@ -12713,3 +12713,7 @@ its chat template rejects (it accepts `xhigh`, `medium`, `low`, and its card say
 behaves like `xhigh`). Fixed in the maintainer's config by listing only `medium` and `xhigh`;
 on 2.2.6 a config `variants` block replaces the built-in list and `disabled: true` is passed
 through as a setting rather than hiding the variant.
+
+Shipped as v0.73.2 on 2026-11-12, a patch: CI green on Linux and Windows on the release commit
+`50b517e`, the publish confirmed by the `Publish package` step's tail and the version
+document's shasum (`6c20468c`), with a GitHub Release.
