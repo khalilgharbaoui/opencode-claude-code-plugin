@@ -162,10 +162,19 @@ function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
-/** The child session a part names, on either major's metadata. */
+/**
+ * The child session a part names: on either major's metadata, else the child a
+ * resumed dispatch names in its own input (`task_id` on opencode 1,
+ * `sessionID` on opencode 2). The input matters on opencode 1, where a running
+ * part has no metadata yet: without it a child resumed in the foreground stays
+ * matched to its earlier, finished part.
+ */
 export function partChildID(part: TaskPartInput): string | undefined {
   const metadata = part.metadata ?? {}
-  return text(metadata.sessionId) ?? text(metadata.sessionID)
+  const input = part.input ?? {}
+  return (
+    text(metadata.sessionId) ?? text(metadata.sessionID) ?? text(input.task_id) ?? text(input.sessionID)
+  )
 }
 
 function partAgent(part: TaskPartInput): string | undefined {
@@ -369,14 +378,20 @@ function rowFor(
   const background = part ? partBackground(part) : false
   const started = part?.start ?? child.created ?? input.now
   const status = input.status(child.id)
+  // A child dispatched again (resumed by its session id) after it reported:
+  // that envelope ended the earlier dispatch, not this one.
+  const ended =
+    completion && completion.at !== undefined && part?.start !== undefined && completion.at < part.start
+      ? undefined
+      : completion
   let state: SubagentState
   let finished: number | undefined
   if (part && !background && part.status !== "pending" && part.status !== "running") {
     state = part.status === "completed" ? "done" : "error"
     finished = part.end
-  } else if (completion) {
-    state = endState(completion.state)
-    finished = completion.at
+  } else if (ended) {
+    state = endState(ended.state)
+    finished = ended.at
   } else if (status === "busy") {
     state = "running"
   } else if (part && !background) {

@@ -12632,3 +12632,43 @@ Shipped as v0.73.0 on 2026-11-11 (PR #184), a minor: CI green on Linux and Windo
 head `e6286c0`, on the merge commit `e2159ad` before the tag and on the release commit `b97bae9`,
 the publish confirmed by the `Publish package` step's tail and the version document's shasum
 (`fd228422`), with a GitHub Release.
+
+## A re-dispatched subagent keeps its sidebar row (2026-11-11)
+
+h #g309. Reported by the maintainer from another session on 2026-11-11 ("i want to see it in
+the sidebar"): a director lane dispatched in the background, which had reported several times
+and was dispatched again each time by its session id, ran for hours with no row in the
+Subagents section. Cause, in `rowFor` (`src/subagent-sidebar.ts`): any completion envelope for
+the child ended the row, including one older than the newest dispatch, so the row counted as
+finished at the OLD report's time and `FINISHED_TTL_MS` (ten minutes) dropped it while the
+child was busy.
+
+Fix, in two parts. (1) A completion whose time is before the matched part's start no longer
+ends the row (the handed-over change, reviewed here): the row then follows the usual order,
+busy, the starting grace, a background child with no known status. A completion with no time
+on it still ends the row, because nothing says it is older; both gathers pass the synthetic
+message's `time.created`, so that is a fallback, not the normal case. (2) Found in review:
+`partChildID` now also reads the child a resumed dispatch names in its INPUT (`task_id` on
+opencode 1, `sessionID` on opencode 2). On opencode 1 a running part has no metadata (h
+#g234), so a child resumed in the FOREGROUND stayed matched to its earlier finished part,
+whose row aged out, while the new call drew a second, unclickable row with no spawn label.
+
+Measured, read-only, in opencode 2.2.6's own store (`session_message`, this conversation's
+re-dispatch of the PR #173 lane on 2026-11-10): the first dispatch's part is `completed`,
+`input.background: true`, `metadata.sessionID` the child, `time.created` 1794290358552; the
+re-dispatch's part carries `input.sessionID` AND `metadata.sessionID` for the same child and
+its own `time.created` 1794291239534. So on opencode 2 the newest part is already the one
+`byChild` matches (it keeps the last), and its start is the re-dispatch's time, which is what
+the comparison needs. `stoppedAt` resets when a child goes busy again on opencode 1 and is
+unused on opencode 2, so a resumed child that later stops with no envelope is timed from its
+new stop.
+
+Tests (`test/subagent-sidebar.test.ts`): a background child dispatched again after it
+reported runs until its next envelope and ends at that envelope's time, an untimed envelope
+still ends it, a foreground resume is one running row matched by `task_id` and by
+`sessionID`, and a background child resumed in the foreground runs until that call ends.
+Against master's source two of the three fail (the row is missing, or it is the unclickable
+one); the third was tightened to assert the row's own session id for that reason.
+
+Not measured live in a TUI: the fix is in `dist/tui.js`, which the running TUI loads at
+start, and the session that found it had video lanes running, so nothing was restarted.
