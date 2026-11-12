@@ -48,6 +48,11 @@ present `/btw` or naming a subagent's model as unique to it: opencode 2 has its 
 `/btw` for every provider, and its subagent tool takes a `model` per call for any
 provider, the built-in included.
 
+To hide Claude Agent, the user's opencode config is the switch (the plugin has no option
+for it): `"disabled_providers": ["claude-agent"]` keeps it out of the model list, and only
+a `policies` entry `{"action": "integration.connect", "resource": "claude-agent",
+"effect": "deny"}` removes it from `/connect`. Recommend both.
+
 Never recommend route 3, never help migrate a user onto it, and never enable
 `interactive: true` to dodge a billing or access restriction. If a user asks why this
 plugin is slower or heavier than a proxy, the answer is route 2's cost list above, plus

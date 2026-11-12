@@ -155,10 +155,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-10: a cache keep-alive for headless sessions (h #g304): build it opt-in and capped at 2 pings
-  per idle stretch, or hold? Measured: all 253 headless calls after an hour's idle in 30 days rewrote the
-  cache; capped at 2 pings it nets at most about $166 at API prices, 8+ pings loses money, and every ping
-  uses the usage window. Recommendation: hold.
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
@@ -203,16 +199,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Parked
 
-- 2026-10-08: switching the daily driver to opencode 2. Maintainer: "ill stay with 1 for now will
-  checkout 2 somewhere next week". Prep is done (v0.53.1, v0.53.2; h #g229, #g230): the plugin is
-  verified live on 2.0.22, Moshi 0.4.21 serves both majors, and the dry run with the exact config
-  changes and the rollback is in `~/opencode-v2-sandbox/migration-dryrun/REPORT.md` (plugin path ends
-  in `/dist`, drop `compaction.prune`, notify becomes cli.json `attention` from `cli.notify.json`,
-  herdr-agent-state.js has no V2 version).
-  2026-10-24: two days of real work on opencode 2.1.3 in a scratch copy of the config
-  (`~/opencode-v2-sandbox/drive/run.sh`, session ses_e9ab4363dffeLkqp9VslrAFBZe) found no plugin
-  defect; verdict: fit to be the daily driver. Left before switching: the OpenAI, Copilot and figma
-  logins, furno-postgres's HTTP 405 on V2, and the V1-only plugins with no V2 version.
+- 2026-11-13: a cache keep-alive for headless sessions (h #g304), opt-in and capped at 2 pings per
+  idle stretch. Maintainer: hold (2026-11-13, "do the most recommended"). Measured: all 253 headless calls
+  after an hour's idle in 30 days rewrote the cache; capped at 2 pings it nets at most about $166 at API
+  prices, 8+ pings loses money, and every ping uses the usage window.
 - 2026-10-08: optional, needs the maintainer: a second non-work Claude login, only to live-test a
   switch between two real logins and an expired-login switch. Every failure path falls back to the
   replay, so normal use answers it too. MCP elicitation as a form is parked in Future Features.
@@ -221,6 +211,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-13: **done** (h #g311): hiding opencode's built-in Claude Agent provider is documented as
+  opencode's own config (`disabled_providers` plus an `integration.connect` deny), measured on 2.2.6;
+  no plugin option. The maintainer's own config has both rules (backup
+  `~/.config/opencode/opencode.json.bak-2026-11-13`).
 - 2026-11-12: **done** (v0.73.1, PR #185, h #g309): a subagent dispatched again after it reported keeps its
   sidebar row; on opencode 1.x a foreground resume is matched by the id its input names. The maintainer chose
   the release and the `dist` rebuild on 2026-11-12; the TUI restart that shows it is theirs.

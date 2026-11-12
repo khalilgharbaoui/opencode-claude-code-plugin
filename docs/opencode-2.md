@@ -38,6 +38,19 @@ opencode 2 gives a plugin no way to ask whether a session is busy and no toast o
 
 opencode 2.2.3 and later ship their own **Claude Agent** provider (id `claude-agent`). It and this plugin share no provider id, model id, setting or `/connect` entry, and both can be used in one opencode (measured on 2.2.5). Moving a chat from one to the other replays the conversation to the new one as text, because neither can continue the other's Claude session.
 
+To hide Claude Agent, use opencode's own settings; this plugin has no option for it, because it is opencode's provider. Two rules in your opencode config do it:
+
+```json
+{
+  "disabled_providers": ["claude-agent"],
+  "policies": [
+    { "action": "integration.connect", "resource": "claude-agent", "effect": "deny" }
+  ]
+}
+```
+
+The `policies` rule is what removes **Claude Agent** from `/connect`; `disabled_providers` alone leaves it there, and keeps it out of the model list (it is the same as a `provider.use` deny). A Claude Agent connection you already made stays listed in `/connect`, so you can still delete it. Measured on opencode 2.2.6: with both rules the integrations list no longer had `claude-agent`, and every other entry stayed.
+
 opencode 2 also has four things 1.x has no counterpart for:
 
 - **`/connect` checks the Claude Code login.** Each provider (**Claude Code**, or one per account) is listed under its own name with one method, *Claude Code login*. Connecting stores nothing, not even a token: the plugin runs `claude auth status` the way a turn would run `claude`, and a toast says how Claude Code is logged in (a Claude subscription, an API key, Amazon Bedrock, Google Vertex AI, ...) or gives the one command that fixes it, `claude auth login`, or `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login` for an account named `work`. A missing or logged-out CLI also marks the connection *Sign in required*; log in in a terminal, then connect again. Connecting is optional, the models work without it, and every connect adds one entry to that provider's list of connections, which you can delete from the same dialog. A connection made earlier is checked again when opencode starts.

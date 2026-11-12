@@ -12717,3 +12717,44 @@ through as a setting rather than hiding the variant.
 Shipped as v0.73.2 on 2026-11-12, a patch: CI green on Linux and Windows on the release commit
 `50b517e`, the publish confirmed by the `Publish package` step's tail and the version
 document's shasum (`6c20468c`), with a GitHub Release.
+
+## Hiding opencode's built-in Claude Agent provider is a config setting (2026-11-13)
+
+h #g311. The maintainer asked whether the plugin could have an option to turn off opencode's
+own Claude provider ("i keep seeing it in the list"). The answer was no option: opencode 2 has
+the switch, and the plugin documents it.
+
+Read out of the 2.2.6 binary:
+
+- The legacy config key `disabled_providers` becomes a `{action: "provider.use", resource, effect:
+  "deny"}` policy, and a built-in provider transform removes every provider a `provider.use`
+  (or `integration.use`) deny names, logging `providers denied by policy`.
+- `/connect`'s list (`integration.list`) drops an integration only under an
+  `integration.connect` deny, and keeps one that already has a connection.
+- Claude Agent (`ClaudeProvider.register`) adds provider `claude-agent` with `activation: "auto"`
+  and an empty model list, fills the list from a probe of the `claude` CLI, and registers the
+  `claude-agent` integration with one external method, `claude-login`. An `auto` provider is
+  listed only with a connection.
+- `plugin.use` is checked only when loading a plugin from npm or a path, so no policy stops the
+  built-in's registration or its probe.
+
+Measured on the maintainer's own config with a foreground `opencode serve` (no background
+service was running, and a plain `opencode models` would have started one), reading
+`/api/provider`, `/api/integration` and `/api/model` after 45 to 60 s:
+
+- Before: `claude-agent` was in no provider or model list (no connection), and WAS in the
+  integration list as **Claude Agent** with `claude-login`. `anthropic` was in the integration
+  list too, although `disabled_providers` already named it: that key does not reach `/connect`.
+- After adding `claude-agent` to `disabled_providers` and an `integration.connect` deny for it:
+  `claude-agent` gone from the integration list, `anthropic` still there, and both plugin
+  accounts' 21 models each unchanged.
+
+`opencode models --standalone` cannot show any of this: it exits before Claude Agent's probe
+fills its model list, so a scratch install listed no `claude-agent` model with or without the
+rules.
+
+A plugin option was declined: removing another provider from the plugin's own provider
+transform would duplicate a host setting, would not reach `/connect`, and its ordering against
+the built-in's own transform was unmeasured. Documented in `docs/opencode-2.md` and the bundled
+skill instead.
+
