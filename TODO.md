@@ -155,11 +155,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-12: PR #185 (a re-dispatched subagent keeps its sidebar row, h #g309) is merged and NOT
-  released. Decide: a patch release now, or with the next batch.
-- 2026-11-12: the main checkout's `dist` was NOT rebuilt after PR #185, because another session had
-  video lanes running through the plugin (the backlog's stranded `task` call after rebuilds, h #g292).
-  Rebuild once the maintainer says the lanes are done; the sidebar fix shows after a TUI restart.
 - 2026-11-10: a cache keep-alive for headless sessions (h #g304): build it opt-in and capped at 2 pings
   per idle stretch, or hold? Measured: all 253 headless calls after an hour's idle in 30 days rewrote the
   cache; capped at 2 pings it nets at most about $166 at API prices, 8+ pings loses money, and every ping
@@ -226,6 +221,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-12: **done** (v0.73.1, PR #185, h #g309): a subagent dispatched again after it reported keeps its
+  sidebar row; on opencode 1.x a foreground resume is matched by the id its input names. The maintainer chose
+  the release and the `dist` rebuild on 2026-11-12; the TUI restart that shows it is theirs.
 - 2026-11-11: **done** (v0.73.0, PR #184, h #g308): on opencode 2 the proxied `bash` tool offers
   `background: true`; the `<shell>` completion message starts a turn the plugin serves on the same process.
   opencode 1.x unchanged. `workdir` stays its own backlog item.

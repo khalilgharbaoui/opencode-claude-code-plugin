@@ -12672,3 +12672,8 @@ one); the third was tightened to assert the row's own session id for that reason
 
 Not measured live in a TUI: the fix is in `dist/tui.js`, which the running TUI loads at
 start, and the session that found it had video lanes running, so nothing was restarted.
+
+Shipped as v0.73.1 on 2026-11-12 (PR #185), a patch: CI green on Linux and Windows on the PR
+head `170dd41`, on the merge commit `b6b877c` before the tag and on the release commit `c38dcf8`,
+the publish confirmed by the `Publish package` step's tail and the version document's shasum
+(`b4fa4999`), with a GitHub Release.
