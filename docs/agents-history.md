@@ -12677,3 +12677,39 @@ Shipped as v0.73.1 on 2026-11-12 (PR #185), a patch: CI green on Linux and Windo
 head `170dd41`, on the merge commit `b6b877c` before the tag and on the release commit `c38dcf8`,
 the publish confirmed by the `Publish package` step's tail and the version document's shasum
 (`b4fa4999`), with a GitHub Release.
+
+## A Claude session can switch to an OpenAI-compatible provider (2026-11-12)
+
+h #g310. Reported by the maintainer on 2026-11-12: a session that had used Claude CLI tools
+and was switched to a local Bonsai model (OpenAI-compatible, `mlx_vlm.server`) failed before
+any request left opencode with "OpenAI Chat assistant messages only support text, reasoning,
+and tool-call content for now". A new session started on Bonsai worked.
+
+Measured on opencode 2.2.6 with a scratch session whose Haiku turn ran Read. The CLI's tool
+is stored with `providerCall: {executed: true}` and replayed inside the assistant message as a
+provider-executed `tool-call` plus `tool-result`; the OpenAI chat format cannot hold a
+tool result in an assistant message, so opencode refuses the history.
+
+- A v1 `experimental.chat.messages.transform` probe never ran, in `opencode run --standalone`
+  or a separate `opencode serve`: a plugin exporting `setup` is called through `setup` only,
+  so its `server` hooks are never registered on 2.x (the herdr plugin's empty `setup` relies on
+  exactly that).
+- A `setup(ctx)` probe saw `session.hook("context")` fire before `model.request`, with the
+  request's `messages` (`{id, role, content[]}`), and editing them changed the request: with
+  the two parts rewritten as text, Bonsai answered from the earlier Read result.
+- The edit is per request: the next request found the structured parts again.
+- A `providerMetadata["claude-code"]` marker added at emit time was stored (as
+  `providerCall.state`) but every replayed part had `providerMetadata` undefined, as had
+  `namespace` and `cache`. The `toolu_` id was the one signal that came back, so the marker was
+  dropped and the rule keys on the id.
+
+Live, in an isolated opencode (own config, data and state, scratch build): Haiku ran Read, the
+same session on Bonsai answered from that result, and back on Haiku it answered from the
+structured result. Then in the maintainer's own TUI from the `file://` dist: a Claude session
+switched to Bonsai with its conversation intact.
+
+Found on the way, not a plugin issue: the TUI had remembered effort `high` for Bonsai, which
+its chat template rejects (it accepts `xhigh`, `medium`, `low`, and its card says `low`
+behaves like `xhigh`). Fixed in the maintainer's config by listing only `medium` and `xhigh`;
+on 2.2.6 a config `variants` block replaces the built-in list and `disabled: true` is passed
+through as a setting rather than hiding the variant.
