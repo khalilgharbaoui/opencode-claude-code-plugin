@@ -82,20 +82,10 @@
   blocked prompt ends a PTY turn is unmeasured; (2) the location-switch empty turn below may be the
   same block: check that session's Claude transcript for a `blocked_by_hook` record before building
   anything on the session-key theory.
-- 2026-11-14 (evening), measured, not fixed: the wire-inactivity watchdog ended a turn while the child
-  lived on, unattached. The Mac idle-slept 21:10:23 to 21:20:56 CET (`pmset -g log`) during a designer
-  subagent's turn (`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of
-  context). `result fallback timer fired` at 20:15:31Z, inside a dark wake; the turn ended as
-  `provider.unknown` and the subagent was reported failed. The CLI recorded `api_error`
-  `StreamSuspended` ("Connection lost while your computer was asleep") at 20:21:03Z, retried on its own
-  and carried on: a proxied `write` (20:22:46Z) and a proxied `bash` (20:32:56Z) each waited out the
-  10-minute deadline with no opencode step to serve them, a third call was parked at 20:43:52Z, and the
-  child died only when opencode restarted (about 20:48Z). That is about 28 minutes of a 777K-context
-  child nobody was listening to, drawn from the account's window, and its finished file never reached
-  the disk. Questions: should the watchdog interrupt or stop the child when it closes the turn; should
-  a system suspend (the CLI's own `StreamSuspended`, or a timer firing late after a sleep) hold the
-  watchdog rather than fire it; should a call queued with no stream attached be rejected at once
-  rather than at its deadline.
+- 2026-11-14 (evening), the watchdog that closed a turn during a sleep: FIXED on `fix/blocked-prompt`
+  (h #g316). It counts wall-clock time, sleep included, so a fire well past its deadline now waits
+  again, and a fire that closes the turn interrupts the CLI. Left alone on purpose: a proxied call
+  queued with no stream attached (late-result recovery) and the start watchdog (unmeasured).
 
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
@@ -203,10 +193,10 @@ raised, so they survive context compaction; removed when answered, done or dropp
   side is fixed, h #g314, and never sets the guard's variable itself): keep it blocking, or set
   `AGENT_GUARD_PROMPT_GUARD_MODE` for opencode's environment? Your config, not the plugin's.
 - 2026-11-14: watchdog follow-up, offered by an earlier turn of session
-  `ses_e324dbf7bffeRHQIz10AIxm7dT` (its reasoning went with that session's history): "should the
-  plugin wait a little longer after the CLI reports an API error before it closes the turn? Now,
-  later, or drop?" The sleep incident (Backlog, 2026-11-14 evening) is a second case and adds the
-  unattached child: now, later, or drop?
+  `ses_e324dbf7bffeRHQIz10AIxm7dT`: "should the plugin wait a little longer after the CLI reports an
+  API error before it closes the turn?" The sleep case is fixed (h #g316: a late fire waits again,
+  a closing fire interrupts the CLI). The API-error case itself has no evidence on record (its
+  reasoning went with that session's history): keep it open until it happens again, or drop?
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.

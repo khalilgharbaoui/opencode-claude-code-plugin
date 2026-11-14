@@ -12982,3 +12982,50 @@ a `LIMITME` message the way 2.1.322 answers a usage limit and a `SERVERERR` one 
 after a limit resumes the first account's session from the second account's config dir with no
 replay and without re-sending the limited message (it fails without the change: the switch
 replays), and a switch after the 529 still replays.
+
+
+## The inactivity watchdog read a sleeping Mac as a silent CLI, and left the CLI running (2026-11-14)
+
+h #g316. The second finding recorded in TODO.md on 2026-11-14: a designer subagent
+(`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of context) was
+reported failed after the Mac idle-slept, and its CLI ran on for about 28 minutes with nobody
+listening.
+
+Measured, from the subagent's own Claude transcript (record types and timestamps only) and
+`pmset -g log`:
+
+- The stream was live: an `api-request` at 20:09:22Z and a thinking record at 20:09:42Z, so the
+  watchdog was last reset at or after 20:09:42Z.
+- The Mac slept at 21:10:23 CET (20:10:23Z), had a dark wake at 21:15:28 that ended in sleep at
+  21:15:39, and woke at 21:20:56.
+- `result fallback timer fired` at 20:15:31Z, 3 s into the dark wake. A 60 s timer counting awake
+  time could not have fired then (at most 41 s of awake time before the sleep, 3 s after), so the
+  timer counts wall-clock time, sleep included, and fired at the first moment the process ran.
+- The turn ended as a stream timeout (`provider.unknown`, the subagent reported failed). The CLI
+  logged `api_error` (`Connection error`, Claude Code's `StreamSuspended`) at 20:21:03Z, retried on
+  its own and carried on: an assistant reply and a proxied call at 20:22:46Z. A message written
+  to its stdin 0.5 s after the fire ("Your response above was cut off mid-stream. Resume directly
+  from where...", source unknown: not in opencode's binaries or plugin caches) was what it went on
+  with. Its proxied calls each waited out the 10-minute deadline, and it died only when opencode
+  restarted.
+
+What changed in `startResultFallback`:
+
+- A fire more than `RESULT_FALLBACK_LATE_SLACK_MS` (5 s) past its deadline re-arms for a fresh
+  full delay instead of closing the turn, with an INFO line. A late fire means the process was not
+  running, so the silence was never observed; an event-loop stall is the same case, where the
+  CLI's output can be sitting unread in the pipe while the timer phase runs first. Repeated
+  sleeps re-arm each time; once awake, the CLI's next line resets the watchdog as always.
+- A fire that does close the turn sends `interruptTurn` to the CLI, exactly as an abort does
+  (h #g59), so the turn stops instead of running on unattached. Not on an aborted turn, whose own
+  path already interrupts.
+- Not changed: a proxied call that arrives with no stream attached still waits for the next turn
+  or its deadline, because that is the late-result recovery path (h #g82, h #g119), and with the
+  interrupt the cause is gone. The start watchdog shares the clock and is unchanged; nothing
+  measured shows it firing across a sleep.
+
+Tests: `test/result-fallback-sleep.test.ts` (POSIX). The sleep is faked with
+`_setResultFallbackClock`, which jumps ten minutes when the first text arrives: the fire at 2 s
+re-arms and the CLI's answer at 3 s lands (with the re-arm switched off the turn closes as a
+stream timeout). A CLI that never finishes gets exactly one `interrupt` control request after the
+close (with the interrupt switched off, none).

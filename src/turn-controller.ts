@@ -7,6 +7,7 @@ import { effectiveSpawnMcpTimeoutMs } from "./cli-version.js"
 import {
   deleteActiveProcess,
   deleteClaudeSessionId,
+  interruptTurn,
   noteTurnStarted,
   respawnActiveProcess,
 } from "./session-manager.js"
@@ -81,6 +82,20 @@ export function clearFallbackTimer(state: TurnState): void {
   }
 }
 
+/** How far past its deadline the inactivity watchdog may fire and still close. */
+const RESULT_FALLBACK_LATE_SLACK_MS = 5_000
+
+let resultFallbackLateSlackMs = RESULT_FALLBACK_LATE_SLACK_MS
+let watchdogNow: () => number = () => Date.now()
+
+/** Test seams: a clock that can jump, as a sleep makes it, and the slack. `null` restores. */
+export function _setResultFallbackClock(now: (() => number) | null): void {
+  watchdogNow = now ?? (() => Date.now())
+}
+export function _setResultFallbackLateSlackMs(ms: number | null): void {
+  resultFallbackLateSlackMs = ms ?? RESULT_FALLBACK_LATE_SLACK_MS
+}
+
 /**
  * Wire-inactivity watchdog. Resets on every line received from the CLI; only
  * fires if the CLI has emitted content and then gone silent on stdout for
@@ -89,6 +104,17 @@ export function clearFallbackTimer(state: TurnState): void {
  * (most visibly with sonnet between text-end and the next tool_use_start).
  * Tunable for reproduces and for the regression test, the same seam
  * CLAUDE_CODE_START_WATCHDOG_MS gives the start watchdog below.
+ *
+ * A fire that comes well past its deadline re-arms instead of closing (h #g316):
+ * the timer counts wall-clock time, sleep included (measured on 2026-11-14: it
+ * fired 3 s into a dark wake, five minutes after it was due, with at most 41 s
+ * of awake time behind it), so ten minutes of a sleeping Mac read as ten
+ * minutes of a silent CLI and the turn was closed while the CLI was only
+ * waiting for the network. A late fire means this process was not running, so
+ * the silence was never observed; an event-loop stall is the same case, with
+ * the CLI's output possibly unread in the pipe. A fire that does close the turn
+ * also interrupts the CLI, as an abort does (h #g59): closed here, nobody reads
+ * what it does next, and one child ran on unattached for 28 minutes.
  */
 export function startResultFallback(
   state: TurnState,
@@ -96,11 +122,25 @@ export function startResultFallback(
 ): void {
   clearFallbackTimer(state)
   if ((!state.hasReceivedContent && !state.hasReceivedProgress) || state.controllerClosed) return
+  const armedAt = watchdogNow()
   state.resultFallbackTimer = setTimeout(() => {
     if (state.controllerClosed) return
+    const lateMs = watchdogNow() - armedAt - delayMs
+    if (lateMs > resultFallbackLateSlackMs) {
+      log.info("result fallback timer fired late; the process was not running, so it waits again", {
+        delayMs,
+        lateMs,
+      })
+      startResultFallback(state, delayMs)
+      return
+    }
     log.warn("result fallback timer fired — closing stream without result event", {
       delayMs,
     })
+    const child = state.activeProcess
+    if (child && !state.autoContinueState.aborted) {
+      void interruptTurn(child).catch(() => undefined)
+    }
     // Closing on a log line alone left the operator with a reply that
     // just stopped. An abort is exempt: they asked for it, and the
     // short grace period there is not a silent CLI.
