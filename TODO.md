@@ -96,6 +96,14 @@
   `shell`) and `src/host-tools.ts` passes it through, but the proxied `bash` def does not offer it.
   Maintainer: its own item, not in the background-flag PR (2026-11-11).
 
+- 2026-11-14, seen when the `dispatch-answers` lane started, not diagnosed: on opencode 2.2.6 a subagent
+  ran `shell` (created its worktree), then Code Mode `execute` (very likely `session_move` into that
+  worktree); opencode recorded `location-switched` and a `system` message (the Code Mode catalog changed),
+  and the next assistant step ended with the plugin's `no reply` note: Claude wrote nothing and called no
+  tool, so the lane stopped. Session `ses_e2898d33effeo0ojQzfvfWVOJK` (opencode.db), 2026-11-14. Check
+  whether a location switch mid-turn changes the session key (the cwd is in it) so the step after the
+  proxied `execute` result lands on a new key with no parked call and a fresh spawn.
+
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
   setup before changing the docs.
