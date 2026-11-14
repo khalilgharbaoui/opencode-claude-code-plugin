@@ -75,6 +75,7 @@ import {
   deliverPendingCompletions,
   finishWithQuestionCall,
   finishAwaitingPlanApproval,
+  noteAnnouncedRetry,
   noteProxyActivity,
   noteReasoning,
   noteStartWatchdogInit,
@@ -350,6 +351,13 @@ export function createLineHandler(
       // session rather than of this answer.
       if (msg.type === "system") {
         reportHookEvent(msg)
+      }
+
+      // The CLI failed an API attempt and says how long it will wait before
+      // the next one; neither watchdog may take that backoff for silence
+      // (h #g316).
+      if (msg.type === "system" && msg.subtype === "api_retry") {
+        noteAnnouncedRetry(state, msg)
       }
 
       // A `UserPromptSubmit` hook (or a Claude plugin's code module) ended a

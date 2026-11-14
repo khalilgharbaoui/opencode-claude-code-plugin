@@ -299,21 +299,56 @@ export function startWatchdogDelayMs(
     : configuredMs
 }
 
-export function armStartWatchdog(state: TurnState): void {
+/**
+ * `extraMs` is a wait the CLI announced itself (an `api_retry` frame's
+ * `retry_delay_ms`), added so a CLI that is only backing off before its next
+ * attempt is not taken for a silent one. A late fire re-arms, as the
+ * inactivity watchdog's does: the clock counts sleep (h #g316).
+ */
+export function armStartWatchdog(state: TurnState, extraMs = 0): void {
   clearStartWatchdog(state)
   if (state.controllerClosed) return
   const ap = state.activeProcess
   // The interactive shim never respawns from here (see the fire handler), so
   // it keeps the configured delay.
   state.startWatchdogBeforeInit = !ap?.interactiveControl && ap?.initSeen !== true
-  state.startWatchdogArmedMs = startWatchdogDelayMs(
-    state.startWatchdogMs,
-    state.startWatchdogBeforeInit,
-  )
-  state.startWatchdog = setTimeout(
-    () => onStartWatchdogFire(state),
-    state.startWatchdogArmedMs,
-  )
+  state.startWatchdogArmedMs =
+    startWatchdogDelayMs(state.startWatchdogMs, state.startWatchdogBeforeInit) + extraMs
+  const armedAt = watchdogNow()
+  const delayMs = state.startWatchdogArmedMs
+  state.startWatchdog = setTimeout(() => {
+    const lateMs = watchdogNow() - armedAt - delayMs
+    if (lateMs > resultFallbackLateSlackMs && !state.controllerClosed) {
+      log.info("start watchdog fired late; the process was not running, so it waits again", {
+        delayMs,
+        lateMs,
+      })
+      armStartWatchdog(state)
+      return
+    }
+    onStartWatchdogFire(state)
+  }, delayMs)
+}
+
+/** Longest wait an `api_retry` frame may add to a watchdog (h #g316). */
+const MAX_ANNOUNCED_RETRY_WAIT_MS = 30 * 60_000
+
+/**
+ * The CLI said it will wait before its next attempt: measured on 2.1.322
+ * against a server answering 529, the `system`/`api_retry` frame arrives as the
+ * attempt fails, with `retry_delay_ms` equal to the gap before the next request
+ * (`retry-after: 4` gave 4000 and a request 4.0 s later). Whichever watchdog is
+ * armed waits that much longer, so a backoff longer than its window neither
+ * closes the turn (and, since h #g316, interrupts the CLI) nor respawns a child
+ * that is working as designed. The CLI's own `max_retries` bounds how often.
+ */
+export function noteAnnouncedRetry(state: TurnState, msg: ClaudeStreamMessage): void {
+  const announced = (msg as { retry_delay_ms?: unknown }).retry_delay_ms
+  if (typeof announced !== "number" || !Number.isFinite(announced) || announced <= 0) return
+  const waitMs = Math.min(announced, MAX_ANNOUNCED_RETRY_WAIT_MS)
+  log.info("claude code is retrying the API request; the watchdogs wait for it", { waitMs })
+  if (state.resultFallbackTimer) startResultFallback(state, state.resultFallbackMs + waitMs)
+  if (state.startWatchdog) armStartWatchdog(state, waitMs)
 }
 
 /**

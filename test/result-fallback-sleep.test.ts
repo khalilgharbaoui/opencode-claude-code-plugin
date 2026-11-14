@@ -33,15 +33,23 @@ afterEach(() => {
   _setResultFallbackLateSlackMs(null)
 })
 
+type Step =
+  | { text: string }
+  | { retry: number }
+  | { wait: number }
+  | { result: true }
+
 /**
- * A `claude` that writes half an answer, goes silent, and finishes after
- * `finishAfterMs` (or never, for `null`). It records every stdin line, so a
- * test can see the interrupt the plugin sends.
+ * A `claude` that plays `steps` on its first message: text deltas, `api_retry`
+ * frames shaped as 2.1.322 writes them, waits, and a `result`. A script with
+ * no `result` goes silent for good. It records every stdin line and every
+ * spawn, so a test can see an interrupt or a respawn.
  */
-function createFakeCli(finishAfterMs: number | null) {
+function createFakeCli(steps: Step[]) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-result-fallback-sleep-"))
   const cliPath = join(cwd, "fake-claude.cjs")
   const record = join(cwd, "stdin.jsonl")
+  const spawns = join(cwd, "spawns.txt")
   writeFileSync(
     cliPath,
     `#!${process.execPath}
@@ -51,36 +59,32 @@ if (process.argv.includes("--version")) {
   process.stdout.write("2.1.322\\n")
   process.exit(0)
 }
+if (process.argv.includes("--help")) process.exit(0)
+fs.appendFileSync(${JSON.stringify(spawns)}, process.pid + "\\n")
 const emit = (message) => process.stdout.write(JSON.stringify({ session_id: "fake-session", ...message }) + "\\n")
-const text = (body) => emit({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: body } } })
+emit({ type: "system", subtype: "init", tools: ["Read"] })
+const STEPS = ${JSON.stringify(steps)}
 let answered = false
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
+readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   fs.appendFileSync(${JSON.stringify(record)}, line + "\\n")
   if (answered) return
   answered = true
-  emit({ type: "system", subtype: "init", tools: ["Read"] })
-  text("half an answer")
-  const after = ${JSON.stringify(finishAfterMs)}
-  if (after === null) return
-  setTimeout(() => {
-    text(" and the rest")
-    emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "done",
-      usage: { input_tokens: 1, output_tokens: 1 } })
-  }, after)
+  for (const step of STEPS) {
+    if ("text" in step) emit({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: step.text } } })
+    if ("retry" in step) emit({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, retry_delay_ms: step.retry, error_status: 529, error: "overloaded" })
+    if ("wait" in step) await new Promise((resolve) => setTimeout(resolve, step.wait))
+    if ("result" in step) emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "done", usage: { input_tokens: 1, output_tokens: 1 } })
+  }
 })
 `,
     { mode: 0o755 },
   )
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [])
   return {
     cwd,
     cliPath,
-    stdinLines: (): any[] =>
-      existsSync(record)
-        ? readFileSync(record, "utf8")
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line))
-        : [],
+    stdinLines: (): any[] => read(record).map((line) => JSON.parse(line)),
+    spawnCount: (): number => read(spawns).length,
   }
 }
 
@@ -88,11 +92,14 @@ async function runTurn(
   fake: ReturnType<typeof createFakeCli>,
   fallbackMs: number,
   onFirstText?: () => void,
+  startWatchdogMs?: number,
 ): Promise<{ parts: any[]; key: string }> {
   const modelId = "claude-test-result-fallback-sleep"
   const key = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
   const previous = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
+  const previousStart = process.env.CLAUDE_CODE_START_WATCHDOG_MS
   process.env.CLAUDE_CODE_RESULT_FALLBACK_MS = String(fallbackMs)
+  if (startWatchdogMs !== undefined) process.env.CLAUDE_CODE_START_WATCHDOG_MS = String(startWatchdogMs)
   try {
     const model = createClaudeCode({
       cliPath: fake.cliPath,
@@ -122,6 +129,8 @@ async function runTurn(
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
     else process.env.CLAUDE_CODE_RESULT_FALLBACK_MS = previous
+    if (previousStart === undefined) delete process.env.CLAUDE_CODE_START_WATCHDOG_MS
+    else process.env.CLAUDE_CODE_START_WATCHDOG_MS = previousStart
   }
 }
 
@@ -140,7 +149,7 @@ test("a watchdog that fires after a sleep waits again instead of closing the tur
   // Due at 2 s; the CLI finishes at 3 s. The clock jumps ten minutes the
   // moment the first text arrives, as a sleep makes it, so the fire at 2 s
   // looks ten minutes late and must wait a fresh 2 s, which the CLI beats.
-  const fake = createFakeCli(3_000)
+  const fake = createFakeCli([{ text: "half an answer" }, { wait: 3_000 }, { text: " and the rest" }, { result: true }])
   let key = ""
   try {
     _setResultFallbackLateSlackMs(500)
@@ -165,7 +174,7 @@ test("a watchdog that fires after a sleep waits again instead of closing the tur
 })
 
 test("a watchdog that closes the turn interrupts the CLI it stopped listening to", POSIX, async () => {
-  const fake = createFakeCli(null)
+  const fake = createFakeCli([{ text: "half an answer" }])
   let key = ""
   try {
     const turn = await runTurn(fake, 500)
@@ -181,6 +190,72 @@ test("a watchdog that closes the turn interrupts the CLI it stopped listening to
     }
     assert.equal(interrupts.length, 1, JSON.stringify(fake.stdinLines()))
   } finally {
+    if (key) deleteActiveProcess(key)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a retry the CLI announces holds the inactivity watchdog for that long", POSIX, async () => {
+  // Due 1.5 s after the last line; the CLI says it will wait 3 s and answers
+  // at 3.5 s. Without the announced wait the turn closes at 1.5 s.
+  const fake = createFakeCli([
+    { text: "half an answer" },
+    { retry: 3_000 },
+    { wait: 3_500 },
+    { text: " and the rest" },
+    { result: true },
+  ])
+  let key = ""
+  try {
+    const turn = await runTurn(fake, 1_500)
+    key = turn.key
+    const said = body(turn.parts)
+    assert.ok(!said.includes(STREAM_TIMEOUT_MARKER), said)
+    assert.match(said, /half an answer and the rest/)
+  } finally {
+    if (key) deleteActiveProcess(key)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a retry the CLI announces holds the start watchdog too, so nothing is respawned", POSIX, async () => {
+  // No content yet, so only the start watchdog is armed: 1.5 s after the
+  // envelope. The CLI announces a 3 s wait and answers at 3.5 s. Without the
+  // announced wait the child is respawned at 1.5 s.
+  const fake = createFakeCli([{ retry: 3_000 }, { wait: 3_500 }, { text: "the answer" }, { result: true }])
+  let key = ""
+  try {
+    const turn = await runTurn(fake, 60_000, undefined, 1_500)
+    key = turn.key
+    assert.match(body(turn.parts), /the answer/)
+    assert.equal(fake.spawnCount(), 1, "the child was never respawned")
+  } finally {
+    if (key) deleteActiveProcess(key)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+test("a start watchdog that fires after a sleep waits again instead of respawning", POSIX, async () => {
+  // Due 2 s after the envelope; the CLI answers 3 s after it. The clock jumps
+  // ten minutes once the CLI has the envelope (so after the watchdog was
+  // armed), as a sleep makes it, so the fire at 2 s looks late and waits a
+  // fresh 2 s, to 4 s, which the answer beats by a second.
+  const fake = createFakeCli([{ wait: 3_000 }, { text: "the answer" }, { result: true }])
+  let key = ""
+  const jump = setInterval(() => {
+    if (fake.stdinLines().length === 0) return
+    clearInterval(jump)
+    const offset = 10 * 60_000
+    _setResultFallbackClock(() => Date.now() + offset)
+  }, 20)
+  try {
+    _setResultFallbackLateSlackMs(500)
+    const turn = await runTurn(fake, 60_000, undefined, 2_000)
+    key = turn.key
+    assert.match(body(turn.parts), /the answer/)
+    assert.equal(fake.spawnCount(), 1, "the child was never respawned")
+  } finally {
+    clearInterval(jump)
     if (key) deleteActiveProcess(key)
     rmSync(fake.cwd, { recursive: true, force: true })
   }

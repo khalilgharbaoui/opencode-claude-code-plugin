@@ -13021,11 +13021,31 @@ What changed in `startResultFallback`:
   path already interrupts.
 - Not changed: a proxied call that arrives with no stream attached still waits for the next turn
   or its deadline, because that is the late-result recovery path (h #g82, h #g119), and with the
-  interrupt the cause is gone. The start watchdog shares the clock and is unchanged; nothing
-  measured shows it firing across a sleep.
+  interrupt the cause is gone.
+
+Added before the release, at the maintainer's request to cover what the first version left out,
+and because the interrupt made one edge worse: a watchdog that fires while the CLI waits out its
+own retry backoff used to leave the CLI to carry on, and would now stop it.
+
+- Measured on 2.1.322 against a local server answering every request with 529 and
+  `retry-after: 4` (`--bare`, a fake key, `CLAUDE_CODE_MAX_RETRIES=2`): the `system`/`api_retry`
+  frame arrived 60 ms after the failed request with `retry_delay_ms: 4000`, and the next request
+  followed 4.0 s later, twice. So the frame announces the wait before it starts.
+- `noteAnnouncedRetry` adds that wait to whichever watchdog is armed (capped at 30 minutes; the
+  CLI's `max_retries` bounds how often). Before, a backoff longer than the 60 s window closed the
+  turn, and before any content one longer than the start watchdog's window respawned a child that
+  was retrying as designed: `api_retry` frames do not count as model progress.
+- The start watchdog shares the wall clock, so it gets the same late-fire rule: a late fire
+  re-arms instead of respawning.
+
+Two of the new tests were wrong before they were right, and both lessons are about the harness:
+the fake counted the plugin's own `claude --help` probe as a spawn, and a clock jump on a timer
+started with the test landed before the watchdog was armed (the plugin's probes and spawn take
+longer than half a second), so the jump now waits until the fake holds the envelope.
 
 Tests: `test/result-fallback-sleep.test.ts` (POSIX). The sleep is faked with
-`_setResultFallbackClock`, which jumps ten minutes when the first text arrives: the fire at 2 s
-re-arms and the CLI's answer at 3 s lands (with the re-arm switched off the turn closes as a
-stream timeout). A CLI that never finishes gets exactly one `interrupt` control request after the
-close (with the interrupt switched off, none).
+`_setResultFallbackClock`, which jumps ten minutes: the inactivity watchdog's fire re-arms and the
+CLI's answer lands; a CLI that never finishes gets exactly one `interrupt` after the close; an
+announced 3 s retry holds the inactivity watchdog and, before any content, the start watchdog, with
+no respawn; a late start-watchdog fire re-arms with no respawn. Each fails with its change switched
+off.

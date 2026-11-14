@@ -84,8 +84,9 @@
   anything on the session-key theory.
 - 2026-11-14 (evening), the watchdog that closed a turn during a sleep: FIXED on `fix/blocked-prompt`
   (h #g316). It counts wall-clock time, sleep included, so a fire well past its deadline now waits
-  again, and a fire that closes the turn interrupts the CLI. Left alone on purpose: a proxied call
-  queued with no stream attached (late-result recovery) and the start watchdog (unmeasured).
+  again, and a fire that closes the turn interrupts the CLI. The start watchdog follows the same
+  late-fire rule, and both watchdogs wait out the backoff an `api_retry` frame announces. Left alone
+  on purpose: a proxied call queued with no stream attached (the late-result recovery path).
 
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
@@ -192,14 +193,16 @@ raised, so they survive context compaction; removed when answered, done or dropp
 - 2026-11-14: agent-guard's prompt guard blocks any replay that quotes a secret-like value (the plugin
   side is fixed, h #g314, and never sets the guard's variable itself): keep it blocking, or set
   `AGENT_GUARD_PROMPT_GUARD_MODE` for opencode's environment? Your config, not the plugin's.
+  Deferred by the maintainer, 2026-11-15.
 - 2026-11-14: watchdog follow-up, offered by an earlier turn of session
   `ses_e324dbf7bffeRHQIz10AIxm7dT`: "should the plugin wait a little longer after the CLI reports an
-  API error before it closes the turn?" The sleep case is fixed (h #g316: a late fire waits again,
-  a closing fire interrupts the CLI). The API-error case itself has no evidence on record (its
-  reasoning went with that session's history): keep it open until it happens again, or drop?
+  API error before it closes the turn?" The sleep case is fixed, and both watchdogs now wait out the
+  backoff the CLI announces in its `api_retry` frame (h #g316). Deferred (2026-11-15): whether to wait
+  any longer than the CLI announces; the original case has no evidence on record.
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
+  Deferred again by the maintainer, 2026-11-15.
 - 2026-10-08: subagent startup (~25 s). Maintainer: "do 1 but not fully just comment it out, 2 pin it, 3 lets
   try 1 and 2 and see if 3 is needed". Done: `slack` parked under `_parkedMcpServers` in both Claude accounts'
   `.claude.json` (pinned 1.3.0), opencode's slack pinned to 1.3.0 (backups `*.bak-slack-20261008-214042`).
@@ -221,6 +224,7 @@ raised, so they survive context compaction; removed when answered, done or dropp
 Verification still owed, copied from the vault's `Future Features.md` "Next up" on 2026-10-24
 (maintainer: "do the most recommended for all in 1 go"), because they are checks, not features.
 
+  Deferred again by the maintainer, 2026-11-15.
 - Around 2026-11-08: review the progress estimate again, once the busy keys have 30+ samples.
   The 2026-10-25 review (one week, read-only) found a forward test of 44 to 45% in band against
   a 50% target, estimates about 13% long on the median, a typical miss of x2.2, worst on
