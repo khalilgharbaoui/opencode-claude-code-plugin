@@ -35,7 +35,7 @@
  *     (`explore`, `general`, `compaction`, ...) are never in the registry, so
  *     they are never rewritten.
  */
-import { readFile, readdir } from "node:fs/promises"
+import { readFile, readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { log } from "./logger.js"
 import { isCliAddedModel } from "./cli-model-catalog.js"
@@ -109,9 +109,17 @@ let defaultSubagentModel: string | undefined
 let defaultSubagentCacheTtl: string | undefined
 let defaultSubagentCliCaps: AgentCliCaps = {}
 let providerFallbackModels: string[] = []
+/** What the registry was built from on disk, or undefined when set by hand. */
+let registrySource: AgentRegistrySource | undefined
+let refreshInFlight: Promise<boolean> | undefined
 
+/**
+ * Set the registry outright. Whatever it was built from on disk is forgotten,
+ * so `refreshAgentRegistry` can never replace records a caller set by hand.
+ */
 export function setAgentRegistry(records: Record<string, AgentRecord>): void {
   registry = records
+  registrySource = undefined
 }
 
 export function getAgentRegistry(): Record<string, AgentRecord> {
@@ -175,6 +183,9 @@ export function _resetAgentRegistryForTests(): void {
   defaultSubagentCliCaps = {}
   providerFallbackModels = []
   refusedMainAgentBudgets.clear()
+  registrySource = undefined
+  refreshInFlight = undefined
+  recheckMs = AGENT_REGISTRY_RECHECK_MS
 }
 
 /** `claude-opus-5-fast@work` -> `@work`; a default-account id has none. */
@@ -681,4 +692,263 @@ export function agentDirectories(
   }
 
   return directories
+}
+
+// ---------------------------------------------------------------------------
+// Keeping the registry current with the agent files (h #g313)
+// ---------------------------------------------------------------------------
+
+/**
+ * The keys this plugin reads and acts on itself, which is why a change to them
+ * in an agent file applies on the next turn. `mode`, `model` and the prompt are
+ * opencode's own keys: opencode reads them when it sets the plugin up, so the
+ * registry keeps the values opencode is running the agent with until then.
+ */
+const PLUGIN_AGENT_KEYS = [
+  "forceModel",
+  "reasoningEffort",
+  "cacheTtl",
+  "maxTurns",
+  "maxBudgetUsd",
+  "fallbackModels",
+] as const
+
+/** Every key a merged record carries, plugin-owned or not. */
+const AGENT_RECORD_KEYS = [
+  "mode",
+  "model",
+  "forceModel",
+  "reasoningEffort",
+  "cacheTtl",
+  "maxTurns",
+  "maxBudgetUsd",
+  "fallbackModels",
+  "prompt",
+] as const
+
+type AgentRecordKey = (typeof AGENT_RECORD_KEYS)[number]
+
+/**
+ * How often a turn may look at the agent files. A look is a `readdir` per
+ * agent directory and a `stat` per agent file, so this bounds the cost on a
+ * busy process, and two seconds is shorter than an operator takes between
+ * saving a file and dispatching the agent.
+ */
+export const AGENT_REGISTRY_RECHECK_MS = 2_000
+
+let recheckMs = AGENT_REGISTRY_RECHECK_MS
+
+/** Test seam: the recheck window, or the default with null. */
+export function _setAgentRegistryRecheckMs(ms: number | null): void {
+  recheckMs = ms ?? AGENT_REGISTRY_RECHECK_MS
+}
+
+interface AgentRegistrySource {
+  directories: string[]
+  /** What the config's `agent` block declared, per agent, field by field. */
+  overlay: Record<string, AgentRecord>
+  /** The agent files as they were read when the registry was built. */
+  baseline: Record<string, AgentRecord>
+  /** The agent files as they were read last, by the build or a refresh. */
+  lastRead: Record<string, AgentRecord>
+  /** `fingerprintAgentDirectories` of what the registry was last read from. */
+  fingerprint: string
+  checkedAt: number
+}
+
+
+function sameDeclaredValue(left: unknown, right: unknown): boolean {
+  if (left === undefined || right === undefined) return false
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.join("\u0000") === right.join("\u0000")
+  }
+  // A cap is a number in opencode.json and a string in frontmatter.
+  return String(left) === String(right)
+}
+
+/**
+ * The agent files overlaid with the config's `agent` block, which is
+ * authoritative when both describe one agent.
+ *
+ * Except where the config only ECHOES a file: opencode 1 copies every agent
+ * file's frontmatter into `config.agent` (its loader spreads `...data`, read
+ * out of the 1.19.4 binary), so a value the config holds that equals what the
+ * file said when the registry was built (`baseline`) came from the file and
+ * follows the file when it changes. A value only opencode.json gives, or one
+ * opencode.json gives differently, still wins. At build time `baseline` IS
+ * `markdown`, which makes this exactly the overlay the builder always did.
+ */
+export function mergeAgentRecords(
+  markdown: Record<string, AgentRecord>,
+  overlay: Record<string, AgentRecord>,
+  baseline: Record<string, AgentRecord> = markdown,
+): Record<string, AgentRecord> {
+  const records: Record<string, AgentRecord> = { ...markdown }
+  for (const [name, declared] of Object.entries(overlay)) {
+    const fromDisk = markdown[name]
+    const atBuild = baseline[name]
+    const merged: AgentRecord = {}
+    for (const key of AGENT_RECORD_KEYS) {
+      const value = declared[key]
+      const echo = sameDeclaredValue(value, atBuild?.[key])
+      ;(merged as Record<AgentRecordKey, unknown>)[key] =
+        value !== undefined && !echo ? value : fromDisk?.[key]
+    }
+    records[name] = merged
+  }
+  return records
+}
+
+/**
+ * Every agent file's name, modification time, size and inode, per directory,
+ * or `-` for a directory that is not there. Cheap by construction: no file is
+ * opened. Never throws.
+ */
+export async function fingerprintAgentDirectories(directories: string[]): Promise<string> {
+  const lines: string[] = []
+  for (const directory of directories) {
+    let entries: string[]
+    try {
+      entries = (await readdir(directory)).filter((entry) => entry.endsWith(".md")).sort()
+    } catch {
+      lines.push(`${directory}\u0000-`)
+      continue
+    }
+    const stats = await Promise.all(
+      entries.map(async (entry) => {
+        try {
+          const info = await stat(path.join(directory, entry))
+          return `${info.mtimeMs}:${info.size}:${info.ino}`
+        } catch {
+          return "gone"
+        }
+      }),
+    )
+    for (const [index, entry] of entries.entries()) {
+      lines.push(`${directory}\u0000${entry}\u0000${stats[index]}`)
+    }
+  }
+  return lines.join("\n")
+}
+
+/**
+ * Build the registry from the agent files plus the config's `agent` block,
+ * and remember both so `refreshAgentRegistry` can read the files again when
+ * they change. `overlay` holds only what the config declared: a field it does
+ * not set is `undefined` there, and the file's value stands.
+ */
+export async function installAgentRegistry(input: {
+  directories: string[]
+  overlay: Record<string, AgentRecord>
+  now?: number
+}): Promise<void> {
+  const fingerprint = await fingerprintAgentDirectories(input.directories)
+  const markdown = await readAgentMarkdownRecords(input.directories)
+  registry = mergeAgentRecords(markdown, input.overlay)
+  registrySource = {
+    directories: [...input.directories],
+    overlay: input.overlay,
+    baseline: markdown,
+    lastRead: markdown,
+    fingerprint,
+    checkedAt: input.now ?? Date.now(),
+  }
+}
+
+function describeValue(value: unknown): string | null {
+  if (value === undefined) return null
+  return Array.isArray(value) ? value.join(", ") : String(value)
+}
+
+/**
+ * Read the agent files again when they changed since the registry was built
+ * or last refreshed, at most once per `AGENT_REGISTRY_RECHECK_MS`, and say
+ * what changed. Returns whether the registry changed. Never throws: a failed
+ * look keeps the registry it had.
+ *
+ * Without this an edited agent file waited for opencode to set the plugin up
+ * again (a restart on opencode 1, the next set-up on opencode 2) and nothing
+ * said so: a `forceModel` changed on 2026-11-13 kept spawning the old model
+ * (h #g313). Only the plugin's own keys move (`PLUGIN_AGENT_KEYS`); opencode
+ * reads `mode`, `model` and the prompt itself at set-up, so those stay what
+ * opencode is running the agent with. A value the config's `agent` block sets
+ * still wins, and the NOTICE names the agent and key when it does.
+ */
+export async function refreshAgentRegistry(now: number = Date.now()): Promise<boolean> {
+  const source = registrySource
+  if (!source) return false
+  if (refreshInFlight) return refreshInFlight
+  if (now - source.checkedAt < recheckMs) return false
+  source.checkedAt = now
+  refreshInFlight = (async () => {
+    try {
+      const fingerprint = await fingerprintAgentDirectories(source.directories)
+      if (fingerprint === source.fingerprint) return false
+      const markdown = await readAgentMarkdownRecords(source.directories)
+      // A rebuild (a fresh set-up) landed while the files were read: it is
+      // newer than this look, so this look keeps out of its way.
+      if (registrySource !== source) return false
+      source.fingerprint = fingerprint
+      return applyRefreshedRecords(source, markdown)
+    } catch (err) {
+      log.warn("could not re-read the agent files; keeping the agent settings already loaded", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return false
+    } finally {
+      refreshInFlight = undefined
+    }
+  })()
+  return refreshInFlight
+}
+
+function applyRefreshedRecords(
+  source: AgentRegistrySource,
+  markdown: Record<string, AgentRecord>,
+): boolean {
+  const previous = registry
+  const merged = mergeAgentRecords(markdown, source.overlay, source.baseline)
+  const next: Record<string, AgentRecord> = {}
+  for (const [name, record] of Object.entries(merged)) {
+    const kept = previous[name]
+    next[name] = kept ? { ...record, mode: kept.mode, model: kept.model, prompt: kept.prompt } : record
+  }
+
+  const changes: Array<{ agent: string; key: string; from: string | null; to: string | null }> = []
+  const heldByConfig: Array<{ agent: string; key: string }> = []
+  for (const name of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+    for (const key of PLUGIN_AGENT_KEYS) {
+      const from = describeValue(previous[name]?.[key])
+      const to = describeValue(next[name]?.[key])
+      if (from !== to) changes.push({ agent: name, key, from, to })
+      // Said once, on the refresh that read the file's new value.
+      const onDisk = describeValue(markdown[name]?.[key])
+      const before = describeValue(source.lastRead[name]?.[key])
+      if (onDisk !== before && onDisk !== to) heldByConfig.push({ agent: name, key })
+    }
+  }
+
+  registry = next
+  source.lastRead = markdown
+  if (changes.length > 0) {
+    log.notice("agent files changed on disk; their new settings apply from this turn", {
+      changes,
+    })
+  }
+  if (heldByConfig.length > 0) {
+    log.notice(
+      "an agent file changed a setting that opencode's config also sets for that agent; the config's value stays, because it wins over the file",
+      { held: heldByConfig },
+    )
+  }
+  for (const change of changes) {
+    if (change.key !== "forceModel" || change.to === null) continue
+    if (qualifyModelName(change.to, change.to) === null) {
+      log.warn(
+        "an agent file names a forceModel this install does not have; that agent keeps the model opencode asks for until the file names one it has",
+        { agent: change.agent, wanted: withoutAccountMarker(change.to) },
+      )
+    }
+  }
+  return changes.length > 0
 }

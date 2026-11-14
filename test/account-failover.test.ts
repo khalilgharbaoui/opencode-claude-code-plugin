@@ -904,6 +904,56 @@ test("the plan-mode approval reads a tagged answer too", () => {
   assert.equal(rejected.message.content[0].content.includes("dcp-message-id"), false)
 })
 
+test("the switch form and the plan approval read dcp's compact reference too (h #g312)", () => {
+  // dcp 3.2.0's opencode 2 path appends `\n@<n>@` (optionally ` [priority]`)
+  // instead of the xml tag. The dispatch form was measured losing every answer
+  // to it on 2026-11-13; these two forms go through the same unwrapper.
+  const call = createAccountFailoverQuestionCall("sk-dcp-compact", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+    resetsAt: 1_791_067_800,
+    window: "five_hour",
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-dcp-compact",
+      answer(call.toolCallId, {
+        type: "text",
+        value: `${opencodeAnswer(call.input.questions[0].question, "default")}\n@1044@`,
+      }) as any,
+    ),
+    { kind: "switch", target: "default", sourceAccount: "appical", resetsAt: 1_791_067_800 },
+  )
+
+  const stopCall = createAccountFailoverQuestionCall("sk-dcp-compact-stop", {
+    sourceAccount: "appical",
+    candidates: ["default"],
+  })
+  assert.deepEqual(
+    consumeAccountFailoverAnswer(
+      "sk-dcp-compact-stop",
+      answer(stopCall.toolCallId, {
+        type: "text",
+        value: `${opencodeAnswer(stopCall.input.questions[0].question, "stop")}\n@12@ [high]`,
+      }) as any,
+    ),
+    { kind: "stop", reason: "the operator chose to stop" },
+  )
+
+  const plan = createExitPlanModeQuestionCall("sk-plan-dcp-compact", "toolu_plan_c", "the plan")
+  const approved = consumeExitPlanModeQuestionResult(
+    "sk-plan-dcp-compact",
+    answer(plan.toolCallId, {
+      type: "text",
+      value: `${opencodeAnswer("Do you want to proceed with this plan?", "yes")}\n@blocked@`,
+    }) as any,
+  )
+  assert.ok(approved, "the approval must be matched")
+  const parsed = JSON.parse(approved!)
+  assert.match(parsed.message.content[0].content, /User has approved your plan/)
+  assert.equal(parsed.message.content[0].is_error, undefined)
+})
+
 test("an answer to a form asked before an opencode restart still switches", () => {
   // No createAccountFailoverQuestionCall here: the process that asked is gone.
   const toolCallId = `${ACCOUNT_FAILOVER_TOOL_CALL_PREFIX}fromlastrun`

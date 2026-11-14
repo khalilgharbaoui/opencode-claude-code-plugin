@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { blankAccountProvider } from "./account-groups.js"
+import { DCP_COMPACT_REF_LINE, DCP_MESSAGE_ID_TAG } from "./dcp-message-refs.js"
 import { log } from "./logger.js"
 
 type Prompt = Parameters<LanguageModelV3["doGenerate"]>[0]["prompt"]
@@ -104,23 +105,11 @@ export const MAX_FORK_FINGERPRINTS = 64
  */
 export const DIGEST_VERSION = 3
 
-/**
- * dcp's message reference in its XML form (opencode 1): a message, a
- * compressed block (`b3`) or `BLOCKED`, with an optional `priority`
- * attribute. Only the tag itself goes, not the newlines dcp put before it,
- * because those are put there the same way every time and a leading `\s*`
- * would make the scan quadratic over a long run of whitespace.
- */
-const DCP_MESSAGE_ID_TAG = /<dcp-message-id(?:\s[^>]*)?>[^<]*<\/dcp-message-id>/g
-
-/**
- * The same reference in dcp's `compact` form, which its opencode 2 path uses:
- * a last line of `@12@`, `@b3@` or `@blocked@`, optionally followed by
- * ` [<priority>]`. Read off dcp 3.2.0's own source (`formatMessageIdTag`) and
- * measured on opencode 2.0.31: after an undo a message went out as `@4@`
- * before a restart and `@3@` after it (h #g259).
- */
-const DCP_COMPACT_REF_LINE = /^@(?:\d+|b\d+|blocked)@(?: \[[^\]\n]*\])?$/
+// dcp's message reference in its XML form (opencode 1), anywhere in a text,
+// and in its `compact` form (opencode 2) as a text's last line, are
+// `DCP_MESSAGE_ID_TAG` and `DCP_COMPACT_REF_LINE` in `src/dcp-message-refs.ts`
+// (h #g258, h #g259). Only the XML tag itself goes, not the newlines dcp put
+// before it, because those are put there the same way every time.
 
 /**
  * dcp's MAX CONTEXT LIMIT warning, which it appends to a message already in

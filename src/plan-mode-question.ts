@@ -1,3 +1,5 @@
+import { withoutTrailingDcpMessageRefs } from "./dcp-message-refs.js"
+
 export const QUESTION_TOOL_NAME = "question"
 
 export const APPROVED_EXIT_PLAN_MODE_MESSAGE =
@@ -13,21 +15,25 @@ const OPENCODE_QUESTION_RESULT_SUFFIX =
 /** What opencode writes for a question the operator left blank. */
 const OPENCODE_UNANSWERED = "Unanswered"
 
-/**
- * The tag opencode-dcp appends to a tool output on its way to the provider.
- *
- * Measured on 2026-10-03 from the live log: every failover pick arrived as
- * `...You can now continue with the user's answers in mind.\n<dcp-message-id>
- * m0795</dcp-message-id>`, so the `endsWith` below missed the suffix and the
- * whole sentence came back as the answer, which `classify` then refused as
- * `unrecognised answer`. Three picks in a row (`default`, `default`, `stop`)
- * were lost that way. opencode's own database stores the output WITHOUT the
- * tag, so it is added in flight and nothing upstream of here can strip it.
- *
- * Deliberately this one tag, anchored at the end, repeats allowed: a general
- * "drop any trailing tag" rule would eat an answer the operator typed.
- */
-const DCP_MESSAGE_ID_SUFFIX = /(?:\s*<dcp-message-id>[^<>]*<\/dcp-message-id>)+\s*$/
+// opencode-dcp appends a reference to a tool output on its way to the
+// provider, in either of its forms (`withoutTrailingDcpMessageRefs`), and both
+// readers below take it off before anything else.
+//
+// Measured on 2026-10-03 from the live log: every failover pick arrived as
+// `...You can now continue with the user's answers in mind.\n<dcp-message-id>
+// m0795</dcp-message-id>`, so the `endsWith` below missed the suffix and the
+// whole sentence came back as the answer, which `classify` then refused as
+// `unrecognised answer`. Three picks in a row (`default`, `default`, `stop`)
+// were lost that way. opencode's own database stores the output WITHOUT the
+// tag, so it is added in flight and nothing upstream of here can strip it.
+//
+// The same bug a third time on 2026-11-13 (h #g312): dcp's opencode 2 path
+// writes the `compact` form instead, `\n@1044@`, which the XML-only strip
+// missed, so every subagent dispatch answer on opencode 2 with dcp (combo
+// picks, `Customise…` and typed models alike) was read as a dismissal.
+//
+// Deliberately dcp's references only, anchored at the end, repeats allowed: a
+// general "drop any trailing tag" rule would eat an answer the operator typed.
 
 const KEY_SEPARATOR = "\u0000"
 
@@ -214,14 +220,15 @@ export function unwrapToolOutput(part: any): unknown {
  * five-hour limit) it arrives with a trailing newline, so an exact `endsWith`
  * missed it and both failover picks were refused as unrecognised. A trailing
  * `<dcp-message-id>` tag comes off for the same reason and was the same bug a
- * second time (2026-10-03); see `DCP_MESSAGE_ID_SUFFIX`.
+ * second time (2026-10-03), and its `compact` form a third (2026-11-13, h #g312);
+ * see `withoutTrailingDcpMessageRefs`.
  */
 function unwrapOpencodeQuestionResult(value: string, question?: string): string {
   // Every path below falls back to `untagged`, never to the raw input: the
   // tag is opencode-dcp's routing metadata and was never part of an answer,
   // so a bare `yes` that arrived with one should still read as `yes`. With no
   // tag present this is the input unchanged.
-  const untagged = value.replace(DCP_MESSAGE_ID_SUFFIX, "")
+  const untagged = withoutTrailingDcpMessageRefs(value)
   const sentence = untagged.trim()
   if (
     !sentence.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
@@ -287,7 +294,7 @@ export function parseQuestionAnswers(
   }
   if (typeof output !== "string") return null
 
-  const sentence = output.replace(DCP_MESSAGE_ID_SUFFIX, "").trim()
+  const sentence = withoutTrailingDcpMessageRefs(output).trim()
   if (
     !sentence.startsWith(OPENCODE_QUESTION_RESULT_PREFIX) ||
     !sentence.endsWith(OPENCODE_QUESTION_RESULT_SUFFIX)

@@ -1007,6 +1007,12 @@ export function createSubagentDispatchQuestion(
  * a valid answer, so `max` changes only the effort and `@worker` only the
  * account.
  *
+ * A model is accepted as its id or as the name the picker shows, because that
+ * is what an operator types: `fable 5.2 max` was refused as unknown on
+ * 2026-11-13 (h #g312), although this comment had promised `opus 5.5 / max`
+ * since the form shipped. `typedModelAt` reads up to four words as one model;
+ * the result must still be a registered id, so nothing is guessed.
+ *
  * The account must be written with a leading `@`, which is not decoration: an
  * account is a name the operator chose and a bare word could be a model this
  * install does not have yet, so the marker is what keeps a typo being refused
@@ -1022,30 +1028,56 @@ export function parseCustomChoice(
   const words = answer
     .trim()
     .split(/[\s,/]+/)
-    .map((word) => word.trim())
+    .map((word) => word.trim().toLowerCase())
     .filter(Boolean)
   if (words.length === 0) return null
 
   const choice: SubagentChoice = {}
-  for (const word of words) {
-    const lower = word.toLowerCase()
-    if (lower.startsWith("@")) {
-      const account = normalizeAccountName(lower.slice(1))
+  for (let at = 0; at < words.length; ) {
+    const word = words[at]
+    if (word.startsWith("@")) {
+      const account = normalizeAccountName(word.slice(1))
       if (!account || !candidates.includes(account)) return null
       choice.account = account
+      at += 1
       continue
     }
-    if (REASONING_EFFORTS.includes(lower)) {
-      choice.effort = lower
+    if (REASONING_EFFORTS.includes(word)) {
+      choice.effort = word
+      at += 1
       continue
     }
-    if (Object.hasOwn(defaultModels, lower)) {
-      choice.model = lower
-      continue
-    }
-    return null
+    const model = typedModelAt(words, at)
+    if (!model) return null
+    choice.model = model.id
+    at += model.words
   }
   return choice.model || choice.effort || choice.account ? choice : null
+}
+
+/** How many words one typed model may span: `claude`, family, version, `fast`. */
+const MAX_MODEL_WORDS = 4
+
+/**
+ * The registered model the words starting at `at` name, and how many words
+ * that took, or null. Longest first, so `opus 5.5 fast` is the fast twin and
+ * not Opus followed by an unknown word. A run of words is joined with `-`, its
+ * dots become `-` (`5.2` is `5-2` in an id), and `claude-` is put in front when
+ * it is missing: `fable 5.2`, `fable-5.2`, `opus-5-5` and `Claude Opus 5.5 fast` all
+ * land on an id the catalog has, and anything else is refused by that lookup.
+ */
+function typedModelAt(words: readonly string[], at: number): { id: string; words: number } | null {
+  for (let span = Math.min(MAX_MODEL_WORDS, words.length - at); span >= 1; span--) {
+    const run = words.slice(at, at + span)
+    if (span > 1 && run.some((word) => word.startsWith("@") || REASONING_EFFORTS.includes(word))) {
+      continue
+    }
+    const joined = run.join("-").replace(/\./g, "-")
+    for (const id of [joined, `claude-${joined}`]) {
+      if (Object.hasOwn(defaultModels, id)) return { id, words: span }
+    }
+  }
+  return null
 }
 
 /** A combo label (`claude-opus-5-5 / max`) back to a choice, or null. */

@@ -12758,3 +12758,107 @@ transform would duplicate a host setting, would not reach `/connect`, and its or
 the built-in's own transform was unmeasured. Documented in `docs/opencode-2.md` and the bundled
 skill instead.
 
+
+## Every dispatch form answer was lost to dcp's compact reference on opencode 2 (2026-11-14)
+
+h #g312. Reported on 2026-11-13 by the maintainer's Writing session (opencode 2.1.4,
+`claude-code-appical`) over WalkyTalky: "\"Customize\" is ignored. When a subagent dispatch offers
+the choice and Khalil picks \"customize\" to set a different model, the dispatch goes ahead anyway
+on the agent's configured model, without asking."
+
+Measured, read-only, in opencode 2's own store (`session_message`, the `question` tool parts
+whose id starts `subagent_dispatch_summary_`): twelve dispatch forms between 2026-11-12 23:16
+and 2026-11-14 00:15 UTC, ten with a stored answer (`claude-opus-5-5 / max` six times,
+`claude-opus-5-5 / xhigh` twice, `Customise…` at 20:50 and the typed `fable 5.2 max` at 20:52)
+and two with none. The retained `plugin.log` starts at 22:36 and holds four
+`subagent dispatch form was dismissed` NOTICEs, one per form from 22:55 on, and three of those
+four forms have an answer stored. So every answer was being read as a dismissal, combo picks as
+much as `Customise…`; the operator noticed only when the answer was meant to change something.
+
+Cause, read out of dcp 3.2.0's own source (`~/.cache/opencode/npm/@tarquinen/opencode-dcp@latest`,
+`formatMessageIdTag`, `injectMessageIds`, `appendToToolPart`): dcp appends a reference to every
+completed tool output it hands a provider, and its opencode 2 entry builds every session state
+with `createSessionState("compact")`, so the reference is `\n@1044@` (` [<priority>]` after it in
+`compress.mode: "message"`, `\n@b3@` for a block, `\n@blocked@` for a protected message) rather
+than opencode 1's `\n<dcp-message-id>m1044</dcp-message-id>`. `parseQuestionAnswers` and
+`unwrapOpencodeQuestionResult` stripped only the XML tag, and without an attribute, so the
+answer sentence failed its suffix check and the form read as dismissed. The account-switch form
+and the plan-mode bridge go through the same unwrapper and were broken the same way on
+opencode 2 with dcp (not measured live; the tests now cover both). This is h #g194's bug a third
+time: the 2026-10-03 fix was the XML form only.
+
+Fix: `src/dcp-message-refs.ts` holds dcp's two patterns and `withoutTrailingDcpMessageRefs`, which
+takes off every trailing reference in either form (attributes, `BLOCKED`, priority labels,
+several stacked), only at the end, a compact line only after a newline (dcp always writes one,
+and a bare `@4@` could be an answer), and returns the text untouched when there is none. Both
+question readers use it. The digest (`src/session-fork.ts`) imports the same two patterns and
+its hashing is unchanged (`DIGEST_VERSION` stays 3; `test/session-fork.test.ts` green).
+
+The typed `fable 5.2 max` would have been refused even with the strip: `parseCustomChoice` took a
+model only as its exact id, while its own doc comment had promised `opus 5.5 / max` since the
+form shipped. `typedModelAt` now reads up to four words as one model (joined with `-`, dots to
+`-`, `claude-` put in front, longest first), so `fable 5.2 max`, `opus 5.5 / high`,
+`Claude Opus 5.5 fast` and `sonnet-4.6` land on registered ids; the result must still be a
+`defaultModels` key, so nothing is guessed (`opus`, `fable 9.9`, `5.5` are refused).
+
+Tests: `test/dcp-message-refs.test.ts` (portable) for the stripper; in
+`test/subagent-dispatch.test.ts` the stored answers with each compact shape and the XML tag with
+an attribute, `Customise…` then `fable 5.2 max` through the form, and the picker names; in
+`test/account-failover.test.ts` the switch form and the plan approval with compact references.
+Against master's `plan-mode-question.ts` and `subagent-dispatch.ts` the three new dispatch tests
+and the new failover test fail, and pass with the fix.
+
+Not measured live: no opencode 2 with dcp in compact mode was driven through a real form for this
+change. The stored answers above, with the reference dcp's source says it appends, are what the
+tests replay through the real parser and the real form state machine.
+
+Found on the way, not fixed: `src/claude-session-wrapper.ts` strips dcp's XML reference from text
+it types into the interactive transport's TUI and not the compact one, and `promptChars` in
+`src/turn-history.ts` counts a compact reference into a prompt's length. Neither loses an answer.
+
+## An edited agent file applies from the next turn (2026-11-14)
+
+h #g313. The same report, second item: "A changed forceModel was not picked up by a running
+server. ... it should apply the new value or say why it cannot." The edit was to
+`~/.config/opencode/agents/designer.md`; no `agent model override refused` WARN was logged, so the
+new id was not refused, it was never read.
+
+Cause: the agent registry (`src/agent-models.ts`) was built once per set-up, in the config hook on
+opencode 1 and in `setup` on opencode 2 (`buildAgentRegistry`), and nothing read the agent files
+again until opencode set the plugin up again (a restart on 1.x).
+
+Fix: `buildAgentRegistry` hands `installAgentRegistry` the agent directories and the config's
+`agent` block as an overlay, and `refreshAgentRegistry`, awaited at the top of `runModelChain`
+ahead of every registry read, looks at most every 2 s (`AGENT_REGISTRY_RECHECK_MS`) with a
+`readdir` per agent directory and a `stat` per `.md` file (name, mtime, size, inode), and re-reads
+the files only when that fingerprint changed. A look never throws, a rebuild that lands mid-look
+wins, and `setAgentRegistry` forgets the disk source so a registry set by hand is never replaced.
+The await sits before `doStreamForHost`'s abort watch, which is safe: the watch also sees a signal
+that aborted before it was created (h #g182).
+
+Three decisions, each for a reason read or measured:
+
+- Only the plugin's own keys move: `forceModel`, `reasoningEffort`, `cacheTtl`, `maxTurns`,
+  `maxBudgetUsd`, `fallbackModels`. `mode`, `model` and the prompt are opencode's; opencode reads
+  them at set-up and keeps running the agent with them, so the registry keeps those values too
+  (the prompt matters to `interactiveUserInstructions`, which matches the prompt opencode sends).
+- opencode 1 copies every agent file's frontmatter into `config.agent` (read out of the 1.19.4
+  binary: the `{agent,agents}/**/*.md` loader spreads `...data`), and the overlay wins, so a
+  naive re-read would have changed nothing there. `mergeAgentRecords` treats a config value equal
+  to the file's value at build time as the file's own and lets it follow the file; a value only
+  `opencode.json` sets, or sets differently, still wins. At build time the baseline IS the file,
+  so the merge is exactly the overlay the builder always did.
+- It says what happened: one NOTICE naming each agent, key, old and new value (never a prompt),
+  one NOTICE when a file change is held back by the config's own value, and one WARN when the new
+  `forceModel` is not a model the install has (the agent keeps the model opencode asked for, as
+  an unknown `forceModel` always has).
+
+Tests: `test/agent-models.test.ts` (portable) for the window, the opencode 1 echo, the config's
+own value, the kept opencode keys, removals and additions, the unknown model, a hand-set
+registry, the build-time merge and `buildAgentRegistry` itself;
+`test/agent-file-refresh-stream.test.ts` (POSIX) for two real `doStream` turns of one session with
+the file edited between them. With the turn-time call removed, that stream test's second spawn is
+`--model claude-haiku-4-5` (the reported bug); with it, `claude-fable-5-2`.
+
+Not measured live in the maintainer's opencode: the running processes load the main checkout's
+`dist`, which this change does not rebuild.

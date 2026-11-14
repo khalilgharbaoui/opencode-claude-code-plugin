@@ -73,7 +73,8 @@
 ## Backlog
 
 - 2026-11-13, reported by Khalil's Writing session (opencode 2.1.4, `claude-code-appical`) over
-  WalkyTalky, diagnosed, not fixed yet. Reported verbatim: "1. \"Customize\" is ignored. When a subagent
+  WalkyTalky, diagnosed. **Both fixed on branch `fix/dispatch-answers` (2026-11-14, h #g312 and
+  h #g313); close this entry when that PR merges.** Reported verbatim: "1. \"Customize\" is ignored. When a subagent
   dispatch offers the choice and Khalil picks \"customize\" to set a different model, the dispatch goes ahead
   anyway on the agent's configured model, without asking. 2. A changed forceModel was not picked up by a
   running server. ... it should apply the new value or say why it cannot."
@@ -91,6 +92,17 @@
      `~/.config/opencode/agents/designer.md` waits for a re-setup or restart, and nothing says so. No
      `qualifyModelName` refusal was logged, so the bare `claude-fable-5-2` was not the cause. Fix: re-read
      agent definitions when their files change, cheaply (stat check), on both majors.
+
+- 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
+  message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
+  `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
+  message) and `promptChars` in `src/turn-history.ts` (counts it into a prompt's length for the
+  progress estimate). Neither loses an answer; `withoutTrailingDcpMessageRefs` and the two
+  patterns in `src/dcp-message-refs.ts` are the shared pieces to use.
+- 2026-11-14, noticed while fixing h #g313, not fixed: on opencode 2 every location's `setup`
+  rebuilds the one process-wide agent registry with that location's project directory, so the
+  last location set up decides which project's `.opencode/agents` the registry (and now its
+  refresh) reads. Pre-existing; unmeasured whether a second location ever runs turns here.
 
 - 2026-11-11: `workdir`: both majors' shell/bash tools have it (opencode 1.19.4 `bash`, opencode 2.x
   `shell`) and `src/host-tools.ts` passes it through, but the proxied `bash` def does not offer it.

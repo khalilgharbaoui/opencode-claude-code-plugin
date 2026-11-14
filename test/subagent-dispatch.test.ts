@@ -481,6 +481,34 @@ test("a typed model, a typed effort and both are accepted; anything else is not"
   assert.equal(parseCustomChoice("   "), null)
 })
 
+test("a model typed the way the picker names it is read as that model (h #g312)", () => {
+  // The answer stored on 2026-11-13, refused as unknown before.
+  assert.deepEqual(parseCustomChoice("fable 5.2 max"), { model: "claude-fable-5-2", effort: "max" })
+  // The example this parser's own comment had promised since it shipped.
+  assert.deepEqual(parseCustomChoice("opus 5.5 / max"), { model: "claude-opus-5-5", effort: "max" })
+  assert.deepEqual(parseCustomChoice("Claude Opus 5.5"), { model: "claude-opus-5-5" })
+  assert.deepEqual(parseCustomChoice("opus-5-5 high"), { model: "claude-opus-5-5", effort: "high" })
+  assert.deepEqual(parseCustomChoice("fable-5.2"), { model: "claude-fable-5-2" })
+  assert.deepEqual(parseCustomChoice("max Sonnet 4.6"), { model: "claude-sonnet-4-6", effort: "max" })
+  // Longest first, so `fast` belongs to the model rather than being refused.
+  assert.deepEqual(parseCustomChoice("opus 5.5 fast xhigh"), {
+    model: "claude-opus-5-5-fast",
+    effort: "xhigh",
+  })
+  assert.deepEqual(parseCustomChoice("Claude Opus 5.5 fast"), { model: "claude-opus-5-5-fast" })
+  // An account still rides along, and still only from the candidates.
+  assert.deepEqual(parseCustomChoice("fable 5.2 @work", ["default", "work"]), {
+    model: "claude-fable-5-2",
+    account: "work",
+  })
+  // Nothing is guessed: a family with no version, a version that does not
+  // exist and a version on its own are refused.
+  assert.equal(parseCustomChoice("opus"), null)
+  assert.equal(parseCustomChoice("fable 9.9 max"), null)
+  assert.equal(parseCustomChoice("5.5"), null)
+  assert.equal(parseCustomChoice("opus max 5.5"), null)
+})
+
 test("a typed custom answer round-trips through the form", () => {
   _resetSubagentDispatchForTests()
   const tasks = [task()]
@@ -840,6 +868,84 @@ test("opencode-dcp's trailing message-id tag comes off the sentence", () => {
     parseQuestionAnswers(part, questions)?.get("Pick a model"),
     "claude-opus-5-5 / max",
   )
+})
+
+/**
+ * What dcp 3.2.0's opencode 2 path appends to the same sentence: its `compact`
+ * form, a last line of `@<n>@` (`formatMessageIdTag`, h #g312). The answers are
+ * the ones opencode 2 stored for the forms of 2026-11-13, every one of which the
+ * plugin logged as `subagent dispatch form was dismissed`.
+ */
+function compactTagged(part: Record<string, unknown>, tag = "@1044@"): Record<string, unknown> {
+  const output = part.output as { type: string; value: string }
+  return { ...part, output: { ...output, value: `${output.value}\n${tag}` } }
+}
+
+test("opencode-dcp's compact reference comes off the sentence too (h #g312)", () => {
+  const question = 'About to dispatch the "designer" subagent (Add new columns to boards A-D). How should it run?'
+  for (const stored of ["claude-opus-5-5 / max", CUSTOMISE_ANSWER, "fable 5.2 max"]) {
+    for (const tag of ["@1044@", "@1044@ [high]", "@blocked@", "@b3@"]) {
+      assert.equal(
+        parseQuestionAnswers(compactTagged(answerPart("x", [[question, stored]]), tag), [question])?.get(question),
+        stored,
+        `${stored} with ${tag}`,
+      )
+    }
+  }
+  // The xml form with an attribute, which the old strip did not allow either.
+  const withPriority = {
+    type: "tool-result",
+    toolCallId: "x",
+    output: {
+      type: "text",
+      value:
+        `User has answered your questions: "${question}"="claude-opus-5-5 / max".` +
+        ` You can now continue with the user's answers in mind.\n<dcp-message-id priority="high">m0004</dcp-message-id>`,
+    },
+  }
+  assert.equal(parseQuestionAnswers(withPriority, [question])?.get(question), "claude-opus-5-5 / max")
+})
+
+test("Customise and a typed model each survive dcp's compact reference, end to end through the form", () => {
+  _resetSubagentDispatchForTests()
+  const tasks = [task({ agent: "designer" })]
+  const tagged = (call: { toolCallId: string; input: { questions: Array<{ question: string }> } }, answers: string[]) =>
+    consumeSubagentDispatchAnswer(
+      SK,
+      promptWith(
+        compactTagged(
+          answerPart(
+            call.toolCallId,
+            call.input.questions.map((question, index) => [question.question, answers[index] ?? ""] as [string, string]),
+          ),
+        ),
+      ),
+    )
+
+  // `Customise…` opens the per-type form instead of releasing with the defaults.
+  const summary = createSubagentDispatchQuestion(SK, ["call-1"], tasks, context())
+  const opened = tagged(summary, [CUSTOMISE_ANSWER])
+  assert.equal(opened?.kind, "form", "Customise must not read as a dismissal")
+  if (opened?.kind !== "form") return
+  assert.deepEqual(opened.call.input.questions.map((question) => question.header), ["designer"])
+  const typeRow = tagged(opened.call, ["fable 5.2 max"])
+  assert.equal(typeRow?.kind, "release")
+  if (typeRow?.kind !== "release") return
+  assert.deepEqual(typeRow.choices.get(0), { model: "claude-fable-5-2", effort: "max" })
+  assert.equal(typeRow.note, null)
+
+  // The answer typed straight into the summary, which is the stored one.
+  const direct = createSubagentDispatchQuestion(SK, ["call-1"], tasks, context())
+  const step = tagged(direct, ["fable 5.2 max"])
+  assert.equal(step?.kind, "release")
+  if (step?.kind !== "release") return
+  assert.deepEqual(step.choices.get(0), { model: "claude-fable-5-2", effort: "max" })
+  assert.equal(step.note, null, "no dismissal note")
+
+  // And a combo pick.
+  const combo = createSubagentDispatchQuestion(SK, ["call-1"], tasks, context())
+  const picked = tagged(combo, ["claude-opus-5-5 / max"])
+  assert.equal(picked?.kind === "release" && picked.choices.get(0)?.effort, "max")
 })
 
 test("the dispatch dialog never reaches a rebuilt transcript", () => {
