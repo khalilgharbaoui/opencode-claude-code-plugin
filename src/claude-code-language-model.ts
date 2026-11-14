@@ -33,6 +33,7 @@ import {
 import { planRewindFork } from "./rewind-fork.js"
 import {
   getAgentRegistry,
+  refreshAgentRegistry,
   qualifyModelName,
   resolveAgentCacheTtl,
   resolveAgentCliCaps,
@@ -1239,6 +1240,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     mode: TurnMode,
     accountRun?: AutoFailoverRun,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
+    // An agent file edited since the registry was built applies from this
+    // turn, rather than from opencode's next set-up of the plugin (h #g313).
+    // At most a `readdir` and a `stat` per agent file, every two seconds, and
+    // never throws. Ahead of every read of the registry below, and safe ahead
+    // of the turn's abort watch: that watch also sees a signal that aborted
+    // before it was created (h #g182).
+    await refreshAgentRegistry()
     const agent = this.getOpencodeAgent(options)
     const chain = this.isCompactionCall(options)
       ? []

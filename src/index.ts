@@ -33,10 +33,10 @@ import {
 import {
   type AgentRecord,
   agentDirectories,
+  getAgentRegistry,
   getDefaultSubagentModel,
+  installAgentRegistry,
   parseFallbackModelList,
-  readAgentMarkdownRecords,
-  setAgentRegistry,
   setDefaultSubagentCacheTtl,
   setDefaultSubagentCliCaps,
   setDefaultSubagentModel,
@@ -692,16 +692,12 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
     ),
   })
 
-  // Markdown agents may or may not reach a plugin's config hook (undocumented
-  // either way), so they are read from disk and then overlaid with whatever
-  // config does carry, which is authoritative when both describe one agent.
-  const records: Record<string, AgentRecord> = await readAgentMarkdownRecords(
-    agentDirectories(
-      process.env.HOME ?? process.env.USERPROFILE,
-      getOpencodeProjectDirectory(),
-    ),
-  )
-
+  // Markdown agents are read from disk and then overlaid with whatever config
+  // does carry, which is authoritative when both describe one agent. opencode 1
+  // copies every agent file's frontmatter into `config.agent` (h #g313), so the
+  // overlay can echo a file; `mergeAgentRecords` tells the two apart, and
+  // `refreshAgentRegistry` reads the files again when they change.
+  const overlay: Record<string, AgentRecord> = {}
   for (const [name, agent] of Object.entries(config.agent ?? {})) {
     const bag = (agent.options ?? {}) as Record<string, unknown>
     const pick = (key: string): string | undefined => {
@@ -722,25 +718,28 @@ export async function buildAgentRegistry(config: OpenCodeConfig): Promise<void> 
       (agent as Record<string, unknown>).fallbackModels ?? bag.fallbackModels,
     )
 
-    records[name] = {
-      mode: pick("mode") ?? records[name]?.mode,
-      model: pick("model") ?? records[name]?.model,
-      forceModel: pick("forceModel") ?? records[name]?.forceModel,
-      reasoningEffort:
-        pick("reasoningEffort") ?? records[name]?.reasoningEffort,
-      cacheTtl: pick("cacheTtl") ?? records[name]?.cacheTtl,
-      maxTurns: pickNumber("maxTurns") ?? records[name]?.maxTurns,
-      maxBudgetUsd: pickNumber("maxBudgetUsd") ?? records[name]?.maxBudgetUsd,
-      fallbackModels: declaredChain.length
-        ? declaredChain
-        : records[name]?.fallbackModels,
-      prompt: pick("prompt") ?? records[name]?.prompt,
+    overlay[name] = {
+      mode: pick("mode"),
+      model: pick("model"),
+      forceModel: pick("forceModel"),
+      reasoningEffort: pick("reasoningEffort"),
+      cacheTtl: pick("cacheTtl"),
+      maxTurns: pickNumber("maxTurns"),
+      maxBudgetUsd: pickNumber("maxBudgetUsd"),
+      fallbackModels: declaredChain.length ? declaredChain : undefined,
+      prompt: pick("prompt"),
     }
   }
 
-  setAgentRegistry(records)
+  await installAgentRegistry({
+    directories: agentDirectories(
+      process.env.HOME ?? process.env.USERPROFILE,
+      getOpencodeProjectDirectory(),
+    ),
+    overlay,
+  })
   log.debug("agent registry built", {
-    agents: Object.keys(records).length,
+    agents: Object.keys(getAgentRegistry()).length,
     defaultSubagentModel: getDefaultSubagentModel(),
   })
 }
