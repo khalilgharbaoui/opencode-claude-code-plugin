@@ -72,6 +72,40 @@
 
 ## Backlog
 
+- 2026-11-14 (evening), diagnosed, not fixed: a replayed thread blocked by a `UserPromptSubmit` hook
+  ends as a `no reply` turn and the history is lost. Two turns of session
+  `ses_e324dbf7bffeRHQIz10AIxm7dT` (after a switch from appical Opus 5.5 to default Fable 5.2, and
+  again after an opencode restart) logged `replaying the conversation as text ... reason:
+  sibling-conversation-changed` (20:42:45Z, 20:48:39Z; envelopes of 187,540 and 196,636 characters),
+  then `claude finished the turn without a reply` about 9 s later. Claude Code 2.1.322's transcript
+  (`~/.claude/projects/-Users-khalil-code-Private-opencode-claude-code-plugin/8ded207b-3255-4627-8a30-70cf0eb0773d.jsonl`,
+  first 12 records) shows why: the prompt was dequeued and never became a `user` record; the CLI wrote
+  `system`/`informational` "UserPromptSubmit operation blocked by hook: agent-guard: blocked user
+  prompt: it contains secret-like values" (`promptSubmitEnding.ending.kind: "blocked_by_hook"`,
+  `promptKept: false`, `preventContinuation: true`, `AGENT_GUARD_PROMPT_GUARD_MODE` controls it), made
+  no API call and ended the turn. The plugin wrote the `no reply` note ("Nothing failed and nothing is
+  pending"), counted the replay as delivered, and ran the next message on the same process with
+  `includeHistoryContext: false`, so that Claude session never had the conversation. To do: read what a
+  blocked prompt looks like on the headless stream (the frames before the `result`), name the hook and
+  its reason in the note, finish as an error, and do not count the replay as delivered. This is a
+  likely cause of the location-switch empty turn below (a new cwd is a new key, so its next step
+  replays): check that session's Claude transcript for the same `blocked_by_hook` record before
+  building anything on the session-key theory.
+- 2026-11-14 (evening), measured, not fixed: the wire-inactivity watchdog ended a turn while the child
+  lived on, unattached. The Mac idle-slept 21:10:23 to 21:20:56 CET (`pmset -g log`) during a designer
+  subagent's turn (`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of
+  context). `result fallback timer fired` at 20:15:31Z, inside a dark wake; the turn ended as
+  `provider.unknown` and the subagent was reported failed. The CLI recorded `api_error`
+  `StreamSuspended` ("Connection lost while your computer was asleep") at 20:21:03Z, retried on its own
+  and carried on: a proxied `write` (20:22:46Z) and a proxied `bash` (20:32:56Z) each waited out the
+  10-minute deadline with no opencode step to serve them, a third call was parked at 20:43:52Z, and the
+  child died only when opencode restarted (about 20:48Z). That is about 28 minutes of a 777K-context
+  child nobody was listening to, drawn from the account's window, and its finished file never reached
+  the disk. Questions: should the watchdog interrupt or stop the child when it closes the turn; should
+  a system suspend (the CLI's own `StreamSuspended`, or a timer firing late after a sleep) hold the
+  watchdog rather than fire it; should a call queued with no stream attached be rejected at once
+  rather than at its deadline.
+
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
@@ -174,6 +208,14 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
+- 2026-11-14: the blocked replay (Backlog, 2026-11-14 evening): fix the plugin side now, later, or
+  drop? Separate from that, agent-guard's prompt guard blocks any replay that quotes a secret-like
+  value: keep it blocking, or set `AGENT_GUARD_PROMPT_GUARD_MODE` for the plugin's spawns?
+- 2026-11-14: watchdog follow-up, offered by an earlier turn of session
+  `ses_e324dbf7bffeRHQIz10AIxm7dT` (its reasoning went with that session's history): "should the
+  plugin wait a little longer after the CLI reports an API error before it closes the turn? Now,
+  later, or drop?" The sleep incident (Backlog, 2026-11-14 evening) is a second case and adds the
+  unattached child: now, later, or drop?
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
