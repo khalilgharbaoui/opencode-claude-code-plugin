@@ -157,6 +157,16 @@ test("the note has one shape per case and never an em dash", () => {
 // Through a real doStream
 // ---------------------------------------------------------------------------
 
+/**
+ * The fake CLI is a `.cjs` file run through its shebang, which Windows cannot
+ * execute. Only the harness is POSIX-only: the parser and the note above are
+ * portable and run on the Windows CI job.
+ */
+const E2E = {
+  timeout: 60_000,
+  skip: process.platform === "win32" ? "the fake-CLI harness is POSIX-only" : false,
+} as const
+
 function fixture(settings: Record<string, unknown> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "opencode-prompt-blocked-"))
   const cliPath = join(cwd, "fake-claude.cjs")
@@ -282,9 +292,7 @@ const lastText = (stdin: string): string => {
   return texts[texts.length - 1]
 }
 
-test("a blocked message fails the turn, names the hook, and the session goes on", {
-  timeout: 60_000,
-}, async () => {
+test("a blocked message fails the turn, names the hook, and the session goes on", E2E, async () => {
   _resetServedConversations()
   const f = fixture()
   const logDir = mkdtempSync(join(tmpdir(), "opencode-prompt-blocked-log-"))
@@ -338,9 +346,7 @@ test("a blocked message fails the turn, names the hook, and the session goes on"
   assert.ok(!log.includes(REASON), "nor the hook's sentence")
 })
 
-test("a blocked replay drops the empty session, so the next message replays again", {
-  timeout: 60_000,
-}, async () => {
+test("a blocked replay drops the empty session, so the next message replays again", E2E, async () => {
   _resetServedConversations()
   const f = fixture()
   try {
@@ -379,9 +385,7 @@ test("a blocked replay drops the empty session, so the next message replays agai
   }
 })
 
-test("before 2.1.314 the frame has no outcome, and the turn still fails", {
-  timeout: 60_000,
-}, async () => {
+test("before 2.1.314 the frame has no outcome, and the turn still fails", E2E, async () => {
   _resetServedConversations()
   const f = fixture()
   try {
@@ -395,9 +399,7 @@ test("before 2.1.314 the frame has no outcome, and the turn still fails", {
   }
 })
 
-test("a message blocked inside a turn that went on gets a note, not a failure", {
-  timeout: 60_000,
-}, async () => {
+test("a message blocked inside a turn that went on gets a note, not a failure", E2E, async () => {
   _resetServedConversations()
   const f = fixture()
   try {
@@ -414,9 +416,7 @@ test("a message blocked inside a turn that went on gets a note, not a failure", 
   }
 })
 
-test("a blocked compaction writes no text and ends on an error", {
-  timeout: 60_000,
-}, async () => {
+test("a blocked compaction writes no text and ends on an error", E2E, async () => {
   _resetServedConversations()
   const f = fixture()
   try {
