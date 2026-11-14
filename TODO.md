@@ -72,25 +72,15 @@
 
 ## Backlog
 
-- 2026-11-14 (evening), diagnosed, not fixed: a replayed thread blocked by a `UserPromptSubmit` hook
-  ends as a `no reply` turn and the history is lost. Two turns of session
-  `ses_e324dbf7bffeRHQIz10AIxm7dT` (after a switch from appical Opus 5.5 to default Fable 5.2, and
-  again after an opencode restart) logged `replaying the conversation as text ... reason:
-  sibling-conversation-changed` (20:42:45Z, 20:48:39Z; envelopes of 187,540 and 196,636 characters),
-  then `claude finished the turn without a reply` about 9 s later. Claude Code 2.1.322's transcript
-  (`~/.claude/projects/-Users-khalil-code-Private-opencode-claude-code-plugin/8ded207b-3255-4627-8a30-70cf0eb0773d.jsonl`,
-  first 12 records) shows why: the prompt was dequeued and never became a `user` record; the CLI wrote
-  `system`/`informational` "UserPromptSubmit operation blocked by hook: agent-guard: blocked user
-  prompt: it contains secret-like values" (`promptSubmitEnding.ending.kind: "blocked_by_hook"`,
-  `promptKept: false`, `preventContinuation: true`, `AGENT_GUARD_PROMPT_GUARD_MODE` controls it), made
-  no API call and ended the turn. The plugin wrote the `no reply` note ("Nothing failed and nothing is
-  pending"), counted the replay as delivered, and ran the next message on the same process with
-  `includeHistoryContext: false`, so that Claude session never had the conversation. To do: read what a
-  blocked prompt looks like on the headless stream (the frames before the `result`), name the hook and
-  its reason in the note, finish as an error, and do not count the replay as delivered. This is a
-  likely cause of the location-switch empty turn below (a new cwd is a new key, so its next step
-  replays): check that session's Claude transcript for the same `blocked_by_hook` record before
-  building anything on the session-key theory.
+- 2026-11-14 (evening), the blocked replay: FIXED on `fix/blocked-prompt` (h #g314). A message a
+  `UserPromptSubmit` hook ends now fails the turn under a `▌ **prompt blocked:**` note quoting the
+  hook's reason, and a blocked replay drops its empty session so the next message replays again.
+  Still open from it: (1) why the Opus 5.5 (appical) to Fable 5.2 (default) switch in session
+  `ses_e324dbf7bffeRHQIz10AIxm7dT` was refused as `sibling-conversation-changed` at all, which is
+  what made the replay happen; (2) the interactive transport does not read the TUI's
+  `promptSubmitEnding` record, and how a blocked prompt ends a PTY turn is unmeasured; (3) the
+  location-switch empty turn below may be the same block: check that session's Claude transcript for
+  a `blocked_by_hook` record before building anything on the session-key theory.
 - 2026-11-14 (evening), measured, not fixed: the wire-inactivity watchdog ended a turn while the child
   lived on, unattached. The Mac idle-slept 21:10:23 to 21:20:56 CET (`pmset -g log`) during a designer
   subagent's turn (`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of
@@ -208,9 +198,9 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-14: the blocked replay (Backlog, 2026-11-14 evening): fix the plugin side now, later, or
-  drop? Separate from that, agent-guard's prompt guard blocks any replay that quotes a secret-like
-  value: keep it blocking, or set `AGENT_GUARD_PROMPT_GUARD_MODE` for the plugin's spawns?
+- 2026-11-14: agent-guard's prompt guard blocks any replay that quotes a secret-like value (the plugin
+  side is fixed, h #g314, and never sets the guard's variable itself): keep it blocking, or set
+  `AGENT_GUARD_PROMPT_GUARD_MODE` for opencode's environment? Your config, not the plugin's.
 - 2026-11-14: watchdog follow-up, offered by an earlier turn of session
   `ses_e324dbf7bffeRHQIz10AIxm7dT` (its reasoning went with that session's history): "should the
   plugin wait a little longer after the CLI reports an API error before it closes the turn? Now,

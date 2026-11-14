@@ -11,6 +11,7 @@ import type { PendingProxyCall } from "./proxy-broker.js"
 import type { AutoContinueState } from "./auto-continue.js"
 import type { ModelRefusal } from "./model-fallback.js"
 import type { AccountBlockKind } from "./account-failover.js"
+import type { PromptBlock } from "./cli-events.js"
 
 /**
  * The turn's own mutable state, lifted out of `doStreamForHost`'s `start()`
@@ -313,6 +314,15 @@ export interface TurnState {
   accountBlock: AccountBlockKind | null
   /** Set only when a fallback is armed, so a turn with no chain is unchanged. */
   modelRefusal: ModelRefusal | null
+  /**
+   * A message Claude Code ended before the model saw it (a `UserPromptSubmit`
+   * hook), from its `system`/`informational` frame. Whether it was this turn's
+   * own message or one steered into a turn that went on is only known at the
+   * `result`, which sets `ownPromptBlocked`. (h #g314)
+   */
+  promptBlock: PromptBlock | null
+  /** This turn's own message was ended: no API call, nothing answered. */
+  ownPromptBlocked: boolean
 
   // ---- The batched drain --------------------------------------------------
 
@@ -503,6 +513,8 @@ export function createTurnState(init: TurnStateInit): TurnState {
     compactionFailureText: null,
     accountBlock: null,
     modelRefusal: null,
+    promptBlock: null,
+    ownPromptBlocked: false,
 
     subagentDispatchForm: null,
     drainBuffer: [],

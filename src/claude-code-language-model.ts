@@ -4398,12 +4398,33 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
         const completeResult = (msg: ClaudeStreamMessage) => {
           if (state.controllerClosed) return
+          // A hook ended the replay of this conversation's history into a
+          // session that had none of it (h #g314). The session is empty, but
+          // everything below would record it as the one that continues the
+          // conversation, and the next message would go to it bare: that is
+          // how a model switch lost a session's history without a word. So
+          // nothing is recorded, and the child and its session id go, which
+          // makes the next message replay the history again.
+          const blockedReplay =
+            state.ownPromptBlocked &&
+            state.promptBlock?.promptKept === false &&
+            includeHistoryContext &&
+            !compactionMode
+          if (blockedReplay) {
+            deleteActiveProcess(sk)
+            deleteClaudeSessionId(sk)
+            log.notice("a hook ended the replayed history; the empty claude session was dropped", {
+              sessionKey: sk,
+              kind: state.promptBlock?.kind,
+            })
+          }
           // Which Claude session answered this conversation, for the next
           // opencode process. Only after a turn that was served: a failed one
           // may leave a transcript the plugin itself would not resume.
           if (
             self.config.resumeAfterRestart !== false &&
             !compactionMode &&
+            !blockedReplay &&
             msg.is_error !== true &&
             typeof msg.session_id === "string"
           ) {
@@ -4421,14 +4442,19 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // elsewhere in between (h #g239). On every `result`, served or not:
           // the CLI received the envelope either way, and a turn it refused is
           // in its transcript as a question without an answer, so replaying
-          // that question later would hand it the same message twice.
+          // that question later would hand it the same message twice. A
+          // message a hook ended counts as asked too, though the CLI dropped it
+          // (h #g314): sending it again would only be ended again.
           //
           // A served turn also leaves its checkpoint: the transcript entry its
           // reply ended on, which an undo or edit later cuts a copy of the
           // session at (h #g282). Only a reply that ended on Claude's own
           // words, in the session this result names: a turn that failed, or
           // whose last record is a tool call, is no place to cut.
-          if (!compactionMode) {
+          //
+          // Not after a blocked replay: the CLI never received that envelope
+          // (`prompt_kept: false`), and the session it went to is gone.
+          if (!compactionMode && !blockedReplay) {
             const reply = state.lastReplyEntry
             const checkpoint =
               msg.is_error !== true &&
@@ -4841,6 +4867,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           fastMode,
           planModeQuestionActive,
           interactive: useInteractive,
+          replayCarried: includeHistoryContext && !compactionMode,
           sourceAccount: limitAccount,
           usageAccount: spawnedAccount,
           // The config dir of the account that ran, so an account-block note

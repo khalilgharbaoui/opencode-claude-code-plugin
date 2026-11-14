@@ -12872,3 +12872,75 @@ Shipped as v0.73.3 on 2026-11-14 (PR #187), a patch, together with h #g312: CI g
 Windows on the PR head `0167bda`, on the merge commit `436cb0d` before the tag and on the release
 commit `0a0d534`, the publish confirmed by the `Publish package` step's tail and the version
 document's shasum (`702fc31b`), with a GitHub Release.
+
+
+## A message a UserPromptSubmit hook blocked read as an empty reply, and a blocked replay lost the history (2026-11-14)
+
+h #g314. Found on 2026-11-14 in the maintainer's own session `ses_e324dbf7bffeRHQIz10AIxm7dT`
+(opencode 2, Claude Code 2.1.322), after a switch from the appical account's Opus 5.5 to the
+default account's Fable 5.2. Two turns logged `replaying the conversation as text ... reason:
+sibling-conversation-changed` (20:42:45Z and, after an opencode restart, 20:48:39Z; envelopes of
+187,540 and 196,636 characters), then `claude finished the turn without a reply` about 9 s later,
+and the reply was a `▌ **no reply:**` note saying nothing failed. The next message ran on the same
+process with `includeHistoryContext: false`, so that Claude session never had the conversation, and
+the model answered a "?" with a status report it had rebuilt from disk.
+
+Claude Code's transcript (first 12 records, read for their types only) shows why: the prompt was
+dequeued and never became a `user` record; the CLI wrote a `system`/`informational` record
+"UserPromptSubmit operation blocked by hook: agent-guard: blocked user prompt: it contains
+secret-like values" (`promptSubmitEnding.ending.kind: "blocked_by_hook"`, `promptKept: false`),
+made no API call and ended the turn. The plugin's log has the result: `numTurns: 0`, `costUsd: 0`,
+`isError: false`, `subtype: "success"`.
+
+Measured with a scratch `UserPromptSubmit` hook (`--setting-sources ""` plus `--settings`, no API
+call is made for a blocked prompt):
+
+- 2.1.314 and 2.1.322, a hook exiting 2 and a hook answering `{"decision":"block"}` alike: one
+  `system`/`informational` frame, `level: "warning"`, `prevent_continuation: true`,
+  `prompt_submit_outcome: {kind: "blocked_by_hook", prompt_kept: false, reason: <the hook's
+  sentence>}`, then `result` `success`, `is_error: false`, `num_turns: 0`, `stop_reason: null`.
+- 2.1.293: the same frame with no `prompt_submit_outcome`.
+- Every version: the frame's `content` is "UserPromptSubmit operation blocked by hook:\n[<the hook
+  command>]: <reason>\n\n\nOriginal prompt: <the WHOLE prompt>", and the result's `result` text
+  repeats it. The plugin never rendered it (it renders `result` only when `is_error`), and nothing
+  here may read past its first words: that prompt is the text the guard refused.
+- A message queued while a turn runs (the plugin's forwarded user messages beside a proxied tool
+  result) is judged too: with a hook that blocks only `BLOCKME`, a first message ran a 8-second
+  Bash call, a second message sent 4 s in was blocked by the same frame mid-turn, and the turn went
+  on and answered (`num_turns: 2`). So `num_turns === 0` is what says it was this turn's own
+  message.
+- The CLI's own list of kinds (2.1.322's schema): `blocked_by_hook` (a hook answered with a block),
+  `stopped_by_hook` (a hook answered `continue: false`), `dropped_by_hook` and `not_passed_on` (a
+  plugin's code module), `no_verdict` (no hook gave a verdict and Claude Code ended the prompt).
+
+What changed:
+
+- `parsePromptBlock` reads the outcome (or the 2.1.293 shape) and nothing else; the WARN carries
+  `kind`, `promptKept` and `reasonChars`, and the note quotes the reason on one line, capped at 300
+  characters.
+- This turn's own message blocked: the turn finishes `{unified: "error", raw: <kind>}` under a
+  `▌ **prompt blocked:**` note, with no `no reply` note and no `turnStats` footer. The session is
+  kept and the message is recorded as asked, so the next message goes to the same process bare;
+  sending the blocked one again would only be blocked again.
+- A blocked REPLAY (the envelope carried the history into a session that had none): the child is
+  killed and `deleteClaudeSessionId` drops the id, the served chain and the resume record before
+  anything is recorded, so the next message replays the history again. The hook judges that replay
+  the same way, which is deliberate: a guard's verdict is the operator's to change, and the plugin
+  sets no hook's bypass variable. The note says so and names the way out (switch back to the model
+  or account that answered before, or let the hook pass the replay).
+- A steered message blocked inside a turn that went on: the note only, the turn served.
+- A blocked compaction writes no text and ends on its error part, as every failed compaction does
+  (h #g214).
+
+Found on the way: `REFUSAL_FALLBACK_MARKER` (h #g300) was never added to `PLUGIN_NOTE_MARKERS`,
+so a `▌ **refusal fallback:**` note was replayed to Claude as its own words, while AGENTS.md said it
+was on the list. Both markers are on it now, and `test/turn-stats.test.ts` scans `src/` for every
+`export const *_MARKER = "▌` and fails on one that is not.
+
+Not done: the interactive transport does not read the TUI's `promptSubmitEnding` record, and how a
+blocked prompt ends a PTY turn is unmeasured. Not diagnosed here: why the sibling carry was refused
+as `sibling-conversation-changed` in the first place, which is what made the replay happen.
+
+Tests: `test/prompt-blocked.test.ts` (the parser, the note, and a fake CLI replaying the measured
+frames through real `doStream` turns, with a secret-like string in the prompt that must reach
+neither the reply nor the log), and the marker scan in `test/turn-stats.test.ts`.

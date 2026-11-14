@@ -6,10 +6,18 @@
  */
 import "./isolate.js"
 import assert from "node:assert/strict"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
+import { fileURLToPath } from "node:url"
 import {
   ACCOUNT_BLOCK_MARKER,
   FAILOVER_MARKER,
@@ -18,7 +26,9 @@ import {
 import {
   COMPACT_BOUNDARY_MARKER,
   CONVERSATION_RESET_MARKER,
+  PROMPT_BLOCKED_MARKER,
   RATE_LIMIT_MARKER,
+  REFUSAL_FALLBACK_MARKER,
   RESULT_ERROR_MARKER,
   SILENT_TURN_MARKER,
   STREAM_TIMEOUT_MARKER,
@@ -178,6 +188,8 @@ test("every ▌ marker the plugin writes is stripped from a rebuilt transcript",
     `${CONVERSATION_REWOUND_MARKER} the thread was edited or undone.`,
     `${TURN_STATS_MARKER} $0.0001`,
     `${BUDGET_MARKER} this conversation has spent $0.50, 50% of its $1.00 \`maxBudgetUsd\`.`,
+    `${REFUSAL_FALLBACK_MARKER} claude-opus-5-5's safety classifier stopped the reply.`,
+    `${PROMPT_BLOCKED_MARKER} A UserPromptSubmit hook blocked this message.`,
   ]
   for (const note of notes) {
     const prompt = [
@@ -198,6 +210,29 @@ test("every ▌ marker the plugin writes is stripped from a rebuilt transcript",
       `not stripped: ${note.slice(0, 40)}`,
     )
   }
+})
+
+test("every ▌ marker declared in src/ is on the strip list", () => {
+  // The list above is only as good as the memory of whoever adds a note:
+  // `REFUSAL_FALLBACK_MARKER` shipped in h #g300 and was never added, so its
+  // note came back to Claude as its own words until h #g314. Read the source
+  // instead, so a new marker fails here the day it is written.
+  const srcDir = fileURLToPath(new URL("../src/", import.meta.url))
+  const declared = new Set<string>()
+  for (const file of readdirSync(srcDir).filter((name) => name.endsWith(".ts"))) {
+    const source = readFileSync(join(srcDir, file), "utf8")
+    for (const match of source.matchAll(/export const ([A-Z_]+_MARKER)\s*=\s*"▌/g)) {
+      declared.add(match[1])
+    }
+  }
+  const builder = readFileSync(join(srcDir, "message-builder.ts"), "utf8")
+  const list = builder.slice(
+    builder.indexOf("const PLUGIN_NOTE_MARKERS = ["),
+    builder.indexOf("]", builder.indexOf("const PLUGIN_NOTE_MARKERS = [")),
+  )
+  assert.ok(declared.size >= 20, `found only ${declared.size} markers`)
+  const missing = [...declared].filter((name) => !new RegExp(`\\b${name}\\b`).test(list))
+  assert.deepEqual(missing, [])
 })
 
 test("turnStats is off unless the provider option asks for it", () => {

@@ -1506,6 +1506,20 @@ at 200 characters, because its stdout is spliced into the model's context. The p
 never passes `--include-hook-events`, so only `SessionStart` (and `Setup`) hooks are
 reported at all; `cancelled` is not a failure, since an abort produces it.
 
+A `UserPromptSubmit` hook that ends a message is not in the doctor: it is a
+`▌ **prompt blocked:**` note in the reply, quoting the hook's reason (h #g314). Claude
+Code reports it as a `success` with no API call, so older plugins showed
+`▌ **no reply:**` instead. The turn now finishes as an error (`blocked_by_hook`, or the
+CLI's other kinds: `stopped_by_hook`, `dropped_by_hook`, `not_passed_on`, `no_verdict`).
+When the blocked message was the replay of the history after a model or account switch,
+the empty Claude session is dropped, so the next message replays the history again rather
+than continuing without it; the hook judges that replay the same way, so the user's
+choices are to switch back to the model or account that answered before, to change the
+hook, or to start a new session. A message steered into a running turn that a hook
+blocks gets the note under an answer that did not see it, and the turn is not failed.
+The plugin never sets or suggests a hook's own bypass variable (agent-guard's
+`AGENT_GUARD_PROMPT_GUARD_MODE`, say): relaxing a guard is the user's decision.
+
 A **Background subagents** section is always printed: first `running now: N (of M
 started by this process)`, then whether `background` was offered
 to Claude and `task_status` / `task_cancel` registered, the opencode major, what decided

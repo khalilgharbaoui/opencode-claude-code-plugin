@@ -145,6 +145,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   anthropicApiKeyInEnv: "flag",
   includeHistoryContext: "flag",
   resumable: "flag",
+  // Whether a message a hook ended is in Claude's transcript anyway (h #g314).
+  promptKept: "flag",
   interactive: "flag",
   interactiveTransport: "flag",
   isError: "flag",
@@ -183,6 +185,8 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   cacheWriteTokens: "count",
   code: "count",
   count: "count",
+  // The length of a hook's reason, never its text (h #g314).
+  reasonChars: "count",
   dropped: "count",
   exitCode: "count",
   historyLength: "count",
