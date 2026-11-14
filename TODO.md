@@ -75,12 +75,13 @@
 - 2026-11-14 (evening), the blocked replay: FIXED on `fix/blocked-prompt` (h #g314). A message a
   `UserPromptSubmit` hook ends now fails the turn under a `▌ **prompt blocked:**` note quoting the
   hook's reason, and a blocked replay drops its empty session so the next message replays again.
-  Still open from it: (1) why the Opus 5.5 (appical) to Fable 5.2 (default) switch in session
-  `ses_e324dbf7bffeRHQIz10AIxm7dT` was refused as `sibling-conversation-changed` at all, which is
-  what made the replay happen; (2) the interactive transport does not read the TUI's
-  `promptSubmitEnding` record, and how a blocked prompt ends a PTY turn is unmeasured; (3) the
-  location-switch empty turn below may be the same block: check that session's Claude transcript for
-  a `blocked_by_hook` record before building anything on the session-key theory.
+  Why the switch replayed at all is fixed on the same branch (h #g315): the appical session's two
+  usage-limited turns never moved its resume record, so the by-hand switch to the default account
+  found their messages past it and refused the carry (`sibling-conversation-changed`). Still open:
+  (1) the interactive transport does not read the TUI's `promptSubmitEnding` record, and how a
+  blocked prompt ends a PTY turn is unmeasured; (2) the location-switch empty turn below may be the
+  same block: check that session's Claude transcript for a `blocked_by_hook` record before building
+  anything on the session-key theory.
 - 2026-11-14 (evening), measured, not fixed: the wire-inactivity watchdog ended a turn while the child
   lived on, unattached. The Mac idle-slept 21:10:23 to 21:20:56 CET (`pmset -g log`) during a designer
   subagent's turn (`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of

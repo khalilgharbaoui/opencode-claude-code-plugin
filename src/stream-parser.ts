@@ -943,6 +943,11 @@ export function createLineHandler(
         // makes the note certain to fire at the result. (h #g194)
         const apiErrorReply = (msg as { is_api_error_message?: unknown })
           .is_api_error_message === true
+        // Either signal means the CLI wrote its own failure reply after the
+        // user's message, so the session holds that message (h #g315).
+        if (apiErrorReply || typeof (msg as { error?: unknown }).error === "string") {
+          state.cliFailureReply = true
+        }
         // The limit itself, whichever of the note or the switch form answers
         // it: the interactive transport has no `rate_limit_event`, so this
         // reply is the only signal it gets (h #g209).

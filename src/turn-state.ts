@@ -323,6 +323,14 @@ export interface TurnState {
   promptBlock: PromptBlock | null
   /** This turn's own message was ended: no API call, nothing answered. */
   ownPromptBlocked: boolean
+  /**
+   * The CLI answered this turn with its own failure reply (a `<synthetic>`
+   * assistant frame, `is_api_error_message` or an `error` kind), which it
+   * writes to the transcript right after the user's message. A turn that
+   * failed this way on a usage limit or an account block left a session that
+   * holds the message, so its resume record is written (h #g315).
+   */
+  cliFailureReply: boolean
 
   // ---- The batched drain --------------------------------------------------
 
@@ -515,6 +523,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     modelRefusal: null,
     promptBlock: null,
     ownPromptBlocked: false,
+    cliFailureReply: false,
 
     subagentDispatchForm: null,
     drainBuffer: [],

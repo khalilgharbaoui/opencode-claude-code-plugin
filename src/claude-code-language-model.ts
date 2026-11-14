@@ -4419,13 +4419,26 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             })
           }
           // Which Claude session answered this conversation, for the next
-          // opencode process. Only after a turn that was served: a failed one
-          // may leave a transcript the plugin itself would not resume.
+          // opencode process, and for a by-hand switch to another model or
+          // account. After a turn that was served, and after one that failed
+          // on a usage limit or an account block with the CLI's own failure
+          // reply (h #g315): measured on 2.1.322, that turn's message and the
+          // `<synthetic>` reply are both in the transcript, so the session is
+          // intact and holds the message. Leaving the record a turn behind is
+          // what made the switch an operator makes BECAUSE of a limit replay
+          // the whole thread instead of carrying it (`sibling-conversation-
+          // changed`: the limited turn's message sat past the record). Every
+          // other failure may leave a transcript the plugin would not resume,
+          // or one too long to carry anywhere, and keeps the replay.
+          const failedTurnKeptSession =
+            msg.is_error === true &&
+            state.cliFailureReply &&
+            (!!state.accountLimitHit || !!state.accountBlock)
           if (
             self.config.resumeAfterRestart !== false &&
             !compactionMode &&
             !blockedReplay &&
-            msg.is_error !== true &&
+            (msg.is_error !== true || failedTurnKeptSession) &&
             typeof msg.session_id === "string"
           ) {
             // Where the transcript was written, and whose account that is, so

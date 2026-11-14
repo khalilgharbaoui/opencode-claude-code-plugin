@@ -12938,9 +12938,47 @@ was on the list. Both markers are on it now, and `test/turn-stats.test.ts` scans
 `export const *_MARKER = "▌` and fails on one that is not.
 
 Not done: the interactive transport does not read the TUI's `promptSubmitEnding` record, and how a
-blocked prompt ends a PTY turn is unmeasured. Not diagnosed here: why the sibling carry was refused
-as `sibling-conversation-changed` in the first place, which is what made the replay happen.
+blocked prompt ends a PTY turn is unmeasured. Why the replay happened at all is h #g315.
 
 Tests: `test/prompt-blocked.test.ts` (the parser, the note, and a fake CLI replaying the measured
 frames through real `doStream` turns, with a secret-like string in the prompt that must reach
 neither the reply nor the log), and the marker scan in `test/turn-stats.test.ts`.
+
+
+## A by-hand switch after a usage limit replayed the thread instead of carrying it (2026-11-14)
+
+h #g315. The other half of h #g314's incident: why the switch from the appical account's Opus 5.5
+to the default account's Fable 5.2 replayed the thread at all. The plugin log names it
+(`replaying the conversation as text ... reason: sibling-conversation-changed`), and the resume
+store and the log together say why:
+
+- The resume record for the appical key (`claude-opus-5-5@appical::...::["claude-code-appical",
+  "build"]`, Claude session `3b917453`) was last written at 19:36:45Z, covering 241 messages.
+- That key's next two turns, 20:21:42Z and 20:23:44Z, both ended on the account's 5-hour limit
+  (`Claude Code rejected this request: you are out of usage in the 5-hour window`, `isError: true`).
+  A record was only ever written after a `result` with `is_error !== true`, so neither moved it.
+- At 20:42:45Z the operator picked a model under the default account. `findSiblingResumePoint` found
+  the appical record, but the two limited turns' user messages sat past it, and
+  `continuesRecordedConversation` refuses a user message past the record: `sibling-conversation-
+  changed`, a replay of 248 messages, which agent-guard then blocked (h #g314).
+
+Claude Code's transcript of `3b917453` (its tail, read for record types only) holds both limited
+turns: a `user` record, an `api-request`, and a `<synthetic>` assistant reply with
+`error: "rate_limit"`, twice. So the session was intact and held those messages, and carrying it
+would have been right. The rule "a failed turn may leave a transcript the plugin would not resume"
+is true of failures in general and false of this one, and this one is the failure that makes an
+operator switch accounts.
+
+What changed: `TurnState.cliFailureReply` is set when the CLI answers with its own failure reply
+(`is_api_error_message`, or an `error` kind, which is all an account block's reply carries), and
+`completeResult` writes the resume record after a failed turn when that reply came and the failure
+was a usage limit or an account block. Every other failure keeps the old rule: an overloaded API
+or a too-long prompt is not trusted to have left a session worth carrying, and a too-long one would
+fail again wherever it was carried. The same record serves an opencode restart, which after a limit
+replayed for the same reason and now resumes.
+
+Tests, in `test/account-groups.test.ts` beside the by-hand switch tests, whose fake CLI now answers
+a `LIMITME` message the way 2.1.322 answers a usage limit and a `SERVERERR` one with a 529: a switch
+after a limit resumes the first account's session from the second account's config dir with no
+replay and without re-sending the limited message (it fails without the change: the switch
+replays), and a switch after the 529 still replays.
