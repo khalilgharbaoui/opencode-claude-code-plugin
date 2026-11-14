@@ -72,27 +72,6 @@
 
 ## Backlog
 
-- 2026-11-13, reported by Khalil's Writing session (opencode 2.1.4, `claude-code-appical`) over
-  WalkyTalky, diagnosed. **Both fixed and shipped in v0.73.3 (2026-11-14, PR #187, h #g312 and
-  h #g313); close this entry when that PR merges.** Reported verbatim: "1. \"Customize\" is ignored. When a subagent
-  dispatch offers the choice and Khalil picks \"customize\" to set a different model, the dispatch goes ahead
-  anyway on the agent's configured model, without asking. 2. A changed forceModel was not picked up by a
-  running server. ... it should apply the new value or say why it cannot."
-  1. **Every dispatch form answer is read as a dismissal on opencode 2 with dcp.** plugin.log: four
-     forms on 2026-11-13, all `subagent dispatch form was dismissed`; the last one's stored answer was the
-     typed `fable 5.2 max`. dcp 3.2.0's `compact` id format (in use here) appends `\n@1044@` (optionally
-     ` [priority]`) to the tool output in flight; `parseQuestionAnswers` strips only the XML
-     `<dcp-message-id>` form, so the sentence fails its suffix check and returns null. Reproduced with the
-     plugin's own parser: stored text and the XML form parse, the compact form returns null. The same
-     strip guards `unwrapOpencodeQuestionResult`, so the account-switch form and the plan-mode bridge are
-     very likely broken the same way (not tested). Fix: strip the compact line too (session-fork.ts
-     already knows its shape, h #g259), and check whether a typed `fable 5.2 max` parses at all.
-  2. **A changed `forceModel` is not seen until the plugin is set up again.** On opencode 2 the agent
-     registry is built once per `setup` (`src/v2.ts`, `deps.buildAgentRegistry`), so an edit to
-     `~/.config/opencode/agents/designer.md` waits for a re-setup or restart, and nothing says so. No
-     `qualifyModelName` refusal was logged, so the bare `claude-fable-5-2` was not the cause. Fix: re-read
-     agent definitions when their files change, cheaply (stat check), on both majors.
-
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
