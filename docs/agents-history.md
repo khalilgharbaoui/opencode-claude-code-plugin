@@ -12816,6 +12816,11 @@ Found on the way, not fixed: `src/claude-session-wrapper.ts` strips dcp's XML re
 it types into the interactive transport's TUI and not the compact one, and `promptChars` in
 `src/turn-history.ts` counts a compact reference into a prompt's length. Neither loses an answer.
 
+Shipped as v0.73.3 on 2026-11-14 (PR #187), a patch, together with h #g313: CI green on Linux and
+Windows on the PR head `0167bda`, on the merge commit `436cb0d` before the tag and on the release
+commit `0a0d534`, the publish confirmed by the `Publish package` step's tail and the version
+document's shasum (`702fc31b`), with a GitHub Release.
+
 ## An edited agent file applies from the next turn (2026-11-14)
 
 h #g313. The same report, second item: "A changed forceModel was not picked up by a running
@@ -12862,3 +12867,8 @@ the file edited between them. With the turn-time call removed, that stream test'
 
 Not measured live in the maintainer's opencode: the running processes load the main checkout's
 `dist`, which this change does not rebuild.
+
+Shipped as v0.73.3 on 2026-11-14 (PR #187), a patch, together with h #g312: CI green on Linux and
+Windows on the PR head `0167bda`, on the merge commit `436cb0d` before the tag and on the release
+commit `0a0d534`, the publish confirmed by the `Publish package` step's tail and the version
+document's shasum (`702fc31b`), with a GitHub Release.

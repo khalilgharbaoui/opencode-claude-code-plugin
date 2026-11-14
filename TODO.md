@@ -73,7 +73,7 @@
 ## Backlog
 
 - 2026-11-13, reported by Khalil's Writing session (opencode 2.1.4, `claude-code-appical`) over
-  WalkyTalky, diagnosed. **Both fixed on branch `fix/dispatch-answers` (2026-11-14, h #g312 and
+  WalkyTalky, diagnosed. **Both fixed and shipped in v0.73.3 (2026-11-14, PR #187, h #g312 and
   h #g313); close this entry when that PR merges.** Reported verbatim: "1. \"Customize\" is ignored. When a subagent
   dispatch offers the choice and Khalil picks \"customize\" to set a different model, the dispatch goes ahead
   anyway on the agent's configured model, without asking. 2. A changed forceModel was not picked up by a
@@ -251,6 +251,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-14: **done** (v0.73.3, PR #187, h #g312, h #g313): dispatch form answers no longer read as
+  dismissed under opencode-dcp's compact references (account-switch form and plan approval too), typed
+  answers accept picker names like `fable 5.2 max`, and an edited agent file applies on the next turn.
 - 2026-11-13: **done** (h #g311): hiding opencode's built-in Claude Agent provider is documented as
   opencode's own config (`disabled_providers` plus an `integration.connect` deny), measured on 2.2.6;
   no plugin option. The maintainer's own config has both rules (backup
