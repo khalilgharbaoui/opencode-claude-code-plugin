@@ -72,19 +72,6 @@
 
 ## Backlog
 
-- 2026-11-15, seen by the maintainer while h #g317 was in progress, not fixed: session
-  `ses_e324dbf7bffeRHQIz10AIxm7dT` (the h #g314 / h #g315 session) is stuck in a blocked-replay loop.
-  At 02:16:22Z a turn on `claude-fable-5-2@appical` (effort high, 510 messages, bounded to 152)
-  replayed with reason `sibling-conversation-changed`, agent-guard blocked it ("contains secret-like
-  values"), and v0.73.4 dropped the empty session as designed, so every next message replays and is
-  blocked the same way. The note's advice (switch back to the model or account that answered before)
-  likely does not help here: that key's resume record was written before the two usage-limited turns
-  (h #g315 fixes the recording only for turns from v0.73.4 on), so its own lookup refuses as
-  `conversation-changed` too, unless its `claude` is still alive in memory. To check: which keys hold a
-  record for this session, and whether accepting a lagging record whose missing messages the
-  transcript itself holds (h #g315's measurement) is safe. Never by changing what the replay sends to
-  get past the guard.
-
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
@@ -179,10 +166,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-14: agent-guard's prompt guard blocks any replay that quotes a secret-like value (the plugin
-  side is fixed, h #g314, and never sets the guard's variable itself): keep it blocking, or set
-  `AGENT_GUARD_PROMPT_GUARD_MODE` for opencode's environment? Your config, not the plugin's.
-  Deferred by the maintainer, 2026-11-15.
 - 2026-11-14: watchdog follow-up, offered by an earlier turn of session
   `ses_e324dbf7bffeRHQIz10AIxm7dT`: "should the plugin wait a little longer after the CLI reports an
   API error before it closes the turn?" The sleep case is fixed, and both watchdogs now wait out the
@@ -246,6 +229,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-15: **done**, by the maintainer's own config: `AGENT_GUARD_PROMPT_GUARD_MODE=warn` set
+  globally, so agent-guard warns instead of blocking a prompt with secret-like values. The stuck
+  session `ses_e324dbf7bffeRHQIz10AIxm7dT` recovered: its 03:28:31Z replay (208,149 characters, the
+  oldest messages dropped by the replay bound) went through unblocked and Fable 5.2 answered on a new
+  Claude session. The plugin still never sets the variable itself (h #g314).
 - 2026-11-15: **done** (v0.73.5, PR #189, h #g317): a session opencode moves to another working
   directory continues its Claude session there (transcript copied into the new directory's project
   folder, `--resume`) instead of replaying the thread, and a step answering the call that moved it
