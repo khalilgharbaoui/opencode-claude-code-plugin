@@ -1120,6 +1120,124 @@ export function formatSilentTurnNote(hadReasoning: boolean): string {
 }
 
 // ---------------------------------------------------------------------------
+// a message a UserPromptSubmit hook kept from Claude
+// ---------------------------------------------------------------------------
+
+export const PROMPT_BLOCKED_MARKER = "▌ **prompt blocked:**"
+
+/**
+ * How Claude Code ended a message before the model saw it. `kind` is the CLI's
+ * own word (`blocked_by_hook`, `stopped_by_hook`, `dropped_by_hook`,
+ * `not_passed_on`, `no_verdict` in 2.1.322), `promptKept` says whether the
+ * message is in its transcript anyway, and `reason` is the hook's own sentence.
+ */
+export interface PromptBlock {
+  kind: string
+  promptKept: boolean
+  reason?: string
+}
+
+/** What 2.1.293 and older start the frame's `content` with; they send no outcome. */
+const LEGACY_PROMPT_BLOCKED_PREFIX = "UserPromptSubmit operation blocked by hook"
+
+/** Long enough for a hook's sentence, short enough to sit in one note. */
+const PROMPT_BLOCK_REASON_MAX = 300
+
+/**
+ * The `system`/`informational` frame Claude Code writes when a
+ * `UserPromptSubmit` hook (or a plugin's code module) ends a message: measured
+ * on 2.1.314 and 2.1.322 as `prompt_submit_outcome: {kind, prompt_kept,
+ * reason}` beside `prevent_continuation: true`, and on 2.1.293 as the same
+ * frame with only `prevent_continuation` and a `content` naming the block. The
+ * frame's `content`, and the `result` text after it, repeat the WHOLE original
+ * prompt, so neither is ever read past its first words: a prompt a guard
+ * blocked is exactly the text that must not reach a log. (h #g314)
+ */
+export function parsePromptBlock(msg: ClaudeStreamMessage): PromptBlock | null {
+  if (msg.type !== "system" || msg.subtype !== "informational") return null
+  const outcome = msg.prompt_submit_outcome
+  if (isRecord(outcome)) {
+    const kind = str(outcome.kind)
+    if (!kind) return null
+    const reason = str(outcome.reason)?.replace(/\s+/g, " ").trim()
+    return {
+      kind,
+      promptKept: outcome.prompt_kept === true,
+      ...(reason
+        ? {
+            reason:
+              reason.length > PROMPT_BLOCK_REASON_MAX
+                ? `${reason.slice(0, PROMPT_BLOCK_REASON_MAX - 3)}...`
+                : reason,
+          }
+        : {}),
+    }
+  }
+  if (
+    msg.prevent_continuation === true &&
+    typeof msg.content === "string" &&
+    msg.content.startsWith(LEGACY_PROMPT_BLOCKED_PREFIX)
+  ) {
+    return { kind: "blocked_by_hook", promptKept: false }
+  }
+  return null
+}
+
+function describePromptBlockKind(kind: string, subject: string): string {
+  switch (kind) {
+    case "blocked_by_hook":
+      return `A UserPromptSubmit hook blocked ${subject}`
+    case "stopped_by_hook":
+      return `A UserPromptSubmit hook stopped the turn on ${subject}`
+    case "dropped_by_hook":
+    case "not_passed_on":
+      return `A Claude Code plugin did not pass ${subject} on`
+    case "no_verdict":
+      return `Claude Code ended ${subject} because no UserPromptSubmit hook gave a verdict`
+    default:
+      return `Claude Code did not send ${subject} on (${kind})`
+  }
+}
+
+/**
+ * The note for a message Claude never answered because a hook ended it. Three
+ * shapes: the turn's own message (`midTurn` false), which fails the turn; a
+ * message steered into a turn that went on and answered (`midTurn`), which does
+ * not; and the turn's own message when it carried the conversation's replayed
+ * history into a session that had none (`carriedHistory`), where the session is
+ * dropped so the next message replays again rather than going on without it.
+ * The hook's reason is quoted, never the message.
+ */
+export function formatPromptBlockedNote(
+  block: PromptBlock,
+  options: { midTurn: boolean; carriedHistory: boolean },
+): string {
+  const subject = options.midTurn
+    ? "a message sent while Claude was working"
+    : "this message"
+  const reason = block.reason ? ` ("${block.reason}")` : ""
+  let after: string
+  if (options.midTurn) {
+    after =
+      ", so it never reached Claude; the answer above did not see it. Send it again without what " +
+      "the hook objected to."
+  } else if (options.carriedHistory) {
+    after =
+      ". It carried this conversation's earlier messages, replayed as text because no Claude " +
+      "session could continue them, so Claude has none of them, and no model was called. The next " +
+      "message replays them again and the hook will judge it the same way. To keep the history, " +
+      "switch back to the model or account that answered before, or let the hook pass the replay."
+  } else if (block.promptKept) {
+    after = " before Claude answered, and no model was called."
+  } else {
+    after =
+      ", so nothing reached Claude and no model was called. Send it again without what the hook " +
+      "objected to."
+  }
+  return `\n${PROMPT_BLOCKED_MARKER} ${describePromptBlockKind(block.kind, subject)}${reason}${after}\n`
+}
+
+// ---------------------------------------------------------------------------
 // output the child wrote while no turn was listening
 // ---------------------------------------------------------------------------
 

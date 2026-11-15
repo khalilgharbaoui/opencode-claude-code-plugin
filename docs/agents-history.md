@@ -12872,3 +12872,212 @@ Shipped as v0.73.3 on 2026-11-14 (PR #187), a patch, together with h #g312: CI g
 Windows on the PR head `0167bda`, on the merge commit `436cb0d` before the tag and on the release
 commit `0a0d534`, the publish confirmed by the `Publish package` step's tail and the version
 document's shasum (`702fc31b`), with a GitHub Release.
+
+
+## A message a UserPromptSubmit hook blocked read as an empty reply, and a blocked replay lost the history (2026-11-14)
+
+h #g314. Found on 2026-11-14 in the maintainer's own session `ses_e324dbf7bffeRHQIz10AIxm7dT`
+(opencode 2, Claude Code 2.1.322), after a switch from the appical account's Opus 5.5 to the
+default account's Fable 5.2. Two turns logged `replaying the conversation as text ... reason:
+sibling-conversation-changed` (20:42:45Z and, after an opencode restart, 20:48:39Z; envelopes of
+187,540 and 196,636 characters), then `claude finished the turn without a reply` about 9 s later,
+and the reply was a `▌ **no reply:**` note saying nothing failed. The next message ran on the same
+process with `includeHistoryContext: false`, so that Claude session never had the conversation, and
+the model answered a "?" with a status report it had rebuilt from disk.
+
+Claude Code's transcript (first 12 records, read for their types only) shows why: the prompt was
+dequeued and never became a `user` record; the CLI wrote a `system`/`informational` record
+"UserPromptSubmit operation blocked by hook: agent-guard: blocked user prompt: it contains
+secret-like values" (`promptSubmitEnding.ending.kind: "blocked_by_hook"`, `promptKept: false`),
+made no API call and ended the turn. The plugin's log has the result: `numTurns: 0`, `costUsd: 0`,
+`isError: false`, `subtype: "success"`.
+
+Measured with a scratch `UserPromptSubmit` hook (`--setting-sources ""` plus `--settings`, no API
+call is made for a blocked prompt):
+
+- 2.1.314 and 2.1.322, a hook exiting 2 and a hook answering `{"decision":"block"}` alike: one
+  `system`/`informational` frame, `level: "warning"`, `prevent_continuation: true`,
+  `prompt_submit_outcome: {kind: "blocked_by_hook", prompt_kept: false, reason: <the hook's
+  sentence>}`, then `result` `success`, `is_error: false`, `num_turns: 0`, `stop_reason: null`.
+- 2.1.293: the same frame with no `prompt_submit_outcome`.
+- Every version: the frame's `content` is "UserPromptSubmit operation blocked by hook:\n[<the hook
+  command>]: <reason>\n\n\nOriginal prompt: <the WHOLE prompt>", and the result's `result` text
+  repeats it. The plugin never rendered it (it renders `result` only when `is_error`), and nothing
+  here may read past its first words: that prompt is the text the guard refused.
+- A message queued while a turn runs (the plugin's forwarded user messages beside a proxied tool
+  result) is judged too: with a hook that blocks only `BLOCKME`, a first message ran a 8-second
+  Bash call, a second message sent 4 s in was blocked by the same frame mid-turn, and the turn went
+  on and answered (`num_turns: 2`). So `num_turns === 0` is what says it was this turn's own
+  message.
+- The CLI's own list of kinds (2.1.322's schema): `blocked_by_hook` (a hook answered with a block),
+  `stopped_by_hook` (a hook answered `continue: false`), `dropped_by_hook` and `not_passed_on` (a
+  plugin's code module), `no_verdict` (no hook gave a verdict and Claude Code ended the prompt).
+
+What changed:
+
+- `parsePromptBlock` reads the outcome (or the 2.1.293 shape) and nothing else; the WARN carries
+  `kind`, `promptKept` and `reasonChars`, and the note quotes the reason on one line, capped at 300
+  characters.
+- This turn's own message blocked: the turn finishes `{unified: "error", raw: <kind>}` under a
+  `▌ **prompt blocked:**` note, with no `no reply` note and no `turnStats` footer. The session is
+  kept and the message is recorded as asked, so the next message goes to the same process bare;
+  sending the blocked one again would only be blocked again.
+- A blocked REPLAY (the envelope carried the history into a session that had none): the child is
+  killed and `deleteClaudeSessionId` drops the id, the served chain and the resume record before
+  anything is recorded, so the next message replays the history again. The hook judges that replay
+  the same way, which is deliberate: a guard's verdict is the operator's to change, and the plugin
+  sets no hook's bypass variable. The note says so and names the way out (switch back to the model
+  or account that answered before, or let the hook pass the replay).
+- A steered message blocked inside a turn that went on: the note only, the turn served.
+- A blocked compaction writes no text and ends on its error part, as every failed compaction does
+  (h #g214).
+
+Found on the way: `REFUSAL_FALLBACK_MARKER` (h #g300) was never added to `PLUGIN_NOTE_MARKERS`,
+so a `▌ **refusal fallback:**` note was replayed to Claude as its own words, while AGENTS.md said it
+was on the list. Both markers are on it now, and `test/turn-stats.test.ts` scans `src/` for every
+`export const *_MARKER = "▌` and fails on one that is not.
+
+The interactive transport, measured on 2026-11-15 under a PTY (Claude Code 2.1.322, a scratch
+`UserPromptSubmit` hook blocking `BLOCKME` through `--settings`, `--setting-sources ""`, Haiku 5.5,
+`ClaudeSession` driven directly):
+
+- The TUI writes the same outcome into the transcript under another spelling: a
+  `system`/`informational` record, `level: "warning"`, `preventContinuation: true`,
+  `promptSubmitEnding: {ending: {kind: "blocked_by_hook", reason}, promptKept: false}`, and a
+  `content` that repeats the whole prompt after the hook's line. No `user` record and no
+  `assistant` record follow, so the turn loop, which ends on a terminal stop or a `turn_duration`
+  after a `user` record, waited out the whole turn timeout.
+- It hands the dropped text back to the input box. The next paste lands after it: the next turn's
+  `user` record held the 40 blocked lines and the new message (1,425 characters), and a blocked
+  replay would carry into every following message, where the same hook blocks it again (the first
+  probe recorded two `blocked_by_hook` records and no `user` record). With one Ctrl+C before the
+  next paste, the record held only the new message (35 characters) and the TUI stayed up. Ctrl+U
+  clears one line of it, so it is not the key.
+
+What changed for the PTY: `scanTranscript` ends the turn as `blocked` on that record when it comes
+before the turn's own `user` record (a message queued into a running turn is judged after it and
+leaves the turn running, as on headless), and marks the box as holding handed-back text when
+`promptKept` is false; the next turn sends one Ctrl+C before its paste, never while a turn runs.
+`streamFrameFromRecord` renames the record into the stream's `prompt_submit_outcome` shape and
+drops `content`, so `parsePromptBlock` reads both transports alike and the refused prompt is never
+carried on. `interactiveResultFrame` synthesizes headless's result for it (`success`, not an
+error, `num_turns: 0`, no `result` text), so the stream parser's `num_turns === 0` rule, the note,
+the error finish and the blocked-replay drop are the headless code unchanged. `ask` (the `/btw`
+fork) throws rather than waiting. Not measured: a queued message a hook drops on the PTY, which is
+marked as handed back the same way; one Ctrl+C on an empty box only draws the TUI's exit hint.
+
+Why the replay happened at all is h #g315.
+
+Tests: `test/prompt-blocked.test.ts` (the parser, the note, and a fake CLI replaying the measured
+frames through real `doStream` turns, with a secret-like string in the prompt that must reach
+neither the reply nor the log), the marker scan in `test/turn-stats.test.ts`, and in
+`test/interactive-pty.test.ts` a scripted TUI that ends a prompt the measured way: the record and
+its stream frame, the synthesized result, a turn ended at once and the next paste starting from an
+empty box, `ask` failing, a queued message leaving its turn running, and real `doStream` turns for
+the note and for a blocked replay dropping its session.
+
+
+## A by-hand switch after a usage limit replayed the thread instead of carrying it (2026-11-14)
+
+h #g315. The other half of h #g314's incident: why the switch from the appical account's Opus 5.5
+to the default account's Fable 5.2 replayed the thread at all. The plugin log names it
+(`replaying the conversation as text ... reason: sibling-conversation-changed`), and the resume
+store and the log together say why:
+
+- The resume record for the appical key (`claude-opus-5-5@appical::...::["claude-code-appical",
+  "build"]`, Claude session `3b917453`) was last written at 19:36:45Z, covering 241 messages.
+- That key's next two turns, 20:21:42Z and 20:23:44Z, both ended on the account's 5-hour limit
+  (`Claude Code rejected this request: you are out of usage in the 5-hour window`, `isError: true`).
+  A record was only ever written after a `result` with `is_error !== true`, so neither moved it.
+- At 20:42:45Z the operator picked a model under the default account. `findSiblingResumePoint` found
+  the appical record, but the two limited turns' user messages sat past it, and
+  `continuesRecordedConversation` refuses a user message past the record: `sibling-conversation-
+  changed`, a replay of 248 messages, which agent-guard then blocked (h #g314).
+
+Claude Code's transcript of `3b917453` (its tail, read for record types only) holds both limited
+turns: a `user` record, an `api-request`, and a `<synthetic>` assistant reply with
+`error: "rate_limit"`, twice. So the session was intact and held those messages, and carrying it
+would have been right. The rule "a failed turn may leave a transcript the plugin would not resume"
+is true of failures in general and false of this one, and this one is the failure that makes an
+operator switch accounts.
+
+What changed: `TurnState.cliFailureReply` is set when the CLI answers with its own failure reply
+(`is_api_error_message`, or an `error` kind, which is all an account block's reply carries), and
+`completeResult` writes the resume record after a failed turn when that reply came and the failure
+was a usage limit or an account block. Every other failure keeps the old rule: an overloaded API
+or a too-long prompt is not trusted to have left a session worth carrying, and a too-long one would
+fail again wherever it was carried. The same record serves an opencode restart, which after a limit
+replayed for the same reason and now resumes.
+
+Tests, in `test/account-groups.test.ts` beside the by-hand switch tests, whose fake CLI now answers
+a `LIMITME` message the way 2.1.322 answers a usage limit and a `SERVERERR` one with a 529: a switch
+after a limit resumes the first account's session from the second account's config dir with no
+replay and without re-sending the limited message (it fails without the change: the switch
+replays), and a switch after the 529 still replays.
+
+
+## The inactivity watchdog read a sleeping Mac as a silent CLI, and left the CLI running (2026-11-14)
+
+h #g316. The second finding recorded in TODO.md on 2026-11-14: a designer subagent
+(`ses_e24dd447bffe3jnporpawTFbxI`, Claude session `3e7cd878`, about 777K tokens of context) was
+reported failed after the Mac idle-slept, and its CLI ran on for about 28 minutes with nobody
+listening.
+
+Measured, from the subagent's own Claude transcript (record types and timestamps only) and
+`pmset -g log`:
+
+- The stream was live: an `api-request` at 20:09:22Z and a thinking record at 20:09:42Z, so the
+  watchdog was last reset at or after 20:09:42Z.
+- The Mac slept at 21:10:23 CET (20:10:23Z), had a dark wake at 21:15:28 that ended in sleep at
+  21:15:39, and woke at 21:20:56.
+- `result fallback timer fired` at 20:15:31Z, 3 s into the dark wake. A 60 s timer counting awake
+  time could not have fired then (at most 41 s of awake time before the sleep, 3 s after), so the
+  timer counts wall-clock time, sleep included, and fired at the first moment the process ran.
+- The turn ended as a stream timeout (`provider.unknown`, the subagent reported failed). The CLI
+  logged `api_error` (`Connection error`, Claude Code's `StreamSuspended`) at 20:21:03Z, retried on
+  its own and carried on: an assistant reply and a proxied call at 20:22:46Z. A message written
+  to its stdin 0.5 s after the fire ("Your response above was cut off mid-stream. Resume directly
+  from where...", source unknown: not in opencode's binaries or plugin caches) was what it went on
+  with. Its proxied calls each waited out the 10-minute deadline, and it died only when opencode
+  restarted.
+
+What changed in `startResultFallback`:
+
+- A fire more than `RESULT_FALLBACK_LATE_SLACK_MS` (5 s) past its deadline re-arms for a fresh
+  full delay instead of closing the turn, with an INFO line. A late fire means the process was not
+  running, so the silence was never observed; an event-loop stall is the same case, where the
+  CLI's output can be sitting unread in the pipe while the timer phase runs first. Repeated
+  sleeps re-arm each time; once awake, the CLI's next line resets the watchdog as always.
+- A fire that does close the turn sends `interruptTurn` to the CLI, exactly as an abort does
+  (h #g59), so the turn stops instead of running on unattached. Not on an aborted turn, whose own
+  path already interrupts.
+- Not changed: a proxied call that arrives with no stream attached still waits for the next turn
+  or its deadline, because that is the late-result recovery path (h #g82, h #g119), and with the
+  interrupt the cause is gone.
+
+Added before the release, at the maintainer's request to cover what the first version left out,
+and because the interrupt made one edge worse: a watchdog that fires while the CLI waits out its
+own retry backoff used to leave the CLI to carry on, and would now stop it.
+
+- Measured on 2.1.322 against a local server answering every request with 529 and
+  `retry-after: 4` (`--bare`, a fake key, `CLAUDE_CODE_MAX_RETRIES=2`): the `system`/`api_retry`
+  frame arrived 60 ms after the failed request with `retry_delay_ms: 4000`, and the next request
+  followed 4.0 s later, twice. So the frame announces the wait before it starts.
+- `noteAnnouncedRetry` adds that wait to whichever watchdog is armed (capped at 30 minutes; the
+  CLI's `max_retries` bounds how often). Before, a backoff longer than the 60 s window closed the
+  turn, and before any content one longer than the start watchdog's window respawned a child that
+  was retrying as designed: `api_retry` frames do not count as model progress.
+- The start watchdog shares the wall clock, so it gets the same late-fire rule: a late fire
+  re-arms instead of respawning.
+
+Two of the new tests were wrong before they were right, and both lessons are about the harness:
+the fake counted the plugin's own `claude --help` probe as a spawn, and a clock jump on a timer
+started with the test landed before the watchdog was armed (the plugin's probes and spawn take
+longer than half a second), so the jump now waits until the fake holds the envelope.
+
+Tests: `test/result-fallback-sleep.test.ts` (POSIX). The sleep is faked with
+`_setResultFallbackClock`, which jumps ten minutes: the inactivity watchdog's fire re-arms and the
+CLI's answer lands; a CLI that never finishes gets exactly one `interrupt` after the close; an
+announced 3 s retry holds the inactivity watchdog and, before any content, the start watchdog, with
+no respawn; a late start-watchdog fire re-arms with no respawn. Each fails with its change switched
+off.

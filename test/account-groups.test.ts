@@ -503,6 +503,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const envelope = JSON.parse(line)
   if (envelope.type !== "user") return
   record({ type: "input", sessionId, envelope })
+  // A turn the CLI answers with its own failure reply, as 2.1.322 does: a
+  // \`<synthetic>\` frame after the user's message, then an \`is_error\` result.
+  // A usage limit, and an overloaded API as the control (h #g315).
+  const said = JSON.stringify(envelope)
+  const failure = said.includes("LIMITME")
+    ? { error: "rate_limit", text: "You've hit your session limit · resets 11pm" }
+    : said.includes("SERVERERR")
+      ? { error: "server_error", text: "API Error: 529 Overloaded." }
+      : null
+  if (failure) {
+    emit({ type: "assistant", uuid: sessionId + "-a" + (++replies), session_id: sessionId, error: failure.error, is_api_error_message: true, message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: failure.text }] } })
+    emit({ type: "result", subtype: "success", session_id: sessionId, is_error: true, num_turns: 1, result: failure.text, usage: { input_tokens: 0, output_tokens: 0 } })
+    return
+  }
   // A uuid per reply, as the real CLI's frames carry: each served turn leaves
   // a checkpoint an undo could cut at (h #g282).
   emit({ type: "assistant", uuid: sessionId + "-a" + (++replies), session_id: sessionId, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "MARLIN" }] } })
@@ -662,6 +676,68 @@ test("a by-hand account switch carries the conversation instead of replaying it"
 
     // A move, not a copy: one conversation has exactly one owner.
     assert.equal(getClaudeSessionId(fake.key("alpha", MODEL)), undefined)
+  } finally {
+    await fake.cleanup()
+  }
+})
+
+test("a by-hand switch AFTER a usage limit still carries the conversation", E2E, async () => {
+  // Measured on 2026-11-14 (h #g315): the appical account hit its 5-hour
+  // limit twice, the operator picked a model under the default account, and
+  // the switch replayed the whole thread as `sibling-conversation-changed`,
+  // because the resume record was only ever written after a SERVED turn and
+  // the limited turns' messages sat past it.
+  const fake = await createSwitchFixture()
+  try {
+    await fake.warm()
+    await fake.turn("alpha", MODEL, [...BEFORE])
+    fake.writeTranscript("alpha", "claude-on-alpha")
+    const LIMITED = [...BEFORE, assistantText("OK"), userText("LIMITME what next?")] as any
+    const limited = await fake.turn("alpha", MODEL, LIMITED)
+    const finish = limited.find((part) => part.type === "finish") as any
+    assert.equal(finish.finishReason.unified, "error", "the limited turn failed")
+
+    await fake.turn("beta", MODEL, [
+      ...LIMITED,
+      assistantText(deltas(limited)),
+      userText("What is the codename?"),
+    ])
+
+    const args: string[] = fake.spawns().at(-1)!.args
+    const at = args.indexOf("--resume")
+    assert.deepEqual(
+      args.slice(at, at + 2),
+      ["--resume", "claude-on-alpha"],
+      `the switch carries the limited conversation: ${JSON.stringify(args)}`,
+    )
+    assert.equal(fake.spawns().at(-1)!.configDir, fake.configDir("beta"))
+    const sent = fake.lastInput()
+    assert.ok(!sent.includes("conversation_history"), sent.slice(0, 400))
+    assert.ok(!sent.includes("LIMITME"), "the limited message is already in the session")
+  } finally {
+    await fake.cleanup()
+  }
+})
+
+test("a switch after any other failed turn still replays, as before", E2E, async () => {
+  // The control: a failure that is not the account's (an overloaded API) is
+  // not trusted to have left a session worth carrying.
+  const fake = await createSwitchFixture()
+  try {
+    await fake.warm()
+    await fake.turn("alpha", MODEL, [...BEFORE])
+    fake.writeTranscript("alpha", "claude-on-alpha")
+    const FAILED = [...BEFORE, assistantText("OK"), userText("SERVERERR what next?")] as any
+    const failed = await fake.turn("alpha", MODEL, FAILED)
+
+    await fake.turn("beta", MODEL, [
+      ...FAILED,
+      assistantText(deltas(failed)),
+      userText("What is the codename?"),
+    ])
+
+    assert.ok(!fake.spawns().at(-1)!.args.includes("--resume"))
+    assert.ok(fake.lastInput().includes("conversation_history"))
   } finally {
     await fake.cleanup()
   }

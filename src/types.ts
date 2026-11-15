@@ -1267,6 +1267,16 @@ export interface ClaudeStreamMessage {
   api_refusal_category?: string | null
   retracted_message_uuids?: unknown
 
+  /**
+   * On a `system`/`informational` that ends a message before the model saw it
+   * (a `UserPromptSubmit` hook, Claude Code 2.1.314 and later): how it ended.
+   * `content` beside it repeats the whole original prompt, so only its first
+   * words are ever read. Read by `parsePromptBlock` (h #g314).
+   */
+  prompt_submit_outcome?: unknown
+  prevent_continuation?: boolean
+  content?: unknown
+
   message?: {
     role?: string
     model?: string

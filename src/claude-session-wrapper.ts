@@ -435,6 +435,24 @@ export function interactiveResultFrame(opts: {
   /** The CLI's own API-error reply the turn ended on (`TailTurnResult`). */
   apiError?: { text: string; status?: number } | null
 }): string {
+  // What headless writes for a message a hook ended (h #g314): `success`, no
+  // error, no API call. Its `result` there repeats the whole prompt, so none
+  // is carried here; the parser reads `num_turns: 0` and the outcome frame.
+  if (opts.end === "blocked") {
+    return JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      stop_reason: null,
+      terminal_reason: "blocked",
+      session_id: opts.sessionId,
+      usage: opts.usage ?? {},
+      permission_denials: opts.denials ?? [],
+      total_cost_usd: 0,
+      duration_ms: opts.durationMs ?? 0,
+    })
+  }
   const completed = opts.end === "stop" && !!opts.stopReason
   // A turn that ended on the CLI's own API-error reply finished, but failed:
   // a headless `result` for it says `subtype: "success"` with `is_error: true`
@@ -511,6 +529,29 @@ export function interactiveSpawnEnv(
  * passes through byte-identical (h #g208).
  */
 export function streamFrameFromRecord(raw: string): string {
+  // A hook ended a message (h #g314): the transcript spells the outcome
+  // `promptSubmitEnding: {ending: {kind, reason}, promptKept}`, the stream
+  // `prompt_submit_outcome: {kind, prompt_kept, reason}`, and the parser reads
+  // the stream's. `content` (the whole prompt) is dropped, never carried on.
+  if (raw.includes('"promptSubmitEnding"')) {
+    try {
+      const rec = JSON.parse(raw)
+      const ending = rec?.promptSubmitEnding
+      if (rec?.type === "system" && typeof ending?.ending?.kind === "string") {
+        const { content: _prompt, promptSubmitEnding: _ending, ...rest } = rec
+        return JSON.stringify({
+          ...rest,
+          prevent_continuation: rec.preventContinuation === true,
+          prompt_submit_outcome: {
+            kind: ending.ending.kind,
+            prompt_kept: ending.promptKept === true,
+            ...(typeof ending.ending.reason === "string" ? { reason: ending.ending.reason } : {}),
+          },
+        })
+      }
+    } catch {}
+    return raw
+  }
   if (!raw.includes('"isApiErrorMessage":true')) return raw
   try {
     const rec = JSON.parse(raw)

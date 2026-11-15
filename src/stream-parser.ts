@@ -15,10 +15,12 @@ import { forgetConversationCheckpoints } from "./conversation-gap.js"
 import { reportFastModeState } from "./fast-mode.js"
 import {
   describeResultFailure,
+  formatPromptBlockedNote,
   formatRefusalFallbackNote,
   formatResultFailureNote,
   isRateLimitRejected,
   parseCredentialExpiresAt,
+  parsePromptBlock,
   parseRateLimitEvent,
   parseRefusalFallback,
   reportCompactBoundary,
@@ -73,6 +75,7 @@ import {
   deliverPendingCompletions,
   finishWithQuestionCall,
   finishAwaitingPlanApproval,
+  noteAnnouncedRetry,
   noteProxyActivity,
   noteReasoning,
   noteStartWatchdogInit,
@@ -112,6 +115,12 @@ export interface StreamParserContext {
   planModeQuestionActive: boolean
   /** The interactive transport, whose TUI parks on `ExitPlanMode`'s dialog. */
   interactive: boolean
+  /**
+   * This turn's envelope replays the conversation's history as text into a
+   * session that held none of it, so a hook ending it leaves that session
+   * empty (h #g314).
+   */
+  replayCarried: boolean
   /** The account this turn spawned on; the account-block note names it. */
   sourceAccount: string
   /**
@@ -342,6 +351,32 @@ export function createLineHandler(
       // session rather than of this answer.
       if (msg.type === "system") {
         reportHookEvent(msg)
+      }
+
+      // The CLI failed an API attempt and says how long it will wait before
+      // the next one; neither watchdog may take that backoff for silence
+      // (h #g316).
+      if (msg.type === "system" && msg.subtype === "api_retry") {
+        noteAnnouncedRetry(state, msg)
+      }
+
+      // A `UserPromptSubmit` hook (or a Claude plugin's code module) ended a
+      // message before the model saw it. This turn's own message then ends the
+      // turn on a `success` result with no API call, which read as an empty
+      // reply under a `no reply` note saying nothing failed; one steered into a
+      // running turn is dropped while the turn goes on. Which of the two it was
+      // is decided at the `result`. Only the outcome is read: the frame's
+      // `content` repeats the whole prompt the hook refused. (h #g314)
+      const promptBlock = parsePromptBlock(msg)
+      if (promptBlock) {
+        state.promptBlock = promptBlock
+        log.warn("claude code ended a message before the model saw it", {
+          sessionKey: state.sessionKey,
+          kind: promptBlock.kind,
+          promptKept: promptBlock.promptKept,
+          reasonChars: promptBlock.reason?.length ?? 0,
+        })
+        return
       }
 
       // The CLI is still inside a tool it is running itself. Nothing is
@@ -916,6 +951,11 @@ export function createLineHandler(
         // makes the note certain to fire at the result. (h #g194)
         const apiErrorReply = (msg as { is_api_error_message?: unknown })
           .is_api_error_message === true
+        // Either signal means the CLI wrote its own failure reply after the
+        // user's message, so the session holds that message (h #g315).
+        if (apiErrorReply || typeof (msg as { error?: unknown }).error === "string") {
+          state.cliFailureReply = true
+        }
         // The limit itself, whichever of the note or the switch form answers
         // it: the interactive transport has no `rate_limit_event`, so this
         // reply is the only signal it gets (h #g209).
@@ -1396,6 +1436,42 @@ export function createLineHandler(
               : "error")
         }
 
+        // A hook ended this turn's own message (h #g314): Claude Code made no
+        // API call and still labels the result `success` (its text repeats the
+        // whole prompt, so it is never rendered). The turn finishes as an error
+        // named for how the message ended, under a note quoting the hook's
+        // reason; `completeResult` drops the session when the message was a
+        // replay of the history into a session that had none. A message steered
+        // into a turn that went on and answered gets the note only. A
+        // compaction turn writes no note, because what it says is stored as the
+        // summary; its error part names the cause instead (h #g214).
+        if (state.promptBlock) {
+          const block = state.promptBlock
+          state.ownPromptBlocked =
+            typeof msg.num_turns === "number"
+              ? msg.num_turns === 0
+              : !state.sawVisibleText && !state.sawToolActivity && !state.sawProxyActivity
+          if (state.ownPromptBlocked) {
+            state.resultFailure ??= block.kind
+            if (ctx.compactionMode) {
+              state.compactionFailureText ??= block.reason
+                ? `A UserPromptSubmit hook ended the request: ${block.reason}`
+                : "A UserPromptSubmit hook ended the request."
+            }
+          }
+          if (!ctx.compactionMode) {
+            state.controller.enqueue({
+              type: "text-delta",
+              id: state.startTextBlock(),
+              delta: formatPromptBlockedNote(block, {
+                midTurn: !state.ownPromptBlocked,
+                carriedHistory: state.ownPromptBlocked && !block.promptKept && ctx.replayCarried,
+              }),
+            })
+            state.endTextBlock()
+          }
+        }
+
         // Some CLI failures only include user-readable text in
         // `result.result` (no prior assistant text blocks). Emit it so
         // opencode users don't see a blank turn. The one exception is a limit
@@ -1521,7 +1597,14 @@ export function createLineHandler(
         // Never on a compaction turn (the footer would be appended to
         // what opencode stores as the summary) and never on a failed
         // one (the error is the thing to read, not the bill).
-        if (ctx.config.turnStats && !ctx.compactionMode && !msg.is_error && !failure) {
+        if (
+          ctx.config.turnStats &&
+          !ctx.compactionMode &&
+          !msg.is_error &&
+          !failure &&
+          // A message a hook ended was not served either (h #g314).
+          !state.ownPromptBlocked
+        ) {
           const footer = formatTurnStatsBlock({
             ...turnStats,
             costUsd: footerCostUsd(
