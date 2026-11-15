@@ -13222,3 +13222,48 @@ Shipped as v0.73.6 on 2026-11-15 (PR #190), a patch: CI green on Linux and Windo
 on the merge commit `bebeccd` before the tag and on the release commit `91f80ec`, the publish confirmed
 by the `Publish package` step's tail and the version document's shasum (`b0c6603a`), with a GitHub
 Release.
+
+
+## A fork of a whole conversation replayed it after an opencode restart (2026-11-15)
+
+h #g319. Seen by the maintainer on 2026-11-15: session `ses_e1f0664f3ffe...` is `(fork #1)` of the
+director session `ses_e7198d765ffeUT1TqjM6JP7LiP`, made at 20:50:16Z through the parent's LAST
+message (opencode 2.2.6 `Session.fork` boundary `{"type":"through"}`, seq 14362). Its first turn logged
+`replaying the conversation as text` with `no-sibling-recorded` and 2,888 messages, bounded to 180,000
+characters, so the fork started with almost none of its context.
+
+The cause: `forkFromCheckpoint` (h #g305) keeps its checkpoints in memory and `forkSessions` (off by
+default) its fingerprints, and opencode had restarted three times since the parent's last turn
+(`plugin ready` at 19:56Z, 20:29Z and 20:41Z). The parent's resume record for the same model, agent
+and effort (`claude-opus-5-5@appical`, build, xhigh) and its transcript were on disk.
+
+Change: `findForkResumePoint` (`src/session-resume-store.ts`) looks for a record of a sibling key
+(`forkSiblingSignature`: the affinity free, cwd, model, scope, agent, prompt cache TTL and effort
+pinned), the same binary, not being written to, its transcript on disk, and a STRICT chain this
+history continues with nothing but the reply past it (`findResumePoint`'s test, so no tool result in
+the trailing segment); the longest match wins. The prologue runs it after the in-memory fork lookup,
+only where the turn was still about to replay, gated on `forkFromCheckpoint` and `resumeAfterRestart`
+(it reads that option's records) and on the `--fork-session` help probe (`fork-cli-too-old`
+otherwise), and starts the fork as `forkSessions` does: `--resume <id> --fork-session` headless,
+`forkOf` on the interactive transport. The parent keeps its record and its conversation.
+
+The lookup is given `options.prompt`, the prompt `recordResumePoint` digests, NOT the
+`filterSideQuestionHistory` thread the in-memory checkpoints use: that filter drops the plugin's `▌`
+note parts, which opencode stores inside the reply, so a reply that carried one (a `usage` note, say)
+digested differently and every such fork was refused as `conversation-changed`. Found live, not by the
+first fake (whose replies had no notes); the test now has a noted reply and fails with the filter.
+
+Live on opencode 2.2.6 with the worktree build (a private `serve` under scratch XDG dirs, Haiku 5.5 on
+the default account): two turns in session A taught it OTTER-77 and HERON-12, the server was stopped
+and started, and `POST /api/session/{A}/fork` with `{}` made a fork with boundary
+`{"type":"through"}` like the maintainer's. Before the prompt fix the fork replayed (`no-sibling-recorded`,
+21,163 tokens written to the cache); after it, the fork logged `forking the claude session of the
+conversation this one was forked from, saved before the restart`, spawned with `--resume <A's session>
+--fork-session`, wrote 29 tokens to the cache (56,798 read) and answered `OTTER-77, HERON-12`.
+
+Not covered: a fork from an earlier message after a restart still replays, because the record keeps
+no checkpoint uuid to cut at. Same snapshot caveat as h #g305 (the fork answers under the system
+prompt the parent first ran with). `test/fork-from-checkpoint.test.ts` drives it through a fake CLI
+across a simulated restart; controls with the branch off and with the filtered prompt both fail. A
+refused candidate logs `not forking from a conversation saved before the restart` at INFO with its
+reason.

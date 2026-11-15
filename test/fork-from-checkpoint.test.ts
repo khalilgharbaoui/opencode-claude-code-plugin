@@ -25,8 +25,10 @@ import {
   deleteActiveProcessAndWait,
   deleteClaudeSessionId,
   getClaudeSessionId,
+  releaseIdleForHandover,
   sessionKey,
 } from "../src/session-manager.js"
+import { _setResumeStorePath } from "../src/session-resume-store.js"
 import { detectCliVersion } from "../src/cli-version.js"
 import { encodeCwd } from "../src/claude-session-bun.js"
 import { TURN_STATS_MARKER } from "../src/turn-stats.js"
@@ -202,7 +204,10 @@ if (args.includes("--version")) {
   process.stdout.write("2.1.322\\n")
   process.exit(0)
 }
-if (args.includes("--help")) process.exit(0)
+if (args.includes("--help")) {
+  process.stdout.write("  --fork-session  When resuming, create a new session ID\\n")
+  process.exit(0)
+}
 const arg = (name) => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined)
 const file = (id) => path.join(DIR, id + ".jsonl")
 const read = (id) =>
@@ -407,5 +412,88 @@ test("a fork of the parent's transcript gone from disk replays", E2E, async () =
     assert.match(f.inputs().at(-1)!.stdin, /<conversation_history>/)
   } finally {
     await f.cleanup()
+  }
+})
+
+
+// After an opencode restart (h #g319): the checkpoints are gone with the
+// process, and the parent's resume record on disk is what a fork of the WHOLE
+// conversation starts from.
+async function restart() {
+  await releaseIdleForHandover()
+  _resetServedConversations()
+}
+
+test("after a restart, a fork of the whole conversation starts from the parent's saved session", E2E, async () => {
+  _resetServedConversations()
+  const f = fixture({ settings: { resumeAfterRestart: true } })
+  _setResumeStorePath(join(f.transcripts, "..", "..", "resume.json"))
+  try {
+    await f.warm()
+    // opencode stores the plugin's notes as parts of the reply, and the record
+    // digests the prompt with them, so the lookup must too (measured live: a
+    // filtered prompt missed every fork whose parent had a `usage` note).
+    const t1 = [u("one")]
+    const r1 = await f.turn("ses_a", t1)
+    const noted = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: r1 }, { type: "text" as const, text: `${TURN_STATS_MARKER} 1 turn` }],
+    }
+    const t2 = [...t1, noted, u("two")]
+    const r2 = await f.turn("ses_a", t2)
+    const t3 = [...t2, a(r2), u("three")]
+    const r3 = await f.turn("ses_a", t3)
+    const parent = f.spawns()[0].sessionId as string
+    const parentTranscript = readFileSync(join(f.transcripts, `${parent}.jsonl`), "utf8")
+    await restart()
+    assert.equal(getClaudeSessionId(f.keyFor("ses_a")), undefined, "nothing survives in memory")
+
+    const forkThread = [...t3, a(r3), u("in the fork")]
+    const forkReply = await f.turn("ses_b", forkThread)
+    const forked = f.spawns().at(-1)
+    assert.equal(argAfter(forked.args, "--resume"), parent, forked.args.join(" "))
+    assert.ok(forked.args.includes("--fork-session"))
+    assert.equal(argAfter(forked.args, "--resume-session-at"), undefined, "the whole conversation, no cut")
+    const sent = sentText(f.inputs().at(-1).stdin)
+    assert.ok(!sent.includes("conversation_history"), sent.slice(0, 300))
+    assert.equal(sent, "in the fork")
+    assert.ok(forkReply.includes("answered fork-"), forkReply)
+    // The parent's conversation is left as it was, and keeps its own record.
+    assert.equal(readFileSync(join(f.transcripts, `${parent}.jsonl`), "utf8"), parentTranscript)
+    assert.equal(getClaudeSessionId(f.keyFor("ses_b")), forked.sessionId)
+
+    // The parent continues its own session, not the fork's.
+    await f.turn("ses_a", [...t3, a(r3), u("four")])
+    assert.equal(argAfter(f.spawns().at(-1).args, "--resume"), parent)
+    assert.ok(!f.spawns().at(-1).args.includes("--fork-session"))
+  } finally {
+    _setResumeStorePath(null)
+    await f.cleanup()
+  }
+})
+
+test("after a restart, a fork from an earlier message, a gone transcript or the option off still replays", E2E, async () => {
+  for (const variant of ["earlier", "gone", "off", "no-resume"] as const) {
+    _resetServedConversations()
+    const settings: Record<string, unknown> = { resumeAfterRestart: variant !== "no-resume" }
+    if (variant === "off") settings.forkFromCheckpoint = false
+    const f = fixture({ settings })
+    _setResumeStorePath(join(f.transcripts, "..", "..", "resume.json"))
+    try {
+      await f.warm()
+      const { t2, t3, r2, r3 } = await serveA(f)
+      const parent = f.spawns()[0].sessionId as string
+      await restart()
+      if (variant === "gone") rmSync(join(f.transcripts, `${parent}.jsonl`))
+      const thread = variant === "earlier" ? [...t2, a(r2), u("in the fork")] : [...t3, a(r3), u("in the fork")]
+      await f.turn("ses_b", thread)
+      const forked = f.spawns().at(-1)
+      assert.ok(!forked.args.includes("--fork-session"), `${variant}: ${forked.args.join(" ")}`)
+      assert.equal(argAfter(forked.args, "--resume"), undefined, variant)
+      assert.ok(sentText(f.inputs().at(-1).stdin).includes("conversation_history"), variant)
+    } finally {
+      _setResumeStorePath(null)
+      await f.cleanup()
+    }
   }
 })

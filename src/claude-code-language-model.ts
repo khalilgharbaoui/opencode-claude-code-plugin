@@ -206,6 +206,7 @@ import { hasInteractiveTransport, requestedTransport, selectTransport } from "./
 import { findForkParent, recordForkFingerprint, sessionKeyCwd } from "./session-fork.js"
 import {
   findForeignAccountSibling,
+  findForkResumePoint,
   findResumePoint,
   findSiblingResumePoint,
   recordResumePoint,
@@ -2753,6 +2754,53 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           })
         } else {
           replayReason = `fork-${plan.reason}`
+        }
+      }
+    }
+
+    // The same kind of fork after an opencode RESTART (h #g319): the
+    // checkpoints above are in memory, so a fork of a conversation an earlier
+    // process served found nothing and replayed it whole. The parent's resume
+    // record is on disk, and when this history is that whole conversation the
+    // fork starts as `forkSessions` does, `--resume <id> --fork-session`. A
+    // fork from an earlier message still replays: the record keeps no cut.
+    if (
+      this.config.forkFromCheckpoint !== false &&
+      this.config.resumeAfterRestart !== false &&
+      includeHistoryContext &&
+      !compactionMode &&
+      !forkFromClaudeSessionId &&
+      failoverAnswer?.kind !== "switch"
+    ) {
+      const configDir = resolveConfigDir(this.config.configDir)
+      const found = findForkResumePoint({
+        sessionKey: sk,
+        // The prompt as `recordResumePoint` digests it, not the filtered thread
+        // the in-memory checkpoints above are keyed on.
+        prompt: options.prompt,
+        cliPath,
+        transcriptPath: (id, dir) => join(dir ?? configDir, "projects", encodeCwd(cwd), `${id}.jsonl`),
+        // `claudeSessionIsWriting`, not `getActiveProcess`, for the reason the
+        // fork lookup above gives.
+        isBusy: claudeSessionIsWriting,
+      })
+      if (found) {
+        const supported = await Promise.race([
+          detectCliSupportsFlag(cliPath, "--fork-session"),
+          turnAbort.whenAborted.then(() => false),
+        ])
+        if (turnAbort.aborted) {
+          return abortedBeforeWork("probing --fork-session support")
+        }
+        if (supported) {
+          forkFromClaudeSessionId = found.claudeSessionId
+          includeHistoryContext = false
+          log.notice(
+            "forking the claude session of the conversation this one was forked from, saved before the restart, instead of replaying it",
+            { sessionKey: sk, parentKey: found.parentKey, matchedMessages: found.matched },
+          )
+        } else {
+          replayReason = "fork-cli-too-old"
         }
       }
     }
