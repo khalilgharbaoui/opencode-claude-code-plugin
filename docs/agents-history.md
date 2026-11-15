@@ -13267,3 +13267,8 @@ prompt the parent first ran with). `test/fork-from-checkpoint.test.ts` drives it
 across a simulated restart; controls with the branch off and with the filtered prompt both fail. A
 refused candidate logs `not forking from a conversation saved before the restart` at INFO with its
 reason.
+
+Shipped as v0.73.7 on 2026-11-16 (PR #191), a patch: CI green on Linux and Windows on the PR head,
+on the merge commit `1684624` before the tag and on the release commit `077a549`, the publish confirmed
+by the `Publish package` step's tail and the version document's shasum (`96274e9a`), with a GitHub
+Release.

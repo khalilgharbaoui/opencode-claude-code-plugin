@@ -224,7 +224,7 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
-- 2026-11-15: **done** (h #g319): after an opencode restart, a fork of the WHOLE conversation starts
+- 2026-11-15: **done** (v0.73.7, PR #191, h #g319): after an opencode restart, a fork of the WHOLE conversation starts
   from the parent's saved Claude session (`--resume <id> --fork-session`) instead of replaying it. A
   fork from an earlier message after a restart still replays (no persisted checkpoint uuid).
 - 2026-11-15: **done** (v0.73.6, PR #190, h #g318): the wire-inactivity watchdog defaults to 90 s instead of 60, because 7
