@@ -13217,3 +13217,8 @@ but wedged is closed 30 s later. A network stall is not specific to this machine
 changes for every user. `CLAUDE_CODE_RESULT_FALLBACK_MS` stays the override and the test seam, so
 there is no option. The other 40 closes had no retry behind them and are not diagnosed (the sleep
 case among them is h #g316). `test/result-fallback.test.ts` pins the default and the override.
+
+Shipped as v0.73.6 on 2026-11-15 (PR #190), a patch: CI green on Linux and Windows on the PR head,
+on the merge commit `bebeccd` before the tag and on the release commit `91f80ec`, the publish confirmed
+by the `Publish package` step's tail and the version document's shasum (`b0c6603a`), with a GitHub
+Release.

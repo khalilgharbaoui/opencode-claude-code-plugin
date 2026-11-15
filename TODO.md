@@ -240,7 +240,7 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
-- 2026-11-15: **done** (h #g318): the wire-inactivity watchdog defaults to 90 s instead of 60, because 7
+- 2026-11-15: **done** (v0.73.6, PR #190, h #g318): the wire-inactivity watchdog defaults to 90 s instead of 60, because 7
   of 51 `stream timeout` closes on this machine came 0 to 2 s before Claude Code announced a retry after
   a stalled connection. Still open: the other 40 closes had no retry behind them and are not diagnosed.
 - 2026-11-15: **done**, by the maintainer's own config: `AGENT_GUARD_PROMPT_GUARD_MODE=warn` set
