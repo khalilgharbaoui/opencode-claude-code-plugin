@@ -420,8 +420,9 @@ export function withoutSpawnSettings(segment: string): string {
  * reason. A fork is a DIFFERENT opencode session continuing the same content,
  * so the affinity is what varies and the model must not. This is the SAME
  * opencode session continuing its own conversation after the operator moved
- * it to another model or another effort level, so cwd, request scope, session
- * affinity, provider and opencode agent all have to match and the model and
+ * it to another model or another effort level, so request scope, session
+ * affinity, provider and opencode agent all have to match (the cwd need not,
+ * below) and the model and
  * effort are exactly what may differ. Both are spawn-time choices (`--model`,
  * `CLAUDE_CODE_EFFORT_LEVEL`) and the CLI applies either to a transcript it
  * resumes, measured on 2.1.288.
@@ -451,6 +452,19 @@ export function withoutSpawnSettings(segment: string): string {
  * Blanking is keyed on that map rather than on the shape of a provider id, so a
  * provider the operator named themselves is never mistaken for an account.
  *
+ * The WORKING DIRECTORY is the fourth (h #g317). opencode 2 moves a session to
+ * another directory (`session_move`, a worktree a lane created), the session's
+ * own directory is the spawn's cwd and the key's first segment, so the next
+ * turn landed on a key nothing had answered and replayed the thread, where a
+ * guard hook could refuse it by size. Measured on 2.1.322, a cwd is no reason
+ * for a new Claude conversation either: `--resume` from another directory
+ * continues it, the model reports the new directory, and only the part of the
+ * prompt after the environment block is written to the cache again. Like an
+ * account it moves a FILE (the transcript lives under the old directory's
+ * encoded name), so the caller carries it before resuming. The affinity is
+ * what makes this one conversation, so the shared `default` affinity keeps its
+ * directory: two `opencode run`s in two folders are not one conversation.
+ *
  * The effort tail is dropped by name rather than by position, and nothing is
  * truncated, so a context blob that somehow contained `::` still compares
  * whole. `null` for a compaction key and for anything too short to be a real
@@ -468,12 +482,19 @@ export function modelSiblingSignature(
     : parts
   if (withoutEffort.length < 5) return null
   const blanked = [...withoutEffort]
+  if (blanked[3] !== "default") blanked[0] = "*"
   blanked[1] = "*"
   blanked[blanked.length - 1] = withoutSpawnSettings(blanked[blanked.length - 1])
   const signature = blanked.join("::")
   return accountProviders && accountProviders.size > 0
     ? blankAccountProvider(signature, accountProviders)
     : signature
+}
+
+/** The working directory a session key was built for: its first segment. */
+export function sessionKeyCwd(sessionKey: string): string | undefined {
+  const end = sessionKey.indexOf("::")
+  return end > 0 ? sessionKey.slice(0, end) : undefined
 }
 
 /** Move what was remembered for one key onto another, for a key that is

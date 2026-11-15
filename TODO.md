@@ -72,6 +72,19 @@
 
 ## Backlog
 
+- 2026-11-15, seen by the maintainer while h #g317 was in progress, not fixed: session
+  `ses_e324dbf7bffeRHQIz10AIxm7dT` (the h #g314 / h #g315 session) is stuck in a blocked-replay loop.
+  At 02:16:22Z a turn on `claude-fable-5-2@appical` (effort high, 510 messages, bounded to 152)
+  replayed with reason `sibling-conversation-changed`, agent-guard blocked it ("contains secret-like
+  values"), and v0.73.4 dropped the empty session as designed, so every next message replays and is
+  blocked the same way. The note's advice (switch back to the model or account that answered before)
+  likely does not help here: that key's resume record was written before the two usage-limited turns
+  (h #g315 fixes the recording only for turns from v0.73.4 on), so its own lookup refuses as
+  `conversation-changed` too, unless its `claude` is still alive in memory. To check: which keys hold a
+  record for this session, and whether accepting a lagging record whose missing messages the
+  transcript itself holds (h #g315's measurement) is safe. Never by changing what the replay sends to
+  get past the guard.
+
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
@@ -99,9 +112,9 @@
   ("agent-guard: the prompt exceeds the assignment-probe scan cap ...", `promptKept: false`) in the
   worktree cwd's transcript `a9e1ac0c-416d-4644-bd57-e70eae20aae6.jsonl`, so the new key replayed the
   history and the guard refused it by size. h #g314 turns that into a `prompt blocked` note and an
-  error. Still open: that a location switch replays the thread at all (a new cwd is a new session key,
-  and Claude's transcript lives under the old cwd's directory). The `fix/session-move` worktree
-  (no commits yet) is where that would go.
+  error. Why it replayed at all is FIXED on `fix/session-move` (h #g317): a moved session's
+  conversation is carried into the new directory (transcript copied, `--resume`), and a step that
+  answers the call that moved it finishes on the old directory's child.
 
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex

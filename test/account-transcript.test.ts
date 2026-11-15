@@ -305,3 +305,59 @@ test("a copy that cannot be made is a refusal, not a throw", async () => {
     s.cleanup()
   }
 })
+
+// A session opencode moved to another working directory (h #g317): same
+// config dir, the transcript filed under the old directory's encoded name.
+test("a moved session's transcript is copied from the old directory into the new one", async () => {
+  const s = scratch()
+  try {
+    const oldCwd = join(s.root, "before-move")
+    mkdirSync(oldCwd)
+    const old = interactiveTranscriptPath({ configDir: s.target, cwd: oldCwd, sessionId: SESSION })
+    mkdirSync(dirname(old), { recursive: true })
+    writeFileSync(old, '{"type":"user"}\n{"type":"assistant"}\n')
+
+    // Without the old directory named, there is nothing to carry.
+    const blind = await carryTranscriptToAccount({
+      sessionId: SESSION,
+      cwd: s.cwd,
+      targetConfigDir: s.target,
+      accountConfigDirs: [s.target],
+    })
+    assert.deepEqual(blind, { kind: "refused", reason: "no-transcript-anywhere" })
+
+    const carry = await carryTranscriptToAccount({
+      sessionId: SESSION,
+      cwd: s.cwd,
+      targetConfigDir: s.target,
+      accountConfigDirs: [s.target],
+      sourceCwds: [oldCwd],
+    })
+    assert.equal(carry.kind, "carried")
+    if (carry.kind !== "carried") return
+    assert.equal(carry.from, old)
+    assert.equal(carry.to, s.path(s.target), "under the new directory's own name")
+    assert.equal(carry.sessionId, SESSION)
+    assert.equal(readFileSync(carry.to, "utf8"), readFileSync(old, "utf8"))
+    if (process.platform !== "win32") assert.equal(statSync(carry.to).mode & 0o777, 0o600)
+
+    // Moving back finds the longer copy where the session now lives, so the
+    // stale original is never what is resumed.
+    writeFileSync(carry.to, readFileSync(carry.to, "utf8") + '{"type":"user"}\n')
+    const back = await carryTranscriptToAccount({
+      sessionId: SESSION,
+      cwd: oldCwd,
+      targetConfigDir: s.target,
+      accountConfigDirs: [s.target],
+      sourceCwds: [s.cwd],
+      newSessionId: () => "renamed-after-move",
+    })
+    assert.equal(back.kind, "carried")
+    if (back.kind !== "carried") return
+    assert.equal(back.from, carry.to)
+    assert.equal(back.renamed, true, "the stale original is never overwritten")
+    assert.equal(back.sessionId, "renamed-after-move")
+  } finally {
+    s.cleanup()
+  }
+})

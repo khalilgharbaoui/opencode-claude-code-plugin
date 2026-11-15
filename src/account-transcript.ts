@@ -94,6 +94,12 @@ export interface CarryTranscriptInput {
   targetConfigDir: string
   /** Every configured account's absolute config dir, the target's included. */
   accountConfigDirs: readonly string[]
+  /**
+   * Other working directories the conversation may be filed under, for a
+   * session opencode moved to `cwd` from one of them (h #g317). Searched in
+   * every config dir like `cwd`; the copy always lands under `cwd`.
+   */
+  sourceCwds?: readonly string[]
   /** Test seam: the id a renamed copy takes. */
   newSessionId?: () => string
 }
@@ -129,14 +135,17 @@ export async function carryTranscriptToAccount(
   }
 
   let live: { file: string; size: number } | undefined
+  const cwds = [cwd, ...(input.sourceCwds ?? []).filter((other) => other !== cwd)]
   for (const dir of dedupe([targetConfigDir, ...input.accountConfigDirs])) {
-    const candidate = transcriptPath({ configDir: dir, cwd, sessionId })
-    const stat =
-      candidate === targetOwn ? targetOwnStat : await statTranscript(candidate)
-    // A directory or a symlink where a transcript belongs is not a
-    // conversation this plugin wrote, so it is no candidate either.
-    if (stat.kind !== "file") continue
-    if (!live || stat.size > live.size) live = { file: candidate, size: stat.size }
+    for (const from of cwds) {
+      const candidate = transcriptPath({ configDir: dir, cwd: from, sessionId })
+      const stat =
+        candidate === targetOwn ? targetOwnStat : await statTranscript(candidate)
+      // A directory or a symlink where a transcript belongs is not a
+      // conversation this plugin wrote, so it is no candidate either.
+      if (stat.kind !== "file") continue
+      if (!live || stat.size > live.size) live = { file: candidate, size: stat.size }
+    }
   }
 
   if (!live) return { kind: "refused", reason: "no-transcript-anywhere" }

@@ -1256,21 +1256,27 @@ function spawnHasPendingWork(key: string): boolean {
 }
 
 /**
- * `spawnIdentity` with the model name blanked too, its `@account` marker kept:
- * one opencode conversation, agent, scope, cwd and account on any model.
- * Undefined for compaction keys, keys of another shape, and the shared
- * `default` affinity, which is no one conversation.
+ * `spawnIdentity` with the model name and the working directory blanked too,
+ * its `@account` marker kept: one opencode conversation, agent, scope and
+ * account on any model, in any directory. The directory goes because opencode
+ * moves a session between directories mid-turn (a lane's `session_move` into
+ * its worktree), and the step answering the call that moved it must reach the
+ * child parked in that call, in the old one (h #g317). The affinity is what
+ * makes it one conversation. Undefined for compaction keys, keys of another
+ * shape, and the shared `default` affinity, which is no one conversation.
  */
 function conversationIdentity(key: string): string | undefined {
   const parts = spawnIdentity(key).split("::")
   if (parts.length !== 5 || parts[2] === "compaction" || parts[3] === "default") return undefined
+  parts[0] = "*"
   parts[1] = parts[1].replace(/^[^@]*/, "*")
   return parts.join("::")
 }
 
 /**
  * Another spawn of this conversation that is still inside a turn, under
- * another model, effort, prompt cache TTL or CLI cap, or `undefined`. The
+ * another model, effort, prompt cache TTL, CLI cap or working directory
+ * (h #g317), or `undefined`. The
  * caller serves the turn on it, so work in flight finishes under the settings
  * it started with and the change applies at the first turn that finds it
  * idle. Before this an effort or TTL change mid-turn was refused, and a model

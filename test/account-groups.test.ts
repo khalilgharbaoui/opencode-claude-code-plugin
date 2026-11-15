@@ -199,10 +199,14 @@ test("modelSiblingSignature treats a model, an effort and an account as one conv
       other,
     )
   }
+  // The same session in another directory is the same conversation (h #g317).
+  assert.equal(
+    modelSiblingSignature(keyFor("beta", "claude-haiku-4-5", "ses_groups", "/elsewhere"), providers),
+    modelSiblingSignature(alpha, providers),
+  )
   // Everything else still has to match exactly.
   for (const other of [
     keyFor("beta", "claude-haiku-4-5", "ses_other"),
-    keyFor("beta", "claude-haiku-4-5", "ses_groups", "/elsewhere"),
     sessionKey("/work", `claude-haiku-4-5::no-tools::ses_groups::${contextFor("claude-code-beta")}`),
     sessionKey(
       "/work",

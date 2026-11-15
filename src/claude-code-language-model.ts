@@ -203,7 +203,7 @@ import {
 } from "./cli-version.js"
 import { interactivePermissionPosture, isReadOnlyPermissionMode } from "./permission-presets.js"
 import { hasInteractiveTransport, requestedTransport, selectTransport } from "./transport.js"
-import { findForkParent, recordForkFingerprint } from "./session-fork.js"
+import { findForkParent, recordForkFingerprint, sessionKeyCwd } from "./session-fork.js"
 import {
   findForeignAccountSibling,
   findResumePoint,
@@ -1402,7 +1402,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
-    const cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
+    // `let` for one reason: a step that finishes a turn begun in the directory
+    // opencode has since moved this session out of is served in that one
+    // (h #g317, below).
+    let cwd = await resolveSpawnCwdForSession(this.config.cwd, affinity)
     const compactionMode = this.isCompactionCall(options)
     // What a dispatch form chose for THIS session, when it is a subagent one
     // chose for (h #g227). Resolved here because the model and the effort it
@@ -1520,6 +1523,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const sk = compactionMode
       ? sessionKey(cwd, `${effectiveModelId}::compaction::${affinity}`)
       : (busyVariant ?? requestedKey)
+    // The busy key may be in the directory opencode moved this session OUT of
+    // mid-turn (a `session_move` from a proxied `execute`): its child is parked
+    // in that call there, and the rest of its turn runs there too. The next
+    // turn finds it idle and carries the conversation over (h #g317).
+    if (busyVariant) cwd = sessionKeyCwd(busyVariant) ?? cwd
     const toUsage = this.toUsage.bind(this)
     const toFinishReason = this.toFinishReason.bind(this)
     const handleControlRequest = this.handleControlRequest.bind(this)
@@ -2535,8 +2543,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // account's on a by-hand switch (h #g226). Omitted everywhere else, so
       // every existing caller asks about this account's directory exactly as
       // it did before.
-      const transcriptPath = (id: string, dir?: string) =>
-        join(dir ?? configDir, "projects", encodeCwd(cwd), `${id}.jsonl`)
+      // `from` is a sibling's own working directory when opencode moved the
+      // session out of it (h #g317).
+      const transcriptPath = (id: string, dir?: string, from?: string) =>
+        join(dir ?? configDir, "projects", encodeCwd(from ?? cwd), `${id}.jsonl`)
       const resumePoint = findResumePoint({
         sessionKey: sk,
         prompt: options.prompt,
@@ -2588,9 +2598,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // so the FILE has to be here before `--resume` means anything
           // (h #g218). A refused carry falls through to the replay exactly as
           // the failover switch's does.
+          //
+          // A sibling in another WORKING DIRECTORY is the same kind of step
+          // (h #g317): opencode moved this session, and its transcript is filed
+          // under the old directory's encoded name. Measured on 2.1.322, a
+          // plain `--resume` from the new directory would find it there and
+          // keep appending there, where neither the restart lookup above nor
+          // the interactive transport's tail would ever look, so it is copied
+          // under this turn's directory first, as an account switch does.
           let carriedSessionId: string | undefined
           let carryRefused: string | undefined
-          if (sibling.siblingAccount && sibling.siblingConfigDir) {
+          const crossAccount = !!(sibling.siblingAccount && sibling.siblingConfigDir)
+          if (crossAccount || sibling.siblingCwd) {
             const carry = await carryTranscriptToAccount({
               sessionId: sibling.claudeSessionId,
               cwd,
@@ -2600,13 +2619,16 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // rewritten only when a turn succeeds), so the conventional
               // directories are what make a stale record recoverable rather
               // than a refusal.
-              accountConfigDirs: [
-                sibling.siblingConfigDir,
-                ...accountsInGroupOf(sourceAccount, this.config.failoverAccounts, groups).map(
-                  configDirForAccount,
-                ),
-                configDir,
-              ],
+              accountConfigDirs: crossAccount
+                ? [
+                    sibling.siblingConfigDir!,
+                    ...accountsInGroupOf(sourceAccount, this.config.failoverAccounts, groups).map(
+                      configDirForAccount,
+                    ),
+                    configDir,
+                  ]
+                : [configDir],
+              ...(sibling.siblingCwd ? { sourceCwds: [sibling.siblingCwd] } : {}),
             })
             if (carry.kind === "carried" || carry.kind === "already-there") {
               carriedSessionId = carry.sessionId
@@ -2616,13 +2638,21 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           }
           if (carryRefused) {
             replayReason = `sibling-${carryRefused}`
-            log.notice("replaying this conversation rather than carrying it across accounts", {
-              sessionKey: sk,
-              siblingKey: sibling.siblingKey,
-              reason: carryRefused,
-              account: sourceAccount,
-              from: sibling.siblingAccount,
-            })
+            if (crossAccount) {
+              log.notice("replaying this conversation rather than carrying it across accounts", {
+                sessionKey: sk,
+                siblingKey: sibling.siblingKey,
+                reason: carryRefused,
+                account: sourceAccount,
+                from: sibling.siblingAccount,
+              })
+            } else {
+              log.notice("replaying this conversation rather than carrying it to the session's new directory", {
+                sessionKey: sk,
+                siblingKey: sibling.siblingKey,
+                reason: carryRefused,
+              })
+            }
           } else {
             // The sibling's own child, if it still has one, is holding the
             // transcript this turn is about to resume. It goes first, so one
@@ -2641,17 +2671,25 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 setClaudeSessionId(sk, carriedSessionId)
               }
               includeHistoryContext = false
-              log.notice(
-                "continuing this conversation's claude session under the new model or effort instead of replaying it",
-                {
-                  sessionKey: sk,
-                  siblingKey: sibling.siblingKey,
-                  matchedMessages: sibling.matched,
-                  ...(sibling.siblingAccount
-                    ? { from: sibling.siblingAccount, account: sourceAccount }
-                    : {}),
-                },
-              )
+              const carriedFields = {
+                sessionKey: sk,
+                siblingKey: sibling.siblingKey,
+                matchedMessages: sibling.matched,
+                ...(sibling.siblingAccount
+                  ? { from: sibling.siblingAccount, account: sourceAccount }
+                  : {}),
+              }
+              if (sibling.siblingCwd) {
+                log.notice(
+                  "continuing this conversation's claude session in the session's new directory instead of replaying it",
+                  carriedFields,
+                )
+              } else {
+                log.notice(
+                  "continuing this conversation's claude session under the new model or effort instead of replaying it",
+                  carriedFields,
+                )
+              }
             } else {
               replayReason = "sibling-carry-over-failed"
             }

@@ -13096,3 +13096,88 @@ Shipped as v0.73.4 on 2026-11-15 (PR #188), a patch, together with h #g314 and h
 Linux and Windows on the PR head `eb00f1c`, on the merge commit `7f893c2` before the tag and on
 the release commit `00a4f19`, the publish confirmed by the `Publish package` step's tail and the
 version document's shasum (`a2d145ff`), with a GitHub Release.
+
+
+## A session opencode moved to another directory replayed the thread instead of carrying it (2026-11-15)
+
+h #g317. The location-switch empty turn recorded in TODO.md on 2026-11-14: in session
+`ses_e2898d33effeo0ojQzfvfWVOJK` (opencode 2.2.6), a lane ran `shell` to create its worktree, then
+Code Mode `execute` (`session_move` into that worktree). opencode recorded `location-switched` at
+00:14:18Z, the next step started at 00:14:21Z, and at 00:14:27.770Z Claude Code 2.1.322 wrote
+`blocked_by_hook` ("agent-guard: the prompt exceeds the assignment-probe scan cap ...",
+`promptKept: false`) into the WORKTREE directory's transcript `a9e1ac0c-...`: the step had replayed
+the whole history as text into a fresh session, and the guard refused it by size. h #g314 turns that
+block into a note; this entry is why the step replayed at all.
+
+The cause is the session key: `<cwd>::<model>::<scope>::<affinity>::context=[...]`. opencode 2
+resolves the spawn's cwd from the session's own directory per call (`resolveSpawnCwdForSession`),
+so after a move every turn lands on a key nothing has answered. `modelSiblingSignature` (the sibling
+lookup over the resume store, h #g215) and `conversationIdentity` (h #g271's routing of a step to
+the key whose child is still in the turn) both kept the cwd, so neither saw the old key.
+
+Measured on Claude Code 2.1.322, Haiku 5.5, `--setting-sources ""`, no MCP, two scratch git repos A
+and B, the appical config dir (the default account was at its 5-hour limit):
+
+- Seeded in A (codeword ZEBRA-41): 11,160 read from the cache, 6,348 written.
+- `--resume` of that session from B with nothing copied: found (the CLI searches every project
+  folder), the codeword kept, and the model gave B as its working directory: the environment block
+  is not part of the system prompt snapshot (h #g187). Cache: 14,071 read, 3,630 written. The CLI
+  appended to A's file (148,893 to 159,237 bytes) and wrote nothing under B's name.
+- Control, a fresh seed resumed from A: 17,555 read, 25 written.
+- A fresh seed whose transcript was copied under B's name first, resumed from B: 17,701 read, 0
+  written (the B prefix was already cached from the first resume), appended to the copy (159,161
+  bytes), A's file untouched (148,881).
+
+So a move needs no new Claude conversation and costs about the environment block's tail once, while
+the replay rewrites the whole thread and may be refused. But a resume with no copy keeps writing
+under the old directory's name, where `findResumePoint` (it checks the transcript under the turn's
+own cwd) and the interactive transport (it tails the path it computes from the cwd) never look.
+
+What changed:
+
+- `modelSiblingSignature` blanks the cwd as well as the model, the effort, the spawn settings and
+  the account, except for the shared `default` affinity, which is no one conversation (two
+  `opencode run`s in two folders). So `findSiblingResumePoint` finds the old directory's record,
+  checks its transcript under the sibling's own cwd, and returns `siblingCwd`.
+- The caller carries the transcript with `carryTranscriptToAccount`, which takes `sourceCwds` now:
+  every config dir is searched under the turn's cwd and the source cwds, the longest copy wins, the
+  copy always lands under the turn's cwd, and nothing is overwritten (a taken target path takes a
+  fresh id, h #g218). Then the old key's child is stopped and `transferClaudeSession` moves the id,
+  the resume record and the served chain, as for a model change. Its own NOTICEs:
+  `continuing this conversation's claude session in the session's new directory instead of
+  replaying it`, and `replaying this conversation rather than carrying it to the session's new
+  directory` with the refusal token.
+- `conversationIdentity` blanks the cwd, so a step that answers the call that moved the session
+  (parked in the old directory's child) is served on that child, and the turn's `cwd` becomes that
+  key's. The rest of that turn runs in the old directory, exactly as h #g271 finishes a model change
+  mid-turn under the old model; the next turn finds it idle and carries.
+- Widening the signature also widens `findForeignAccountSibling`, the `accountGroups` detector,
+  which is the safe direction for a guard.
+
+Live on opencode 2.2.6 with this build (a private `serve` under scratch XDG dirs, basic auth as
+`opencode` with the printed server password, Haiku 5.5 on the default account): a session created in
+repo A (`POST /api/session` with `{"location":{"directory":...}}`) answered "Remember the codeword
+ZEBRA-41" on Claude session `ac24c30c-...`; `POST /api/session/{id}/move` with `{"directory": <repo
+B>}` answered 204 and the session's `location.directory` became repo B; the next prompt logged
+`carrying the claude conversation over to the new session key` and `continuing this conversation's
+claude session in the session's new directory instead of replaying it`, spawned in repo B with
+`--resume ac24c30c-...`, and answered `ZEBRA-41 | <repo B>`. Cache on that turn: 38,958 read, 18,292
+written (the first turn wrote 56,776): opencode's forwarded system prompt carries the working
+directory too, so more of it is rewritten than with the bare CLI, still about a third of what a
+replay rewrites. The transcript: repo A's original left at 492,221 bytes, repo B's copy 502,753 after
+the turn.
+
+Not changed: it reads the resume store, so with `resumeAfterRestart: false` a move replays, as a
+model change does. A fork into another directory (`forkSessions`, `forkFromCheckpoint`) still keys
+on the cwd. Not measured live: the mid-turn move (a Code Mode `execute` calling `session_move`),
+which the fake-CLI test covers, and the interactive transport (the copy lands where its tail looks,
+by construction).
+
+Tests: `test/session-move.test.ts` (two real `doStream` turns in two directories of one opencode
+session, with a fake CLI that resumes only a transcript under its own directory: carried and
+copied, the original untouched, one owner on disk; after a simulated restart too; another session
+never carried; `resumeAfterRestart: false` replaying; the two carry tests fail with the signature
+change switched off), the mid-turn step in `test/effort-sessions.test.ts` (without the routing the
+step never reaches the parked child and the test times out), `sourceCwds` in
+`test/account-transcript.test.ts`, and the updated signature cases in
+`test/session-model-switch.test.ts` and `test/account-groups.test.ts`.
