@@ -182,20 +182,6 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-14: watchdog follow-up: should the plugin wait longer after an API error than Claude Code
-  announces? Maintainer 2026-11-15: "maybe yes how much longer is needed is this something usefull for
-  all plugin users?" Measured 2026-11-15: opencode.db holds 51 real `▌ **stream timeout:**` closes
-  since 2026-09 (22 Sep, 19 Oct, 10 Nov, about four a week). 11 had a Claude Code `api_error` in the
-  same directory during the step, and 7 of those closed 0 to 2 s after it: Claude Code gave up on a
-  stalled connection (`Connection error.`, 288 of the 292 api_error records in both config dirs'
-  transcripts) at about the moment the 60 s inactivity watchdog fired, so the turn was closed just
-  before the retry was announced (v0.73.4 holds the watchdog only for a retry announced first). Claude
-  Code's own backoff: median 1 s, p90 10 s, max 40 s. Silence in the transcript before a Connection
-  error clusters at about 30 s (median 30.0 s) and at 300 s or more (29); Claude Code's own stall
-  timeout was not read off the binary (the shell redacted it). Recommendation: lengthen the inactivity
-  window from 60 s to 90 s by default for everyone (`CLAUDE_CODE_RESULT_FALLBACK_MS` stays the
-  override); cost: a truly hung CLI is noticed 30 s later. The other 40 closes have no retry behind
-  them (the sleep case is fixed in v0.73.4); their cause is not diagnosed.
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
@@ -254,6 +240,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-15: **done** (h #g318): the wire-inactivity watchdog defaults to 90 s instead of 60, because 7
+  of 51 `stream timeout` closes on this machine came 0 to 2 s before Claude Code announced a retry after
+  a stalled connection. Still open: the other 40 closes had no retry behind them and are not diagnosed.
 - 2026-11-15: **done**, by the maintainer's own config: `AGENT_GUARD_PROMPT_GUARD_MODE=warn` set
   globally, so agent-guard warns instead of blocking a prompt with secret-like values. The stuck
   session `ses_e324dbf7bffeRHQIz10AIxm7dT` recovered: its 03:28:31Z replay (208,149 characters, the

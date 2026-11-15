@@ -13186,3 +13186,34 @@ Shipped as v0.73.5 on 2026-11-15 (PR #189), a patch: CI green on Linux and Windo
 `569ae0e`, on the merge commit `51bc536` before the tag and on the release commit `879d36b`, the
 publish confirmed by the `Publish package` step's tail and the version document's shasum
 (`0f49e6ca`), with a GitHub Release.
+
+
+## The inactivity watchdog closed turns just before Claude Code announced a retry (2026-11-15)
+
+h #g318. The follow-up to h #g316, which made both watchdogs wait out a backoff the CLI announces
+(`noteAnnouncedRetry`) but only when the `system`/`api_retry` frame arrives before the window runs out.
+The maintainer asked whether the plugin should wait longer than Claude Code announces, and whether
+that helps every user.
+
+Measured on this machine on 2026-11-15, read-only:
+
+- opencode.db: 51 assistant messages carry a text part that starts with `▌ **stream timeout:**`
+  (22 in September, 19 in October, 10 in November), about four a week. A plain `LIKE` found 108, the
+  rest being messages that quote the note.
+- Both config dirs' Claude Code transcripts hold 292 `system`/`api_error` records: 288
+  `Connection error.`, 3 expired OAuth tokens, 1 `Request timed out.` Claude Code's announced backoff
+  (`retryInMs`): median 1,003 ms, p90 9,887 ms, max 39,611 ms.
+- 11 of the 51 closes had an `api_error` in the same directory during the step, and 7 of those came
+  0 to 2 s after it: the CLI gave up on a stalled connection at about the moment the 60 s window ran
+  out, and the turn was closed before the retry could hold it. The other 4 closed 27 to 153 s after
+  their retry, so a retry was not their cause.
+- The transcript silence before a `Connection error.` clusters at about 30 s (median 30.0 s, p75
+  30.6 s) and at 300 s or more (29 of 217). Claude Code's own stall timeout was not read off the
+  binary (the shell output redacted the surrounding code), so the tie is inferred from timing.
+
+Change: `resolveResultFallbackMs` defaults to 90,000 ms. That clears the tie with 30 s of margin over
+the longest observed timing and over Claude Code's p90 backoff; the cost is that a CLI that is alive
+but wedged is closed 30 s later. A network stall is not specific to this machine, so the default
+changes for every user. `CLAUDE_CODE_RESULT_FALLBACK_MS` stays the override and the test seam, so
+there is no option. The other 40 closes had no retry behind them and are not diagnosed (the sleep
+case among them is h #g316). `test/result-fallback.test.ts` pins the default and the override.
