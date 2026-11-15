@@ -9,6 +9,7 @@ import {
   continuesRecordedConversation,
   conversationDigests,
   modelSiblingSignature,
+  sessionKeyCwd,
   type ForkMessageDigest,
 } from "./session-fork.js"
 
@@ -328,8 +329,10 @@ export function findResumePoint(opts: {
  *    this hands the id to a key that is about to spawn a child on it, and two
  *    children appending to one transcript is not a thing to find out later,
  *  - the match must be a sibling and not this key, so an unrelated
- *    conversation in another directory, scope, agent or opencode session is
- *    never a candidate however well its content lines up.
+ *    conversation in another scope, agent or opencode session is never a
+ *    candidate however well its content lines up. Another working directory
+ *    is allowed, because opencode moves one session between directories
+ *    (h #g317), and the caller carries the transcript across.
  *
  * The caller TRANSFERS the id rather than copying it, so one Claude
  * conversation is owned by exactly one session key at a time.
@@ -345,6 +348,13 @@ export interface SiblingResumePoint {
    */
   siblingAccount?: string
   siblingConfigDir?: string
+  /**
+   * The working directory the sibling ran in, for a sibling in ANOTHER one
+   * (h #g317): its transcript is under that directory's encoded name, so the
+   * caller carries it into this turn's before resuming. Undefined when the
+   * directory is this turn's own.
+   */
+  siblingCwd?: string
 }
 
 export function findSiblingResumePoint(opts: {
@@ -355,9 +365,10 @@ export function findSiblingResumePoint(opts: {
    * The transcript file a session id names. Given the sibling's own recorded
    * `configDir` when it has one, because a cross-account sibling's transcript
    * is under the OTHER account's directory and asking for this account's would
-   * refuse every real candidate.
+   * refuse every real candidate. Given the sibling's own `cwd` for the same
+   * reason when it ran in another working directory (h #g317).
    */
-  transcriptPath: (claudeSessionId: string, configDir?: string) => string
+  transcriptPath: (claudeSessionId: string, configDir?: string, cwd?: string) => string
   /** `claudeSessionIsWriting`, injected so this module stays free of the
    *  session manager. True while a key's transcript may still be written. */
   isBusy: (sessionKey: string) => boolean
@@ -430,7 +441,13 @@ export function findSiblingResumePoint(opts: {
       refusal = "sibling-still-writing"
       continue
     }
-    if (!existsSync(opts.transcriptPath(record.claudeSessionId, record.configDir))) {
+    // A sibling in another working directory wrote its transcript under that
+    // directory's encoded name (h #g317).
+    const keyCwd = sessionKeyCwd(key)
+    const siblingCwd = keyCwd !== undefined && keyCwd !== sessionKeyCwd(opts.sessionKey)
+      ? keyCwd
+      : undefined
+    if (!existsSync(opts.transcriptPath(record.claudeSessionId, record.configDir, siblingCwd))) {
       refusal = "sibling-transcript-gone"
       continue
     }
@@ -447,6 +464,7 @@ export function findSiblingResumePoint(opts: {
         ...(crossAccount
           ? { siblingAccount, siblingConfigDir: record.configDir }
           : {}),
+        ...(siblingCwd ? { siblingCwd } : {}),
       }
     }
   }
@@ -468,12 +486,13 @@ export function findSiblingResumePoint(opts: {
  * would have been refused anyway, because the thing it blocks is the REPLAY,
  * and the replay happens exactly when the carry does not. So nothing about
  * content, transcripts, binaries or busy-ness is consulted. The one test is
- * the sibling signature, which already pins cwd, request scope, opencode
- * session and agent, and leaves only the model, the effort, the spawn settings
- * (prompt-cache TTL, `maxTurns`, `maxBudgetUsd`) and the account free. Leaving
- * the spawn settings free (h #g275) only widens what this sees, which is the
- * safe direction for a guard: an account in another group that answered this
- * conversation under another TTL is still that group's exchange.
+ * the sibling signature, which already pins request scope, opencode session
+ * and agent, and leaves only the model, the effort, the spawn settings
+ * (prompt-cache TTL, `maxTurns`, `maxBudgetUsd`), the working directory and the
+ * account free. Leaving the spawn settings (h #g275) and the directory
+ * (h #g317) free only widens what this sees, which is the safe direction for a
+ * guard: an account in another group that answered this conversation under
+ * another TTL, or before the session moved, is still that group's exchange.
  *
  * `extraKeys` is the in-memory session-key set (`listClaudeSessionKeys`), so
  * the guard still works with `resumeAfterRestart: false`, where nothing is

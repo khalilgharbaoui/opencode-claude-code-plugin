@@ -92,11 +92,22 @@ test("modelSiblingSignature blanks the model and drops the effort tail, and noth
     )
   }
 
+  // The same opencode session after opencode moved it to another directory is
+  // the same conversation (h #g317); the shared `default` affinity is not one
+  // conversation, so it keeps its directory.
+  assert.equal(
+    modelSiblingSignature(sessionKey("/elsewhere", `claude-haiku-4-5::tools::ses_switch::${CONTEXT}`)),
+    modelSiblingSignature(haiku),
+  )
+  assert.notEqual(
+    modelSiblingSignature(sessionKey("/elsewhere", `claude-haiku-4-5::tools::default::${CONTEXT}`)),
+    modelSiblingSignature(sessionKey("/work", `claude-haiku-4-5::tools::default::${CONTEXT}`)),
+  )
+
   // Everything else still has to match, which is what keeps an unrelated
   // conversation out however well its content lines up.
   for (const other of [
     keyFor("claude-haiku-4-5", "ses_other"),
-    sessionKey("/elsewhere", `claude-haiku-4-5::tools::ses_switch::${CONTEXT}`),
     sessionKey("/work", `claude-haiku-4-5::no-tools::ses_switch::${CONTEXT}`),
     sessionKey("/work", `claude-haiku-4-5::tools::ses_switch::context=["claude-code","worker"]`),
     // The agent is not a spawn setting, with or without one beside it.
@@ -124,7 +135,7 @@ function scratchStore(): { dir: string; transcript: (id: string) => string } {
 function findSibling(
   key: string,
   prompt: any,
-  transcript: (id: string) => string,
+  transcript: (id: string, dir?: string, from?: string) => string,
   overrides: { cliPath?: string; isBusy?: (key: string) => boolean } = {},
 ) {
   return findSiblingResumePoint({
@@ -187,10 +198,21 @@ test("every refusal falls back to the replay", () => {
       "a busy sibling",
     )
 
-    // Never another opencode session, directory, scope or agent.
+    // Never another opencode session, scope or agent. Another directory is the
+    // same session moved (h #g317): found, named, and its transcript is looked
+    // for under the directory it ran in.
+    const moved = sessionKey("/elsewhere", `claude-sonnet-4-5::tools::ses_switch::${CONTEXT}`)
+    const asked: (string | undefined)[] = []
+    const found = findSibling(moved, AFTER, (id, dir, from) => {
+      asked.push(from)
+      return transcript(id)
+    })
+    assert.equal(found?.siblingKey, sibling)
+    assert.equal(found?.siblingCwd, "/work")
+    assert.deepEqual(asked, ["/work"])
+    assert.equal(findSibling(current, AFTER, transcript)?.siblingCwd, undefined, "same directory")
     for (const foreign of [
       keyFor("claude-sonnet-4-5", "ses_other"),
-      sessionKey("/elsewhere", `claude-sonnet-4-5::tools::ses_switch::${CONTEXT}`),
       sessionKey("/work", `claude-sonnet-4-5::no-tools::ses_switch::${CONTEXT}`),
     ]) {
       assert.equal(findSibling(foreign, AFTER, transcript), undefined, foreign)

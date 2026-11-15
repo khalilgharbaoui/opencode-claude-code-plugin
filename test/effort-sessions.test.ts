@@ -599,9 +599,12 @@ test("effort changes leave other agent, provider, account, model and conversatio
     const key = effortSessionKey(other, "high")
     const fake = fakeActive()
     // A busy child on another model of this same conversation would take the
-    // turn instead (h #g271), so that one is idle here. It must survive the
-    // effort change all the same.
-    if (!other.includes("::claude-opus-5::")) fake.active.lineEmitter.on("line", () => {})
+    // turn instead (h #g271), and so would one in the directory opencode moved
+    // this session out of (h #g317), so those two are idle here. They must
+    // survive the effort change all the same.
+    if (!other.includes("::claude-opus-5::") && !other.startsWith(`${cwd}/other::`)) {
+      fake.active.lineEmitter.on("line", () => {})
+    }
     setActiveProcess(key, fake.active)
     setClaudeSessionId(key, "untouched")
     return { key, ...fake }
@@ -626,6 +629,44 @@ test("effort changes leave other agent, provider, account, model and conversatio
       deleteActiveProcess(other.key)
       deleteClaudeSessionId(other.key)
     }
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test("doStream: a step after opencode moved the session mid-turn finishes on the old directory's child (h #g317)", { timeout: 60_000 }, async () => {
+  // A lane's Code Mode `execute` moved its session into a worktree, so the
+  // step carrying that call's result arrives for the new directory while the
+  // child that made the call is parked in it, in the old one.
+  const { cwd, modelId, provider, base, options } = fixture()
+  const oldDir = `${cwd}-before-move`
+  const parked = base.replace(cwd, oldDir)
+  const first = scriptedActive()
+  setActiveProcess(parked, first.active)
+  setClaudeSessionId(parked, "pending-before-move")
+  const id = "pending-session-move"
+  let answer!: (result: unknown) => void
+  const answered = new Promise<unknown>((resolve) => { answer = resolve })
+  queuePendingProxyCall(parked, {
+    id, toolName: "execute", input: {}, channel: { closed: false },
+    resolve(result) { answer(result) }, reject() {},
+  })
+  markPendingProxyCallEmitted(id)
+  options.prompt.push(
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "execute", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "execute", output: { type: "text", value: "moved" } }] },
+  )
+  try {
+    await answerParkedCall(() => provider.languageModel(modelId).doStream(options), first.active, answered)
+    assert.equal(first.killed(), false)
+    assert.equal(getActiveProcess(parked), first.active)
+    assert.equal(getActiveProcess(base), undefined, "no child spawned in the new directory mid-turn")
+    assert.equal(getClaudeSessionId(base), undefined, "the conversation stays with the parked child")
+  } finally {
+    resolvePendingProxyCallById(id, { kind: "text", text: "cleanup" })
+    deleteActiveProcess(parked)
+    deleteClaudeSessionId(parked)
+    await deleteActiveProcessAndWait(base)
+    deleteClaudeSessionId(base)
     rmSync(cwd, { recursive: true, force: true })
   }
 })
