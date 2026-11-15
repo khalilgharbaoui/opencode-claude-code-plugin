@@ -13154,10 +13154,24 @@ What changed:
 - Widening the signature also widens `findForeignAccountSibling`, the `accountGroups` detector,
   which is the safe direction for a guard.
 
+Live on opencode 2.2.6 with this build (a private `serve` under scratch XDG dirs, basic auth as
+`opencode` with the printed server password, Haiku 5.5 on the default account): a session created in
+repo A (`POST /api/session` with `{"location":{"directory":...}}`) answered "Remember the codeword
+ZEBRA-41" on Claude session `ac24c30c-...`; `POST /api/session/{id}/move` with `{"directory": <repo
+B>}` answered 204 and the session's `location.directory` became repo B; the next prompt logged
+`carrying the claude conversation over to the new session key` and `continuing this conversation's
+claude session in the session's new directory instead of replaying it`, spawned in repo B with
+`--resume ac24c30c-...`, and answered `ZEBRA-41 | <repo B>`. Cache on that turn: 38,958 read, 18,292
+written (the first turn wrote 56,776): opencode's forwarded system prompt carries the working
+directory too, so more of it is rewritten than with the bare CLI, still about a third of what a
+replay rewrites. The transcript: repo A's original left at 492,221 bytes, repo B's copy 502,753 after
+the turn.
+
 Not changed: it reads the resume store, so with `resumeAfterRestart: false` a move replays, as a
 model change does. A fork into another directory (`forkSessions`, `forkFromCheckpoint`) still keys
-on the cwd. Not measured: a live `session_move` end to end through opencode, and the interactive
-transport (the copy lands where its tail looks, by construction).
+on the cwd. Not measured live: the mid-turn move (a Code Mode `execute` calling `session_move`),
+which the fake-CLI test covers, and the interactive transport (the copy lands where its tail looks,
+by construction).
 
 Tests: `test/session-move.test.ts` (two real `doStream` turns in two directories of one opencode
 session, with a fake CLI that resumes only a transcript under its own directory: carried and
