@@ -100,22 +100,6 @@
   `shell`) and `src/host-tools.ts` passes it through, but the proxied `bash` def does not offer it.
   Maintainer: its own item, not in the background-flag PR (2026-11-11).
 
-- 2026-11-14, seen when the `dispatch-answers` lane started, not diagnosed: on opencode 2.2.6 a subagent
-  ran `shell` (created its worktree), then Code Mode `execute` (very likely `session_move` into that
-  worktree); opencode recorded `location-switched` and a `system` message (the Code Mode catalog changed),
-  and the next assistant step ended with the plugin's `no reply` note: Claude wrote nothing and called no
-  tool, so the lane stopped. Session `ses_e2898d33effeo0ojQzfvfWVOJK` (opencode.db), 2026-11-14. Check
-  whether a location switch mid-turn changes the session key (the cwd is in it) so the step after the
-  proxied `execute` result lands on a new key with no parked call and a fresh spawn.
-  2026-11-15, the empty turn is explained: the step started at 00:14:21Z (opencode.db seq 34, after
-  `location-switched` at 00:14:18Z) and at 00:14:27.770Z Claude Code recorded `blocked_by_hook`
-  ("agent-guard: the prompt exceeds the assignment-probe scan cap ...", `promptKept: false`) in the
-  worktree cwd's transcript `a9e1ac0c-416d-4644-bd57-e70eae20aae6.jsonl`, so the new key replayed the
-  history and the guard refused it by size. h #g314 turns that into a `prompt blocked` note and an
-  error. Why it replayed at all is FIXED on `fix/session-move` (h #g317): a moved session's
-  conversation is carried into the new directory (transcript copied, `--resume`), and a step that
-  answers the call that moved it finishes on the old directory's child.
-
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex
   setup before changing the docs.
@@ -262,6 +246,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-15: **done** (v0.73.5, PR #189, h #g317): a session opencode moves to another working
+  directory continues its Claude session there (transcript copied into the new directory's project
+  folder, `--resume`) instead of replaying the thread, and a step answering the call that moved it
+  finishes on the old directory's child. The 2026-11-14 location-switch empty turn was this replay,
+  refused by agent-guard by size. Live on opencode 2.2.6.
 - 2026-11-15: **done** (v0.73.4, PR #188, h #g314, h #g315, h #g316): a message a `UserPromptSubmit`
   hook ends fails the turn under a `▌ **prompt blocked:**` note on both transports (the interactive
   one ends the turn on the TUI's record and clears the text handed back to its input box), and a

@@ -13181,3 +13181,8 @@ change switched off), the mid-turn step in `test/effort-sessions.test.ts` (witho
 step never reaches the parked child and the test times out), `sourceCwds` in
 `test/account-transcript.test.ts`, and the updated signature cases in
 `test/session-model-switch.test.ts` and `test/account-groups.test.ts`.
+
+Shipped as v0.73.5 on 2026-11-15 (PR #189), a patch: CI green on Linux and Windows on the PR head
+`569ae0e`, on the merge commit `51bc536` before the tag and on the release commit `879d36b`, the
+publish confirmed by the `Publish package` step's tail and the version document's shasum
+(`0f49e6ca`), with a GitHub Release.
