@@ -77,11 +77,11 @@
   hook's reason, and a blocked replay drops its empty session so the next message replays again.
   Why the switch replayed at all is fixed on the same branch (h #g315): the appical session's two
   usage-limited turns never moved its resume record, so the by-hand switch to the default account
-  found their messages past it and refused the carry (`sibling-conversation-changed`). Still open:
-  (1) the interactive transport does not read the TUI's `promptSubmitEnding` record, and how a
-  blocked prompt ends a PTY turn is unmeasured; (2) the location-switch empty turn below may be the
-  same block: check that session's Claude transcript for a `blocked_by_hook` record before building
-  anything on the session-key theory.
+  found their messages past it and refused the carry (`sibling-conversation-changed`). The
+  interactive transport is done on the same branch (2026-11-15, measured under a PTY on 2.1.322):
+  it reads the TUI's `promptSubmitEnding` record, ends the turn at once, and clears the text the TUI
+  hands back to its input box. The location-switch empty turn below was the same block (checked
+  2026-11-15, see that entry).
 - 2026-11-14 (evening), the watchdog that closed a turn during a sleep: FIXED on `fix/blocked-prompt`
   (h #g316). It counts wall-clock time, sleep included, so a fire well past its deadline now waits
   again, and a fire that closes the turn interrupts the CLI. The start watchdog follows the same
@@ -110,6 +110,14 @@
   tool, so the lane stopped. Session `ses_e2898d33effeo0ojQzfvfWVOJK` (opencode.db), 2026-11-14. Check
   whether a location switch mid-turn changes the session key (the cwd is in it) so the step after the
   proxied `execute` result lands on a new key with no parked call and a fresh spawn.
+  2026-11-15, the empty turn is explained: the step started at 00:14:21Z (opencode.db seq 34, after
+  `location-switched` at 00:14:18Z) and at 00:14:27.770Z Claude Code recorded `blocked_by_hook`
+  ("agent-guard: the prompt exceeds the assignment-probe scan cap ...", `promptKept: false`) in the
+  worktree cwd's transcript `a9e1ac0c-416d-4644-bd57-e70eae20aae6.jsonl`, so the new key replayed the
+  history and the guard refused it by size. h #g314 turns that into a `prompt blocked` note and an
+  error. Still open: that a location switch replays the thread at all (a new cwd is a new session key,
+  and Claude's transcript lives under the old cwd's directory). The `fix/session-move` worktree
+  (no commits yet) is where that would go.
 
 - 2026-11-10, found by the pr173 lane (h #g295), not measured: Claude Code 2.1.322 adds fast mode on
   Vertex, while `docs/models.md` says fast mode excludes Bedrock, Vertex and Foundry. Check on a Vertex

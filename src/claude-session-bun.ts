@@ -688,6 +688,24 @@ export function isTurnDurationRecord(rec: any): boolean {
 }
 
 /**
+ * The TUI's own record of a hook ending a message before the model saw it
+ * (h #g314). Measured on 2.1.322 under a PTY with a blocking `UserPromptSubmit`
+ * hook: a `system`/`informational` record with `promptSubmitEnding: {ending:
+ * {kind, reason}, promptKept}` and `preventContinuation: true`, and no `user`
+ * or `assistant` record, so a turn waiting for either waited out its whole
+ * timeout. Its `content` repeats the whole prompt and is never read.
+ */
+export function isPromptEndingRecord(rec: any): boolean {
+  return (
+    rec?.type === "system" &&
+    rec.subtype === "informational" &&
+    rec.promptSubmitEnding !== null &&
+    typeof rec.promptSubmitEnding === "object" &&
+    typeof rec.promptSubmitEnding.ending?.kind === "string"
+  )
+}
+
+/**
  * A `compact_boundary` record the TUI wrote while no turn was running, marked
  * `betweenTurns` for the stream parser's note; null for any other line. The
  * TUI's idle compaction (Claude Code 2.1.299 and later) writes it with
@@ -921,6 +939,8 @@ export type TurnEnd =
   | "interrupted"
   /** The TUI wrote `turn_duration` without a terminal assistant record. */
   | "ended"
+  /** A hook ended the turn's own message before the model saw it (h #g314). */
+  | "blocked"
 
 export interface TailTurnResult {
   stopReason: string | null
@@ -987,6 +1007,14 @@ export class ClaudeSession {
   /** A fork whose first turn has not started: its transcript opens with the
    *  parent's copied conversation, which belongs to no turn of this session. */
   private forkPending = false
+  /**
+   * A hook dropped a message (`promptKept: false`) and the TUI put its text
+   * back in the input box, where the next paste would be appended to it
+   * (measured on 2.1.322: the next turn's record held both messages, and a
+   * blocked replay's 40 lines leaked into the next message). Cleared with one
+   * Ctrl+C before the next paste, when no turn runs (h #g314).
+   */
+  private inputHandedBack = false
   private readonly env?: Record<string, string | undefined>
   private readonly onScreen?: (event: ScreenEvent) => void
   private readonly onExit?: (code: number | null) => void
@@ -1442,6 +1470,17 @@ export class ClaudeSession {
     this.turn = new Promise<void>((resolve) => (settle = resolve))
     this.turnDenied = []
     this.abandonTurn = false
+    // A message a hook dropped is back in the input box. One Ctrl+C clears a
+    // box that holds text (measured on 2.1.322: the next record held only the
+    // new message, and the TUI stayed up); safe only here, with no turn
+    // running, where it cannot interrupt one. Ctrl+U clears one line of it.
+    if (this.inputHandedBack) {
+      this.inputHandedBack = false
+      this.proc.terminal.write("\x03")
+      await delay(150)
+      const until = Date.now() + 3_000
+      while (Date.now() < until && Date.now() - this.lastDataAt < 300) await delay(50)
+    }
     // Records written between turns (a late `turn_duration`, an interrupt
     // marker) belong to the turn before, never to this one. A compaction is
     // the exception: the TUI compacts a long conversation on its own while it
@@ -1584,6 +1623,11 @@ export class ClaudeSession {
         } else if (rec.type === "user") {
           if (scan.sawUserRecord && isInterruptRecord(rec)) scan.end = "interrupted"
           scan.sawUserRecord = true
+        } else if (isPromptEndingRecord(rec)) {
+          // The turn's own message, ended before it became a `user` record:
+          // the turn is over. One queued into a running turn leaves it running.
+          if (rec.promptSubmitEnding.promptKept === false) this.inputHandedBack = true
+          if (!scan.sawUserRecord) scan.end = "blocked"
         } else if ((scan.sawUserRecord || scan.stopReason) && isTurnDurationRecord(rec)) {
           scan.end = scan.stopReason ? "stop" : "ended"
         }
@@ -1739,7 +1783,7 @@ export class ClaudeSession {
     const t0 = Date.now()
     const collected: string[] = []
     const usage = new TurnUsageAccumulator()
-    const { stopReason } = await this.runTurnLoop(
+    const { stopReason, end } = await this.runTurnLoop(
       prompt,
       (_raw, rec) => {
         if (rec?.type !== "assistant" || !rec.message) return
@@ -1753,6 +1797,9 @@ export class ClaudeSession {
       timeout,
     )
 
+    if (end === "blocked") {
+      throw new Error(this.failureMessage("a UserPromptSubmit hook ended the prompt before the model saw it"))
+    }
     if (!stopReason) {
       throw new Error(
         this.failureMessage(

@@ -25,6 +25,7 @@ import {
   highlightedChoice,
   interactiveTranscriptPath,
   isInterruptRecord,
+  isPromptEndingRecord,
   isTurnDurationRecord,
   planApprovalKeys,
   resumeQuotaChoice,
@@ -45,7 +46,13 @@ import {
 } from "../src/claude-session-wrapper.js"
 import { REJECTED_EXIT_PLAN_MODE_PREFIX } from "../src/plan-mode-question.js"
 import { _setAccountUsageStorePathForTests, snapshotAccountUsage } from "../src/account-usage.js"
-import { describeResultFailure, parseToolProgress } from "../src/cli-events.js"
+import {
+  PROMPT_BLOCKED_MARKER,
+  SILENT_TURN_MARKER,
+  describeResultFailure,
+  parsePromptBlock,
+  parseToolProgress,
+} from "../src/cli-events.js"
 import {
   deleteActiveProcess,
   getActiveProcess,
@@ -95,6 +102,23 @@ function assistantRecord(id: string, stopReason: string, block: any): any {
 const textBlock = (text: string) => ({ type: "text", text })
 const toolBlock = (id: string, name: string) => ({ type: "tool_use", id, name, input: {} })
 
+/**
+ * What 2.1.322's TUI writes when a `UserPromptSubmit` hook ends a prompt
+ * (h #g314), measured under a PTY with a blocking hook; ids, paths and
+ * timestamps dropped. `content` repeats the whole prompt after the hook's line.
+ */
+function promptEndingRecord(text: string, reason: string, promptKept = false): any {
+  return {
+    type: "system",
+    subtype: "informational",
+    level: "warning",
+    isMeta: false,
+    preventContinuation: true,
+    content: `UserPromptSubmit operation blocked by hook:\n[/hooks/guard.sh]: ${reason}\n\n\nOriginal prompt: ${text}`,
+    promptSubmitEnding: { ending: { kind: "blocked_by_hook", reason }, promptKept },
+  }
+}
+
 type TurnScript = (tui: FakeTui) => void
 
 class FakeTui {
@@ -111,10 +135,20 @@ class FakeTui {
   /** Drawn the moment the child starts. */
   bootScreen = ""
   exitCode: number | null | undefined = undefined
+  /**
+   * A `UserPromptSubmit` hook: a reason ends the prompt the way 2.1.322 does
+   * (h #g314): no `user` record, an `informational` record instead, no turn
+   * script run, and the text handed back to the input box.
+   */
+  blockPrompt?: (text: string) => string | null
+  /** Every prompt the TUI recorded as submitted, after any handed-back text. */
+  submittedTexts: string[] = []
   private draw: (text: string) => void = () => {}
   private resolveExit: (code: number | null) => void = () => {}
   private pasted = false
   private pastedText = ""
+  /** Text a hook dropped, back in the input box until Ctrl+C clears it. */
+  private handedBack = ""
   /** A fork's parent transcript, copied in ahead of the first prompt as the
    *  CLI does with `--fork-session`. */
   private forkSource: string | null = null
@@ -159,7 +193,9 @@ class FakeTui {
     this.writes.push(data)
     if (data.startsWith("\x1b[200~")) {
       this.pasted = true
-      this.pastedText = data.slice("\x1b[200~".length, -"\x1b[201~".length)
+      // A paste lands after whatever the box still holds.
+      this.pastedText = this.handedBack + data.slice("\x1b[200~".length, -"\x1b[201~".length)
+      this.handedBack = ""
       return
     }
     if (data === "\r" && this.pasted) {
@@ -167,10 +203,18 @@ class FakeTui {
       if (this.forkSource && this.submitted === 0 && fs.existsSync(this.forkSource)) {
         fs.appendFileSync(this.transcript, fs.readFileSync(this.forkSource, "utf8"))
       }
+      this.submittedTexts.push(this.pastedText)
+      const reason = this.blockPrompt?.(this.pastedText) ?? null
+      if (reason !== null) {
+        this.append(promptEndingRecord(this.pastedText, reason))
+        this.handedBack = this.pastedText
+        return
+      }
       this.append(userRecord(this.pastedText))
       this.turns[this.submitted++]?.(this)
       return
     }
+    if (data === "\x03") this.handedBack = ""
     if (data === "\x1b") this.onEsc(this)
   }
 
@@ -1780,6 +1824,7 @@ async function runFakeBunTurn(
   options: Record<string, unknown> = {},
   prompt: any[] = [{ role: "user", content: [{ type: "text", text: "reply" }] }],
   providerOptions?: Record<string, unknown>,
+  configure?: (tui: FakeTui) => void,
 ): Promise<{ parts: any[]; children: FakeTui[] }> {
   const previousBun = Object.getOwnPropertyDescriptor(globalThis, "Bun")
   const children: FakeTui[] = []
@@ -1792,6 +1837,7 @@ async function runFakeBunTurn(
     }) => {
       const tui = new FakeTui()
       tui.turns = [turn]
+      configure?.(tui)
       children.push(tui)
       return tui.spawner(argv, { ...spawnOptions, ...spawnOptions.terminal,
         onData: (text) => spawnOptions.terminal.data(undefined, Buffer.from(text)),
@@ -1966,6 +2012,168 @@ test("an expired login on the PTY gets the account note that names the login com
 // `forkSessions` on the PTY (h #g209): a forked opencode session branches the
 // parent's Claude conversation with `--fork-session` instead of replaying it.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A prompt a `UserPromptSubmit` hook ends (h #g314). The TUI writes no `user`
+// record for it, so a turn waiting for one waited out its whole timeout, and
+// it hands the text back to the input box, where the next paste joined it.
+// ---------------------------------------------------------------------------
+
+const GUARD_REASON = "probe-guard: blocked user prompt: BLOCKME seen"
+const blockOnMarker = (tui: FakeTui) => {
+  tui.blockPrompt = (text) => (text.includes("BLOCKME") ? GUARD_REASON : null)
+}
+
+test("the TUI's prompt-ending record reaches the parser in the stream's shape, without the prompt", () => {
+  const record = promptEndingRecord("hello BLOCKME", GUARD_REASON)
+  assert.equal(isPromptEndingRecord(record), true)
+  assert.equal(isPromptEndingRecord({ type: "system", subtype: "informational", content: "x" }), false)
+  assert.equal(isPromptEndingRecord(userRecord("hi")), false)
+  const frame = JSON.parse(streamFrameFromRecord(JSON.stringify(record)))
+  assert.deepEqual(frame.prompt_submit_outcome, {
+    kind: "blocked_by_hook",
+    prompt_kept: false,
+    reason: GUARD_REASON,
+  })
+  assert.equal(frame.prevent_continuation, true)
+  assert.equal(frame.content, undefined, "the prompt the hook refused is not carried on")
+  assert.equal(frame.promptSubmitEnding, undefined)
+  assert.deepEqual(parsePromptBlock(frame), { kind: "blocked_by_hook", promptKept: false, reason: GUARD_REASON })
+})
+
+test("a blocked turn's synthesized result is headless's: success, no API call, no prompt text", () => {
+  const frame = JSON.parse(interactiveResultFrame({ sessionId: "s", end: "blocked", stopReason: null }))
+  assert.equal(frame.subtype, "success")
+  assert.equal(frame.is_error, false)
+  assert.equal(frame.num_turns, 0)
+  assert.equal(frame.total_cost_usd, 0)
+  assert.equal(frame.result, undefined)
+  assert.equal(frame.session_id, "s")
+})
+
+test("a prompt a hook ends ends the turn at once, and the next paste starts from an empty box", async () => {
+  const tui = new FakeTui()
+  blockOnMarker(tui)
+  tui.turns.push((t) => t.append(assistantRecord("m1", "end_turn", textBlock("PINEAPPLE"))))
+  await withSession(tui, async (session) => {
+    await session.start()
+    const lines: string[] = []
+    const started = Date.now()
+    const blocked = await session.tailTurn("line 0 of a replayed history\nBLOCKME", (raw) => lines.push(raw), 20_000)
+    assert.equal(blocked.end, "blocked")
+    assert.equal(blocked.stopReason, null)
+    assert.ok(Date.now() - started < 10_000, "ended on the record, not at the turn timeout")
+    assert.ok(lines.some((line) => line.includes('"promptSubmitEnding"')))
+    assert.ok(!tui.writes.includes("\x03"), "nothing is cleared while the turn runs")
+
+    const next = await session.tailTurn("Reply with only the word PINEAPPLE.", () => {})
+    assert.equal(next.end, "stop")
+    const clear = tui.writes.indexOf("\x03")
+    const paste = tui.writes.findLastIndex((write) => write.startsWith("\x1b[200~"))
+    assert.ok(clear >= 0 && clear < paste, "one Ctrl+C before the next paste")
+    assert.equal(tui.writes.filter((write) => write === "\x03").length, 1)
+    assert.equal(
+      tui.submittedTexts.at(-1),
+      "Reply with only the word PINEAPPLE.",
+      "nothing of the blocked prompt joined the next message",
+    )
+
+    // A turn after an ordinary one sends no Ctrl+C.
+    tui.turns.push((t) => t.append(assistantRecord("m2", "end_turn", textBlock("again"))))
+    await session.tailTurn("again", () => {})
+    assert.equal(tui.writes.filter((write) => write === "\x03").length, 1)
+  })
+})
+
+test("ask fails a prompt a hook ends instead of waiting out its timeout", async () => {
+  const tui = new FakeTui()
+  blockOnMarker(tui)
+  await withSession(tui, async (session) => {
+    await session.start()
+    const started = Date.now()
+    await assert.rejects(session.ask("BLOCKME", 20_000), /UserPromptSubmit hook ended the prompt/)
+    assert.ok(Date.now() - started < 10_000)
+  })
+})
+
+test("a message a hook ends while the turn runs leaves the turn running", async () => {
+  // A queued message is ended after the turn's own `user` record, so it is
+  // not this turn's prompt: the turn goes on to its reply.
+  const tui = new FakeTui()
+  tui.turns.push((t) => {
+    t.append(promptEndingRecord("steered BLOCKME", GUARD_REASON))
+    t.later(20, () => t.append(assistantRecord("m1", "end_turn", textBlock("the answer"))))
+  })
+  await withSession(tui, async (session) => {
+    await session.start()
+    const lines: string[] = []
+    const result = await session.tailTurn("hi", (raw) => lines.push(raw))
+    assert.equal(result.end, "stop")
+    assert.ok(lines.some((line) => line.includes("the answer")))
+  })
+})
+
+test("a blocked prompt on the PTY fails the turn under the plugin's note naming the hook", async () => {
+  const dirs = scratch()
+  const modelId = "claude-test-pty-blocked"
+  const key = sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  try {
+    const { parts } = await runFakeBunTurn(
+      dirs,
+      modelId,
+      () => {},
+      {},
+      [{ role: "user", content: [{ type: "text", text: "hello BLOCKME" }] }],
+      undefined,
+      blockOnMarker,
+    )
+    const text = textOf(parts)
+    assert.ok(text.includes(PROMPT_BLOCKED_MARKER), text)
+    assert.ok(text.includes(GUARD_REASON), text)
+    assert.match(text, /nothing reached Claude/)
+    assert.ok(!text.includes(SILENT_TURN_MARKER), "not an empty reply")
+    assert.ok(!text.includes("Original prompt"), "the record's copy of the prompt is never rendered")
+    assert(!parts.some((part) => part.type === "error"), "the note is the account of it")
+    const finish = parts.find((part) => part.type === "finish")
+    assert.deepEqual(finish.finishReason, { unified: "error", raw: "blocked_by_hook" })
+    assert.ok(getClaudeSessionId(key), "an ordinary message's session is kept")
+  } finally {
+    deleteClaudeSessionId(key)
+    dirs.cleanup()
+  }
+})
+
+test("a blocked replay on the PTY drops the empty session, so the next message replays again", async () => {
+  const dirs = scratch()
+  const modelId = "claude-test-pty-blocked-replay"
+  const key = sessionKey(dirs.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  try {
+    const { parts, children } = await runFakeBunTurn(
+      dirs,
+      modelId,
+      () => {},
+      {},
+      [
+        { role: "user", content: [{ type: "text", text: "one BLOCKME" }] },
+        { role: "assistant", content: [{ type: "text", text: "A1" }] },
+        { role: "user", content: [{ type: "text", text: "two" }] },
+      ],
+      undefined,
+      blockOnMarker,
+    )
+    const pasted = children[0].submittedTexts[0]
+    assert.match(pasted, /one BLOCKME/, "the envelope was a replay")
+    const text = textOf(parts)
+    assert.ok(text.includes(PROMPT_BLOCKED_MARKER), text)
+    assert.match(text, /next message replays them again/)
+    const finish = parts.find((part) => part.type === "finish")
+    assert.deepEqual(finish.finishReason, { unified: "error", raw: "blocked_by_hook" })
+    assert.equal(getClaudeSessionId(key), undefined, "the session that holds none of it is dropped")
+  } finally {
+    deleteClaudeSessionId(key)
+    dirs.cleanup()
+  }
+})
 
 test("a forked opencode session branches the parent's conversation on the PTY", async () => {
   _resetForkFingerprints()

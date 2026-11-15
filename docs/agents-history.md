@@ -12937,12 +12937,44 @@ so a `▌ **refusal fallback:**` note was replayed to Claude as its own words, w
 was on the list. Both markers are on it now, and `test/turn-stats.test.ts` scans `src/` for every
 `export const *_MARKER = "▌` and fails on one that is not.
 
-Not done: the interactive transport does not read the TUI's `promptSubmitEnding` record, and how a
-blocked prompt ends a PTY turn is unmeasured. Why the replay happened at all is h #g315.
+The interactive transport, measured on 2026-11-15 under a PTY (Claude Code 2.1.322, a scratch
+`UserPromptSubmit` hook blocking `BLOCKME` through `--settings`, `--setting-sources ""`, Haiku 5.5,
+`ClaudeSession` driven directly):
+
+- The TUI writes the same outcome into the transcript under another spelling: a
+  `system`/`informational` record, `level: "warning"`, `preventContinuation: true`,
+  `promptSubmitEnding: {ending: {kind: "blocked_by_hook", reason}, promptKept: false}`, and a
+  `content` that repeats the whole prompt after the hook's line. No `user` record and no
+  `assistant` record follow, so the turn loop, which ends on a terminal stop or a `turn_duration`
+  after a `user` record, waited out the whole turn timeout.
+- It hands the dropped text back to the input box. The next paste lands after it: the next turn's
+  `user` record held the 40 blocked lines and the new message (1,425 characters), and a blocked
+  replay would carry into every following message, where the same hook blocks it again (the first
+  probe recorded two `blocked_by_hook` records and no `user` record). With one Ctrl+C before the
+  next paste, the record held only the new message (35 characters) and the TUI stayed up. Ctrl+U
+  clears one line of it, so it is not the key.
+
+What changed for the PTY: `scanTranscript` ends the turn as `blocked` on that record when it comes
+before the turn's own `user` record (a message queued into a running turn is judged after it and
+leaves the turn running, as on headless), and marks the box as holding handed-back text when
+`promptKept` is false; the next turn sends one Ctrl+C before its paste, never while a turn runs.
+`streamFrameFromRecord` renames the record into the stream's `prompt_submit_outcome` shape and
+drops `content`, so `parsePromptBlock` reads both transports alike and the refused prompt is never
+carried on. `interactiveResultFrame` synthesizes headless's result for it (`success`, not an
+error, `num_turns: 0`, no `result` text), so the stream parser's `num_turns === 0` rule, the note,
+the error finish and the blocked-replay drop are the headless code unchanged. `ask` (the `/btw`
+fork) throws rather than waiting. Not measured: a queued message a hook drops on the PTY, which is
+marked as handed back the same way; one Ctrl+C on an empty box only draws the TUI's exit hint.
+
+Why the replay happened at all is h #g315.
 
 Tests: `test/prompt-blocked.test.ts` (the parser, the note, and a fake CLI replaying the measured
 frames through real `doStream` turns, with a secret-like string in the prompt that must reach
-neither the reply nor the log), and the marker scan in `test/turn-stats.test.ts`.
+neither the reply nor the log), the marker scan in `test/turn-stats.test.ts`, and in
+`test/interactive-pty.test.ts` a scripted TUI that ends a prompt the measured way: the record and
+its stream frame, the synthesized result, a turn ended at once and the next paste starting from an
+empty box, `ask` failing, a queued message leaving its turn running, and real `doStream` turns for
+the note and for a blocked replay dropping its session.
 
 
 ## A by-hand switch after a usage limit replayed the thread instead of carrying it (2026-11-14)

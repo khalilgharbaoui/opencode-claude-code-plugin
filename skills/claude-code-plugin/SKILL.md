@@ -1517,6 +1517,9 @@ than continuing without it; the hook judges that replay the same way, so the use
 choices are to switch back to the model or account that answered before, to change the
 hook, or to start a new session. A message steered into a running turn that a hook
 blocks gets the note under an answer that did not see it, and the turn is not failed.
+Both transports behave alike: on the interactive one the TUI puts the blocked text back
+in its input box, and the plugin clears it before the next message so it never rides
+along (older builds waited out `turnTimeoutMs` there instead).
 The plugin never sets or suggests a hook's own bypass variable (agent-guard's
 `AGENT_GUARD_PROMPT_GUARD_MODE`, say): relaxing a guard is the user's decision.
 
