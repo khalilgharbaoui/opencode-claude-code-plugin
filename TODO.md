@@ -166,11 +166,20 @@ them ran in this directory.
 Questions the maintainer still owes an answer on. Written here the turn they are
 raised, so they survive context compaction; removed when answered, done or dropped.
 
-- 2026-11-14: watchdog follow-up, offered by an earlier turn of session
-  `ses_e324dbf7bffeRHQIz10AIxm7dT`: "should the plugin wait a little longer after the CLI reports an
-  API error before it closes the turn?" The sleep case is fixed, and both watchdogs now wait out the
-  backoff the CLI announces in its `api_retry` frame (h #g316). Deferred (2026-11-15): whether to wait
-  any longer than the CLI announces; the original case has no evidence on record.
+- 2026-11-14: watchdog follow-up: should the plugin wait longer after an API error than Claude Code
+  announces? Maintainer 2026-11-15: "maybe yes how much longer is needed is this something usefull for
+  all plugin users?" Measured 2026-11-15: opencode.db holds 51 real `▌ **stream timeout:**` closes
+  since 2026-09 (22 Sep, 19 Oct, 10 Nov, about four a week). 11 had a Claude Code `api_error` in the
+  same directory during the step, and 7 of those closed 0 to 2 s after it: Claude Code gave up on a
+  stalled connection (`Connection error.`, 288 of the 292 api_error records in both config dirs'
+  transcripts) at about the moment the 60 s inactivity watchdog fired, so the turn was closed just
+  before the retry was announced (v0.73.4 holds the watchdog only for a retry announced first). Claude
+  Code's own backoff: median 1 s, p90 10 s, max 40 s. Silence in the transcript before a Connection
+  error clusters at about 30 s (median 30.0 s) and at 300 s or more (29); Claude Code's own stall
+  timeout was not read off the binary (the shell redacted it). Recommendation: lengthen the inactivity
+  window from 60 s to 90 s by default for everyone (`CLAUDE_CODE_RESULT_FALLBACK_MS` stays the
+  override); cost: a truly hung CLI is noticed 30 s later. The other 40 closes have no retry behind
+  them (the sleep case is fixed in v0.73.4); their cause is not diagnosed.
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
