@@ -12976,6 +12976,11 @@ its stream frame, the synthesized result, a turn ended at once and the next past
 empty box, `ask` failing, a queued message leaving its turn running, and real `doStream` turns for
 the note and for a blocked replay dropping its session.
 
+Shipped as v0.73.4 on 2026-11-15 (PR #188), a patch, together with h #g315 and h #g316: CI green on
+Linux and Windows on the PR head `eb00f1c`, on the merge commit `7f893c2` before the tag and on
+the release commit `00a4f19`, the publish confirmed by the `Publish package` step's tail and the
+version document's shasum (`a2d145ff`), with a GitHub Release.
+
 
 ## A by-hand switch after a usage limit replayed the thread instead of carrying it (2026-11-14)
 
@@ -13014,6 +13019,11 @@ a `LIMITME` message the way 2.1.322 answers a usage limit and a `SERVERERR` one 
 after a limit resumes the first account's session from the second account's config dir with no
 replay and without re-sending the limited message (it fails without the change: the switch
 replays), and a switch after the 529 still replays.
+
+Shipped as v0.73.4 on 2026-11-15 (PR #188), a patch, together with h #g314 and h #g316: CI green on
+Linux and Windows on the PR head `eb00f1c`, on the merge commit `7f893c2` before the tag and on
+the release commit `00a4f19`, the publish confirmed by the `Publish package` step's tail and the
+version document's shasum (`a2d145ff`), with a GitHub Release.
 
 
 ## The inactivity watchdog read a sleeping Mac as a silent CLI, and left the CLI running (2026-11-14)
@@ -13081,3 +13091,8 @@ CLI's answer lands; a CLI that never finishes gets exactly one `interrupt` after
 announced 3 s retry holds the inactivity watchdog and, before any content, the start watchdog, with
 no respawn; a late start-watchdog fire re-arms with no respawn. Each fails with its change switched
 off.
+
+Shipped as v0.73.4 on 2026-11-15 (PR #188), a patch, together with h #g314 and h #g315: CI green on
+Linux and Windows on the PR head `eb00f1c`, on the merge commit `7f893c2` before the tag and on
+the release commit `00a4f19`, the publish confirmed by the `Publish package` step's tail and the
+version document's shasum (`a2d145ff`), with a GitHub Release.

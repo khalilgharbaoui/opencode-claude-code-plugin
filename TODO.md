@@ -72,22 +72,6 @@
 
 ## Backlog
 
-- 2026-11-14 (evening), the blocked replay: FIXED on `fix/blocked-prompt` (h #g314). A message a
-  `UserPromptSubmit` hook ends now fails the turn under a `▌ **prompt blocked:**` note quoting the
-  hook's reason, and a blocked replay drops its empty session so the next message replays again.
-  Why the switch replayed at all is fixed on the same branch (h #g315): the appical session's two
-  usage-limited turns never moved its resume record, so the by-hand switch to the default account
-  found their messages past it and refused the carry (`sibling-conversation-changed`). The
-  interactive transport is done on the same branch (2026-11-15, measured under a PTY on 2.1.322):
-  it reads the TUI's `promptSubmitEnding` record, ends the turn at once, and clears the text the TUI
-  hands back to its input box. The location-switch empty turn below was the same block (checked
-  2026-11-15, see that entry).
-- 2026-11-14 (evening), the watchdog that closed a turn during a sleep: FIXED on `fix/blocked-prompt`
-  (h #g316). It counts wall-clock time, sleep included, so a fire well past its deadline now waits
-  again, and a fire that closes the turn interrupts the CLI. The start watchdog follows the same
-  late-fire rule, and both watchdogs wait out the backoff an `api_retry` frame announces. Left alone
-  on purpose: a proxied call queued with no stream attached (the late-result recovery path).
-
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
@@ -265,6 +249,12 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## Done
 
+- 2026-11-15: **done** (v0.73.4, PR #188, h #g314, h #g315, h #g316): a message a `UserPromptSubmit`
+  hook ends fails the turn under a `▌ **prompt blocked:**` note on both transports (the interactive
+  one ends the turn on the TUI's record and clears the text handed back to its input box), and a
+  blocked replay drops its empty session; a switch made after a usage limit carries the conversation;
+  the watchdogs no longer fire on time spent asleep, wait out an announced retry, and a closing fire
+  interrupts the CLI. Left alone on purpose: a proxied call queued with no stream attached.
 - 2026-11-14: **done** (v0.73.3, PR #187, h #g312, h #g313): dispatch form answers no longer read as
   dismissed under opencode-dcp's compact references (account-switch form and plan approval too), typed
   answers accept picker names like `fable 5.2 max`, and an edited agent file applies on the next turn.
