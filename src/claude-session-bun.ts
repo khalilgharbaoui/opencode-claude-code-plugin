@@ -1126,7 +1126,7 @@ export class ClaudeSession {
       submitMaxRetries: opts.submitMaxRetries ?? 8,
       debug: opts.debug ?? false,
       // The headless CLI's `tool_progress` heartbeat runs every 30 s, and the
-      // wire-inactivity watchdog it keeps quiet fires at 60 s.
+      // wire-inactivity watchdog it keeps quiet fires at 90 s.
       heartbeatMs: opts.heartbeatMs ?? 30_000,
       interruptGraceMs: opts.interruptGraceMs ?? 5_000,
       // Shorter than `bootQuietMs`, so a trust dialog is answered before boot

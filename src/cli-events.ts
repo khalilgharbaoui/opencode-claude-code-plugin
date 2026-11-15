@@ -1635,9 +1635,9 @@ export function _resetToolProgressReports(): void {
  *
  * The one job a progress frame could have done is already done for free. The
  * line handler calls `startResultFallback` on every line it receives, so a
- * heartbeat resets the 60-second wire-inactivity watchdog like any other line,
- * and the measured 30-second cadence keeps a long CLI-executed tool at half
- * the deadline. What was missing was not the reset but the diagnostic: until
+ * heartbeat resets the 90-second wire-inactivity watchdog like any other line,
+ * and the measured 30-second cadence keeps a long CLI-executed tool at a third
+ * of the deadline. What was missing was not the reset but the diagnostic: until
  * now a turn stuck inside a ten-minute `Bash` wrote twenty `stream message
  * tool_progress` debug lines that named neither the tool nor how long it had
  * been going. That is what the INFO line below says.
