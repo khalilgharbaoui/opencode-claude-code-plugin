@@ -72,6 +72,22 @@
 
 ## Backlog
 
+- 2026-11-15, seen by the maintainer, not fixed: a fork of a conversation served before an opencode
+  restart replays it. Session `ses_e1f0664f3ffe...` is `(fork #1)` of the director session
+  `ses_e7198d765ffeUT1TqjM6JP7LiP`, made at 20:50:16Z through the parent's LAST message (boundary
+  `through`, seq 14362). Its first turn logged `replaying the conversation as text` with
+  `no-sibling-recorded` and 2,888 messages, bounded to 180,000 characters, so the fork lost almost all of
+  its context. The parent's resume record for the same model, agent and effort
+  (`claude-opus-5-5@appical`, build, xhigh) and its transcript were on disk, but `forkFromCheckpoint`
+  (h #g305) keeps its checkpoints in memory only and `forkSessions` is off and in memory too, and
+  opencode had restarted three times since the parent's last turn (19:56Z, 20:29Z, 20:41Z). Candidate
+  fix: when a new key is about to replay, look in the resume store for a record of another affinity on
+  the same cwd, model, scope, agent and binary whose STRICT chain this history continues with nothing
+  but the fork's own new message past it, and start with `--resume <id> --fork-session` (the cut-at-end
+  case needs no `--resume-session-at`). Same snapshot caveat as h #g305, same refusals (busy parent,
+  transcript gone, tool result in the trailing segment). opencode 2's `Session.fork` names the source
+  session and could narrow the scan. A fork mid-thread still needs a persisted checkpoint uuid.
+
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
