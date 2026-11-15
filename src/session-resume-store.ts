@@ -8,6 +8,7 @@ import {
   DIGEST_VERSION,
   continuesRecordedConversation,
   conversationDigests,
+  forkSiblingSignature,
   modelSiblingSignature,
   sessionKeyCwd,
   type ForkMessageDigest,
@@ -290,6 +291,78 @@ export function findResumePoint(opts: {
     return refuse("transcript-gone")
   }
   return { claudeSessionId: record.claudeSessionId, matched: record.chain.length }
+}
+
+/**
+ * The Claude session of the conversation a NEW opencode session was forked
+ * from in its entirety, when that conversation was served by an earlier
+ * opencode process, or `undefined` (h #g319).
+ *
+ * `forkFromCheckpoint` (h #g305) finds the parent through checkpoints kept in
+ * memory, so after a restart a fork of a whole conversation replayed it as
+ * text: on 2026-11-15, 2,888 messages bounded to 180,000 characters. This
+ * record is on disk and holds everything the in-memory fork lookup
+ * (`findForkParent`) compares, so the caller starts the fork the way
+ * `forkSessions` does, `--resume <id> --fork-session`, and the parent's own
+ * conversation is left as it was.
+ *
+ * Only a fork of the WHOLE conversation: the record's strict chain must be a
+ * prefix of this history with nothing but the reply past it, which is
+ * `findResumePoint`'s test. A fork from an earlier message needs a checkpoint
+ * uuid the record does not keep, and still replays. The refusals are the fork
+ * lookup's: a sibling key only (`forkSiblingSignature`, which pins cwd, model,
+ * scope, agent, prompt cache TTL and effort and leaves the affinity free), the
+ * same binary, a parent that is not being written to, a transcript still on
+ * disk, and no tool result in the trailing segment. The longest match wins.
+ */
+export function findForkResumePoint(opts: {
+  sessionKey: string
+  prompt: Prompt
+  cliPath: string
+  transcriptPath: (claudeSessionId: string, configDir?: string) => string
+  isBusy: (sessionKey: string) => boolean
+}): { claudeSessionId: string; parentKey: string; matched: number } | undefined {
+  const signature = forkSiblingSignature(opts.sessionKey)
+  if (signature === null) return undefined
+  let best: { claudeSessionId: string; parentKey: string; matched: number; updatedAt: number } | undefined
+  let refusal: string | undefined
+  for (const [key, record] of load()) {
+    if (key === opts.sessionKey || forkSiblingSignature(key) !== signature) continue
+    if (record.cliPath !== opts.cliPath) {
+      refusal = "another-claude-binary"
+      continue
+    }
+    if (best && (record.chain.length < best.matched ||
+      (record.chain.length === best.matched && record.updatedAt <= best.updatedAt))) continue
+    if (!continuesRecordedConversation(record.chain, opts.prompt, { version: record.version ?? 1 })) {
+      refusal = "conversation-changed"
+      continue
+    }
+    if (opts.isBusy(key)) {
+      refusal = "parent-still-writing"
+      continue
+    }
+    if (!existsSync(opts.transcriptPath(record.claudeSessionId, record.configDir))) {
+      refusal = "transcript-gone"
+      continue
+    }
+    best = {
+      claudeSessionId: record.claudeSessionId,
+      parentKey: key,
+      matched: record.chain.length,
+      updatedAt: record.updatedAt,
+    }
+  }
+  if (!best) {
+    if (refusal) {
+      log.info("not forking from a conversation saved before the restart", {
+        sessionKey: opts.sessionKey,
+        reason: refusal,
+      })
+    }
+    return undefined
+  }
+  return { claudeSessionId: best.claudeSessionId, parentKey: best.parentKey, matched: best.matched }
 }
 
 /**
