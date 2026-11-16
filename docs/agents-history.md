@@ -13190,7 +13190,8 @@ publish confirmed by the `Publish package` step's tail and the version document'
 
 ## The inactivity watchdog closed turns just before Claude Code announced a retry (2026-11-15)
 
-h #g318. The follow-up to h #g316, which made both watchdogs wait out a backoff the CLI announces
+h #g318. **Its reason is corrected by h #g320**: the 7 closes it blamed on a 60 s give-up were mostly
+the Mac asleep. The follow-up to h #g316, which made both watchdogs wait out a backoff the CLI announces
 (`noteAnnouncedRetry`) but only when the `system`/`api_retry` frame arrives before the window runs out.
 The maintainer asked whether the plugin should wait longer than Claude Code announces, and whether
 that helps every user.
@@ -13272,3 +13273,37 @@ Shipped as v0.73.7 on 2026-11-16 (PR #191), a patch: CI green on Linux and Windo
 on the merge commit `1684624` before the tag and on the release commit `077a549`, the publish confirmed
 by the `Publish package` step's tail and the version document's shasum (`96274e9a`), with a GitHub
 Release.
+
+
+## Why the inactivity watchdog closed turns: mostly sleep (2026-11-16)
+
+h #g320. A read-only diagnosis by a subagent of every `▌ **stream timeout:**` close in opencode.db,
+matched to Claude Code transcripts by hashing opencode's text and reasoning parts and `toolu_` ids
+against transcript blocks (no text read). Transcripts reach back to 2026-10-17 only (Claude Code's
+30-day cleanup) and `pmset -g log` to 2026-11-09. All closes predate v0.73.4.
+
+- The 51 "real" closes h #g318 counted are 38 distinct turns: a forked or migrated session repeats a
+  message with the same `time.created`.
+- 24 of the 38 were the Mac asleep, the timer firing late at a wake (4 confirmed within 9 s of a
+  logged Wake or DarkWake, the rest inferred from the CLI's own "Your response above was cut off
+  mid-stream" or from 220 to 3,620 s gaps, where every awake close came 60 to 104 s after the last
+  activity). That includes 9 of the 11 closes next to a Claude Code `api_error`: its code there is
+  `StreamSuspended` ("Stream watchdog detected system suspend"), and one `ENOTFOUND` 8 s after a wake
+  from hibernate. **So h #g318's reason was wrong**: those were not 60 s give-ups and 90 s fixes none
+  of them; v0.73.4's late-fire re-arm (h #g316) does.
+- 6 were hung streams while awake: one ECONNRESET Claude Code reported at 124 s (180 s would have
+  saved it), one whose final block was delivered and `message_stop` never came (the CLI noticed 88
+  minutes later), and four interrupted by the next turn 2 to 15 s after the close, two of them two
+  accounts' streams stalling 3.3 s apart with no error anywhere.
+- 2 were long generations: a `task_batch` tool input that streamed nothing for about 72 s and then
+  completed (90 s saves it; the one close the new default helps), and a probable second.
+- 4 have no transcript left (2026-09-25 to 10-07, awake, cause unrecoverable).
+
+Verdict: keep 90 s; 120 s saves nothing more and 180 s saves one at the cost of every dead stream
+waiting longer. Claude Code's own detection of a dead stream took 124 s, 356 s and about 720 s in
+the data. Also found: before the retry opt-out (h #g277, 2026-10-31) opencode 2 resent each closed
+turn about 2 s later; in 6 closes the final block had already streamed, so the note's "may be
+incomplete" was false and Claude Code went on to write a continuation nobody received; Stop hooks
+are not a factor (p99 20 s over 2,680 records). The subagent's per-close map is in
+`wd-diag/uniq.json` under the session's scratch dir, not kept.
+

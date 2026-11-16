@@ -72,6 +72,14 @@
 
 ## Backlog
 
+- 2026-11-16, from the h #g320 diagnosis, not started: (1) re-count `▌ **stream timeout:**` closes
+  around 2026-11-23 to confirm v0.73.4's sleep fix took most of them away; (2) dead streams (final
+  block delivered and no `message_stop`, or a stream that stalls with no error) are revived by no
+  window length; the only candidate is interrupting and resending once on the same process, which
+  needs a guard so a slow but alive stream is not billed twice, a design change; (3) the note says
+  "may be incomplete" even when the final block had already streamed (6 of 38 closes): word it from
+  what arrived, for example when the last message reached `end_turn`.
+
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
   `src/claude-session-wrapper.ts` (the interactive transport types it into the TUI with the
@@ -229,7 +237,8 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
   fork from an earlier message after a restart still replays (no persisted checkpoint uuid).
 - 2026-11-15: **done** (v0.73.6, PR #190, h #g318): the wire-inactivity watchdog defaults to 90 s instead of 60, because 7
   of 51 `stream timeout` closes on this machine came 0 to 2 s before Claude Code announced a retry after
-  a stalled connection. Still open: the other 40 closes had no retry behind them and are not diagnosed.
+  a stalled connection. The reason was wrong (h #g320): most closes were the Mac asleep, fixed by v0.73.4; 90 s saves one
+  measured close and is kept.
 - 2026-11-15: **done**, by the maintainer's own config: `AGENT_GUARD_PROMPT_GUARD_MODE=warn` set
   globally, so agent-guard warns instead of blocking a prompt with secret-like values. The stuck
   session `ses_e324dbf7bffeRHQIz10AIxm7dT` recovered: its 03:28:31Z replay (208,149 characters, the

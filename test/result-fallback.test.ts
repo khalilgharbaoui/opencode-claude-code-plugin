@@ -145,9 +145,8 @@ test("the note rounds the silence to whole seconds, never to zero", () => {
   assert.match(formatStreamTimeoutNote(10), /1s/)
 })
 
-// 90 s, not 60 (h #g318): Claude Code announces a retry after a stalled API
-// connection at about the 60 s mark, and a 60 s window closed those turns
-// just before the announcement could hold it.
+// 90 s, not 60 (h #g318, corrected by h #g320): a turn that streamed a large
+// tool input with no output for about 72 s was cut off at 60 s.
 test("the inactivity window defaults to 90 s and the env var still overrides it", () => {
   const saved = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
   try {

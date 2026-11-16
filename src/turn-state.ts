@@ -398,9 +398,10 @@ export interface TurnStateInit {
  * Wire-inactivity watchdog delay. Read per turn, because the regression test
  * sets the env var between runs.
  *
- * 90 s, not 60 (h #g318): Claude Code gives up on a stalled API connection and
- * announces its retry at about the 60 s mark, and on this machine 7 turns were
- * closed 0 to 2 s before that announcement could hold the watchdog.
+ * 90 s, not 60 (h #g318, corrected by h #g320): one measured turn streamed a
+ * large tool input with no output for about 72 s and was cut off at 60 s. A
+ * longer window saves nothing more: most closes were the Mac asleep (h #g316)
+ * and the rest dead streams that no window revives.
  */
 export function resolveResultFallbackMs(): number {
   const env = process.env.CLAUDE_CODE_RESULT_FALLBACK_MS
