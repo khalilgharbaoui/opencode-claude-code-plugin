@@ -230,6 +230,17 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
+- 2026-11-18: opencode 2.3.2 removed the `subagent` tool's `background` input; every subagent runs in the
+  background ("Subagents always run in the background"). Reported over WalkyTalky by the agent in
+  `webapp#staging` (wt_v0p3bgdhamvh): two subagents dispatched in plan mode vanished from the sidebar after
+  a plan to build switch while still running; result delivery still works.
+  1. Sidebar: `partBackground` reads `input.background`, so a 2.3 dispatch reads as a foreground call that
+     finished ~20 ms after it started (done row, dropped after FINISHED_TTL_MS). Rows were gone before that
+     cutoff in the report; live repro running (subagent ses_e10da335fffe...).
+  2. Server half: on 2.3 the proxied `task` description ("Calls block until the subagent finishes"), the
+     background notes and hints ("Foreground is still the default") and `task_batch` ("returns every
+     result together") are wrong: a dispatch without `background` returned at once on 2.3.2.
+
 ## Done
 
 - 2026-11-15: **done** (v0.73.7, PR #191, h #g319): after an opencode restart, a fork of the WHOLE conversation starts
