@@ -9,17 +9,21 @@
  */
 import "./isolate.js"
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { after, test } from "node:test"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { createClaudeCode } from "../src/index.js"
+import { frozenContextUsage, recordContextReading } from "../src/context-reading.js"
 import { getPendingProxyCalls, resolvePendingProxyCallById } from "../src/proxy-broker.js"
-import { deleteActiveProcess, sessionKey } from "../src/session-manager.js"
+import { deleteActiveProcess, killAllActiveProcesses, sessionKey } from "../src/session-manager.js"
 import { lastCallContextUsage, toUsage } from "../src/usage.js"
 
 const SESSION = "fake-session"
+
+// A compaction turn spawns under a key `streamParts` does not clean up.
+after(() => killAllActiveProcesses())
 
 /** A fake `claude` that replays a fixed line sequence on the first stdin write. */
 function createFakeCli(lines: unknown[]) {
@@ -156,12 +160,18 @@ function answer() {
   return { cliPath, cwd }
 }
 
+const MODEL_ID = "claude-test-context-usage"
+
+const keyFor = (fake: { cwd: string }) =>
+  sessionKey(fake.cwd, `${MODEL_ID}::tools::default::context=["claude-code",null]`)
+
 async function streamParts(
   fake: { cliPath: string; cwd: string },
   settings: Record<string, unknown> = {},
+  callOptions: Record<string, unknown> = {},
 ): Promise<any[]> {
-  const modelId = "claude-test-context-usage"
-  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const modelId = MODEL_ID
+  const sk = keyFor(fake)
   try {
     const model = createClaudeCode({
       cliPath: fake.cliPath,
@@ -189,6 +199,7 @@ async function streamParts(
           inputSchema: { type: "object", properties: {} },
         },
       ],
+      ...callOptions,
     } as any)
 
     const parts: any[] = []
@@ -428,10 +439,8 @@ test("with no assistant usage in the stream the result's usage is reported as be
   assert.equal(finish.providerMetadata.anthropic.cacheCreationInputTokens, 2048)
 })
 
-test("a mid-turn proxied tool boundary still reports no usage", async () => {
-  // No `result` has arrived: the CLI is parked inside the MCP call. Reporting
-  // the real context here would let opencode compact with that call parked,
-  // which has never been verified, so it stays what it always was.
+test("a mid-turn proxied tool boundary with no earlier reading reports no usage", async () => {
+  // No earlier turn recorded a reading, so the parked step has nothing to repeat.
   const parts = await streamParts(createFakeProxyCli("mid-turn"), { proxyTools: ["Task"] })
 
   const finish = onlyFinish(parts)
@@ -440,6 +449,96 @@ test("a mid-turn proxied tool boundary still reports no usage", async () => {
   assert.equal(finish.usage.inputTokens.cacheRead, undefined)
   assert.equal(finish.usage.outputTokens.total, undefined)
   assert.equal(finish.providerMetadata.anthropic, undefined)
+})
+
+test("a mid-turn proxied tool boundary repeats the previous turn's reading as cache read", async () => {
+  const fake = createFakeProxyCli("mid-turn")
+  recordContextReading(keyFor(fake), SESSION, {
+    input_tokens: 2,
+    cache_read_input_tokens: 189_949,
+    cache_creation_input_tokens: 9_105,
+    output_tokens: 42_215,
+  })
+
+  const finish = onlyFinish(await streamParts(fake, { proxyTools: ["Task"] }))
+  assert.equal(finish.finishReason.unified, "tool-calls")
+  // The reading the last turn ended on, not this turn's live 9 + 150,000 + 600.
+  assert.equal(finish.usage.inputTokens.total, 2 + 189_949 + 9_105)
+  assert.equal(finish.usage.inputTokens.noCache, 0)
+  assert.equal(finish.usage.inputTokens.cacheRead, 2 + 189_949 + 9_105)
+  assert.equal(finish.usage.inputTokens.cacheWrite, undefined)
+  assert.equal(finish.usage.outputTokens.total, 0)
+})
+
+test("a turn's result records the reading the next turn's steps repeat", async () => {
+  const fake = createFakeProxyCli("result-first")
+  const key = keyFor(fake)
+  await streamParts(fake, { proxyTools: ["Task"] })
+
+  assert.deepEqual(frozenContextUsage(key, SESSION), {
+    input_tokens: 0,
+    cache_read_input_tokens: 9 + 150_000 + 600,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+  })
+})
+
+test("a turn that ends on its result records its last call's context", async () => {
+  const fake = createFakeCli([
+    init,
+    ...answerCall("done", {
+      input_tokens: 4,
+      cache_read_input_tokens: 80_000,
+      cache_creation_input_tokens: 1_200,
+      output_tokens: 1,
+    }),
+    {
+      type: "result",
+      subtype: "success",
+      session_id: SESSION,
+      is_error: false,
+      result: "done",
+      num_turns: 1,
+      usage: { input_tokens: 4, cache_read_input_tokens: 80_000, output_tokens: 300 },
+    },
+  ])
+  const key = keyFor(fake)
+  assert.equal(onlyFinish(await streamParts(fake)).finishReason.unified, "stop")
+
+  assert.equal(frozenContextUsage(key, SESSION)?.cache_read_input_tokens, 4 + 80_000 + 1_200)
+})
+
+test("a reading is repeated only on the Claude session it was measured on", () => {
+  const key = sessionKey("/tmp/context-reading-session", `m::tools::ses_a::context=[]`)
+  recordContextReading(key, "claude-1", { input_tokens: 5, cache_read_input_tokens: 1_000 })
+
+  assert.equal(frozenContextUsage(key, "claude-1")?.cache_read_input_tokens, 1_005)
+  assert.equal(frozenContextUsage(key, "claude-2"), undefined)
+  assert.equal(frozenContextUsage(key, undefined), undefined)
+})
+
+test("a reading with no prompt tokens is not recorded", () => {
+  const key = sessionKey("/tmp/context-reading-zero", `m::tools::ses_z::context=[]`)
+  recordContextReading(key, "claude-1", { input_tokens: 0, output_tokens: 300 })
+
+  assert.equal(frozenContextUsage(key, "claude-1"), undefined)
+})
+
+test("a compaction drops the readings of its own opencode session only", async () => {
+  const fake = createFakeCli([
+    init,
+    ...answerCall("summary", { input_tokens: 4, output_tokens: 1 }),
+    { type: "result", subtype: "success", session_id: SESSION, is_error: false, result: "summary", num_turns: 1 },
+  ])
+  const compacted = keyFor(fake)
+  const other = sessionKey(fake.cwd, `${MODEL_ID}::tools::ses_c::context=["claude-code",null]`)
+  recordContextReading(compacted, SESSION, { cache_read_input_tokens: 900_000 })
+  recordContextReading(other, SESSION, { cache_read_input_tokens: 40_000 })
+
+  await streamParts(fake, {}, { providerOptions: { "claude-code": { opencodeAgent: "compaction" } } })
+
+  assert.equal(frozenContextUsage(compacted, SESSION), undefined)
+  assert.equal(frozenContextUsage(other, SESSION)?.cache_read_input_tokens, 40_000)
 })
 
 test("a tool-call finish written after the result reports the last call's context", async () => {
