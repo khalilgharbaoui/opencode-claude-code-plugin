@@ -100,6 +100,8 @@ export interface ClaudeCodeConfig {
   stripContextReminders?: boolean
   /** See `ClaudeCodeProviderSettings.verbatimPrompts`. Default true. */
   verbatimPrompts?: boolean
+  /** See `ClaudeCodeProviderSettings.claudeCommands`. Default true. */
+  claudeCommands?: boolean
   extraDisallowedTools?: string[]
   /** See `ClaudeCodeProviderSettings.mapReadRules`. Default true. */
   mapReadRules?: boolean
@@ -606,6 +608,28 @@ export interface ClaudeCodeProviderSettings {
    * transport only; an older Claude Code ignores the field.
    */
   verbatimPrompts?: boolean
+
+  /**
+   * List Claude Code's own commands and skills in opencode's `/` menu, and
+   * send a typed one the way Claude Code accepts it (h #g322). Default true.
+   *
+   * The list is the CLI's own: a background `claude` sent `initialize` and
+   * never a message, with hooks off (`disableAllHooks`) and no MCP servers,
+   * once per config dir and folder per opencode start (measured on 2.1.322:
+   * about a second, no API request). It is kept in `claude-commands.json`
+   * under `$XDG_STATE_HOME`. A menu entry is named by the command's short
+   * name when that is unique (`/test-cards` for `stripe:test-cards`), and
+   * runs `/<full name> <arguments>`; Claude Code's built-ins and any name
+   * opencode already has are never offered. A typed short name that exactly
+   * one listed plugin command ends in is sent under its full name, because
+   * headless Claude Code does not resolve one, and every listed command goes
+   * out without `client_composed` so Claude Code runs it. Both TUIs read
+   * their `/` menu at startup, so a skill installed while opencode runs is
+   * listed from the next start (on opencode 2 also after a second
+   * `/reload`). `false` adds no entries, runs no probe and leaves messages
+   * as typed.
+   */
+  claudeCommands?: boolean
 
   /**
    * Extra Claude Code built-ins to switch off with `--disallowedTools`,

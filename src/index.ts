@@ -6,6 +6,13 @@ import {
   effectiveModels,
   refreshCliModelCatalog,
 } from "./cli-model-catalog.js"
+import {
+  claudeCommandsEnabled,
+  claudeMenuFor,
+  logClaudeMenu,
+  refreshClaudeCommands,
+} from "./claude-command-probe.js"
+import { opencodeCommandNames } from "./claude-commands.js"
 import type {
   OpenCodeConfig,
   OpenCodeEvent,
@@ -143,6 +150,34 @@ export function registerDoctorCommand(config: OpenCodeConfig): boolean {
 }
 
 let ownsSideQuestionCommand = false
+
+/**
+ * Claude Code's own commands and skills in opencode 1's `/` menu (h #g322),
+ * from what the CLI listed last time (`claude-commands.json`), plus the probe
+ * that refreshes that list in the background. Runs after `/btw`, the doctor
+ * and the operator's own commands are in `config.command`, so every name
+ * there is opencode's and wins. opencode 1 reads its command list once, so a
+ * command the probe learns about now is listed from the next start; typed, it
+ * works as soon as the probe has answered.
+ */
+export function registerClaudeCommands(
+  config: OpenCodeConfig,
+  settings: Record<string, unknown> | undefined,
+  cwd: string,
+): number {
+  if (!claudeCommandsEnabled(settings)) return 0
+  config.command ??= {}
+  const plan = claudeMenuFor(settings, cwd, opencodeCommandNames(config.command))
+  for (const entry of plan.entries) {
+    config.command[entry.name] = {
+      template: `/${entry.command} $ARGUMENTS`,
+      description: entry.description,
+    }
+  }
+  logClaudeMenu(plan, "v1")
+  void refreshClaudeCommands(settings, cwd)
+  return plan.entries.length
+}
 
 // One-time heads-up: an API key in the environment makes Claude Code bill
 // pay-as-you-go (Console) instead of the logged-in Pro/Max subscription, which
@@ -325,6 +360,7 @@ export function createClaudeCode(
       parallelWebfetch: settings.parallelWebfetch !== false,
       stripContextReminders: settings.stripContextReminders === true,
       verbatimPrompts: settings.verbatimPrompts !== false,
+      claudeCommands: settings.claudeCommands !== false,
       extraDisallowedTools:
         preset?.extraDisallowedTools ?? settings.extraDisallowedTools,
       mapReadRules: settings.mapReadRules,
@@ -806,6 +842,19 @@ const server: OpenCodePlugin = async (input) => {
       const seedOptions = config.provider[PROVIDER_ID]?.options
       activateCliModelCatalog(seedOptions)
       void refreshCliModelCatalog(seedOptions)
+
+      // Claude Code's own commands and skills, read here while the seed
+      // provider (accounts, cliPath) is still in the config.
+      try {
+        const configuredCwd = typeof seedOptions?.cwd === "string" && seedOptions.cwd ? seedOptions.cwd : undefined
+        registerClaudeCommands(
+          config,
+          seedOptions,
+          configuredCwd ?? getOpencodeProjectDirectory() ?? process.cwd(),
+        )
+      } catch (err) {
+        log.debug("could not list claude code's own commands", { error: String(err) })
+      }
 
       // Every configured account into the usage store before any turn, so the
       // sidebar's `Accounts` section lists them all from its first draw

@@ -63,9 +63,22 @@ first message. It looks where Claude Code looks: your Claude config dir, and `.c
 the folder up to its git root (never the home dir's `.claude`, which is the config dir's
 job, and nothing above it), with a nested command `/ns:name` at `commands/ns/name.md`. A
 Claude Code plugin's command lives in Claude Code's plugin cache instead, so for it the
-plugin waits until a `claude` in the same folder has listed it when starting a turn: the
-first message in a folder after opencode starts keeps the mark for a plugin command, and
-from the next one on it runs as typed. A command file named like a built-in (`model.md`)
+plugin goes by Claude Code's own list: the commands a short background `claude` listed for
+that folder when opencode started (see
+[Claude Code's own commands in the `/` menu](../configuration/skills.md#claude-codes-own-commands-and-skills-in-the--menu)),
+or, with `claudeCommands: false`, a `claude` in the same folder having listed it when it
+started a turn. Every command that list names runs as typed from the first message.
+
+A plugin skill's short name is rewritten on the way. Headless Claude Code accepts a plugin
+skill only under its full name: measured on 2.1.322, `/test-cards` answered "`/test-cards` is
+not available in this session" while `/stripe:test-cards` ran the skill. So a message that
+starts with `/test-cards` goes out as `/stripe:test-cards` when exactly one listed plugin
+command ends in `:test-cards` and no command of your own, of the project or of Claude Code is
+called `test-cards`; anything ambiguous or unknown goes out exactly as typed. Both opencode
+majors pass a `/name` they have no command for through as an ordinary message (measured on
+1.19.4 and 2.3.2), which is what makes a typed name work before the `/` menu lists it.
+
+A command file named like a built-in (`model.md`)
 replaces the built-in in Claude Code, so it runs too. Claude Code reads its commands when it
 starts, so a command file you add while a conversation's `claude` is running is not known to
 it: the model answers that the command is not installed, and it runs from the next process

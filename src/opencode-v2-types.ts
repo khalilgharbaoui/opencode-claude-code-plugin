@@ -257,6 +257,16 @@ export interface V2Context {
     transform(
       callback: (editor: { add(definition: V2CommandDefinition): void }) => void,
     ): Promise<V2Registration>
+    /**
+     * The commands opencode has, as `{name, description}` rows (2.3.2 answers
+     * an array; the HTTP shape wraps it in `data`). Read once at setup, where
+     * it answered in 1 ms with the server built-ins and earlier plugins'
+     * commands, never the config's (those are applied after plugin transforms
+     * and win anyway).
+     */
+    list?(): Promise<unknown>
+    /** Runs every command transform again (2.3.2). */
+    reload?(): Promise<void>
   }
   readonly event?: {
     subscribe(options?: { signal?: AbortSignal }): AsyncIterable<V2Event>

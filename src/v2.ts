@@ -23,6 +23,8 @@ import {
   type BtwWaitOptions,
 } from "./btw-command.js"
 import { DOCTOR_COMMAND, DOCTOR_COMMAND_DESCRIPTION } from "./doctor.js"
+import { claudeMenuFor, logClaudeMenu, refreshClaudeCommands } from "./claude-command-probe.js"
+import { opencodeCommandNames } from "./claude-commands.js"
 import type {
   V2Cleanup,
   V2CommandInvocation,
@@ -379,6 +381,33 @@ export function commandPromptText(command: string, args: string | undefined): st
   const rest = (args ?? "").trim()
   return rest ? `/${command} ${rest}` : `/${command}`
 }
+
+/**
+ * The command names opencode 2 already answers, minus this plugin's own
+ * entries. Bounded, because setup must never wait on it: no answer in
+ * `COMMAND_LIST_WAIT_MS` (or no `list` at all) is the empty set, and the
+ * reserved names (`OPENCODE_RESERVED_COMMAND_NAMES`) still apply.
+ */
+export async function opencodeCommandNamesV2(command: V2Context["command"]): Promise<Set<string>> {
+  if (typeof command?.list !== "function") return new Set()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const listed = await Promise.race([
+      command.list(),
+      new Promise<undefined>((done) => {
+        timer = setTimeout(() => done(undefined), COMMAND_LIST_WAIT_MS)
+        timer.unref?.()
+      }),
+    ])
+    return opencodeCommandNames(listed)
+  } catch {
+    return new Set()
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+const COMMAND_LIST_WAIT_MS = 2_000
 
 /** The session a V2 `session.deleted` event names (`data.sessionID`). */
 export function deletedSessionIdV2(event: V2Event | undefined): string | undefined {
@@ -936,6 +965,18 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
             delivery,
           })
           .then(() => undefined)
+      // Claude Code's own commands and skills (h #g322). The names opencode
+      // already has are read once, before this transform exists: a plugin
+      // command REPLACES a built-in of the same name (measured on 2.3.2 with
+      // `init`), and `list()` answered in 1 ms at setup.
+      const command = ctx.command
+      const claudeSettings = () =>
+        configuredSeedSettings(deps.loadConfig(directory ?? process.cwd()), plainObject(ctx.options))
+      const claudeCwd = (settings: Record<string, unknown>) =>
+        (typeof settings.cwd === "string" && settings.cwd) || directory || process.cwd()
+      const opencodeNames = await opencodeCommandNamesV2(command)
+      opencodeNames.add(DOCTOR_COMMAND)
+      opencodeNames.add("btw")
       registrations.push(
         await ctx.command.transform((editor) => {
           editor.add({
@@ -964,8 +1005,46 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
               return Promise.resolve()
             },
           })
+          // Read from the store on every pass, so `reload()` after a probe
+          // that learned something lists the new set.
+          try {
+            const settings = claudeSettings()
+            const plan = claudeMenuFor(settings, claudeCwd(settings), opencodeNames)
+            for (const entry of plan.entries) {
+              try {
+                editor.add({
+                  name: entry.name,
+                  description: entry.description,
+                  execute: (input) => send(input, entry.command, input.delivery),
+                })
+              } catch (err) {
+                log.debug("opencode 2 refused a claude code command", {
+                  name: entry.name,
+                  error: err instanceof Error ? err.message : String(err),
+                })
+              }
+            }
+            logClaudeMenu(plan, "v2")
+          } catch (err) {
+            log.debug("could not list claude code's own commands", {
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
         }),
       )
+      // In the background: a changed answer runs the transform above again,
+      // which updates opencode's command list; the 2.3.2 TUI re-reads its menu
+      // only at startup and on `/reload` (measured).
+      try {
+        const settings = claudeSettings()
+        void refreshClaudeCommands(settings, claudeCwd(settings), {
+          onChanged: () => command.reload?.(),
+        })
+      } catch (err) {
+        log.debug("could not start the claude code command probe", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
 
     // The bundled `claude-code-plugin` skill, listed by opencode for every

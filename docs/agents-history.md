@@ -13382,3 +13382,95 @@ Shipped as v0.74.0 on 2026-11-19 (PR #194), a minor release: CI green on Linux a
 merged PR head, on the merge commit `9f5c259` before the tag and on the release commit `4761d4f`, the
 publish confirmed by the `Publish package` step's tail and the version document's shasum (`e2cbd657`),
 with a GitHub Release.
+
+## Claude Code's own commands and skills in opencode (2026-11-19)
+
+h #g322. Reported by a colleague: their Claude Code skills, for example `/release` from the Appical
+Claude Code plugin `appical-core`, "do not exist" in opencode with the plugin. The maintainer chose
+both halves: list Claude Code's commands and skills in opencode's `/` menu, and make a typed short
+name work.
+
+**What Claude Code does, measured on 2.1.322 on this Mac.** The free `claude -p "/cost"` init frame
+lists 216 `slash_commands`, 54 of them colon names; the plugin skill appears only as
+`appical-core:release`. Headless Claude Code does not resolve a plugin skill's short name:
+`claude -p "/test-cards" --tools "" --max-turns 1` answered "`/test-cards` is not available in this
+session" (1 turn) while `/stripe:test-cards` ran the skill, and an unknown `/nonexistent-zzz` reached
+the model as text. The interactive picker resolves short names; `--print` does not.
+
+**Where the list comes from, and why not the disk.** The CLI's `initialize` control request answers
+with `commands` rows (`name`, `description`, `argumentHint`, `builtin`), which is exactly the picker's
+list in that folder under that config dir: 211 rows for `~/.claude`, 47 `builtin: true`, 41 colon
+names, a scratch project's `.claude/commands/hello-probe.md` among them as `hello-probe` (described
+"... (project)"), plugin rows described "(plugin) ...", and synced skills (`docs`, `pdf`,
+`anthropic-skills:deep-research`) no settings file names. Reading that from disk would mean
+re-implementing `enabledPlugins` over the user, project, local, managed and flag scopes,
+`installed_plugins.json` (whose entries carry `scope` and `projectPath` but no enable state) and each
+plugin's manifest paths. The probe is not the model probe's `--bare` (h #g279), which skips plugins.
+Without `--bare`, `initialize` alone ran a scratch config dir's `SessionStart` hook (a marker file
+appeared; the stream carried `hook_started` / `hook_response` before the `control_response`), and
+the probe would run every enabled plugin's SessionStart hooks at each opencode start (appical-core
+says of its PR-comment watcher that it starts on every session). With
+`--settings '{"disableAllHooks":true}'` the marker never appeared and the only other frame was
+`ui_invalidate`. Against a local server set as `ANTHROPIC_BASE_URL` logging method and path only,
+the probe (`--strict-mcp-config`, `--no-session-persistence`, hooks off) made no request at all while
+a control `claude -p hi` made two `POST /v1/messages`; 0.9 to 1.2 s on the real config, 1.1 to 3.8 s
+inside a starting opencode. The answer also carries `account` (`email`, `organization`), which is
+never read or stored.
+
+**What opencode does with commands, measured with a throwaway plugin.** Both majors accept a colon
+(and even a slash) in a command name. A plugin command named like a server built-in REPLACES it:
+`init` added from a V1 `config` hook or a V2 `editor.add` showed the plugin's description in the
+`/` menu on 1.19.4 and 2.3.2, while the operator's own config command beat the plugin's on 2.3.2 (the
+config is applied after plugin transforms). On 2.3.2 `ctx.command.list()` called inside `setup`
+answered in 1 ms with `init`, `review`, `goal` and not the config's commands; its domain also has
+`reload()`. The TUIs' own entries never appear in a plugin's view, so they were read off each `/`
+menu, outside a session and inside one (2.3.2 adds `compact`, `copy`, `export`, `fork`, `rename`,
+`terminal`, `timeline`, `undo`, `variants`, `web` in a session; 1.19.4 `compact`, `copy`, `export`,
+`fork`, `rename`, `thinking`, `timeline`, `timestamps`, `undo`). 1.19.4 never listed a
+`config.command` entry added three seconds after the hook returned. A typed `/nonexistent-zzz hello`
+is an ordinary text message on both (1.19.4's `chat.message` hook saw it verbatim and
+`command.execute.before` never fired; 2.3.2 stored and sent it as typed). opencode 2.3.2 also ships
+a `/btw` of its own, so with the plugin its menu shows two.
+
+**What changed here.**
+
+- `src/claude-commands.ts` (pure): `commandsFromInitialize`, the `claude-commands.json` store (one
+  entry per config dir and folder, 32 entries, 600 rows, descriptions folded and capped at 240,
+  `0600`, merge-on-write), `cliCommandsFor` (the nearest probed folder at or above the cwd),
+  `planClaudeMenu`, `resolveShortCommandName`, `opencodeCommandNames` and
+  `OPENCODE_RESERVED_COMMAND_NAMES` (the measured names above, plus `redo`, `share`, `unshare`,
+  which those builds show only in states not measured).
+- `src/claude-command-probe.ts`: the probe, once per (binary, config dirs, folder) per process in the
+  background, one target per configured account with an existing config dir, the base binary with
+  `CLAUDE_CONFIG_DIR` exported for an account (no wrapper needed, every platform);
+  `OPENCODE_CLAUDE_CODE_COMMAND_PROBE=0` for the test env; `claudeCommands: false` for the operator.
+- V1 (`registerClaudeCommands` in the `config` hook, after `/btw`, the doctor and the operator's
+  commands): `config.command[name] = {template: "/<full> $ARGUMENTS", description: "Claude Code: ..."}`.
+- V2 (the existing command transform): the names `list()` gave at setup, plus `/btw` and the doctor,
+  are skipped; an entry's `execute` prompts `/<full> <arguments>` like the doctor's; a changed probe
+  answer calls `ctx.command.reload()`. Measured live: that re-lists the server's commands but the
+  2.3.2 TUI keeps the menu it read at startup; opencode's own `/reload` re-runs setup (and the probe)
+  and the TUI re-reads its menu then. So on both majors a skill installed mid-session is listed from
+  the next start (on V2 also after a second `/reload`).
+- `src/user-commands.ts`: `ownCommandIn` takes any non-built-in listed name without a report, which
+  closes h #g281's first-message gap for plugin commands; `expandShortCommand` rewrites a unique short
+  name (exactly one listed colon name ends in it, nothing is listed or defined on disk under it) to
+  the full name, applied in `getClaudeUserMessage` before the stamp decision and regardless of
+  `verbatimPrompts`, so both transports get the full name. Every listed command thus reaches the CLI
+  unstamped. Accepted risk: a stale list naming a deleted user command whose name a later CLI made a
+  built-in would unstamp that built-in once, until the next start's probe.
+
+**Live, worktree dist, scratch XDG dirs and TMPDIR, tmux 210x60, Claude Code 2.1.322, Haiku 5.5**
+(the real `~/.claude` left in place, `stripe` and `appical-core` enabled). opencode 2.3.2: the first
+start listed 0 then the probe found 164 in 1.6 s; after a restart the menu held `/test-cards`,
+`/hello-probe`, `/release` and `/agent-guard:verify` (full, `verify` is a built-in), each described
+`Claude Code: ...`; `/hello-probe menu-arg` from the menu answered `HELLO-PROBE-OK menu-arg`, 1 turn,
+unstamped; `/test-cards declined` from the menu went out as `/stripe:test-cards declined` and ran the
+skill (its "Declined Test Cards" table), 1 turn; on a first start (fresh state, so no menu entry)
+`/test-cards visa` typed was stored by opencode as typed, rewritten (`sending a claude code command
+under the full name it was listed with`), and ran the skill in 1 turn; `/nonexistent-zzz say only OK`
+stayed stamped and the model answered. opencode 1.19.4 with the same store: the menu held the same
+164 at the first start, `/test-cards fraud` from the menu ran the skill in 1 turn, and on a fresh
+state `/test-cards 3dsecure` typed was rewritten and ran in 1 turn. Interactive transport on 2.3.2:
+`/hello-probe pty-arg` and `/stripe:test-cards visa` were typed into Claude's own TUI and each ran in
+one API call. `/release` and every other skill with side effects were never run.

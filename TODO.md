@@ -72,6 +72,13 @@
 
 ## Backlog
 
+- 2026-11-19, found by the h #g322 lane, not started: opencode 2.3.2 ships a `/btw` of its own
+  ("One-shot answer from the session's context without adding to the conversation"), so with the
+  plugin its `/` menu shows two `/btw` rows (the plugin's "Ask a side question in the live Claude
+  Code session..."). Measure which one a typed `/btw` runs on 2.3.2, whether opencode's reaches a
+  `claude-code` provider as a `session.generate` (h #g299) or a turn, and whether the plugin should
+  stop registering its own on 2.3+ or keep it.
+
 - 2026-11-16, from the h #g320 diagnosis, not started: (1) re-count `▌ **stream timeout:**` closes
   around 2026-11-23 to confirm v0.73.4's sleep fix took most of them away; (2) dead streams (final
   block delivered and no `message_stop`, or a stream that stalls with no error) are revived by no

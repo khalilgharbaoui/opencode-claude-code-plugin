@@ -29,7 +29,7 @@ import { BUDGET_MARKER } from "./budget-ledger.js"
 import { DOCTOR_MARKER, parseDoctorCommandContent } from "./doctor.js"
 import { log } from "./logger.js"
 import { userEnvelope } from "./user-envelope.js"
-import { ownCommandIn, type OwnCommandContext } from "./user-commands.js"
+import { expandShortCommand, ownCommandIn, type OwnCommandContext } from "./user-commands.js"
 import { MODEL_FALLBACK_MARKER } from "./model-fallback.js"
 import { parseSideQuestionContent } from "./side-question.js"
 import { STALE_BUILD_MARKER } from "./stale-build.js"
@@ -632,7 +632,9 @@ export function getClaudeUserMessage(
     /**
      * Where the turn's `claude` finds the operator's own commands. Given, a
      * message that runs one of them goes out unstamped (`ownCommandIn`,
-     * h #g280); omitted, `verbatimPrompts` alone decides.
+     * h #g280), and a typed short name the CLI lists under one plugin is sent
+     * as that plugin's full name (`expandShortCommand`, h #g322); omitted,
+     * `verbatimPrompts` alone decides and the text is sent as typed.
      */
     ownCommands?: OwnCommandContext
     /**
@@ -831,11 +833,25 @@ Now continuing with the current message:
     return userEnvelope([{ type: "text", text: "(empty)" }], verbatim)
   }
 
-  const ownCommand = verbatim && opts.ownCommands ? ownCommandIn(content, opts.ownCommands) : null
+  // Headless Claude Code does not resolve a plugin skill's short name
+  // (`/test-cards` for `stripe:test-cards`, measured on 2.1.322), so a short
+  // name the CLI listed under exactly one plugin is sent under its full name.
+  // Done with `verbatimPrompts` off too: the CLI parses the text either way.
+  const expanded: ReturnType<typeof expandShortCommand> = opts.ownCommands
+    ? expandShortCommand(content, opts.ownCommands)
+    : { content }
+  if (expanded.to) {
+    log.info("sending a claude code command under the full name it was listed with", {
+      typed: expanded.from,
+      command: expanded.to,
+    })
+  }
+  const message = expanded.content as any[]
+  const ownCommand = verbatim && opts.ownCommands ? ownCommandIn(message, opts.ownCommands) : null
   if (ownCommand) {
     log.info("sending the operator's own claude code command as typed", { command: ownCommand })
   }
-  return userEnvelope(content, verbatim && !ownCommand)
+  return userEnvelope(message, verbatim && !ownCommand)
 }
 
 /**

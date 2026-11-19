@@ -28,6 +28,7 @@ const root = mkdtempSync(join(tmpdir(), "opencode-test-isolation-"))
 process.env.OPENCODE_CLAUDE_CODE_LOG_FILE = "0"
 process.env.OPENCODE_CLAUDE_CODE_LOG_DIR = join(root, "log")
 process.env.OPENCODE_CLAUDE_CODE_MODEL_PROBE = "0"
+process.env.OPENCODE_CLAUDE_CODE_COMMAND_PROBE = "0"
 process.env.XDG_STATE_HOME = join(root, "state")
 process.env.XDG_CACHE_HOME = join(root, "cache")
 
