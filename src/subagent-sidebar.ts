@@ -42,6 +42,20 @@
  *   - A tool shell leaves the store when its job ends, and `shell.exited`
  *     (exit code and status) arrives just before; the memory keeps the end so
  *     the row can say how it went, for `FINISHED_TTL_MS` like a subagent.
+ *
+ * Read out of opencode 2.3.0 (`@opencode/core`, h #g321), and each one shapes
+ * a subagent row there:
+ *
+ *   - Every subagent runs in the background and `subagent` has no
+ *     `background` input. Its part completes as soon as the child is prompted,
+ *     with `metadata: {sessionID, status: "running"}` (2.2.x wrote the same
+ *     for a background call and `status: "completed"` for a foreground one), so
+ *     a completed part whose metadata still says running is a background
+ *     dispatch on any 2.x.
+ *   - The parent gets a `<subagent sessionID state>` message each time the
+ *     child goes idle, including after later work, so a child can run again
+ *     after an envelope; and `state="running"` there is an idle child whose
+ *     own background work is still going, which will report again.
  */
 
 export type SubagentState = "running" | "done" | "error"
@@ -186,24 +200,38 @@ function partDescription(part: TaskPartInput): string | undefined {
   return text(part.input?.description) ?? text(part.title)
 }
 
+/**
+ * Whether the parent stopped waiting on this child while it runs on: asked for
+ * (`background: true`), or a completed part whose metadata still says the
+ * child is running, which is every dispatch on opencode 2.3.0 and later and a
+ * background one on 2.0 to 2.2 (h #g321). A running part's metadata says
+ * `running` too while the parent waits, so only a completed one counts.
+ */
 function partBackground(part: TaskPartInput): boolean {
-  return part.input?.background === true || part.metadata?.background === true
+  return (
+    part.input?.background === true ||
+    part.metadata?.background === true ||
+    (part.status === "completed" && part.metadata?.status === "running")
+  )
 }
 
 const COMPLETION_ENVELOPE =
-  /<(?:task\s+id|subagent\s+sessionID)="(ses_[A-Za-z0-9]+)"\s+state="([a-z_]+)"/g
+  /<(task\s+id|subagent\s+sessionID)="(ses_[A-Za-z0-9]+)"\s+state="([a-z_]+)"/g
 
 /**
- * Every background end a text names, in order. Both majors' envelopes:
+ * Every background report a text names, in order. Both majors' envelopes:
  * `<task id="ses_..." state="completed">` (1.x) and
- * `<subagent sessionID="ses_..." state="completed">` (2.x). `running` is the
- * dispatch's own answer, not an end, so it is skipped.
+ * `<subagent sessionID="ses_..." state="completed">` (2.x). A 1.x `running`
+ * envelope is the dispatch's own answer, not a report, so it is skipped; a 2.x
+ * `<subagent state="running">` is opencode 2.3's report of a child that went
+ * idle with background work of its own still going (h #g321), kept so the row
+ * keeps its spinner until the report that follows.
  */
 export function completionsIn(value: string, at?: number): CompletionInput[] {
   const found: CompletionInput[] = []
   for (const match of value.matchAll(COMPLETION_ENVELOPE)) {
-    if (match[2] === "running") continue
-    found.push({ sessionID: match[1], state: match[2], at })
+    if (match[3] === "running" && match[1].startsWith("task")) continue
+    found.push({ sessionID: match[2], state: match[3], at })
   }
   return found
 }
@@ -380,20 +408,33 @@ function rowFor(
   const status = input.status(child.id)
   // A child dispatched again (resumed by its session id) after it reported:
   // that envelope ended the earlier dispatch, not this one.
-  const ended =
+  const current =
     completion && completion.at !== undefined && part?.start !== undefined && completion.at < part.start
       ? undefined
       : completion
+  // opencode 2.3: idle, with its own background work still going (h #g321).
+  const working = current?.state === "running"
+  const ended = working ? undefined : current
   let state: SubagentState
   let finished: number | undefined
-  if (part && !background && part.status !== "pending" && part.status !== "running") {
+  if (
+    part &&
+    !background &&
+    part.status !== "pending" &&
+    part.status !== "running" &&
+    status !== "busy"
+  ) {
     state = part.status === "completed" ? "done" : "error"
     finished = part.end
+  } else if (working || status === "busy") {
+    // A child that reads busy is running, whatever its part or an earlier
+    // report says: a completed part whose child still works (a host whose
+    // dispatch shape this module does not know), or a child that runs again
+    // after it reported (opencode 2.3 reports every time it goes idle).
+    state = "running"
   } else if (ended) {
     state = endState(ended.state)
     finished = ended.at
-  } else if (status === "busy") {
-    state = "running"
   } else if (part && !background) {
     // pending or running: the parent is still waiting on this child.
     state = "running"
