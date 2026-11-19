@@ -61,7 +61,14 @@ export const TASK_CANCEL_TOOL_NAME = "task_cancel"
  */
 const MAX_LEDGERS = 32
 const MAX_COLLECTED_PER_SESSION = 64
-const collected = new Map<string, Set<string>>()
+/**
+ * Task id to the ROUND that was handed over: how many assistant replies the
+ * child's transcript held when it was collected. A child can run again after
+ * it reported (a follow-up by its id; on opencode 2.3.0 and later also its own
+ * background work finishing, h #g321), and that newer answer has not been
+ * handed over, so collect-once is once per round rather than once per child.
+ */
+const collected = new Map<string, Map<string, number>>()
 /**
  * The same bookkeeping for cancels, kept only so the doctor can say what this
  * process did. It is never read by either tool: a cancelled task is dropped
@@ -69,13 +76,14 @@ const collected = new Map<string, Set<string>>()
  */
 const cancelled = new Map<string, Set<string>>()
 
-function ledgerIn(
-  ledgers: Map<string, Set<string>>,
+function ledgerIn<T extends Set<string> | Map<string, number>>(
+  ledgers: Map<string, T>,
   sessionKey: string,
-): Set<string> {
+  create: () => T,
+): T {
   let ids = ledgers.get(sessionKey)
   if (!ids) {
-    ids = new Set()
+    ids = create()
     ledgers.set(sessionKey, ids)
     // Insertion order: the oldest conversation's ledger goes first.
     while (ledgers.size > MAX_LEDGERS) {
@@ -92,7 +100,7 @@ function mark(
   sessionKey: string,
   taskId: string,
 ): void {
-  const ids = ledgerIn(ledgers, sessionKey)
+  const ids = ledgerIn(ledgers, sessionKey, () => new Set<string>())
   ids.add(taskId)
   while (ids.size > MAX_COLLECTED_PER_SESSION) {
     const oldest = ids.values().next()
@@ -101,15 +109,35 @@ function mark(
   }
 }
 
-function markCollected(sessionKey: string, taskId: string): void {
-  mark(collected, sessionKey, taskId)
+function markCollected(sessionKey: string, taskId: string, round: number): void {
+  const ids = ledgerIn(collected, sessionKey, () => new Map<string, number>())
+  // Re-inserting moves it to the newest end, so the bound drops the oldest.
+  ids.delete(taskId)
+  ids.set(taskId, round)
+  while (ids.size > MAX_COLLECTED_PER_SESSION) {
+    const oldest = ids.keys().next()
+    if (oldest.done) break
+    ids.delete(oldest.value)
+  }
 }
 
+/**
+ * Whether this conversation was already handed that task's result: any round
+ * when `round` is not given, else that round or a later one.
+ */
 export function hasCollectedBackgroundTask(
   sessionKey: string,
   taskId: string,
+  round?: number,
 ): boolean {
-  return collected.get(sessionKey)?.has(taskId) === true
+  const seen = collected.get(sessionKey)?.get(taskId)
+  if (seen === undefined) return false
+  return round === undefined || seen >= round
+}
+
+/** How many assistant replies a child's transcript holds: its collect round. */
+function replyRound(replies: SessionReply[]): number {
+  return replies.filter((reply) => reply.role === "assistant").length
 }
 
 /**
@@ -131,11 +159,15 @@ export function clearBackgroundTasks(sessionKey: string): void {
  * are the same, so a result already collected must stay collected.
  */
 export function moveBackgroundTasks(fromKey: string, toKey: string): void {
-  for (const ledger of [collected, cancelled]) {
-    const ids = ledger.get(fromKey)
-    if (!ids) continue
-    ledger.delete(fromKey)
-    ledger.set(toKey, ids)
+  const handed = collected.get(fromKey)
+  if (handed) {
+    collected.delete(fromKey)
+    collected.set(toKey, handed)
+  }
+  const stopped = cancelled.get(fromKey)
+  if (stopped) {
+    cancelled.delete(fromKey)
+    cancelled.set(toKey, stopped)
   }
 }
 
@@ -391,12 +423,17 @@ export async function withBackgroundRunningCount(
  */
 export const BACKGROUND_CAP_BUDGET_MS = 2000
 
-/** How many background children one `task` / `task_batch` input asks for. */
+/**
+ * How many background children one `task` / `task_batch` input asks for. With
+ * `everyDispatch` (opencode 2.3.0 and later, h #g321) every task is one,
+ * whatever it says about `background`, because the host runs them all that way.
+ */
 export function requestedBackgroundChildren(
   toolName: string,
   input: Record<string, unknown>,
+  everyDispatch = false,
 ): number {
-  const isBackground = (value: unknown) => value === true || value === "true"
+  const isBackground = (value: unknown) => everyDispatch || value === true || value === "true"
   if (toolName === "task") return isBackground(input.background) ? 1 : 0
   if (toolName === "task_batch" && Array.isArray(input.tasks)) {
     return input.tasks.filter(
@@ -424,8 +461,9 @@ export async function admitBackgroundDispatch(
   input: Record<string, unknown>,
   cap: number,
   budgetMs = BACKGROUND_CAP_BUDGET_MS,
+  everyDispatch = false,
 ): Promise<ProxyToolResult | null> {
-  const requested = requestedBackgroundChildren(toolName, input)
+  const requested = requestedBackgroundChildren(toolName, input, everyDispatch)
   if (requested === 0) return null
   const running = await countOtherRunningWithin(new Set(), budgetMs)
   if (running !== undefined && running + requested <= cap) return null
@@ -437,7 +475,7 @@ export async function admitBackgroundDispatch(
   })
   return {
     kind: "error",
-    message: formatBackgroundCapRefusal({ toolName, cap, running, requested, budgetMs }),
+    message: formatBackgroundCapRefusal({ toolName, cap, running, requested, budgetMs, everyDispatch }),
   }
 }
 
@@ -447,6 +485,8 @@ export function formatBackgroundCapRefusal(opts: {
   running: number | undefined
   requested: number
   budgetMs?: number
+  /** opencode 2.3.0 and later: there is no foreground to fall back on. */
+  everyDispatch?: boolean
 }): string {
   const batch = opts.toolName === "task_batch"
   const what = batch
@@ -464,6 +504,14 @@ export function formatBackgroundCapRefusal(opts: {
         } at once, ${opts.running} ${opts.running === 1 ? "is" : "are"} running now, and this ${
           batch ? "batch" : "dispatch"
         } would start ${opts.requested} more.`
+  if (opts.everyDispatch) {
+    return (
+      `Background dispatch refused. ${why} ${what} ` +
+      `Every subagent runs in the background on this opencode, so keep working and dispatch ` +
+      `it later: a running subagent's result arrives as a new message when it goes idle. ` +
+      `Do not sleep or poll for room.`
+    )
+  }
   return (
     `Background dispatch refused. ${why} ${what} ` +
     `Run this work in the foreground instead (omit \`background\`), which is never capped, ` +
@@ -485,10 +533,18 @@ export function formatBackgroundRunningLine(others: number, dispatched: number):
  * and the doctor answers without a turn.
  */
 export interface BackgroundSubagentGate {
-  /** Whether `background` was offered to Claude and the two tools registered. */
+  /** Whether background subagents run here and the two tools are registered. */
   supported: boolean
   /** Which opencode major that model serves. */
   hostApi: "v1" | "v2"
+  /**
+   * Every subagent runs in the background and none can be asked for in the
+   * foreground: opencode 2.3.0 and later (h #g321). `background` is not
+   * offered then, because there is nothing to choose.
+   */
+  everyDispatch?: boolean
+  /** The opencode version the decision was read off, when it was known. */
+  hostVersion?: string
   /** Whether opencode's live tool registry answered at all. */
   registryResolved: boolean
   /** `Date.now()` of the read. */
@@ -527,7 +583,7 @@ export function snapshotBackgroundTasks(): BackgroundTaskLedger[] {
   const keys = new Set([...collected.keys(), ...cancelled.keys()])
   return [...keys].map((sessionKey) => ({
     sessionKey,
-    collected: [...(collected.get(sessionKey) ?? [])],
+    collected: [...(collected.get(sessionKey)?.keys() ?? [])],
     cancelled: [...(cancelled.get(sessionKey) ?? [])],
   }))
 }
@@ -659,8 +715,9 @@ export async function collectBackgroundTask(
     }
   }
 
+  const round = replyRound(replies)
   if (reply.error) {
-    markCollected(options.sessionKey, taskId)
+    markCollected(options.sessionKey, taskId, round)
     return {
       kind: "text",
       isError: true,
@@ -668,7 +725,7 @@ export async function collectBackgroundTask(
     }
   }
 
-  if (hasCollectedBackgroundTask(options.sessionKey, taskId)) {
+  if (hasCollectedBackgroundTask(options.sessionKey, taskId, round)) {
     return {
       kind: "text",
       text:
@@ -679,7 +736,7 @@ export async function collectBackgroundTask(
     }
   }
 
-  markCollected(options.sessionKey, taskId)
+  markCollected(options.sessionKey, taskId, round)
   log.info("collected background subagent result", {
     sessionKey: options.sessionKey,
     taskId,

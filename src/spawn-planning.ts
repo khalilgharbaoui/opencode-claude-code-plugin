@@ -39,6 +39,7 @@ import {
   resolveMcpProxyToolDefs,
   DEFAULT_PROXY_TOOLS,
   TASK_BATCH_TOOL_NAME,
+  dispatchesAlwaysInBackground,
   taskBatchTasks,
   type McpProxyToolResolution,
   type ModelToolEntry,
@@ -520,10 +521,13 @@ export async function ensureProxyServer(
   // unless set, and only where `task` is proxied at all, so a default install's
   // server is the one it always was.
   const cap = config.maxBackgroundSubagents
+  // On opencode 2.3.0 and later every dispatch is a background one (h #g321),
+  // read off the tool list the way the collect/cancel pair above is.
+  const everyDispatch = dispatchesAlwaysInBackground(tools)
   const admit =
     cap !== undefined && tools.some((t) => t.name === "task" || t.name === TASK_BATCH_TOOL_NAME)
       ? (toolName: string, input: Record<string, unknown>) =>
-          admitBackgroundDispatch(toolName, input, cap)
+          admitBackgroundDispatch(toolName, input, cap, undefined, everyDispatch)
       : undefined
   // A per-call `model` on another account's provider moves the subagent, and
   // the task text it is handed, to that account (h #g254). Built only with

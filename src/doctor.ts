@@ -940,11 +940,18 @@ function formatBackgroundSubagents(state: {
   } else {
     lines.push("| Field | Value |")
     lines.push("|---|---|")
-    lines.push(`| \`background\` offered to Claude | ${gate.supported ? "yes" : "no"} |`)
+    if (gate.everyDispatch) {
+      // opencode 2.3.0 and later (h #g321): nothing to offer, every call is one.
+      lines.push("| every subagent runs in the background | yes (opencode 2.3.0 and later) |")
+      lines.push("| `background` offered to Claude | no (there is no foreground dispatch to choose) |")
+    } else {
+      lines.push(`| \`background\` offered to Claude | ${gate.supported ? "yes" : "no"} |`)
+    }
     lines.push(
       `| \`task_status\` / \`task_cancel\` | ${gate.supported ? "registered" : "not registered"} |`,
     )
     lines.push(`| opencode API | ${gate.hostApi} |`)
+    if (gate.hostVersion) lines.push(`| opencode version | ${gate.hostVersion} |`)
     lines.push(`| decided from | ${describeBackgroundGateSource(gate)} |`)
     lines.push(`| read | ${formatAge(Math.max(0, Date.now() - gate.at))} ago |`)
     if (!gate.supported && gate.hostApi === "v1") {
@@ -1056,6 +1063,9 @@ function formatBudgets(budgets: DoctorBudgets): string[] {
 /** The one sentence that explains the gate's answer on this major. */
 function describeBackgroundGateSource(gate: BackgroundSubagentGate): string {
   if (gate.hostApi === "v2") {
+    if (gate.everyDispatch) {
+      return "opencode's version: 2.3.0 and later run every subagent in the background"
+    }
     return "opencode 2 offers `background` unconditionally, so the registry is not consulted"
   }
   return gate.registryResolved
