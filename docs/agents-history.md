@@ -13377,3 +13377,8 @@ build and a message at 11:03:20; rows kept spinning; "Sleep two" reported `state
 proxy's own `tools/list`, read with the spawn's config: `task` and the `task_batch` items without
 `background`, the 2.3 texts, and `task_status` / `task_cancel` without `background: true`; the log
 line `background subagent gate {"mode":"always","hostVersion":"2.3.2",...}`.
+
+Shipped as v0.74.0 on 2026-11-19 (PR #194), a minor release: CI green on Linux and Windows on the
+merged PR head, on the merge commit `9f5c259` before the tag and on the release commit `4761d4f`, the
+publish confirmed by the `Publish package` step's tail and the version document's shasum (`e2cbd657`),
+with a GitHub Release.
