@@ -13307,3 +13307,73 @@ incomplete" was false and Claude Code went on to write a continuation nobody rec
 are not a factor (p99 20 s over 2,680 records). The subagent's per-close map is in
 `wd-diag/uniq.json` under the session's scratch dir, not kept.
 
+
+## opencode 2.3 runs every subagent in the background (2026-11-19)
+
+h #g321. Reported on 2026-11-18 over WalkyTalky by the agent in `webapp#staging`: two subagents
+dispatched in plan mode at 10:16:07 UTC disappeared from the sidebar by 10:23:28 after a plan to
+build switch, while both children still ran; result delivery still worked.
+
+**What changed upstream.** opencode 2.3.0 removed the `subagent` tool's `background` input. Read out of
+`@opencode/core` 2.3.0 against 2.2.7 (curl'd tarballs) and the GitHub release binaries
+(`rg -c -a 'Subagents always run in the background'`: 2.2.7 0, 2.3.0 2, 2.3.1 2; the 2.3.2 zip
+download failed with curl exit 7, so 2.3.2 is the installed binary, 2): the description says
+"Subagents always run in the background: the call returns immediately with a sessionID, and you
+receive a `<subagent>` message each time the child goes idle, including after later work"; every
+call returns `backgroundResult` (`The subagent is working in the background (sessionID: ses_...). You
+will receive a <subagent> message when it goes idle, and again after each later round of work.`);
+the part's metadata is `{sessionID, status: "running"}` (2.2.7 wrote `running` for a background or
+ctrl+b-moved call and `completed` for a foreground one, and `context.progress` writes `running` while
+a 2.2 foreground call is still waiting); a call naming a running child's `sessionID` joins its run;
+and `deliver` posts `<subagent sessionID state description>` with `state="running"` when the child
+went idle while background work of its own (a shell, a nested subagent) is still listed, which 2.2.7
+never did. `ctx.app.version` is on the 2.3.0 plugin context (`@opencode/plugin` 2.3.0 `app.d.ts`).
+
+**Why the rows went.** `partBackground` read only `background` on the input, so every 2.3 dispatch
+was a foreground call that completed 20 ms after it started: a muted ✓ from dispatch, `finished` at
+the part's end, and gone after `FINISHED_TTL_MS` or sooner under `FINISHED_KEEP`. A parallel repro
+lane (2026-11-18, scratch 2.3.2 TUIs, instrumented `tui.ts`) did not reproduce the early loss: rows
+stayed exactly ten minutes after dispatch, switch or no switch, no derive threw, children never left
+`data.session.list()`, and the TUI's LRU evicts messages, not session info. Its candidate was
+`FINISHED_KEEP` pushed by finished shell rows from the build turn's foreground `shell` calls. Measured
+here on 2.3.2 (Claude Code 2.1.322, Haiku 5.5): five foreground shell calls (`sleep 6`, then four in
+a row) never left a shell row, so h #g307's foreground rule holds on 2.3.2; and a read-only query of
+the reported parent showed its build turn ran exactly two `shell` calls before 10:23:28, both with
+`metadata.status: "completed"` (foreground). The early loss is still unexplained, and with the fix it
+cannot come from the cap or the TTL: a running row is never capped.
+
+**What changed here.**
+
+- Sidebar: a completed part whose metadata says `running` is a background dispatch; a 2.x
+  `<subagent state="running">` keeps the spinner until the next report (a 1.x `<task state="running">`
+  is still skipped); a child that reads busy is running whatever its part or an earlier report says
+  (the maintainer's generic guard for a completed part, and a 2.3 child run again with no new part).
+  1.x and 2.0 to 2.2 rows are unchanged, except that a 2.2 call moved to the background with ctrl+b
+  is now a `bg` row rather than a ✓.
+- Server half, mode `always` (`backgroundSubagentMode` on `ClaudeCodeConfig.hostVersion`, from
+  `ctx.app.version` through `resolveSdkSettings`, else `detectOpencodeVersion()`; unknown is the
+  2.0 to 2.2 mode): `background` stripped from `task` and every `task_batch` item, the blocking
+  sentences of `TASK_PROXY_NOTE` and the `task_batch` lead replaced, `TASK_BACKGROUND_NOTE_ALWAYS`
+  appended, the collect/cancel pair registered without `background: true`, the system hints
+  `BACKGROUND_SUBAGENT_HINT_ALWAYS` (no "Foreground is still the default") and
+  `SUBAGENT_DISPATCH_HINT_ALWAYS_BACKGROUND`, `maxBackgroundSubagents` counting every dispatch with a
+  refusal that offers no foreground, and the doctor's `every subagent runs in the background` and
+  `opencode version` rows. `backgroundTaskIdsIn` and `withBackgroundRunningCount` already match the
+  2.3 prose (a test pins 2.3.0's text verbatim); the dispatch form's claim matching is unchanged
+  (the child's first message is still the 2.0 wrapper plus the prompt); `src/host-tools.ts` still
+  forwards a stray `background`, which 2.3 drops.
+- `task_status` collect-once is per round now (the number of assistant replies when collected):
+  a child that ran again after a collect had its newer answer refused as "Already delivered".
+- Separate commit: a reset later the same day had one spelling, so
+  `default · 5h 100% left · resets 21:10` (37 cells against 36) was cut or dropped; it now drops only
+  the word, on that line only (found by the repro lane).
+
+**Live, on opencode 2.3.2 with the worktree's dist** (scratch XDG dirs and TMPDIR, `--standalone`,
+tmux 210x60): in plan mode a `task_batch` of two `general` subagents each running
+`sleep 180 && echo ...` (11:02:28); both rows spun with `bg` and their own progress line; Shift+Tab to
+build and a message at 11:03:20; rows kept spinning; "Sleep two" reported `state="running"` at
+11:04:36 (opencode had moved its foreground sleep to the background) and kept spinning; it reported
+`completed` at 11:05:36 and "Sleep one" at 11:05:40, and each row turned ✓ at its own report. The
+proxy's own `tools/list`, read with the spawn's config: `task` and the `task_batch` items without
+`background`, the 2.3 texts, and `task_status` / `task_cancel` without `background: true`; the log
+line `background subagent gate {"mode":"always","hostVersion":"2.3.2",...}`.

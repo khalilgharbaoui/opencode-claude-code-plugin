@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-A foreground `task` call blocks the conversation until the subagent finishes, and so does `task_batch`. Background dispatch is the other shape: start a subagent, keep working, collect the result later. opencode owns it, this plugin surfaces it, and it is **off unless the opencode process has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`** (or the blanket `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x. On opencode 2.x it is unconditional.
+A foreground `task` call blocks the conversation until the subagent finishes, and so does `task_batch`. Background dispatch is the other shape: start a subagent, keep working, collect the result later. opencode owns it, this plugin surfaces it, and it is **off unless the opencode process has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`** (or the blanket `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x. On opencode 2.0 to 2.2 it is unconditional, and from **opencode 2.3.0 every subagent runs in the background**: there is no foreground dispatch left (see [below](#opencode-230-and-later-every-subagent-runs-in-the-background)).
 
 ```sh
 OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true opencode
@@ -32,6 +32,24 @@ The subagent is working in the background (sessionID: ses_f0cb9005fffekrDPNa1Px8
 
 and the completion arrives as `<subagent sessionID="…" state="completed" description="…">`, which opencode writes into the parent session as its own turn. A cancel pushes the same envelope with `state="cancelled"`. That `sessionID` is the `task_id` for the two tools below. Measured on opencode 2.0.16 and re-measured end to end on **2.0.22**.
 
+### opencode 2.3.0 and later: every subagent runs in the background
+
+opencode 2.3.0 removed the `subagent` tool's `background` input. Every dispatch returns at once with the same prose as above (`The subagent is working in the background (sessionID: ses_...)`), and the parent gets a `<subagent sessionID="…" state="…">` message **each time the child goes idle**, not only once: a follow-up you send it by its `sessionID` (`task_id` here) runs it again and it reports again, and `state="running"` means it went idle while background work of its own (a command opencode moved to the background, say) is still going, so another report will follow. Read out of the published 2.3.0, 2.3.1 and 2.3.2 builds against 2.2.7, which still blocks without `background`.
+
+The plugin reads the opencode version (the plugin context's `app.version`, or the opencode binary when that is missing) and on 2.3.0 and later:
+
+- removes `background` from `task` and from every `task_batch` item, because there is nothing to choose;
+- replaces the sentences that say a call blocks until the subagent finishes, and that `task_batch` returns every result together, with what 2.3 does: each call returns at once, and `task_batch` returns every dispatch answer together;
+- gives the model a system-prompt hint without "foreground is still the default", and tells it that when it needs an answer before it can go on, it dispatches, ends its turn and carries on when the `<subagent>` message arrives;
+- keeps `task_status` and `task_cancel` (without asking for a `background: true` no call can set), and `task_status` hands over each newer answer of a child that ran again, once each;
+- counts every dispatch against [`maxBackgroundSubagents`](../configuration/budgets.md#a-ceiling-on-background-subagents-maxbackgroundsubagents), whose refusal no longer suggests running in the foreground.
+
+opencode 1.x and 2.0 to 2.2 are told exactly what they were before. `plugin.log` says which applied:
+
+```
+background subagent gate {"supported":true,"mode":"always","hostApi":"v2","hostVersion":"2.3.2", ...}
+```
+
 **The gate is enforced at the schema, not at the call.** On a host without the flag opencode rejects `background: true` outright with `Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, which costs a whole dispatch. So the plugin reads the host's own `task` schema (the same registry fetch that supplies the agent-type list) and, when it has no `background` property, strips the field before Claude ever sees it. Nothing about a default install changes: the model is shown exactly `description`, `prompt`, `subagent_type`, `task_id`, `command`. Either way `plugin.log` says which:
 
 ```
@@ -51,7 +69,7 @@ Both work on opencode 1.x and on opencode 2. On opencode 2 they run over the ses
 
 **Picking the model, the effort and the account.** With `subagentDispatch: "ask"` a background dispatch is held for the same form a foreground one is, and the answer reaches the background child's own spawn. Nothing else about the dispatch changes: the same immediate envelope, the same automatic completion. Verified live on opencode 2.0.22.
 
-**What `/claude-code-doctor` says about it.** The report has a **Background subagents** section: whether `background` was offered to Claude and the two tools registered, which opencode major, and what decided it (the live `task` schema, a registry that did not answer, or opencode 2 offering it unconditionally), plus the background tasks this process has collected or cancelled. The gate is read while a turn plans its proxy tools, so in a fresh process the section reads `Not read yet this process`: send one message and run it again.
+**What `/claude-code-doctor` says about it.** The report has a **Background subagents** section: whether `background` was offered to Claude and the two tools registered, which opencode major, and what decided it (the live `task` schema, a registry that did not answer, opencode 2 offering it unconditionally, or on 2.3.0 and later the version, with an `every subagent runs in the background` row), plus the background tasks this process has collected or cancelled. The gate is read while a turn plans its proxy tools, so in a fresh process the section reads `Not read yet this process`: send one message and run it again.
 
 The section opens with how many are working right now:
 

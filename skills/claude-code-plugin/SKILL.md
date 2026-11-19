@@ -146,7 +146,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `defaultSubagentMaxBudgetUsd` | number | unset | `--max-budget-usd` for discovered `mode: subagent` agents that declare no `maxBudgetUsd`. Counted by the CLI over the whole process's life and reset on `--resume`, hence subagents only; a main agent's `maxBudgetUsd` is refused with a WARN. Probe-gated on `claude --help`; headless only. |
 | `maxBudgetUsd` | number | unset | Dollar cap per opencode conversation (its turns plus every descendant subagent), from the CLI's `total_cost_usd` (cumulative per Claude session on headless, so the ledger takes deltas). Unset: no ledger at all. Warn notes at `budgetWarnAt`; at the cap the next fresh turn ends before any spawn with a `▌ **budget:**` note and `{unified:"error", raw:"budget_exceeded"}`. Not on a turn answering a parked proxy call, not on compaction; a child gets an `error` part instead of the note; `doGenerate` gets the finish only. In memory; raising it needs an opencode relaunch. |
 | `budgetWarnAt` | number[] | `[50, 80]` | Percent thresholds of `maxBudgetUsd`, one note each per conversation (only the highest when a turn jumps several). `[]` drops the notes, keeps the stop. Invalid values WARN and keep the default. |
-| `maxBackgroundSubagents` | number | unset | Ceiling on background subagents running at once (the doctor's running count, process-wide). A background `task`, or a `task_batch` with background items, that would exceed it is refused whole with an `isError` tool result naming the cap and the count; nothing reaches opencode. Foreground is never capped. An unreadable count (2 s budget) refuses. |
+| `maxBackgroundSubagents` | number | unset | Ceiling on background subagents running at once (the doctor's running count, process-wide). A background `task`, or a `task_batch` with background items, that would exceed it is refused whole with an `isError` tool result naming the cap and the count; nothing reaches opencode. Foreground is never capped. On opencode 2.3.0+ every dispatch counts, because every one runs in the background. An unreadable count (2 s budget) refuses. |
 | `leanGenerate` | boolean | `false` | A detached generate call (opencode 2 `experimental.generate.text`: affinity `default`, no agent, not compaction; OpenChamber's AI rename and walkthroughs; on 1.x only `opencode agent create`) gets one lean `claude -p` on the requested model: `--tools ""`, `--strict-mcp-config`, `--setting-sources ""` (no CLAUDE.md at all), `--disable-slash-commands`, `--no-session-persistence`, a `client_composed` stream-json envelope on stdin (no `@path` attachment), a fresh `0700` cwd under the plugin scratch dir. Skipped when `--help` lacks one of those four flags. Any failure or 180 s timeout runs the normal turn; an abort ends the call. `claude -p` on either transport. |
 | `titleModel` | string | unset | A CLI model (`haiku`) that names sessions through the same lean `claude -p` as `leanGenerate` (same flags, same `--help` gate, same account and `cliPath` as a turn of this provider, `@account`/`-fast` stripped), given the title agent's system prompt as `<instructions>` and the conversation's last 12k characters. Unset keeps the synthetic title with zero spawns (first six non-stop words of the latest user text, read from inside V2's `<message>` / `<conversation>` element so its lead-in is skipped); any failure or 30 s timeout falls back to it, and a `model_not_found` refusal WARNs once per model. Both majors (V1 no-tools title, V2 `title` agent). |
 | `fallbackModels` | string[] | unset | Ordered models to try when the model a turn would run on is refused. Default for agents declaring no `fallbackModels`; a per-agent list replaces it rather than extending it. Same account throughout, never a switch. Armed only by the CLI refusing the model (`model_not_found`) or by a usage limit when the `accountFailover` form is not taking the turn, which is the case whenever it is `"off"` (its default) or has no other account to offer; with `"ask"` and another account the switch form wins. Entries must be registered model ids, unknown ones warn and are skipped, the current model is dropped from its own chain, each entry is tried at most once per turn, and an exhausted chain surfaces the original error. Never on compaction or title stubs; both transports. Writes a `▌ **model fallback:**` note that transcript rebuilds strip. Not independently read per expanded account. |
@@ -205,6 +205,7 @@ Defaults below describe normal headless opencode use when the key is absent.
 | `name` | string | unset | Low-level `createClaudeCode()` provider identity fallback after `providerID`, not the opencode display-name setting. Display name lives at `provider.<id>.name`; account expansion supplies its own label. Leave this option unset. |
 | `providerID` | string | derived | Config hook writes the actual provider id (`claude-code` or `claude-code-work`). Do not override manually. |
 | `hostApi` | `"v1"` \| `"v2"` | derived | Which opencode major created the model, which decides the tool names its stream uses (`bash` on 1.x, `shell` on 2.x). Set only by the opencode 2 entrypoint. Do not set it: forcing `"v2"` under opencode 1.x makes every proxied tool call fail as an unavailable tool. |
+| `hostVersion` | string | derived | The opencode version that created the model (opencode 2's `app.version`), which decides whether every subagent runs in the background (2.3.0 and later). Set only by the opencode 2 entrypoint; when it is missing the plugin asks `opencode --version`. Do not set it. |
 | `account` | string | unset/derived | Account expansion supplies this to generate its runtime wrapper. Prefer `accounts` over hand-wiring it. |
 | `configDir` | string | unset/derived | Generated account directory, also used for interactive env/transcript lookup. Not a standalone headless auth switch: headless account selection comes from the wrapper's env. Do not hand-wire it. |
 
@@ -286,7 +287,7 @@ their secret values. Arbitrary MCP `{env:NAME}` placeholders are outside this li
 | `HOME` | Home expansion and direct agent-file discovery (other paths also use OS homedir). Do not change it to switch accounts. |
 | `USERPROFILE` | Home fallback where `HOME` is absent. |
 | `OPENCODE_VERSION` | Startup diagnostics version fallback, not a capability override. |
-| `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` | opencode's own flag, read by opencode and never by this plugin. On opencode 1.x it is what makes opencode advertise `background` on its `task` tool, and that advertised schema is the only thing the plugin reads. `OPENCODE_EXPERIMENTAL` turns it on as a blanket. It must be in the environment that launches opencode. Unconditional on opencode 2. |
+| `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` | opencode's own flag, read by opencode and never by this plugin. On opencode 1.x it is what makes opencode advertise `background` on its `task` tool, and that advertised schema is the only thing the plugin reads. `OPENCODE_EXPERIMENTAL` turns it on as a blanket. It must be in the environment that launches opencode. Unconditional on opencode 2.0 to 2.2; on 2.3.0+ every subagent runs in the background. |
 | `OPENCODE_DISABLE_EXTERNAL_SKILLS` | opencode's own switch, honoured by the skill bridge: any value other than empty / `0` / `false` drops both `~/.claude/skills` and `~/.agents/skills` from discovery. |
 | `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` | The same switch for `~/.claude/skills` alone; `~/.agents/skills` is unaffected by it. |
 
@@ -333,7 +334,7 @@ Same package, same config. 2.x's native key is `plugins` (plural), but it still 
 - On 2.1.4, `opencode plugin list` prints `No plugins found` even while this plugin is loaded. Never read that as "not installed": check with `/claude-code-doctor` or `opencode models | grep claude-code`.
 - Provider settings, lowest precedence first: `provider.claude-code.options` (1.x's spelling, still read on 2.x), `provider.claude-code.settings`, `providers.claude-code.settings` (2.x's own), and the plugin entry's own `options`, which wins over all three. Any option of this plugin can sit in any of them; the plugin entry is the usual home for `accounts`: `{"package": "@khalilgharbaoui/opencode-claude-code-plugin", "options": {"accounts": ["work"]}}`.
 - A local checkout is loaded by pointing `plugins` at its **`dist`** directory, never the repository root: 2.x resolves a configured plugin path as `<dir>/server` or `<dir>/index`.
-- Known 2.x differences: a `task` call can carry its own `model` (2.x's `subagent` tool takes one; 1.x's `task` does not), there is no todo panel (2.x has no `todowrite` tool, so the sidebar's progress bar is always the time estimate), `bridgeMcpOauthTokens` finds nothing (2.x's plugin API can activate a stored credential but not read one), and Claude's `EnterPlanMode`, `ExitPlanMode` and `NotebookEdit` calls get no tool row (2.x rejects an unknown tool name). Everything else behaves as on 1.x, including `/btw` answered inside the running turn, a permission prompt not counting against a proxied call's deadline, a stopped turn releasing its parked proxied calls, and warnings shown as toasts: the plugin reads busy and idle off opencode 2's event stream (`session.execution.*`) and sends warnings over its plugin RPC channel (measured on 2.0.22 and 2.0.31). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
+- Known 2.x differences: a `task` call can carry its own `model` (2.x's `subagent` tool takes one; 1.x's `task` does not), there is no todo panel (2.x has no `todowrite` tool, so the sidebar's progress bar is always the time estimate), `bridgeMcpOauthTokens` finds nothing (2.x's plugin API can activate a stored credential but not read one), and Claude's `EnterPlanMode`, `ExitPlanMode` and `NotebookEdit` calls get no tool row (2.x rejects an unknown tool name). From opencode 2.3.0 every subagent runs in the background and `task` has no `background` field (see Background subagents). Everything else behaves as on 1.x, including `/btw` answered inside the running turn, a permission prompt not counting against a proxied call's deadline, a stopped turn releasing its parked proxied calls, and warnings shown as toasts: the plugin reads busy and idle off opencode 2's event stream (`session.execution.*`) and sends warnings over its plugin RPC channel (measured on 2.0.22 and 2.0.31). Do not set `hostApi`; the 2.x entrypoint sets it, and forcing it on 1.x breaks every proxied tool call.
 - `/connect` on 2.x lists each provider (`Claude Code`, or one per account) under its own name with one method, *Claude Code login (checked with claude auth status)*. Connecting stores no token: the plugin runs `claude auth status` through that provider's own binary or account wrapper, toasts the login method (subscription, API key, Bedrock, Vertex, ...) or the one command that fixes it (`claude auth login`, or `CLAUDE_CONFIG_DIR=~/.claude-<account> claude auth login`), and marks the connection *Sign in required* when the CLI is missing or logged out. It is optional (models work without it) and has no option. Before this, the entry was the raw id with a "Manually enter API Key" method whose key nothing reads; never tell a user to store a key there. Needs CLI 2.1.288 or later for the check; an older CLI gets a "could not check" toast and the connection is left as it was.
 - 2.x would run a failed turn again up to ten times (each retry a new `claude` resuming the conversation and resending the prompt). The plugin declines every retry for its providers, with no option: the CLI retries API errors itself, and usage limits, max turns and refused models were never retried. An error shows once; resend after fixing the cause.
 - Every form the plugin raises is answered through 2.x's own `Form` surface rather than a question tool, which changes nothing the operator does. The account-switch form and the plan-mode approval were measured live on 2.0.22, and the `subagentDispatch` form (including `Customise…`, `Per type…` accounts and `Same as last time` across a restart) on 2026-10-08. The by-hand account carry and the `accountGroups` guard were measured live there the same day: both behave exactly as on 1.x.
@@ -485,7 +486,8 @@ at 2026-10-17 18:00.
   `limited` for a refusal, `home · Max 20x · no reading yet` before an account's first
   turn reports, the reset time in its own colour apart from the level). A second line
   under an account names a weekly window that is refused or 75% used or more
-  (`7d limited · resets 10-30 12:00`). The sidebar re-reads every 1.5 s. Also the doctor's
+  (`7d limited · resets 10-30 12:00`). A reset today keeps the word `resets` unless its
+  own line has no room (`default · 5h 100% left · 18:00`). The sidebar re-reads every 1.5 s. Also the doctor's
   `Account usage` table, which also shows which thresholds were already noted. "No
   reading yet" with a recent turn usually means the interactive transport.
 
@@ -1036,7 +1038,7 @@ Names below become `mcp__opencode_proxy__<name>`; input config is case-insensiti
 | `edit` | `"Edit"`, default; replaces CLI Edit. |
 | `write` | `"Write"`, default; replaces CLI Write. |
 | `webfetch` | `"WebFetch"`, default; replaces CLI WebFetch. |
-| `task` | `"Task"`, default; disables CLI Agent and dispatches opencode subagents under its permissions. No proxy deadline by default; a positive `proxyToolTimeoutMs` entry adds one. Takes `background: true` only on a host that runs background subagents (see below), and `model` only on opencode 2 (recipe "One subagent on a model the user names"). |
+| `task` | `"Task"`, default; disables CLI Agent and dispatches opencode subagents under its permissions. No proxy deadline by default; a positive `proxyToolTimeoutMs` entry adds one. Takes `background: true` only on a host that runs background subagents and lets the model choose (1.x with the flag, opencode 2.0 to 2.2; on 2.3.0+ every dispatch is a background one and the field is gone, see below), and `model` only on opencode 2 (recipe "One subagent on a model the user names"). |
 | `task_batch` | Included with Task; one MCP call fans out two or more independent task inputs concurrently. Separate task calls were measured serial (2026-09-06, two 8-second calls: the second MCP request left the CLI 7 ms after the first resolved). The input must be a `tasks` array of at least two items, each with `description`, `prompt` and `subagent_type`; anything else is refused before the calls are queued. |
 | `task_status` | Included with Task, and only on a host that runs background subagents. Reads a background subagent's state by `task_id` and collects its result. A recovery path for a completion notification that never arrived, not a progress poll; a result is handed over once. Answered in-process (opencode has no such tool) and refuses any session that is not this conversation's subagent. Not nameable in `proxyTools`. |
 | `task_cancel` | Included with Task, same host gate as `task_status`. Aborts a background subagent's child session; a cancelled subagent sends no completion notification. |
@@ -1088,7 +1090,8 @@ before suggesting any timeout change.
 
 Off unless the **opencode process** has `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`
 (or `OPENCODE_EXPERIMENTAL=true`) in its environment on opencode 1.x; unconditional on
-opencode 2.x. It is opencode's feature, not this plugin's: the plugin only surfaces it.
+opencode 2.0 to 2.2; and from **opencode 2.3.0 every subagent runs in the background**
+(see "opencode 2.3.0 and later" below). It is opencode's feature, not this plugin's: the plugin only surfaces it.
 There is no provider option, and nothing in `opencode.json` can turn it on, because the
 flag is read by opencode itself at startup.
 
@@ -1127,6 +1130,22 @@ at all. Which way it went is in `plugin.log`:
 background subagent gate {"supported":false,"registryResolved":true,"hostApi":"v1","note":"`background` stripped ..."}
 ```
 
+**opencode 2.3.0 and later** removed the `subagent` tool's `background` input: every
+dispatch returns at once with the prose above, and the parent gets a
+`<subagent sessionID="..." state="...">` message each time the child goes idle (again
+after a follow-up by its `sessionID`, and `state="running"` while the child's own
+background work is still going). The plugin reads opencode's version (the V2 plugin
+context's `app.version`, else `opencode --version`) and on 2.3.0+ strips `background`
+from `task` and every `task_batch` item, replaces "calls block until the subagent
+finishes" and "returns every result together" with what 2.3 does, sends a system hint
+with no "foreground is still the default", keeps `task_status` / `task_cancel` (which
+hand over each newer round of a child that ran again, once each) and counts every
+dispatch against `maxBackgroundSubagents`. 1.x and 2.0 to 2.2 are told what they were
+before. The log line says which: `background subagent gate {"mode":"always",
+"hostVersion":"2.3.2",...}`; the doctor adds an `every subagent runs in the background`
+row. A `background` field still reaching a 2.3 host (an older plugin) is dropped by
+opencode and changes nothing.
+
 Troubleshooting: `background` missing from the tool schema, or a refusal naming the env
 var, means the flag is not set on the opencode process (setting it in a shell after
 opencode started does nothing, and a plugin upgrade cannot change it). A `task_status`
@@ -1156,7 +1175,9 @@ fault. There is no option for it.
 Always on, no option. While the viewed session has subagents, the sidebar ends with a
 `Subagents` section: one row each, running first (spinner in the theme accent), then up
 to three finished ones (✓ or ✗, greyed out, gone after ten minutes), with the agent type,
-the task description, a dim `bg` for background dispatches, and a muted second line
+the task description, a dim `bg` for background dispatches (every dispatch on opencode
+2.3.0+, spinning until the child's own `<subagent>` report, and again whenever opencode
+says the child is working), and a muted second line
 `model · effort · account` (account only on a multi-account install; the effort alone in
 the theme's warning colour, faded on a finished row). That line is what
 the plugin really spawned, read from `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json`,
