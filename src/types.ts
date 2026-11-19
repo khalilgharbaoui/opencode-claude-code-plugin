@@ -15,6 +15,14 @@ export interface ClaudeCodeConfig {
    * so nothing process-wide may decide it.
    */
   hostApi?: "v1" | "v2"
+  /**
+   * The opencode version that created this model (`ctx.app.version`), set
+   * only by the V2 entrypoint. opencode 2.3.0 and later runs every subagent
+   * in the background (h #g321), and the V1 client shim cannot show that in
+   * the tool schema, so the version decides it. Absent means unknown, and the
+   * opencode binary is asked instead.
+   */
+  hostVersion?: string
   /** Explicit transport selection; auto switches only on proven missing headless flags. */
   transport?: ClaudeCodeTransport
   /** Drive interactive claude (subscription) instead of headless --print. */
@@ -224,6 +232,8 @@ export interface ClaudeCodeProviderSettings {
   cliModelCatalog?: boolean
   /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostApi`. */
   hostApi?: "v1" | "v2"
+  /** Internal: set by the opencode 2 entrypoint. See `ClaudeCodeConfig.hostVersion`. */
+  hostVersion?: string
   /** Wins over the legacy interactive option and its environment fallback. */
   transport?: ClaudeCodeTransport
   /** Drive interactive claude (subscription) instead of headless --print. */

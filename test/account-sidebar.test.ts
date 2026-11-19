@@ -77,7 +77,7 @@ test("a reset on another day carries its date in the usage note's notation, with
     "2026-10-21 12:00",
     "10-21 12:00",
   ])
-  assert.deepEqual(resetSpellings(reading(), NOW), ["resets 18:00"])
+  assert.deepEqual(resetSpellings(reading(), NOW), ["resets 18:00", "18:00"])
   assert.deepEqual(resetSpellings(reading({ resetsAt: undefined, resetsText: "6pm" }), NOW), ["resets 6pm", "6pm"])
   assert.deepEqual(resetSpellings(reading({ resetsAt: undefined }), NOW), [])
 })
@@ -97,9 +97,37 @@ test("a reset on another day fits the row by dropping the word, then the year, t
     NOW,
   )
   assert.deepEqual(two.map(lineText), ["appical · 5h 28% left · 10-18 01:20", "default · 5h ok · 10-18 01:20"])
-  // A reset today keeps its word beside them: it always fits.
+  // A reset today keeps its word beside them while its own line fits.
   const mixed = accountUsageLines(usage({ appical: appical(), default: { five_hour: reading() } }), NOW)
   assert.deepEqual(mixed.map(lineText), ["appical · 5h 28% left · 10-18 01:20", "default · 5h 28% left · resets 18:00"])
+})
+
+test("a reset today that does not fit drops its word rather than being cut (h #g321)", () => {
+  // Measured in the sidebar: `default · 5h 100% left · resets 21:10` is 37 cells
+  // against a 36-cell row, and with one spelling it was cut to `resets 21:…`.
+  const full = reading({ utilization: 0, resetsAt: AT_18 })
+  const [line] = accountUsageLines(usage({ default: { five_hour: full } }), NOW)
+  assert.equal(lineText(line), "default · 5h 100% left · 18:00")
+  assert.equal(lineText(line).includes("…"), false)
+  // The time keeps its own colour without the word.
+  assert.deepEqual(line.segments.slice(-1), [{ text: "18:00", role: "reset" }])
+  // The interactive transport's phrase already fell back this way.
+  assert.deepEqual(resetSpellings(reading({ resetsAt: undefined, resetsText: "6pm" }), NOW), ["resets 6pm", "6pm"])
+  // Only the line that would be cut drops it: a neighbour today keeps its word,
+  // and a line with a date keeps the spelling it would have had.
+  const tomorrow = new Date(2026, 9, 18, 1, 20).getTime()
+  const lines = accountUsageLines(
+    usage({ default: { five_hour: full }, home: { five_hour: reading() }, work: { five_hour: reading({ resetsAt: tomorrow }) } }),
+    NOW,
+    60,
+  )
+  assert.deepEqual(lines.map(lineText), [
+    "default · 5h 100% left · resets 18:00",
+    "home · 5h 28% left · resets 18:00",
+    "work · 5h 28% left · resets 2026-10-18 01:20",
+  ])
+  const narrow = accountUsageLines(usage({ default: { five_hour: full }, home: { five_hour: reading() } }), NOW)
+  assert.deepEqual(narrow.map(lineText), ["default · 5h 100% left · 18:00", "home · 5h 28% left · resets 18:00"])
 })
 
 test("window names are short, an unknown one is shown as itself and `unknown` as nothing", () => {
@@ -307,9 +335,14 @@ test("an account with no five-hour reading shows its most pressing window instea
   assert.deepEqual(lines.map(lineText), ["appical · 7d 10% left · resets 18:00"])
   assert.equal(lines[0].state, "warning")
   assert.equal(lines[0].detail, false)
-  // A reset that does not fit takes the word `resets` with it rather than leave it hanging.
+  // A reset today that does not fit with its word drops the word and keeps the
+  // time (h #g321); before, the whole reset went, word and all.
   const opus = accountUsageLines(usage({ appical: { seven_day_opus: reading({ utilization: 0.9 }) } }), NOW)
-  assert.deepEqual(opus.map(lineText), ["appical · 7d opus 10% left"])
+  assert.deepEqual(opus.map(lineText), ["appical · 7d opus 10% left · 18:00"])
+  // One that does not fit even without the word still takes the word with it
+  // rather than leave it hanging.
+  const longer = accountUsageLines(usage({ appical: { seven_day_opus: reading({ utilization: 0.9 }) } }), NOW, 29)
+  assert.deepEqual(longer.map(lineText), ["appical · 7d opus 10% left"])
 })
 
 test("unknown utilization is `ok`, never 100% left, and 75% used or more takes the warning colour", () => {

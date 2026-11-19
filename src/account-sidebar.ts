@@ -135,13 +135,16 @@ export function formatResetClock(resetsAt: number, now: number, year = true): st
 /**
  * How a line may say when its window resets, widest first: `resets 2026-10-18
  * 01:20`, then without the word, then without the year. A reset today is
- * `resets 01:20` only, since that always fits, and the interactive transport's
- * phrase has no year to drop. Empty when nothing is known.
+ * `resets 01:20`, then `01:20`, and the interactive transport's phrase the
+ * same way: neither has a year to drop. A reset today drops its word only when
+ * its own line would otherwise be cut (`isSameDayReset`), because
+ * `default · 5h 100% left · resets 21:10` is 37 cells against a 36-cell row
+ * (h #g321). Empty when nothing is known.
  */
 export function resetSpellings(entry: WindowUsage, now: number): string[] {
   if (entry.resetsAt !== undefined) {
     const full = formatResetClock(entry.resetsAt, now)
-    if (sameDay(new Date(entry.resetsAt), new Date(now))) return [`${RESET_WORD}${full}`]
+    if (sameDay(new Date(entry.resetsAt), new Date(now))) return [`${RESET_WORD}${full}`, full]
     return [`${RESET_WORD}${full}`, full, formatResetClock(entry.resetsAt, now, false)]
   }
   if (entry.resetsText) return [`${RESET_WORD}${entry.resetsText}`, entry.resetsText]
@@ -198,6 +201,11 @@ interface LineDraft {
   /** The plan tier, drawn only on a line with no reading. */
   tier?: string
   spellings: string[]
+  /**
+   * A reset later today: it keeps its word whenever its own line fits, and
+   * neither follows nor moves the spelling the other lines share (h #g321).
+   */
+  sameDay?: boolean
 }
 
 const cells = (value: string) => Array.from(value).length
@@ -278,7 +286,12 @@ function readingDraft(
     level: levelText(window, entry),
     dimmed,
     spellings: entry ? resetSpellings(entry, now) : [],
+    ...(entry && isSameDayReset(entry, now) ? { sameDay: true } : {}),
   }
+}
+
+function isSameDayReset(entry: WindowUsage, now: number): boolean {
+  return entry.resetsAt !== undefined && sameDay(new Date(entry.resetsAt), new Date(now))
 }
 
 /** The drafts for one account: none, one, or a five-hour line with another window under it. */
@@ -375,7 +388,8 @@ export function accountUsageLines(
   const budget = (draft: LineDraft) => Math.max(0, width - cells(draft.name))
   // The reset's spelling is decided over the lines that have one; a line with
   // no reading has nothing to spell and does not move the column.
-  const spelt = drafts.filter((draft) => draft.state !== "none")
+  // A reset today is left out of it: it has its own fallback, below.
+  const spelt = drafts.filter((draft) => draft.state !== "none" && !draft.sameDay)
   const last = Math.max(0, ...spelt.map((draft) => draft.spellings.length - 1))
   let spelling = 0
   while (
@@ -384,7 +398,11 @@ export function accountUsageLines(
   ) {
     spelling += 1
   }
+  // A reset today keeps `resets` when its own line fits, else drops the word.
+  const spellingFor = (draft: LineDraft) =>
+    !draft.sameDay ? spelling : segmentsCells(tailSegments(draft, 0, true)) <= budget(draft) ? 0 : 1
   const lines: AccountUsageLine[] = drafts.map((draft) => {
+    const spelling = spellingFor(draft)
     const full = tailSegments(draft, spelling, true)
     const tail = segmentsCells(full) <= budget(draft) ? full : tailSegments(draft, spelling, false)
     return {

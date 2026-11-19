@@ -245,6 +245,30 @@ test("a registry that did not answer says so rather than blaming the host", () =
   assert.ok(text.includes("did not answer"), text)
 })
 
+test("on opencode 2.3 the report says every subagent runs in the background (h #g321)", () => {
+  const text = formatDoctorReport({
+    ...report,
+    backgroundSubagents: {
+      gate: {
+        supported: true,
+        hostApi: "v2",
+        registryResolved: true,
+        everyDispatch: true,
+        hostVersion: "2.3.2",
+        at: Date.now(),
+      },
+      ledgers: [],
+    },
+  })
+  assert.ok(text.includes("| every subagent runs in the background | yes (opencode 2.3.0 and later) |"), text)
+  assert.ok(text.includes("| `background` offered to Claude | no (there is no foreground dispatch to choose) |"), text)
+  assert.ok(text.includes("| `task_status` / `task_cancel` | registered |"), text)
+  assert.ok(text.includes("| opencode version | 2.3.2 |"), text)
+  assert.ok(text.includes("2.3.0 and later run every subagent in the background"), text)
+  assert.equal(text.includes("unconditionally"), false)
+  assert.equal(text.includes("| `background` offered to Claude | yes |"), false)
+})
+
 test("on opencode 2 the report says the registry is not consulted", () => {
   const text = formatDoctorReport({
     ...report,

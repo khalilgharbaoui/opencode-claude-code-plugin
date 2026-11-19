@@ -281,6 +281,7 @@ export function createClaudeCode(
       provider: providerName,
       cliPath,
       hostApi: settings.hostApi,
+      hostVersion: settings.hostVersion,
       cwd: settings.cwd,
       account: settings.account,
       configDir: settings.configDir,

@@ -197,6 +197,17 @@ export interface V2ProviderPlan {
   models: V2ModelInfo[]
 }
 
+/**
+ * The opencode version this process runs, from the first V2 setup's
+ * `ctx.app.version`. Read by `resolveSdkSettings` for every model it builds.
+ */
+let hostVersionHere: string | undefined
+
+/** Test seam: forget the recorded opencode version. */
+export function _resetHostVersionForTests(): void {
+  hostVersionHere = undefined
+}
+
 function stripPluginOnly(settings: Record<string, unknown> | undefined): Record<string, unknown> {
   const result = { ...(settings ?? {}) }
   for (const key of PLUGIN_ONLY_SETTINGS) delete result[key]
@@ -275,6 +286,10 @@ export async function resolveSdkSettings(
   providerID: string,
   planned: Record<string, unknown> | undefined,
   eventOptions: Record<string, unknown>,
+  // `ctx.app.version`: opencode 2.3.0 and later runs every subagent in the
+  // background (h #g321), and only the version can say so. Undefined leaves
+  // the model to ask the binary.
+  hostVersion: string | undefined = hostVersionHere,
 ): Promise<ClaudeCodeProviderSettings> {
   const fromEvent = { ...eventOptions }
   for (const key of OPENCODE_SDK_OPTION_KEYS) delete fromEvent[key]
@@ -283,6 +298,7 @@ export async function resolveSdkSettings(
     providerID,
     // The only place a model is told it serves opencode 2.
     hostApi: "v2",
+    ...(hostVersion ? { hostVersion } : {}),
   }
 
   const account = typeof merged.account === "string" ? merged.account : undefined
@@ -695,6 +711,9 @@ export function createV2Setup(deps: V2SetupDeps): (ctx: V2Context) => Promise<V2
       })
       return () => undefined
     }
+    // One opencode per process, so every location's setup names the same one.
+    const appVersion = (ctx as { app?: { version?: unknown } }).app?.version
+    if (typeof appVersion === "string" && appVersion.length > 0) hostVersionHere = appVersion
     ensureProcessExitCleanup()
     // The live-state calls (MCP status, tool registry, session lookups) are
     // answered in V1's shapes, so their callers need no V2 branch.

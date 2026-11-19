@@ -503,6 +503,100 @@ export const TASK_BACKGROUND_NOTE_V2 =
   " now: that is for information, never a reason to poll or wait."
 
 /**
+ * The first opencode release whose `subagent` tool runs EVERY subagent in the
+ * background (h #g321). Read out of the published builds: the 2.2.7 binary and
+ * `@opencode/core` 2.2.7 still take `background` and block without it, while
+ * 2.3.0, 2.3.1 and 2.3.2 dropped the field and say "Subagents always run in the
+ * background: the call returns immediately with a sessionID, and you receive a
+ * `<subagent>` message each time the child goes idle, including after later
+ * work." Every call answers `The subagent is working in the background
+ * (sessionID: ses_...)`, so nothing the plugin says about a foreground dispatch
+ * is true there.
+ */
+export const ALWAYS_BACKGROUND_SUBAGENTS_SINCE = "2.3.0"
+
+/**
+ * Whether an opencode version runs every subagent in the background. Unknown
+ * or unparsable is false, which keeps the 2.0 to 2.2 behaviour: the version is
+ * on the V2 plugin context and the binary probe is the fallback, so unknown is
+ * rare, and of the two wrong answers telling a 2.2 model that a foreground call
+ * returns at once is the one that loses work.
+ */
+export function hostRunsEverySubagentInBackground(version: string | undefined): boolean {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version?.trim() ?? "")
+  if (!match) return false
+  const [major, minor, patch] = match.slice(1).map(Number)
+  const [sinceMajor, sinceMinor, sincePatch] = ALWAYS_BACKGROUND_SUBAGENTS_SINCE.split(".").map(Number)
+  if (major !== sinceMajor) return major > sinceMajor
+  if (minor !== sinceMinor) return minor > sinceMinor
+  return patch >= sincePatch
+}
+
+/**
+ * Replaces `TASK_PROXY_NOTE` on a host that runs every subagent in the
+ * background (opencode 2.3.0 and later): there is no call that blocks, so the
+ * blocking and deadline sentences would be false, and task_batch is no longer
+ * how two subagents run at once (each call returns at once) but still starts
+ * several in one step.
+ */
+export const TASK_PROXY_NOTE_ALWAYS_BACKGROUND =
+  "This and task_batch are the ONLY tools that dispatch opencode subagents" +
+  " (including user @-mentions). Claude Code's built-in TaskCreate/TaskUpdate" +
+  " manage a local todo list and cannot dispatch subagents. Do not search" +
+  " config files to verify a subagent type exists: invalid types fail fast" +
+  " with a clear error. On this opencode every subagent runs in the" +
+  " background: the call never returns the subagent's answer. For two or" +
+  " more independent subagents in one response use task_batch, which starts" +
+  " them in one call."
+
+/**
+ * Appended to `task` and `task_batch` on opencode 2.3.0 and later, in place of
+ * `TASK_BACKGROUND_NOTE_V2`. Read out of `@opencode/core` 2.3.0: a dispatch
+ * answers `The subagent is working in the background (sessionID: ses_...)`,
+ * the parent gets a synthetic `<subagent sessionID="..." state="...">` message
+ * each time the child goes idle, `state="running"` when it went idle with
+ * background work of its own still running (so more will follow), and a call
+ * naming a running child's sessionID joins its current run.
+ */
+export const TASK_BACKGROUND_NOTE_ALWAYS =
+  "Every call returns at once with `The subagent is working in the background" +
+  " (sessionID: ses_...)`: that is success, not a truncated result. Keep" +
+  " working on something that does not overlap it, then end your turn: each" +
+  " time the subagent goes idle opencode delivers a" +
+  ' `<subagent sessionID="..." state="...">` message to this conversation on' +
+  ' its own (`state="running"` means it stopped with background work of its' +
+  " own still going and will report again). Do NOT poll, sleep or loop waiting" +
+  " for it. That sessionID is the task_id: pass it as `task_id` to send the" +
+  " same subagent a follow-up, to task_status to read a result the" +
+  " notification did not deliver, or to task_cancel to stop it. The dispatch" +
+  " result may end with how many background subagents are running now: that" +
+  " is for information, never a reason to poll or wait."
+
+/**
+ * How the host runs a subagent, which decides what the model is told and which
+ * tools it gets: `unsupported` (opencode 1.x without its flag: `background` is
+ * stripped), `optional` (1.x with the flag, opencode 2.0 to 2.2: foreground by
+ * default, `background: true` on request) and `always` (opencode 2.3.0 and
+ * later: every call returns at once and there is no `background` to set).
+ */
+export type BackgroundSubagentMode = "unsupported" | "optional" | "always"
+
+/**
+ * The mode for this host. A 1.x host is read off its advertised `task` schema
+ * (`liveTaskSupportsBackground`); opencode 2 off its version, because the V1
+ * client shim reports `parameters: {}` for every V2 tool, so the schema cannot
+ * say that `background` went away.
+ */
+export function backgroundSubagentMode(
+  taskParameters: Record<string, unknown> | undefined,
+  dialect: "v1" | "v2",
+  hostVersion?: string,
+): BackgroundSubagentMode {
+  if (dialect === "v2" && hostRunsEverySubagentInBackground(hostVersion)) return "always"
+  return liveTaskSupportsBackground(taskParameters, dialect) ? "optional" : "unsupported"
+}
+
+/**
  * `task_batch`: one MCP call that opencode runs as N parallel `task` calls.
  *
  * Design and first implementation by Joseph Roberts (@broskees) on his fork
@@ -528,6 +622,24 @@ export const TASK_BATCH_PROXY_NOTE =
   " task tool. Results come back in task order, each labelled. Like task it" +
   " has no proxy deadline by default (a positive proxyToolTimeoutMs override" +
   " adds one)."
+
+/** The opening of the `task_batch` def, before `TASK_BATCH_PROXY_NOTE`. */
+export const TASK_BATCH_LEAD =
+  "Launch two or more independent opencode subagents at the same time and" +
+  " get all their results back together. Put one ordinary task input in" +
+  " `tasks` for each subagent. "
+
+/**
+ * `TASK_BATCH_LEAD` plus `TASK_BATCH_PROXY_NOTE` as they read on opencode 2.3.0
+ * and later, where a batch gets every child's dispatch answer back together,
+ * never their results.
+ */
+export const TASK_BATCH_DESCRIPTION_ALWAYS_BACKGROUND =
+  "Start two or more independent opencode subagents in one call. Put one" +
+  " ordinary task input in `tasks` for each subagent; each takes the same" +
+  " fields as the task tool. Every subagent runs in the background, so the" +
+  " call returns at once with each one's dispatch answer and sessionID, in" +
+  " task order, each labelled."
 
 export const TASK_INPUT_REQUIRED = ["description", "prompt", "subagent_type"]
 
@@ -806,6 +918,24 @@ export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
 ]
 
 /**
+ * The collect/cancel pair as described on opencode 2.3.0 and later, where no
+ * call sets `background` and none blocks: the same tools, without the
+ * `background: true` they would otherwise ask for and without the sentence
+ * about a foreground call there is no longer any of.
+ */
+export const ALWAYS_BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = BACKGROUND_TASK_TOOL_DEFS.map(
+  (def) => ({
+    ...def,
+    description: def.description
+      .replaceAll(" and `background: true`", "")
+      .replace(
+        " This cannot stop a foreground task call: those block this conversation and end on their own.",
+        "",
+      ),
+  }),
+)
+
+/**
  * Make the proxy tool list match what the host can actually do with a
  * background subagent.
  *
@@ -817,23 +947,74 @@ export const BACKGROUND_TASK_TOOL_DEFS: ProxyToolDef[] = [
  * live on a default 1.18.33: the model set it, opencode rejected the call
  * outright with `Background subagents require
  * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, and the dispatch was lost.
+ *
+ * Always (opencode 2.3.0 and later, h #g321): see
+ * `applyAlwaysBackgroundSupport`. `supported` takes a boolean as before
+ * (`true` is `optional`) or a `BackgroundSubagentMode`.
  * No-op when `task` is not among the tools.
  */
 export function applyBackgroundSubagentSupport(
   tools: ProxyToolDef[],
-  supported: boolean,
+  supported: boolean | BackgroundSubagentMode,
   dialect: "v1" | "v2" = "v1",
 ): ProxyToolDef[] {
   if (!tools.some((t) => t.name === "task")) return tools
+  const mode: BackgroundSubagentMode =
+    typeof supported === "string" ? supported : supported ? "optional" : "unsupported"
+  if (mode === "always") return applyAlwaysBackgroundSupport(tools)
   const note = dialect === "v2" ? TASK_BACKGROUND_NOTE_V2 : TASK_BACKGROUND_NOTE
   const adjusted = tools.map((t) => {
     if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
-    if (supported) {
+    if (mode === "optional") {
       return { ...t, description: `${t.description}\n\n${note}` }
     }
     return { ...t, inputSchema: stripBackgroundFromSchema(t.name, t.inputSchema) }
   })
-  return supported ? [...adjusted, ...BACKGROUND_TASK_TOOL_DEFS] : adjusted
+  return mode === "optional" ? [...adjusted, ...BACKGROUND_TASK_TOOL_DEFS] : adjusted
+}
+
+/**
+ * opencode 2.3.0 and later (h #g321): every `task` returns at once, so the
+ * blocking sentences in `task` and `task_batch` are replaced rather than
+ * appended to, `background` is stripped (the host has no such field and a
+ * model shown it would think foreground still exists), the always-background
+ * note is appended, and the collect/cancel pair is registered with
+ * descriptions that do not ask for a `background: true` no call can set.
+ * The replacements match the static texts, so the agent-type list the overlay
+ * put in front survives. A function replacer, because a `$` in a replacement
+ * string means something to `String.prototype.replace`.
+ */
+function applyAlwaysBackgroundSupport(tools: ProxyToolDef[]): ProxyToolDef[] {
+  const adjusted = tools.map((t) => {
+    if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
+    const description =
+      t.name === "task"
+        ? t.description.replace(TASK_PROXY_NOTE, () => TASK_PROXY_NOTE_ALWAYS_BACKGROUND)
+        : t.description.replace(
+            TASK_BATCH_LEAD + TASK_BATCH_PROXY_NOTE,
+            () => TASK_BATCH_DESCRIPTION_ALWAYS_BACKGROUND,
+          )
+    return {
+      ...t,
+      description: `${description}\n\n${TASK_BACKGROUND_NOTE_ALWAYS}`,
+      inputSchema: stripBackgroundFromSchema(t.name, t.inputSchema),
+    }
+  })
+  return [...adjusted, ...ALWAYS_BACKGROUND_TASK_TOOL_DEFS]
+}
+
+/**
+ * Whether a proxy tool list is the one `applyBackgroundSubagentSupport` builds
+ * for a host that runs every subagent in the background: the collect/cancel
+ * pair is registered while `task` offers no `background` to set. The proxy
+ * server reads the mode off its tools, the way it decides to answer the pair
+ * at all, so `maxBackgroundSubagents` counts every dispatch there.
+ */
+export function dispatchesAlwaysInBackground(tools: ProxyToolDef[]): boolean {
+  const task = tools.find((t) => t.name === "task")
+  if (!task || !tools.some((t) => t.name === "task_status")) return false
+  const properties = task.inputSchema.properties
+  return !properties || typeof properties !== "object" || !("background" in properties)
 }
 
 /**
@@ -1226,11 +1407,7 @@ export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
   },
   {
     name: TASK_BATCH_TOOL_NAME,
-    description:
-      "Launch two or more independent opencode subagents at the same time and" +
-      " get all their results back together. Put one ordinary task input in" +
-      " `tasks` for each subagent. " +
-      TASK_BATCH_PROXY_NOTE,
+    description: TASK_BATCH_LEAD + TASK_BATCH_PROXY_NOTE,
     inputSchema: {
       type: "object",
       properties: {

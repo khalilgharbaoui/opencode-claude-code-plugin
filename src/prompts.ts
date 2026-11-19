@@ -110,9 +110,53 @@ This opencode host runs background subagents, so \`mcp__opencode_proxy__task\` t
 - A background dispatch's result may end with \`Background subagents running now: N\`. That number is for information, so you can avoid starting more than the work needs; it is never a reason to poll, sleep or wait.
 - Foreground is still the default and still the right choice when you need the answer before you can continue. Use background only for work that genuinely runs alongside yours.`
 
-/** The hint describing this host's own envelopes, picked like the tool note. */
-export function backgroundSubagentHint(dialect: "v1" | "v2"): string {
+/**
+ * The hint for opencode 2.3.0 and later (h #g321), where every subagent runs in
+ * the background and there is no `background` to set. Read out of
+ * `@opencode/core` 2.3.0: each dispatch answers in the same prose as 2.0, the
+ * parent gets a `<subagent>` message each time the child goes idle (with
+ * `state="running"` while the child's own background work goes on), and a
+ * call naming a child's sessionID sends it a follow-up. "Foreground is still
+ * the default" would be false here, and a model that believes it waits for an
+ * answer the call will never carry.
+ */
+export const BACKGROUND_SUBAGENT_HINT_ALWAYS = `## Background subagents
+
+On this opencode host every subagent runs in the background: \`mcp__opencode_proxy__task\` and \`mcp__opencode_proxy__task_batch\` return at once and never carry the subagent's answer. There is no foreground dispatch and no \`background\` field to set.
+
+- A dispatch answers \`The subagent is working in the background (sessionID: ses_...)\`. That is success, not a truncated result.
+- After starting one, keep working on something that does not overlap it, then end your turn normally. Each time the subagent goes idle, opencode delivers a \`<subagent sessionID="..." state="...">\` message into this conversation on its own; \`state="running"\` means it stopped with background work of its own still going and will report again. Do not sleep, poll, or ask the operator to wait.
+- When you need a subagent's answer before you can continue, dispatch it, end your turn, and carry on when its \`<subagent>\` message arrives.
+- That \`sessionID\` is the task_id. Pass it as \`task_id\` to send the same subagent a follow-up; \`mcp__opencode_proxy__task_status\` reads a result back if the automatic delivery did not arrive (an interrupted or errored turn); \`mcp__opencode_proxy__task_cancel\` stops a subagent you no longer want. Neither is a progress poll.
+- A dispatch's result may end with \`Background subagents running now: N\`. That number is for information, so you can avoid starting more than the work needs; it is never a reason to poll, sleep or wait.`
+
+/**
+ * The hint describing this host's own envelopes, picked like the tool note.
+ * `always` is opencode 2.3.0 and later, where every dispatch is a background one.
+ */
+export function backgroundSubagentHint(dialect: "v1" | "v2", always = false): string {
+  if (always) return BACKGROUND_SUBAGENT_HINT_ALWAYS
   return dialect === "v2" ? BACKGROUND_SUBAGENT_HINT_V2 : BACKGROUND_SUBAGENT_HINT
+}
+
+/**
+ * `SUBAGENT_DISPATCH_HINT` as it reads on opencode 2.3.0 and later (h #g321):
+ * a `task_batch` hands back every child's dispatch answer rather than its
+ * result, and a dispatch has happened when the call returned its sessionID.
+ * Everything else is the same text.
+ */
+export const SUBAGENT_DISPATCH_HINT_ALWAYS_BACKGROUND = SUBAGENT_DISPATCH_HINT.replace(
+  "runs them concurrently in opencode and returns every result together, labelled in order.",
+  () => "starts them all in opencode in one call and returns every dispatch answer together, labelled in order.",
+).replace(
+  "Never report a subagent as dispatched unless `mcp__opencode_proxy__task` returned its result.",
+  () =>
+    "Never report a subagent as dispatched unless `mcp__opencode_proxy__task` returned its sessionID.",
+)
+
+/** The dispatch hint for this host. */
+export function subagentDispatchHint(always = false): string {
+  return always ? SUBAGENT_DISPATCH_HINT_ALWAYS_BACKGROUND : SUBAGENT_DISPATCH_HINT
 }
 
 /**

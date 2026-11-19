@@ -239,19 +239,20 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
   2. The dead-stream follow-up of h #g320 (interrupt and resend once on the same process) would have saved
      both; a subagent has nobody to press continue.
 
-- 2026-11-18: opencode 2.3.2 removed the `subagent` tool's `background` input; every subagent runs in the
-  background ("Subagents always run in the background"). Reported over WalkyTalky by the agent in
-  `webapp#staging` (wt_v0p3bgdhamvh): two subagents dispatched in plan mode vanished from the sidebar after
-  a plan to build switch while still running; result delivery still works.
-  1. Sidebar: `partBackground` reads `input.background`, so a 2.3 dispatch reads as a foreground call that
-     finished ~20 ms after it started (done row, dropped after FINISHED_TTL_MS). Rows were gone before that
-     cutoff in the report; live repro running (subagent ses_e10da335fffe...).
-  2. Server half: on 2.3 the proxied `task` description ("Calls block until the subagent finishes"), the
-     background notes and hints ("Foreground is still the default") and `task_batch` ("returns every
-     result together") are wrong: a dispatch without `background` returned at once on 2.3.2.
-
 ## Done
 
+- 2026-11-19: **done** (PR [#194](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/194), h #g321, not yet merged or released): opencode 2.3.0 (not 2.3.2) removed the `subagent` tool's `background` input; every subagent runs in the background. Reported over WalkyTalky by the agent in `webapp#staging` (wt_v0p3bgdhamvh). The sidebar now keeps a 2.3 row spinning until its child reports (and through a `state="running"` report), the model is told every dispatch returns at once (version-gated: no `background`, no "calls block", no "foreground is the default"), `maxBackgroundSubagents` counts every dispatch, `task_status` hands over each round, and a same-day reset drops its word to fit. Live on 2.3.2 through a plan to build switch. The early loss in the report (rows gone before the 10-minute TTL) was not reproduced and is still unexplained; with the fix a running row is never capped.
+  Original entry:
+  - 2026-11-18: opencode 2.3.2 removed the `subagent` tool's `background` input; every subagent runs in the
+    background ("Subagents always run in the background"). Reported over WalkyTalky by the agent in
+    `webapp#staging` (wt_v0p3bgdhamvh): two subagents dispatched in plan mode vanished from the sidebar after
+    a plan to build switch while still running; result delivery still works.
+    1. Sidebar: `partBackground` reads `input.background`, so a 2.3 dispatch reads as a foreground call that
+       finished ~20 ms after it started (done row, dropped after FINISHED_TTL_MS). Rows were gone before that
+       cutoff in the report; live repro running (subagent ses_e10da335fffe...).
+    2. Server half: on 2.3 the proxied `task` description ("Calls block until the subagent finishes"), the
+       background notes and hints ("Foreground is still the default") and `task_batch` ("returns every
+       result together") are wrong: a dispatch without `background` returned at once on 2.3.2.
 - 2026-11-15: **done** (v0.73.7, PR #191, h #g319): after an opencode restart, a fork of the WHOLE conversation starts
   from the parent's saved Claude session (`--resume <id> --fork-session`) instead of replaying it. A
   fork from an earlier message after a restart still replays (no persisted checkpoint uuid).
