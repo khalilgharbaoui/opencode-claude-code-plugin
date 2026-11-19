@@ -230,6 +230,15 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
+- 2026-11-19: a subagent (ses_e0d42a176ffe..., webapp, reported over WalkyTalky wt_v5vl5nq0c9o7) died twice
+  with "The Claude Code CLI closed its output before finishing this turn". Measured: both times Claude Code had
+  sent an API request (07:44:46 and 08:47:51 UTC) and got no answer; the 90 s watchdog closed the turn. The
+  network was failing (another session logged `Unable to connect to API (EPROTO)` at 07:46:26). Two items:
+  1. The watchdog close goes through the crash handler, so the turn also reports a CLI crash that did not
+     happen. Word it as what it is (no answer from the API for 90 s) and keep the crash text for real exits.
+  2. The dead-stream follow-up of h #g320 (interrupt and resend once on the same process) would have saved
+     both; a subagent has nobody to press continue.
+
 - 2026-11-18: opencode 2.3.2 removed the `subagent` tool's `background` input; every subagent runs in the
   background ("Subagents always run in the background"). Reported over WalkyTalky by the agent in
   `webapp#staging` (wt_v0p3bgdhamvh): two subagents dispatched in plan mode vanished from the sidebar after
