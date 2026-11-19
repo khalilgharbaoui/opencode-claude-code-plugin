@@ -230,6 +230,15 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
+- 2026-11-19: a subagent (ses_e0d42a176ffe..., webapp, reported over WalkyTalky wt_v5vl5nq0c9o7) died twice
+  with "The Claude Code CLI closed its output before finishing this turn". Measured: both times Claude Code had
+  sent an API request (07:44:46 and 08:47:51 UTC) and got no answer; the 90 s watchdog closed the turn. The
+  network was failing (another session logged `Unable to connect to API (EPROTO)` at 07:46:26). Two items:
+  1. The watchdog close goes through the crash handler, so the turn also reports a CLI crash that did not
+     happen. Word it as what it is (no answer from the API for 90 s) and keep the crash text for real exits.
+  2. The dead-stream follow-up of h #g320 (interrupt and resend once on the same process) would have saved
+     both; a subagent has nobody to press continue.
+
 ## Done
 
 - 2026-11-19: **done** (PR [#194](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/194), h #g321, not yet merged or released): opencode 2.3.0 (not 2.3.2) removed the `subagent` tool's `background` input; every subagent runs in the background. Reported over WalkyTalky by the agent in `webapp#staging` (wt_v0p3bgdhamvh). The sidebar now keeps a 2.3 row spinning until its child reports (and through a `state="running"` report), the model is told every dispatch returns at once (version-gated: no `background`, no "calls block", no "foreground is the default"), `maxBackgroundSubagents` counts every dispatch, `task_status` hands over each round, and a same-day reset drops its word to fit. Live on 2.3.2 through a plan to build switch. The early loss in the report (rows gone before the 10-minute TTL) was not reproduced and is still unexplained; with the fix a running row is never capped.
