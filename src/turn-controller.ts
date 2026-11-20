@@ -496,6 +496,46 @@ export function noteStartWatchdogInit(state: TurnState): void {
 // ---- Late proxy results ---------------------------------------------------
 
 /**
+ * A proxied result the model has provably answered leaves
+ * `pendingProxyCompletions`, so a start-watchdog respawn does not hand it to
+ * the resumed conversation a second time (h #g323). Until then the store held
+ * every result of a Claude turn until its `result`, and after a stall late in
+ * a long turn the respawn re-sent all of them as one user message.
+ *
+ * The proof is a main-thread API message that STARTED after the result was
+ * handed over and then streamed model output. The CLI asks for the next
+ * message only once every tool call of the one before has its result, so that
+ * request carried this one, and the model answered it. Nothing weaker counts:
+ * output with no `message_start` since the hand-over can be the rest of the
+ * message that asked for the call, which streams on while the call runs (h
+ * #g288); a subagent's or sidechain's frames carry `parent_tool_use_id`; the
+ * CLI's own `<synthetic>` reply is not the model, and a request that started
+ * and then failed answered nothing. A result whose channel closed never
+ * reached the CLI as a `tool_result`, so it stays for its delivery.
+ * The interactive transport streams no `message_start`, so nothing changes
+ * there.
+ */
+export function noteProxyResultsAnswered(
+  state: TurnState,
+  frame: ClaudeStreamMessage,
+  msg: ClaudeStreamMessage,
+  modelProgress: boolean,
+): void {
+  const completions = state.activeProcess?.pendingProxyCompletions
+  if (!completions || completions.size === 0 || frame.parent_tool_use_id) return
+  if (msg.type === "message_start") {
+    for (const entry of completions.values()) entry.answerStarted = true
+    return
+  }
+  if (!modelProgress || msg.message?.model === "<synthetic>") return
+  for (const [toolCallId, entry] of completions) {
+    if (!entry.answerStarted || entry.recoveryRequired || isPendingProxyCallChannelClosed(entry.call)) continue
+    completions.delete(toolCallId)
+    log.debug("proxied result answered; it is not kept for a re-send", { toolCallId })
+  }
+}
+
+/**
  * Both buffered/live terminal boundaries and respawn consume through this
  * path. Open-channel results remain available for a later close.
  */

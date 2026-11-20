@@ -98,6 +98,7 @@ type FakeTaskMode =
   | "bookkeeping"
   | "bookkeeping-respawn"
   | "task_batch"
+  | "steps"
 
 /**
  * Every test spawns this one script, and reads its mode and task inputs from a
@@ -325,9 +326,47 @@ async function callTask(input = taskInput, id = 1, signal, name = "task", onQueu
 
 const recoveryMode = ["late", "late-queued", "swallow", "bookkeeping", "bookkeeping-respawn"].includes(mode)
 const swallowMode = mode === "swallow" || mode.startsWith("bookkeeping")
+const stepsMode = mode === "steps"
 const eventsPath = config.eventsPath
 function record(event) {
   fs.appendFileSync(eventsPath, JSON.stringify(event) + "\\n")
+}
+function stepInput(step) {
+  return { ...secondTaskInput, description: "Step " + step, task_id: "task-step-" + step }
+}
+function streamStep(step) {
+  const event = (inner) =>
+    emit({ type: "stream_event", session_id: "fake-session", parent_tool_use_id: null, event: inner })
+  event({ type: "message_start", message: { id: "msg_step_" + step, type: "message", role: "assistant", content: [] } })
+  event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+  event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Step " + step + " delegates." } })
+  event({ type: "content_block_stop", index: 0 })
+  event({
+    type: "content_block_start",
+    index: 1,
+    content_block: { type: "tool_use", id: "toolu_step_" + step, name: "mcp__opencode_proxy__task" },
+  })
+  event({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify(stepInput(step)) } })
+  event({ type: "content_block_stop", index: 1 })
+  event({ type: "message_delta", delta: { stop_reason: "tool_use" } })
+  event({ type: "message_stop" })
+}
+// One long turn of proxied calls: each API message asks for one call, and the
+// CLI writes its own record of each result before it asks for the next
+// message. After the third result that request fails and nothing answers its
+// retry, so the CLI writes nothing more, which is what the start watchdog is for.
+async function runSteps() {
+  for (let step = 1; step <= 3; step++) {
+    streamStep(step)
+    const body = await callTask(stepInput(step), step)
+    record({ type: "step-result", step, body })
+    emit({
+      type: "user",
+      session_id: "fake-session",
+      parent_tool_use_id: null,
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_step_" + step, content: body.result.content }] },
+    })
+  }
 }
 function answer(text) {
   emit({
@@ -341,7 +380,7 @@ function answer(text) {
   emit(result)
 }
 const resumed = args.includes("--resume")
-if (recoveryMode) {
+if (recoveryMode || stepsMode) {
   emit({ type: "system", subtype: "init", session_id: "fake-session" })
   const promptIndex = args.indexOf("--append-system-prompt-file")
   record({
@@ -379,6 +418,19 @@ if (recoveryMode && !swallowMode) {
 
 let handled = false
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  if (stepsMode) {
+    record({ type: "input", envelope: JSON.parse(line), resumed })
+    // The watchdog's replacement is handed what its predecessor left
+    // unanswered, and answers it.
+    if (resumed) {
+      answer("Fresh answer after the restart.")
+      return
+    }
+    if (handled) return
+    handled = true
+    void runSteps().catch((error) => record({ type: "fixture-error", message: error.message }))
+    return
+  }
   if (recoveryMode) {
     const envelope = JSON.parse(line)
     record({ type: "input", envelope, resumed })
@@ -1050,6 +1102,234 @@ for (const ordering of ["buffered-terminal", "delayed-terminal", "close-after-re
     }
   })
 }
+
+test("a start-watchdog restart hands over only the proxied result the model never answered", {
+  timeout: RECOVERY_TEST_TIMEOUT_MS,
+}, async () => {
+  // One long turn: three proxied calls, the first two each answered by the
+  // model on a new API message, then the request after the third result fails
+  // and nothing answers its retry. Every earlier result is already in the
+  // resumed conversation, so the replacement is handed the third alone.
+  const fake = createFakeTaskCli("steps")
+  const modelId = "claude-test-task-steps"
+  const sk = sessionKey(fake.cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const previousWatchdog = process.env.CLAUDE_CODE_START_WATCHDOG_MS
+  // Derived, never a literal: see START_WATCHDOG_MS.
+  process.env.CLAUDE_CODE_START_WATCHDOG_MS = String(START_WATCHDOG_MS)
+  const events = () => existsSync(fake.eventsPath)
+    ? readFileSync(fake.eventsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    : []
+  const options: LanguageModelV3CallOptions = {
+    prompt: [{ role: "user", content: [{ type: "text", text: "Run the three checks." }] }],
+    tools: [{
+      type: "function",
+      name: "task",
+      description: "Delegate work to an opencode subagent",
+      inputSchema: { type: "object", properties: {} },
+    }],
+  }
+  const calls: Array<Extract<LanguageModelV3StreamPart, { type: "tool-call" }>> = []
+  const storedAfterStep: number[] = []
+  try {
+    const model = createClaudeCode({
+      cliPath: fake.cliPath,
+      cwd: fake.cwd,
+      bridgeOpencodeMcp: false,
+      proxyOpencodeMcpTools: false,
+      proxyTools: ["Task"],
+      autoContinueIncompleteTurns: false,
+    }).languageModel(modelId)
+    for (let step = 1; step <= 3; step++) {
+      const parts = await collectRecoveryStream((await model.doStream(options)).stream)
+      const stepCalls = parts.filter((part) => part.type === "tool-call")
+      assert.equal(stepCalls.length, 1, `step ${step} ends on its one call`)
+      assert.equal(JSON.parse(stepCalls[0].input).description, `Step ${step}`)
+      const finishes = parts.filter((part) => part.type === "finish")
+      assert.equal(finishes.length, 1)
+      assert.equal(finishes[0].finishReason.unified, "tool-calls")
+      storedAfterStep.push(getActiveProcess(sk)?.pendingProxyCompletions?.size ?? 0)
+      const call = stepCalls[0]
+      calls.push(call)
+      options.prompt.push({
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: call.toolCallId, toolName: call.toolName, input: JSON.parse(call.input) }],
+      }, {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          output: { type: "text", value: `result of step ${step}` },
+        }],
+      })
+    }
+
+    const finalParts = await collectRecoveryStream((await model.doStream(options)).stream)
+    const finalText = finalParts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.delta)
+      .join("")
+    assert.ok(finalText.endsWith("Fresh answer after the restart."), `received: ${finalText}`)
+    assert.equal(finalParts.filter((part) => part.type === "error").length, 0)
+    const finishes = finalParts.filter((part) => part.type === "finish")
+    assert.equal(finishes.length, 1)
+    assert.equal(finishes[0].finishReason.unified, "stop")
+
+    const recorded = events()
+    assert.deepEqual(recorded.filter((event) => event.type === "fixture-error"), [])
+    assert.equal(recorded.filter((event) => event.type === "step-result").length, 3)
+    const spawns = recorded.filter((event) => event.type === "spawn")
+    assert.equal(spawns.length, 2, "the start watchdog replaced the silent child once")
+    assert.equal(spawns[1].resumed, true)
+    const lateInputs = recorded.filter((event) => event.type === "input" && event.resumed)
+    assert.equal(lateInputs.length, 1)
+    const late = JSON.stringify(lateInputs[0].envelope)
+    assert.ok(late.includes(calls[2].toolCallId), "the unanswered result is handed over")
+    assert.ok(late.includes("result of step 3"))
+    for (const step of [1, 2]) {
+      assert.ok(!late.includes(calls[step - 1].toolCallId), `the answered result of step ${step} is not sent again`)
+      assert.ok(!late.includes(`result of step ${step}`), `the answered output of step ${step} is not sent again`)
+    }
+    // Each answered result left the store when the model answered it, not at
+    // the end: nothing was waiting there when the next call arrived.
+    assert.deepEqual(storedAfterStep, [0, 0, 0])
+  } finally {
+    if (previousWatchdog === undefined) delete process.env.CLAUDE_CODE_START_WATCHDOG_MS
+    else process.env.CLAUDE_CODE_START_WATCHDOG_MS = previousWatchdog
+    rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+    await deleteActiveProcessAndWait(sk)
+    deleteClaudeSessionId(sk)
+    rmSync(fake.cwd, { recursive: true, force: true })
+  }
+})
+
+/**
+ * One proxied result handed over to a stand-in process on a tool-result turn,
+ * with the turn still open, so a test can feed it what the CLI writes next.
+ */
+async function handOverOneResult(label: string, channelClosed: boolean) {
+  const cwd = process.cwd()
+  const modelId = `claude-test-recovery-${label}`
+  const sk = sessionKey(cwd, `${modelId}::tools::default::context=["claude-code",null]`)
+  const writes: string[] = []
+  const proc = Object.assign(new EventEmitter(), {
+    stdin: { write: (line: string) => { writes.push(line); return true } },
+    kill: () => true,
+  }) as unknown as ChildProcess
+  const active: ActiveProcess = { proc, lineEmitter: new EventEmitter(), unattendedLines: [] }
+  const emit = (message: unknown) => active.lineEmitter.emit("line", JSON.stringify(message))
+  const streamEvent = (event: unknown, parentToolUseId: string | null = null) =>
+    emit({ type: "stream_event", session_id: `${label}-session`, parent_tool_use_id: parentToolUseId, event })
+  const callId = `${label}-call`
+  const terminal = { type: "result", session_id: `${label}-session`, is_error: false }
+  const cleanup = () => {
+    // Ends a turn a failed assertion left open; a no-op once it has ended.
+    emit(terminal)
+    rejectAllPendingProxyCallsForSession(sk, new Error("test cleanup"))
+    deleteActiveProcess(sk)
+    deleteClaudeSessionId(sk)
+  }
+  try {
+    setActiveProcess(sk, active)
+    setClaudeSessionId(sk, `${label}-session`)
+    queuePendingProxyCall(sk, {
+      id: callId, toolName: "task", input: {}, channel: { closed: channelClosed },
+      resolve: () => {}, reject: () => {},
+    })
+    markPendingProxyCallEmitted(callId)
+    const model = createClaudeCode({
+      cwd, cliPath: process.execPath, bridgeOpencodeMcp: false,
+      proxyOpencodeMcpTools: false, proxyTools: [], autoContinueIncompleteTurns: false,
+    }).languageModel(modelId)
+    const response = await model.doStream({
+      tools: [{ type: "function", name: "task", inputSchema: { type: "object" } }],
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "Delegate." }] },
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: callId, toolName: "task", input: {} }] },
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: callId, toolName: "task", output: { type: "text", value: `${label} output` } }],
+        },
+      ],
+    })
+    const collected = collectRecoveryStream(response.stream)
+    // Awaited by the test; this only keeps a failed test's stream from
+    // rejecting after the test has ended.
+    collected.catch(() => {})
+    await eventually("the result handed over", () => active.pendingProxyCompletions?.has(callId) === true)
+    return {
+      writes,
+      emit,
+      streamEvent,
+      callId,
+      collected,
+      cleanup,
+      kept: () => active.pendingProxyCompletions?.has(callId) === true,
+      terminal,
+    }
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+}
+
+test("only model output on a new main-thread message proves a proxied result was used", async () => {
+  const handed = await handOverOneResult("consumed", false)
+  try {
+    // The rest of the message that asked for the call streams on while the
+    // call runs: it started before the result existed.
+    handed.streamEvent({ type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "Still the asking message." } })
+    assert.ok(handed.kept(), "late output of the asking message proves nothing")
+    // A subagent's or sidechain's own reply.
+    handed.streamEvent({ type: "message_start", message: { id: "msg_sidechain", role: "assistant", content: [] } }, "toolu_subagent")
+    handed.streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Subagent." } }, "toolu_subagent")
+    assert.ok(handed.kept(), "a sidechain's reply proves nothing")
+    // A request that started and failed, answered by the CLI's own reply.
+    handed.streamEvent({ type: "message_start", message: { id: "msg_failed", role: "assistant", content: [] } })
+    handed.emit({
+      type: "assistant",
+      session_id: "consumed-session",
+      parent_tool_use_id: null,
+      message: { id: "msg_synthetic", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "API Error: Connection reset." }] },
+    })
+    assert.ok(handed.kept(), "the CLI's synthetic reply is not the model")
+    // The model answers on the next main-thread message.
+    handed.streamEvent({ type: "message_start", message: { id: "msg_answer", role: "assistant", content: [] } })
+    assert.ok(handed.kept(), "a started request is not yet an answer")
+    handed.streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+    handed.streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Answered." } })
+    assert.equal(handed.kept(), false, "the model answered on a new message")
+    handed.emit(handed.terminal)
+    const parts = await handed.collected
+    assert.equal(parts.filter((part) => part.type === "finish").length, 1)
+    assert.equal(handed.writes.length, 0, "nothing is handed over again")
+  } finally {
+    handed.cleanup()
+  }
+})
+
+test("a proxied result the CLI never received survives model output and is delivered", async () => {
+  const handed = await handOverOneResult("unreceived", true)
+  try {
+    handed.streamEvent({ type: "message_start", message: { id: "msg_after_timeout", role: "assistant", content: [] } })
+    handed.streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })
+    handed.streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "The call timed out." } })
+    assert.ok(handed.kept(), "a recoveryRequired result stays for its delivery")
+    handed.emit(handed.terminal)
+    await eventually("the late result delivered", () => handed.writes.length === 1)
+    assert.equal(handed.kept(), false)
+    const completion = JSON.parse(handed.writes[0]).message.content[0].text as string
+    assert.ok(completion.includes(handed.callId))
+    assert.ok(completion.includes("unreceived output"))
+    handed.emit({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Recovered." }] } })
+    handed.emit(handed.terminal)
+    const parts = await handed.collected
+    assert.equal(parts.filter((part) => part.type === "finish").length, 1)
+    assert.equal(handed.writes.length, 1)
+  } finally {
+    handed.cleanup()
+  }
+})
 
 test("default provider proxies Task through opencode", () => {
   assert.deepEqual(modelProxyTools(), [
