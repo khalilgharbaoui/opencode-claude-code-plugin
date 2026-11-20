@@ -13474,3 +13474,8 @@ stayed stamped and the model answered. opencode 1.19.4 with the same store: the 
 state `/test-cards 3dsecure` typed was rewritten and ran in 1 turn. Interactive transport on 2.3.2:
 `/hello-probe pty-arg` and `/stripe:test-cards visa` were typed into Claude's own TUI and each ran in
 one API call. `/release` and every other skill with side effects were never run.
+
+Shipped as v0.75.0 on 2026-11-20 (PR #195), a minor release: CI green on Linux and Windows on the
+PR head, on the merge commit `71ee408` before the tag and on the release commit `375a18a`, the
+publish confirmed by the `Publish package` step's tail and the version document's shasum (`0bd255a1`),
+with a GitHub Release.
