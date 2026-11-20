@@ -1261,6 +1261,11 @@ export interface ClaudeStreamMessage {
   // The inner event mirrors the same shape (content_block_*, message_*, etc).
   event?: ClaudeStreamMessage
 
+  // On `stream_event`, `assistant` and `user` frames: the tool call a
+  // subagent's or sidechain's frame belongs to, `null` on the main
+  // conversation (the CLI's own schema, read on 2.1.322).
+  parent_tool_use_id?: string | null
+
   request?: {
     subtype?: string
     tool_name?: string
