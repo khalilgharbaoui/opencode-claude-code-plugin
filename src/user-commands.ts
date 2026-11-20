@@ -1,6 +1,12 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import {
+  type ClaudeCommand,
+  cliCommandsFor,
+  isListedCommand,
+  resolveShortCommandName,
+} from "./claude-commands.js"
 
 /**
  * Which messages run one of the operator's own Claude Code commands, so they
@@ -30,13 +36,24 @@ import path from "node:path"
  *  - a colon name is never a built-in (none of the 47 to 51 built-ins has
  *    one). `/a:b` is a nested command at `commands/a/b.md`, any depth. A
  *    plugin's (`/stripe:explain-error`) lives in the CLI's plugin cache behind
- *    enable state this module does not read, so for it a `claude` in this
- *    workspace listing the name in its `system`/`init` `slash_commands` is
- *    the evidence (`noteReportedCommands`), as in h #g280.
+ *    enable state this module does not read, so for it the evidence is the
+ *    CLI's own list: the commands the free `initialize` probe stored for this
+ *    config dir and folder (`src/claude-commands.ts`, h #g322), or a `claude`
+ *    in this workspace listing the name in its `system`/`init`
+ *    `slash_commands` (`noteReportedCommands`), as in h #g280.
+ *  - any other name the probe listed and did not flag `builtin` is the
+ *    operator's too (a synced or managed skill has no file this module
+ *    reads), so every entry the `/` menu offers runs as a command.
  *
  * The file decides alone wherever there is one, because no process reports
  * before it has read its first message: keyed on a report, the first message
- * in a folder after opencode started kept the mark (h #g281).
+ * in a folder after opencode started kept the mark (h #g281). The probe's list
+ * is there before the first message too.
+ *
+ * A typed short name the CLI does not resolve headless (`/release` for the
+ * plugin skill `appical-core:release`, measured on 2.1.322: "`/test-cards` is
+ * not available in this session") is rewritten to the one listed command it
+ * names (`expandShortCommand`), and then runs like any listed command.
  *
  * Only a message whose whole content is one text block qualifies: that is the
  * shape measured, and an attachment or a replayed history keeps the mark.
@@ -90,6 +107,55 @@ export interface OwnCommandContext {
   cwd: string
   /** The `CLAUDE_CONFIG_DIR` that `claude` reads its user commands from. */
   configDir: string | null
+  /**
+   * The commands the CLI listed for this config dir and folder. Omitted, they
+   * are read from the store (`cliCommandsFor`); `null` means the operator
+   * turned the list off (`claudeCommands: false`) and only files and reports
+   * count.
+   */
+  cliCommands?: readonly ClaudeCommand[] | null
+}
+
+function listedCommands(context: OwnCommandContext): readonly ClaudeCommand[] | null {
+  if (context.cliCommands !== undefined) return context.cliCommands
+  if (!context.configDir) return null
+  return cliCommandsFor(context.configDir, context.cwd)
+}
+
+/** The single text block a message is, or null for any other shape. */
+function soleText(content: readonly unknown[]): string | null {
+  if (content.length !== 1) return null
+  const block = content[0] as { type?: unknown; text?: unknown } | null
+  return block?.type === "text" && typeof block.text === "string" ? block.text : null
+}
+
+/**
+ * A message that opens with a short name the CLI would not resolve headless,
+ * rewritten to the one listed command it names, with whatever followed the
+ * name kept as it was. Returns the content unchanged (the same array) for
+ * anything else: another shape, a colon name, a name with a definition of its
+ * own on disk or in the list (a user, project or built-in command, which is
+ * what Claude Code runs), an ambiguous or an unknown name.
+ */
+export function expandShortCommand(
+  content: readonly unknown[],
+  context: OwnCommandContext,
+): { content: readonly unknown[]; from?: string; to?: string } {
+  const text = soleText(content)
+  if (text === null) return { content }
+  const name = leadingCommandName(text)
+  if (!name || name.includes(":")) return { content }
+  const listed = listedCommands(context)
+  if (!listed) return { content }
+  if (definedOnDisk(name, context)) return { content }
+  const full = resolveShortCommandName(name, listed)
+  if (!full) return { content }
+  const block = content[0] as Record<string, unknown>
+  return {
+    content: [{ ...block, text: `/${full}${text.slice(name.length + 1)}` }],
+    from: name,
+    to: full,
+  }
 }
 
 /** The operator's own command a message runs, or null when it keeps the mark. */
@@ -97,12 +163,13 @@ export function ownCommandIn(
   content: readonly unknown[],
   context: OwnCommandContext,
 ): string | null {
-  if (content.length !== 1) return null
-  const block = content[0] as { type?: unknown; text?: unknown } | null
-  if (block?.type !== "text" || typeof block.text !== "string") return null
-  const name = leadingCommandName(block.text)
+  const text = soleText(content)
+  if (text === null) return null
+  const name = leadingCommandName(text)
   if (!name) return null
   if (definedOnDisk(name, context)) return name
+  const listed = listedCommands(context)
+  if (listed && isListedCommand(name, listed)) return name
   if (name.includes(":") && reportedByWorkspace.get(path.resolve(context.cwd))?.has(name)) {
     return name
   }

@@ -1,6 +1,6 @@
 ---
 title: 'Skills'
-description: 'The bundled configuration skill, and bridging your opencode skills into Claude''s native Skill tool.'
+description: 'The bundled configuration skill, your Claude Code commands and skills in opencode''s / menu, and bridging your opencode skills into Claude''s native Skill tool.'
 sidebar:
   order: 7
 ---
@@ -18,6 +18,29 @@ It covers accounts, models and agent effort, proxy tools, permissions, MCP/skill
 The plugin registers the bundled directory with opencode's `skills.paths`, making it available to other providers too on supporting opencode versions. For Claude turns it also loads through Claude's native Skill tool as `opencode-skills:claude-code-plugin`, even when `bridgeOpencodeSkills` is `false`. This requires CLI `--plugin-dir` support and applies to the headless and interactive spawns; compaction never loads the native bridge.
 
 No separate skill installation or copying is needed. It ships with each package version, so upgrading updates the reference. Fully restart opencode to load it. `test/configure-skill.test.ts` checks coverage of provider/logging options, model ids, proxy tools and environment variables; maintainers must update behavior and default guidance in the same change as the implementation.
+
+## Claude Code's own commands and skills in the `/` menu
+
+Your Claude Code commands and skills work in opencode. The plugin lists them in opencode's `/` menu, each described as `Claude Code: ...`, and picking one sends it to Claude Code, which runs it as a command. Typing one works too. The list covers:
+
+- your own, from your Claude config dir's `commands/` and `skills/`;
+- the project's, from `.claude/commands` and `.claude/skills` in the folder or above it, up to the git root;
+- every enabled Claude Code plugin's, such as `/stripe:test-cards` or `/appical-core:release`;
+- the skills Claude Code syncs for your account.
+
+A plugin skill is listed under its short name when that is unique: `/release` for `appical-core:release`, or under `plugin:name` when two plugins share it. Claude Code's built-in commands (`/model`, `/compact`, `/cost` and the rest) are never listed. Neither is a name opencode already has: opencode's own commands (`/init`, `/review`, `/models`, `/status` and so on), the commands you defined in opencode and the plugin's `/btw` and `/claude-code-doctor` always win.
+
+Typing a short name works even before the menu lists it. Claude Code itself accepts a plugin skill only under its full name when it runs headless, so the plugin sends `/release planned` as `/appical-core:release planned` when exactly one enabled plugin defines `release` and nothing of yours, of the project or of Claude Code is called `release`. A name that is ambiguous or unknown is sent exactly as you typed it.
+
+```text
+/test-cards declined      runs the stripe plugin's test-cards skill
+/release planned          runs appical-core:release, if it is the only release
+/hello-probe              runs .claude/commands/hello-probe.md
+```
+
+How the list is read: when opencode starts, a short background `claude` is asked for its commands (it gets one `initialize` request and no message, with hooks and MCP servers off), once per folder and per configured account, and the answer is kept in `$XDG_STATE_HOME/opencode-claude-code-plugin/claude-commands.json`. Measured on Claude Code 2.1.322: about a second and no API request. opencode reads its `/` menu when it starts, so the menu shows the list from the previous start, and a command or skill you install while opencode runs is listed from the next start. On opencode 2, `/reload` asks again too, and a second `/reload` lists what the first one found. A typed command works as soon as the background `claude` has seen it.
+
+The menu is shared by every model, so an entry picked in a session on another provider reaches that model as plain text: the `Claude Code:` description is the reminder. The interactive transport types the command into Claude Code's own input, and gets the full name too. Turn all of this off with `claudeCommands: false`; `OPENCODE_CLAUDE_CODE_COMMAND_PROBE=0` stops only the background `claude`.
 
 ## Skill bridge
 

@@ -41,6 +41,7 @@ interface FixtureReport {
   cacheHome: string | null
   logFile: { path: string; enabled: boolean }
   probe: { status: string; reason?: string }
+  commandProbe: { status: string; reason?: string }
   stores: Array<{ path: string; written: boolean }>
 }
 
@@ -69,6 +70,7 @@ async function runFixture(fixture: string, args: string[], home: string, report:
   for (const name of [
     "OPENCODE_CLAUDE_CODE_LOG_DIR",
     "OPENCODE_CLAUDE_CODE_MODEL_PROBE",
+    "OPENCODE_CLAUDE_CODE_COMMAND_PROBE",
     "XDG_STATE_HOME",
     "XDG_CACHE_HOME",
     // This file runs under node's test runner; the child must not think it does.
@@ -98,6 +100,11 @@ test("a focused run, under --test or run directly, writes nothing under the home
       assert.deepEqual(filesUnder(home), [], `${mode}: the home is untouched`)
       assert.equal(report.logFile.enabled, false, `${mode}: file logging is off`)
       assert.deepEqual(report.probe, { status: "skipped", reason: "env-off" }, `${mode}: the CLI is never probed`)
+      assert.deepEqual(
+        report.commandProbe,
+        { status: "skipped", reason: "env-off" },
+        `${mode}: the CLI is never asked for its commands`,
+      )
       const root = dirname(report.stateHome ?? "")
       assert.ok(!root.startsWith(home), `${mode}: the scratch root is not the home`)
       assert.equal(dirname(report.cacheHome ?? ""), root, `${mode}: the wrapper cache is scratch too`)
@@ -132,6 +139,8 @@ test("the control: the same writes without test/isolate.ts land in the home", { 
     )
     assert.match(readFileSync(join(home, log), "utf8"), /isolation fixture line/)
     assert.deepEqual(report.probe, { status: "skipped", reason: "cli-not-found" })
+    // Not stopped by the switch; the fake home has no config dir to ask.
+    assert.notEqual(report.commandProbe.reason, "env-off")
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(reports, { recursive: true, force: true })

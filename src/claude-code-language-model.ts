@@ -3081,7 +3081,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         verbatimPrompts: this.config.verbatimPrompts !== false,
         ownCommands: compactionMode
           ? undefined
-          : { cwd, configDir: claudeConfigDir(this.skillBridgeSpawn(failover).configDir) },
+          : {
+              cwd,
+              configDir: claudeConfigDir(this.skillBridgeSpawn(failover).configDir),
+              // Off, only the operator's files and a process's own report count.
+              ...(this.config.claudeCommands === false ? { cliCommands: null } : {}),
+            },
       })
     // Plan mode on the TUI writes its plan to `~/.claude/plans/` with Claude's
     // own Write, which proxying `write` disables, and before approval it asks
