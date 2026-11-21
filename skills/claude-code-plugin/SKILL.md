@@ -487,8 +487,12 @@ at 2026-10-17 18:00.
   `5h 100% left` once that window has reset, `ok` for a reading without a number,
   `limited` for a refusal, `home · Max 20x · no reading yet` before an account's first
   turn reports, the reset time in its own colour apart from the level). A second line
-  under an account names a weekly window that is refused or 75% used or more
-  (`7d limited · resets 10-30 12:00`). A reset today keeps the word `resets` unless its
+  under an account shows its current weekly reading even below 75% used. The viewed
+  session's last spawned model also gets its own weekly row when the CLI reports
+  one (`Fable 7d 80% left · 10-30 12:00`), on that spawn's account only. Missing or
+  expired weekly/model readings are hidden; extra usage is not a model reading.
+  Each window keeps its own reset; detail rows reduce their indentation before
+  clipping the date. An additional refused/nearly spent window is still shown. A reset today keeps the word `resets` unless its
   own line has no room (`default · 5h 100% left · 18:00`). The sidebar re-reads every 1.5 s. Also the doctor's
   `Account usage` table, which also shows which thresholds were already noted. "No
   reading yet" with a recent turn usually means the interactive transport.

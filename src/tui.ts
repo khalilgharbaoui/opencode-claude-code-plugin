@@ -590,9 +590,12 @@ function createSidebar(host: SidebarHost) {
       if (current.rows.length === 0) return null
       return attempt(() => buildSection(current, expanded, setExpanded), null)
     })
-    const accountLines = createMemo(() =>
-      attempt(() => accountUsageLines(usage(), usageNow(), SIDEBAR_ROW_WIDTH, known(), logins()), [] as AccountUsageLine[]),
-    )
+    const accountLines = createMemo(() => {
+      recordVersion()
+      const id = sessionID()
+      const active = id ? recordMap.get(id) : undefined
+      return attempt(() => accountUsageLines(usage(), usageNow(), SIDEBAR_ROW_WIDTH, known(), logins(), active), [] as AccountUsageLine[])
+    })
     insert(accountsBox, () => {
       const lines = accountLines()
       if (lines.length === 0) return null

@@ -13383,6 +13383,36 @@ merged PR head, on the merge commit `9f5c259` before the tag and on the release 
 publish confirmed by the `Publish package` step's tail and the version document's shasum (`e2cbd657`),
 with a GitHub Release.
 
+## Weekly and active-model usage in Accounts (2026-11-21)
+
+<a id="g323"></a>
+
+The operator asked for weekly and Fable usage beside the five-hour reading.
+`src/account-sidebar.ts` now shows a current `seven_day` reading even below
+75% used, plus a reported `seven_day_<family>` reading for the viewed session's
+last actual spawn, on that spawn's account only. `src/tui.ts` reads the existing
+spawn records; a model switch or account failover follows the recorded spawn,
+not the model opencode originally requested. No new usage source or store.
+Missing or expired weekly/model readings stay hidden; unknown utilization stays
+`ok`. Extra usage is not model-specific usage. The most pressing additional
+refused or nearly spent window remains visible, without duplicate rows.
+
+Live on OpenCode 2.3.2 in a fresh private TUI with the saved Fable session:
+`default · 5h 57% left · resets 15:00`, `7d 56% left · 11-24 23:00`, and
+`7d extra 23% left · 11-24 23:00`. The real store reported no Fable-specific
+window, so no Fable row appeared. Fable rendering is covered by synthetic
+readings in `test/account-sidebar.test.ts`, not claimed as live account data.
+The first trial clipped the extra-usage reset; detail rows now give up
+indentation before clipping the level or date, and a second private-config TUI
+showed the full date. `test/account-usage.test.ts` also pins the existing
+eight-window bound. The 72 focused tests, typecheck and build passed.
+
+The approved trial backed up global config as
+`opencode.json.bak-20261121T210730Z-usage`, then restored its published 0.75.0
+reference after the layout defect. The corrected trial used private config.
+Both private TUIs were closed; the original SSH TUI and background services
+were not stopped. Release approval does not authorize another OpenCode restart.
+
 ## Claude Code's own commands and skills in opencode (2026-11-19)
 
 h #g322. Reported by a colleague: their Claude Code skills, for example `/release` from the Appical

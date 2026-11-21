@@ -18,6 +18,7 @@ import { join } from "node:path"
 import {
   DEFAULT_USAGE_SWITCH_AT,
   DEFAULT_USAGE_WARN_THRESHOLDS,
+  MAX_USAGE_WINDOWS,
   UNTIMED_READING_TTL_MS,
   USAGE_READING_MAX_AGE_MS,
   _setAccountUsageStorePathForTests,
@@ -216,6 +217,18 @@ test("the file holds account names, window names, numbers and times, and nothing
     "utilization",
   ])
   assert.deepEqual(raw.accounts.appical.seven_day.noted, [50, 75, 90])
+})
+
+test("one observation retains all eight windows including Fable and bounds later additions", () => {
+  const names = ["five_hour", "seven_day", "seven_day_fable", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage", "other"]
+  const windows = Object.fromEntries(names.map((name) => [name, { utilization: 0.2, resetsAt: NOW + HOUR }]))
+  assert.equal(recordRateLimitObservation("default", { windows }, NOW), true)
+  const saved = snapshotAccountUsage(NOW).get("default")!
+  assert.equal(saved.size, MAX_USAGE_WINDOWS)
+  assert.deepEqual([...saved.keys()], names)
+  assert.equal(saved.get("seven_day_fable")?.utilization, 0.2)
+  recordUsageReading("default", "new_window", { utilization: 0.3, status: "allowed" }, NOW + 1)
+  assert.equal(snapshotAccountUsage(NOW + 1).get("default")!.size, MAX_USAGE_WINDOWS)
 })
 
 test("the accounts registered at startup sit beside the readings, are replaced on each registration, and ride a reading's write", () => {

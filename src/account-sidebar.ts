@@ -20,12 +20,12 @@
  * the one that moves turn by turn now that every event carries every window's
  * reading (`unifiedWindows`, h #g266). A five-hour reading whose reset has
  * passed describes a window that is over, so the account has all of a fresh
- * one: `5h 100% left`, with no reset time, until the next reading. Under it, a
- * SECOND line, set in under the level, names any other window that is refused
- * or at `WARNING_PERCENT` or more (`7d limited · resets 10-30 12:00`), because
- * a full five-hour window on an account whose week is spent is not room to
- * work in; while that other window is refused, the five-hour level is drawn
- * muted. An account with no five-hour reading at all (the interactive
+ * one: `5h 100% left`, with no reset time, until the next reading. Under it,
+ * current weekly and active-model readings are shown even below the warning
+ * level. The most pressing other window is kept when refused or nearly spent;
+ * while another window is refused, the five-hour level is drawn muted.
+ * Missing or expired weekly/model readings are hidden, never assumed fresh.
+ * An account with no five-hour reading at all (the interactive
  * transport records only a refusal) gets today's choice: a refused window
  * first, else the fullest. `ok` is a window the CLI reported without a
  * utilization, which is how a CLI without `unifiedWindows` reports
@@ -97,6 +97,7 @@ const SHORT_WINDOWS: Record<string, string> = {
   seven_day: "7d",
   seven_day_opus: "7d opus",
   seven_day_sonnet: "7d sonnet",
+  seven_day_fable: "Fable 7d",
   seven_day_overage_included: "7d extra",
   overage: "extra",
 }
@@ -294,32 +295,49 @@ function isSameDayReset(entry: WindowUsage, now: number): boolean {
   return entry.resetsAt !== undefined && sameDay(new Date(entry.resetsAt), new Date(now))
 }
 
-/** The drafts for one account: none, one, or a five-hour line with another window under it. */
+/** Match only a reported model-family window, never derive usage from the model's bill. */
+export function modelUsageWindow(model: string | undefined): string | undefined {
+  const family = model?.match(/^claude-([a-z]+)-/)?.[1]
+  return family ? `seven_day_${family}` : undefined
+}
+
+/** The account's primary reading, weekly/model readings, and any additional urgent window. */
 function accountDrafts(
   account: string,
   windows: ReadonlyMap<string, WindowUsage> | undefined,
   known: KnownAccounts,
   now: number,
   width: number,
+  modelWindow?: string,
 ): LineDraft[] {
   const name = truncate(account, Math.max(1, Math.floor(width / 2)))
   const fiveHour = windows?.get(FIVE_HOUR_WINDOW)
   const current = fiveHour && isReadingCurrent(fiveHour, now) ? fiveHour : undefined
-  // A five-hour window that is over is a fresh one, for an account this
-  // install runs; one only the old readings remember is not listed.
+  // Only the existing five-hour rollover rule assumes a fresh window.
   const rolled = fiveHour !== undefined && !current && known.has(account)
-  if (current || rolled) {
-    const other = windows ? pressingWindow(windows, now, FIVE_HOUR_WINDOW) : undefined
-    const otherState = other ? stateOf(other[1]) : "ok"
-    const drafts = [readingDraft(account, name, FIVE_HOUR_WINDOW, current, now, false, otherState === "limited")]
-    if (other && otherState !== "ok") {
-      const indent = " ".repeat(Math.min(MAX_DETAIL_INDENT, cells(name) + cells(SEPARATOR)))
-      drafts.push(readingDraft(account, indent, other[0], other[1], now, true))
+  const pressing = windows ? pressingWindow(windows, now) : undefined
+  const primary = current || rolled ? FIVE_HOUR_WINDOW : pressing?.[0]
+  if (primary) {
+    const other = windows ? pressingWindow(windows, now, primary) : undefined
+    const dimmed = primary === FIVE_HOUR_WINDOW && other?.[1].status === "rejected"
+    const drafts = [readingDraft(account, name, primary, primary === FIVE_HOUR_WINDOW ? current : pressing?.[1], now, false, dimmed)]
+    const shown = new Set([primary])
+    const indent = " ".repeat(Math.min(MAX_DETAIL_INDENT, cells(name) + cells(SEPARATOR)))
+    for (const window of ["seven_day", modelWindow, other && stateOf(other[1]) !== "ok" ? other[0] : undefined]) {
+      if (!window || shown.has(window)) continue
+      const entry = windows?.get(window)
+      if (!entry || !isReadingCurrent(entry, now)) continue
+      const preferredIndent = window === modelWindow ? 2 : cells(indent)
+      const resets = resetSpellings(entry, now)
+      const shortestReset = resets.at(-1)
+      const tailWidth = cells(levelText(window, entry)) + (shortestReset ? cells(SEPARATOR) + cells(shortestReset) : 0)
+      // Give up indentation before clipping the level or its reset date.
+      const detailIndent = " ".repeat(Math.min(preferredIndent, Math.max(2, width - tailWidth)))
+      drafts.push(readingDraft(account, detailIndent, window, entry, now, true))
+      shown.add(window)
     }
     return drafts
   }
-  const pressing = windows ? pressingWindow(windows, now) : undefined
-  if (pressing) return [readingDraft(account, name, pressing[0], pressing[1], now)]
   if (!known.has(account)) return []
   return [
     {
@@ -381,10 +399,14 @@ export function accountUsageLines(
   width: number = SIDEBAR_ROW_WIDTH,
   known: KnownAccounts = new Map(),
   logins: LoginExpiries = new Map(),
+  active?: { model?: string; account?: string },
 ): AccountUsageLine[] {
   const drafts: LineDraft[] = []
   const names = [...new Set([...usage.keys(), ...known.keys()])].sort()
-  for (const account of names) drafts.push(...accountDrafts(account, usage.get(account), known, now, width))
+  for (const account of names) {
+    const modelWindow = active && account === (active.account ?? "default") ? modelUsageWindow(active.model) : undefined
+    drafts.push(...accountDrafts(account, usage.get(account), known, now, width, modelWindow))
+  }
   const budget = (draft: LineDraft) => Math.max(0, width - cells(draft.name))
   // The reset's spelling is decided over the lines that have one; a line with
   // no reading has nothing to spell and does not move the column.
