@@ -103,8 +103,16 @@ test("a CLI that goes silent after content says so, and the stream closes", asyn
     (part) => part.type === "text-delta" && part.delta.includes(STREAM_TIMEOUT_MARKER),
   )
   assert.equal(notes.length, 1, "exactly one stream-timeout note")
-  assert.match(notes[0].delta, /went silent for 1s/)
+  assert.match(notes[0].delta, /stayed silent for 1s/)
   assert.match(notes[0].delta, /closed without a result/)
+  assert.match(notes[0].delta, /may be incomplete/)
+
+  // A CLI that is still running did not crash, and the error says so rather
+  // than borrowing the crash text (h #g323).
+  const errors = parts.filter((part) => part.type === "error")
+  assert.equal(errors.length, 1)
+  assert.match(String(errors[0].error?.message), /went silent for 1s/)
+  assert.doesNotMatch(String(errors[0].error?.message), /closed its output/)
 
   // Its own text part, which is what makes the transcript strip exact.
   const noteIndex = parts.indexOf(notes[0])

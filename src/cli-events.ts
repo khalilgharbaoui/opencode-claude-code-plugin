@@ -1079,17 +1079,114 @@ export function formatCompactionFailure(
 export const STREAM_TIMEOUT_MARKER = "▌ **stream timeout:**"
 
 /**
+ * Where the CLI's current API call stood when the inactivity watchdog fired,
+ * read off the stream rather than guessed (h #g323). Measured on 2.1.322
+ * against a local API: a `system`/`status` frame with `status: "requesting"`
+ * reaches stdout about 4 ms before every request, and `message_start` arrives
+ * when the answer starts; a `message_delta` carries the call's `stop_reason`
+ * before the closing `message_stop`.
+ *
+ * - `no-answer`: a request went out and nothing came back, not even
+ *   `message_start`. What a dead network looks like (2026-11-19).
+ * - `complete`: the call's `stop_reason` said the reply was finished
+ *   (`end_turn` or `stop_sequence`) and only the end of the stream never
+ *   arrived. Interrupted there, Claude Code itself reports a `success` result.
+ * - `mid-reply`: anything else, a reply that stopped partway or a turn that
+ *   went quiet between calls.
+ */
+export type StreamTimeoutPhase = "no-answer" | "complete" | "mid-reply"
+
+const COMPLETE_STOP_REASONS = new Set(["end_turn", "stop_sequence"])
+
+export function streamTimeoutPhase(stream: {
+  requestAwaitingReply: boolean
+  replyStopReason: string | null
+}): StreamTimeoutPhase {
+  if (stream.requestAwaitingReply) return "no-answer"
+  if (stream.replyStopReason && COMPLETE_STOP_REASONS.has(stream.replyStopReason)) return "complete"
+  return "mid-reply"
+}
+
+function wholeSeconds(ms: number): number {
+  return Math.max(1, Math.round(ms / 1000))
+}
+
+/**
  * The inactivity watchdog in `doStream` closes a turn whose CLI produced
  * output and then stopped talking without sending a `result`. That decision
  * was log-only, so the operator saw a reply that simply stopped mid-thought
- * with nothing saying why. This is the note that says it.
+ * with nothing saying why. This is the note that says it, worded from what
+ * actually arrived: until h #g323 it said "may be incomplete" even when the
+ * reply had finished (6 of 38 closes in h #g320), and called a request that
+ * never got an answer "output and then silent".
  */
-export function formatStreamTimeoutNote(silenceMs: number): string {
-  const seconds = Math.max(1, Math.round(silenceMs / 1000))
+export function formatStreamTimeoutNote(
+  silenceMs: number,
+  phase: StreamTimeoutPhase = "mid-reply",
+  resent = false,
+): string {
+  const seconds = wholeSeconds(silenceMs)
+  if (phase === "no-answer") {
+    return (
+      `\n${STREAM_TIMEOUT_MARKER} Claude Code sent a request to the Anthropic API and got ` +
+      `no answer for ${seconds}s, so the turn was closed. ` +
+      (resent ? "The request had already been sent a second time, and that went unanswered too. " : "") +
+      "Nothing after the last finished step above was generated.\n"
+    )
+  }
+  if (phase === "complete") {
+    return (
+      `\n${STREAM_TIMEOUT_MARKER} Claude's reply above had finished, but the end of the ` +
+      `stream never arrived, so after ${seconds}s of silence the turn was closed. ` +
+      "Nothing is missing from the reply.\n"
+    )
+  }
   return (
-    `\n${STREAM_TIMEOUT_MARKER} The Claude Code CLI produced output and then went ` +
-    `silent for ${seconds}s without finishing the turn, so it was closed without a ` +
-    "result. The answer above may be incomplete.\n"
+    `\n${STREAM_TIMEOUT_MARKER} Claude Code stopped sending output partway through this ` +
+    `turn and stayed silent for ${seconds}s without finishing it, so it was closed ` +
+    "without a result. The answer above may be incomplete.\n"
+  )
+}
+
+/**
+ * The error a turn the watchdog closed ends on, in place of the CLI crash
+ * text it used to borrow (`describeChildCrash`): the close went through the
+ * crash handler, so a request the network swallowed read as "The Claude Code
+ * CLI closed its output before finishing this turn" (2026-11-19, h #g323).
+ * Null for a reply that had finished, which ends as an ordinary stop.
+ */
+export function describeWatchdogClose(
+  silenceMs: number,
+  phase: StreamTimeoutPhase,
+  resent = false,
+): string | null {
+  const seconds = wholeSeconds(silenceMs)
+  if (phase === "complete") return null
+  if (phase === "no-answer") {
+    return (
+      `Claude Code waited ${seconds}s for an answer from the Anthropic API that never came` +
+      (resent ? " (the request was sent twice)" : "") +
+      ", so the turn was closed. The Claude Code CLI did not crash: the API request got no response."
+    )
+  }
+  return (
+    `Claude Code went silent for ${seconds}s partway through this turn, so it was closed ` +
+    "without a result. The Claude Code CLI did not crash."
+  )
+}
+
+export const REQUEST_RESENT_MARKER = "▌ **request resent:**"
+
+/**
+ * Said once, where the turn picks up again, when the watchdog interrupted a
+ * request that got no answer and asked the same Claude Code process to go on
+ * (h #g323). Without it the reply resumes after a long pause with nothing
+ * saying why, and Claude may refer to an interruption the operator never made.
+ */
+export function formatRequestResentNote(silenceMs: number): string {
+  return (
+    `\n${REQUEST_RESENT_MARKER} Claude Code's request to the Anthropic API got no answer ` +
+    `for ${wholeSeconds(silenceMs)}s, so it was cancelled and sent once more.\n`
   )
 }
 
