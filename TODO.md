@@ -79,13 +79,13 @@
   `claude-code` provider as a `session.generate` (h #g299) or a turn, and whether the plugin should
   stop registering its own on 2.3+ or keep it.
 
-- 2026-11-16, from the h #g320 diagnosis, not started: (1) re-count `▌ **stream timeout:**` closes
-  around 2026-11-23 to confirm v0.73.4's sleep fix took most of them away; (2) dead streams (final
-  block delivered and no `message_stop`, or a stream that stalls with no error) are revived by no
-  window length; the only candidate is interrupting and resending once on the same process, which
-  needs a guard so a slow but alive stream is not billed twice, a design change; (3) the note says
-  "may be incomplete" even when the final block had already streamed (6 of 38 closes): word it from
-  what arrived, for example when the last message reached `end_turn`.
+- 2026-11-16, from the h #g320 diagnosis: (1) not started: re-count `▌ **stream timeout:**` closes
+  around 2026-11-23 to confirm v0.73.4's sleep fix took most of them away; (2) partly done in h #g323
+  (PR [#197](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/197)): a request that
+  got no answer at all is interrupted and resent once on the same process; a stream that started and
+  then stalled is still only closed, on purpose, because resending it could bill its output twice
+  (Claude Code itself resends one after 300 s of idle); (3) done in h #g323: the note is worded from
+  what arrived, and a reply whose `end_turn` arrived ends as a stop.
 
 - 2026-11-14, found while fixing h #g312, not fixed (not in that PR's scope): dcp's `compact`
   message reference (`\n@1044@`) is not stripped in two places that strip its XML form.
@@ -237,16 +237,20 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-- 2026-11-19: a subagent (ses_e0d42a176ffe..., webapp, reported over WalkyTalky wt_v5vl5nq0c9o7) died twice
-  with "The Claude Code CLI closed its output before finishing this turn". Measured: both times Claude Code had
-  sent an API request (07:44:46 and 08:47:51 UTC) and got no answer; the 90 s watchdog closed the turn. The
-  network was failing (another session logged `Unable to connect to API (EPROTO)` at 07:46:26). Two items:
-  1. The watchdog close goes through the crash handler, so the turn also reports a CLI crash that did not
-     happen. Word it as what it is (no answer from the API for 90 s) and keep the crash text for real exits.
-  2. The dead-stream follow-up of h #g320 (interrupt and resend once on the same process) would have saved
-     both; a subagent has nobody to press continue.
+Nothing in progress.
 
 ## Done
+
+- 2026-11-22: **done** (PR [#197](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/197), h #g323, not yet merged or released): the inactivity watchdog says what happened and resends a request the API never answered. A closing fire is no longer reported as a CLI crash: its note and error say no answer came from the API, the reply had finished (the turn then ends as a stop), or it stopped partway. A request that got no answer at all (Claude Code's `requesting` frame with no `message_start` after it) is interrupted and sent once more on the same process, marked by a `▌ **request resent:**` note; a reply that had started is never resent. Measured on Claude Code 2.1.322 against a fake API and live through the plugin with the real CLI.
+  Original entry:
+  - 2026-11-19: a subagent (ses_e0d42a176ffe..., webapp, reported over WalkyTalky wt_v5vl5nq0c9o7) died twice
+    with "The Claude Code CLI closed its output before finishing this turn". Measured: both times Claude Code had
+    sent an API request (07:44:46 and 08:47:51 UTC) and got no answer; the 90 s watchdog closed the turn. The
+    network was failing (another session logged `Unable to connect to API (EPROTO)` at 07:46:26). Two items:
+    1. The watchdog close goes through the crash handler, so the turn also reports a CLI crash that did not
+       happen. Word it as what it is (no answer from the API for 90 s) and keep the crash text for real exits.
+    2. The dead-stream follow-up of h #g320 (interrupt and resend once on the same process) would have saved
+       both; a subagent has nobody to press continue.
 
 - 2026-11-19: **done** (v0.75.0, PR [#195](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/195), h #g322): Claude Code's own commands and skills in opencode. Reported by a colleague: `/release` from the Claude Code plugin `appical-core` "does not exist" in opencode. Now the `/` menu lists the CLI's own commands (a free `initialize` probe with hooks off, kept in `claude-commands.json`), short names when unique, never a Claude Code built-in or a name opencode has; a typed short name is sent as the one plugin command it names, and listed commands go out unstamped from the first message. `claudeCommands: false` turns it off. Live on opencode 2.3.2 and 1.19.4 with Claude Code 2.1.322.
 
