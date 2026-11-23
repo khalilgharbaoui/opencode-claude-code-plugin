@@ -11,9 +11,11 @@ import {
 } from "./cli-events.js"
 import { userEnvelope } from "./user-envelope.js"
 import { effectiveSpawnMcpTimeoutMs } from "./cli-version.js"
+import { frozenContextUsage, recordContextReading } from "./context-reading.js"
 import {
   deleteActiveProcess,
   deleteClaudeSessionId,
+  getClaudeSessionId,
   interruptTurn,
   noteTurnStarted,
   respawnActiveProcess,
@@ -639,6 +641,25 @@ export function enqueueProxyToolCall(
   } as any)
 }
 
+/**
+ * The usage of a finish that may come before the turn's `result`. With a
+ * result it is the last call's context, which the next turn's steps then
+ * repeat; without one (the usual mid-turn boundary, the CLI parked in a
+ * proxied call) it is the reading the conversation's previous turn ended on,
+ * never the live context (h #g225).
+ */
+function stepUsage(state: TurnState) {
+  const claudeSessionId = getClaudeSessionId(state.sessionKey)
+  if (!state.resultMeta.usage) {
+    return state.toUsage(frozenContextUsage(state.sessionKey, claudeSessionId))
+  }
+  const context = lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)
+  if (!state.resultFailure && state.lastCallUsage) {
+    recordContextReading(state.sessionKey, claudeSessionId, context)
+  }
+  return state.toUsage(context)
+}
+
 export function finishWithToolCalls(
   state: TurnState,
   calls: PendingProxyCall[],
@@ -678,8 +699,7 @@ export function finishWithToolCalls(
   state.controller.enqueue({
     type: "finish",
     finishReason: state.toFinishReason("tool-calls"),
-    // No result yet (the usual mid-turn boundary) still reports nothing.
-    usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
+    usage: stepUsage(state),
     providerMetadata: {
       "claude-code": state.resultMeta,
     },
@@ -720,7 +740,7 @@ export function finishWithQuestionCall(
   state.controller.enqueue({
     type: "finish",
     finishReason: state.toFinishReason("tool-calls"),
-    usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
+    usage: stepUsage(state),
     providerMetadata: {
       "claude-code": state.resultMeta,
     },
@@ -745,7 +765,7 @@ export function finishAwaitingPlanApproval(state: TurnState): void {
   state.controller.enqueue({
     type: "finish",
     finishReason: state.toFinishReason("stop"),
-    usage: state.toUsage(lastCallContextUsage(state.lastCallUsage, state.resultMeta.usage)),
+    usage: stepUsage(state),
     providerMetadata: {
       "claude-code": state.resultMeta,
     },

@@ -345,6 +345,7 @@ import {
   toFinishReason,
   toUsage,
 } from "./usage.js"
+import { forgetContextReadings, recordContextReading } from "./context-reading.js"
 import {
   claimDispatchChoice,
   consumeSubagentDispatchAnswer,
@@ -4949,7 +4950,15 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           // opencode reads this usage as the context the conversation
           // occupies, and `msg.usage` is summed over every call of the turn.
-          const usage = toUsage(lastCallContextUsage(state.lastCallUsage, msg.usage))
+          const context = lastCallContextUsage(state.lastCallUsage, msg.usage)
+          const usage = toUsage(context)
+          // The steps of the next turn repeat this reading until its own
+          // `result` (`context-reading.ts`); a compaction starts opencode's
+          // measuring over, so it drops the session's readings instead.
+          if (compactionMode) forgetContextReadings(affinity)
+          else if (!state.resultFailure && state.lastCallUsage) {
+            recordContextReading(sk, getClaudeSessionId(sk), context)
+          }
           controller.enqueue({
             type: "finish",
             finishReason: state.resultFailure
