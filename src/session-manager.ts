@@ -143,6 +143,12 @@ export interface ActiveProcess {
     call: PendingProxyCall
     result: ProxyToolResult
     recoveryRequired: boolean
+    /**
+     * A main-thread API message started after this result was handed over.
+     * Half of the proof that the CLI used it; `noteProxyResultsAnswered`
+     * (src/turn-controller.ts) holds the other half and the reasoning.
+     */
+    answerStarted?: boolean
   }>
   /**
    * stdout lines the child emitted while no turn had a line listener
