@@ -13592,3 +13592,8 @@ goes unanswered too closing as `no-answer` with no crash text and no second rese
 started never resent; a finished reply ending as a stop; a real exit still reporting the crash).
 `test/result-fallback.test.ts` now asserts the new wording and that its error is not the crash
 text. With the resend and the `watchdogClose` read switched off, five of them fail.
+
+Shipped as v0.76.0 on 2026-11-23 (PR #197), a minor release: CI green on Linux and Windows on the
+PR head, on the merge commit `57d572e` before the tag and on the release commit `369b389`, the
+publish confirmed by the `Publish package` step's tail and the version document's shasum (`1250b91e`),
+with a GitHub Release.
