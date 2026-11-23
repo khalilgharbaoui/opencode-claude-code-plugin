@@ -1,7 +1,9 @@
 /**
  * The sidebar's `Accounts` lines (`src/account-sidebar.ts`, h #g244, h #g248,
- * h #g266): what is left of each account's five-hour window, the second line a
- * refused or nearly spent weekly window adds under it, how each reads, which
+ * h #g266): what is left of each account's five-hour window, the detail lines
+ * under it (the weekly window at any level, the weekly window of the model the
+ * viewed session last spawned, and the most pressing other window, h #g326),
+ * how each reads, which
  * colour each piece takes, that every account registered at startup is listed
  * from the first draw, that an account the store knows nothing about is
  * not, and the login line an account whose claude.ai login is about to end
@@ -272,7 +274,7 @@ test("a registered account whose only window has reset reads `no reading yet` ag
   assert.deepEqual(mixed.map(lineText), ["appical · 5h 28% left · 10-18 01:20", "workstation · no reading yet"])
 })
 
-test("a weekly window at 75% used or more gets a second line, set in under the level", () => {
+test("a weekly window gets a second line even below 75% used", () => {
   const lines = accountUsageLines(
     usage({
       appical: {
@@ -292,12 +294,86 @@ test("a weekly window at 75% used or more gets a second line, set in under the l
   )
   assert.equal(roleOf(lines[0], "5h 70% left"), "ok", "a weekly warning does not dim the five-hour level")
   assert.equal(roleOf(lines[1], "7d 19% left"), "effort")
-  // Under the warning level the weekly window adds nothing.
+  // Weekly headroom stays visible below the warning level too.
   const calm = accountUsageLines(
     usage({ appical: { five_hour: reading({ utilization: 0.3 }), seven_day: reading({ utilization: 0.5 }) } }),
     NOW,
   )
-  assert.deepEqual(calm.map(lineText), ["appical · 5h 70% left · resets 18:00"])
+  assert.deepEqual(calm.map(lineText), ["appical · 5h 70% left · resets 18:00", "          7d 50% left · resets 18:00"])
+})
+
+test("the weekly window and the active model's weekly window keep separate reset dates within the sidebar width", () => {
+  const data = usage({ default: {
+    five_hour: reading({ utilization: 0.1 }),
+    seven_day: reading({ utilization: 0.4, resetsAt: OCT_21 }),
+    seven_day_opus: reading({ utilization: 0.2, resetsAt: TOMORROW }),
+    seven_day_sonnet: reading({ utilization: 0.3 }),
+  } })
+  const render = (model?: string) => accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model })
+  const lines = render("claude-opus-5-5")
+  assert.deepEqual(lines.map(lineText), [
+    "default · 5h 90% left · resets 18:00",
+    "          7d 60% left · 10-21 12:00",
+    "      7d opus 80% left · 10-18 01:20",
+  ])
+  assert.ok(lines.every((line) => Array.from(lineText(line)).length <= SIDEBAR_ROW_WIDTH))
+  assert.equal(roleOf(lines[2], "7d opus 80% left"), "ok")
+  // A fast twin is the same family.
+  assert.deepEqual(render("claude-opus-5-5-fast").map((line) => line.window), ["five_hour", "seven_day", "seven_day_opus"])
+  assert.deepEqual(render("claude-sonnet-5-5").map((line) => line.window), ["five_hour", "seven_day", "seven_day_sonnet"])
+  // A family Claude Code reports no weekly window for (2.1.322: Fable, Haiku) adds nothing.
+  assert.deepEqual(render("claude-fable-5-2").map((line) => line.window), ["five_hour", "seven_day"])
+  assert.deepEqual(render("claude-haiku-5-5").map((line) => line.window), ["five_hour", "seven_day"])
+})
+
+test("missing, expired and unknown model readings do not become invented headroom", () => {
+  const data = usage({ default: {
+    five_hour: reading(),
+    seven_day: reading({ resetsAt: NOW }),
+    seven_day_opus: reading({ resetsAt: NOW - 1 }),
+    seven_day_overage_included: reading({ utilization: 0.4 }),
+  } })
+  const render = (model?: string) => accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model })
+  assert.deepEqual(render("claude-opus-5-5").map((line) => line.window), ["five_hour"])
+  assert.deepEqual(render("unknown").map((line) => line.window), ["five_hour"])
+  data.get("default")!.set("seven_day_opus", reading({ utilization: null }))
+  assert.ok(render("claude-opus-5-5").some((line) => lineText(line).includes("7d opus ok")))
+})
+
+test("active model usage belongs only to its spawned account and windows are not duplicated", () => {
+  const windows = { five_hour: reading(), seven_day_opus: reading({ utilization: 0.1 }) }
+  const lines = accountUsageLines(usage({ default: windows, work: windows }), NOW, 36, new Map(), new Map(), {
+    model: "claude-opus-5-5@work", account: "work",
+  })
+  assert.deepEqual(lines.filter((line) => line.window === "seven_day_opus").map((line) => line.account), ["work"])
+  const onlyModel = accountUsageLines(usage({ work: { seven_day_opus: reading() } }), NOW, 36, new Map(), new Map(), {
+    model: "claude-opus-5-5", account: "work",
+  })
+  assert.equal(onlyModel.length, 1)
+})
+
+test("a refused model window stays visible and dims five-hour headroom", () => {
+  const lines = accountUsageLines(usage({ default: {
+    five_hour: reading(), seven_day: reading({ utilization: 0.1 }),
+    seven_day_opus: reading({ status: "rejected", utilization: 1 }),
+  } }), NOW, 36, new Map(), new Map(), { model: "claude-opus-5-5" })
+  assert.deepEqual(lines.map((line) => line.window), ["five_hour", "seven_day", "seven_day_opus"])
+  assert.equal(roleOf(lines[0], "5h 28% left"), "muted")
+  assert.equal(lines[2].state, "limited")
+})
+
+test("extra-usage reset keeps its full date beside the newly visible weekly row", () => {
+  const lines = accountUsageLines(usage({ default: {
+    five_hour: reading({ utilization: 0.43 }),
+    seven_day: reading({ utilization: 0.44, resetsAt: OCT_21 }),
+    seven_day_overage_included: reading({ utilization: 0.77, resetsAt: OCT_21 }),
+  } }), NOW)
+  assert.deepEqual(lines.map(lineText), [
+    "default · 5h 57% left · resets 18:00",
+    "          7d 56% left · 10-21 12:00",
+    "     7d extra 23% left · 10-21 12:00",
+  ])
+  assert.ok(lines.every((line) => !lineText(line).includes("…")))
 })
 
 test("a refused weekly window mutes the five-hour level, which is no room to work in", () => {
@@ -381,8 +457,8 @@ test("no line runs past the sidebar's width, a long name's detail line included"
   )
   assert.equal(lines.length, 2)
   for (const line of lines) assert.ok(Array.from(lineText(line)).length <= 24, lineText(line))
-  // Set in at most twelve cells, so the detail keeps room for its level.
-  assert.match(lineText(lines[1]), /^ {12}7d extra/)
+  // Give up indentation before clipping the detail's level.
+  assert.match(lineText(lines[1]), /^ {2}7d extra limited/)
 })
 
 // ---------------------------------------------------------------------------

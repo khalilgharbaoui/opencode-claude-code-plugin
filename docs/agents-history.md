@@ -13725,3 +13725,68 @@ PR merged with master and renumbered from h #g324 (taken meanwhile by #196) to h
 Windows on the PR head, on the merge commit `24d50ed` before the tag and on the release commit `83a0047`, the
 publish confirmed by the `Publish package` step's tail and the version document's shasum (`13e3cf97`), with a
 GitHub Release.
+
+## The Accounts lines always show the weekly window (2026-11-24)
+
+h #g326. Built by Joe Callea (@jcalleacreative) on their fork, for their own use (`feat/usage-windows`,
+commit `aaf6a33`, 2026-11-21): they wanted the weekly usage, and the usage of the model they were
+running, beside the five-hour reading. The maintainer took it on 2026-11-24, cherry-picked with Joe's
+authorship kept, choosing "Take it without the Fable label". By that choice it reverses the rule of
+h #g248 and h #g266 that an account gets a second line only for a window refused or at 75% used or
+more. Its sibling `e9f1c92` (a fork-only version bump) was not taken.
+
+**What changed** (`src/account-sidebar.ts`, `src/tui.ts`): under each account's first line, one detail
+line per window: the weekly window (`seven_day`, drawn `7d`) whenever its reading is current, at any
+level; the weekly window of the model the viewed session last really spawned (`modelUsageWindow`:
+`claude-<family>-...` to `seven_day_<family>`), read off the spawn record (h #g234) so a model switch or
+a failover follows what ran rather than what opencode asked for, on that spawn's account only; and, as
+before, the most pressing other window when it is refused or nearly spent. No window is listed twice. A
+missing or expired weekly or model reading is hidden, never assumed fresh and never derived from a bill,
+and a reading without a utilization stays `ok`. A detail line gives up its indentation, down to two
+cells, before its level or reset date is clipped. An account with no five-hour reading takes the most
+pressing window as its first line, with the same detail lines under it. No new usage source or store.
+
+**Why the Fable label was dropped.** Joe's commit drew `seven_day_fable` as `Fable 7d`. Claude Code
+2.1.322 names no such window: `rg -a -o 'seven_day_[a-z_]+'` over its binary finds `seven_day_opus`,
+`seven_day_sonnet`, `seven_day_cowork`, `seven_day_oauth_apps`, `seven_day_omelette` and
+`seven_day_overage_included`, and nothing for Fable or Haiku, and Joe's own live run saw no Fable line
+either. A label for a window nothing reports describes a reading that cannot exist, so it went, and
+`modelUsageWindow` stays generic: an Opus spawn draws `7d opus`, a Sonnet one `7d sonnet`, a Fable or
+Haiku one nothing. The tests that used a synthetic Fable window use `seven_day_opus` with
+`claude-opus-5-5` now, plus Fable and Haiku spawns that add no line, and the eight-window bound uses
+`seven_day_cowork`. With the label gone, the model line's hanging two-cell indent, which had set
+`Fable 7d` apart, went too: it is set in like every other detail line and gives up indentation by the
+same rule.
+
+**Joe's measurements** (opencode 2.3.2, a fresh private TUI on his account): `default · 5h 57% left ·
+resets 15:00`, `7d 56% left · 11-24 23:00` and `7d extra 23% left · 11-24 23:00`; the store held no
+Fable window, so no Fable line appeared. His first trial clipped the extra-usage reset; detail lines
+then gave up indentation before clipping the level or date, and a second private TUI showed the full
+date. 72 focused tests, typecheck and build passed.
+
+**The maintainer's check** (2026-11-24, opencode 2.4.0, which had replaced 2.3.2 on this Mac, and Claude
+Code 2.1.322), by h #g307's method: a scratch `--standalone` TUI in its own tmux socket, every XDG dir and
+`TMPDIR` under the lane's temp dir, the plugin from the worktree's `dist`, 210 columns, the operator's
+`account-usage.json` copied in, no `accounts` configured. During the first turn, on
+`claude-code/claude-opus-5-5`, verbatim:
+
+```
+Accounts
+appical · 5h 27% left · resets 01:20
+          7d 31% left · resets 23:00
+          7d extra 23% left · 23:00
+default · 5h 57% left · resets 03:40
+          7d 73% left · 11-25 13:00
+          login ends by 11-30 15:43
+```
+
+After it `default` read `5h 56% left`, the spawn record named `claude-opus-5-5` and `build`, and the
+turn's own readings held `five_hour`, `seven_day` and `seven_day_overage_included` for both accounts and
+no `seven_day_opus`, so live data draws no model line on either account. With one `seven_day_opus`
+reading planted in the scratch store only (20% used, the weekly reset), the next refresh drew
+`      7d opus 80% left · 11-25 13:00` under `default`'s `7d` line and nothing under `appical`'s, set in
+six cells rather than ten so the date stayed whole. So the model line is wired end to end, and it stays
+dormant until Claude Code reports a per-model weekly window for the account. Not run live: opencode 1.x
+and the interactive transport (which records no readings but a refusal). PR #198, not yet merged or
+released.
+`test/account-sidebar.test.ts`, `test/account-usage.test.ts`.
