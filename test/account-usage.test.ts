@@ -219,14 +219,15 @@ test("the file holds account names, window names, numbers and times, and nothing
   assert.deepEqual(raw.accounts.appical.seven_day.noted, [50, 75, 90])
 })
 
-test("one observation retains all eight windows including Fable and bounds later additions", () => {
-  const names = ["five_hour", "seven_day", "seven_day_fable", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage", "other"]
+test("one observation retains all eight windows and bounds later additions", () => {
+  // Window names Claude Code 2.1.322 reports, plus two more to reach the bound.
+  const names = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_cowork", "seven_day_overage_included", "overage", "other"]
   const windows = Object.fromEntries(names.map((name) => [name, { utilization: 0.2, resetsAt: NOW + HOUR }]))
   assert.equal(recordRateLimitObservation("default", { windows }, NOW), true)
   const saved = snapshotAccountUsage(NOW).get("default")!
   assert.equal(saved.size, MAX_USAGE_WINDOWS)
   assert.deepEqual([...saved.keys()], names)
-  assert.equal(saved.get("seven_day_fable")?.utilization, 0.2)
+  assert.equal(saved.get("seven_day_opus")?.utilization, 0.2)
   recordUsageReading("default", "new_window", { utilization: 0.3, status: "allowed" }, NOW + 1)
   assert.equal(snapshotAccountUsage(NOW + 1).get("default")!.size, MAX_USAGE_WINDOWS)
 })

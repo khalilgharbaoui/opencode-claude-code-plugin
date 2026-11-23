@@ -1,7 +1,9 @@
 /**
  * The sidebar's `Accounts` lines (`src/account-sidebar.ts`, h #g244, h #g248,
- * h #g266): what is left of each account's five-hour window, the second line a
- * refused or nearly spent weekly window adds under it, how each reads, which
+ * h #g266): what is left of each account's five-hour window, the detail lines
+ * under it (the weekly window at any level, the weekly window of the model the
+ * viewed session last spawned, and the most pressing other window, h #g326),
+ * how each reads, which
  * colour each piece takes, that every account registered at startup is listed
  * from the first draw, that an account the store knows nothing about is
  * not, and the login line an account whose claude.ai login is about to end
@@ -300,47 +302,52 @@ test("a weekly window gets a second line even below 75% used", () => {
   assert.deepEqual(calm.map(lineText), ["appical · 5h 70% left · resets 18:00", "          7d 50% left · resets 18:00"])
 })
 
-test("weekly and active Fable usage retain separate reset dates within the sidebar width", () => {
+test("the weekly window and the active model's weekly window keep separate reset dates within the sidebar width", () => {
   const data = usage({ default: {
     five_hour: reading({ utilization: 0.1 }),
     seven_day: reading({ utilization: 0.4, resetsAt: OCT_21 }),
-    seven_day_fable: reading({ utilization: 0.2, resetsAt: TOMORROW }),
-    seven_day_opus: reading({ utilization: 0.3 }),
+    seven_day_opus: reading({ utilization: 0.2, resetsAt: TOMORROW }),
+    seven_day_sonnet: reading({ utilization: 0.3 }),
   } })
-  const lines = accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model: "claude-fable-5-2-fast" })
+  const render = (model?: string) => accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model })
+  const lines = render("claude-opus-5-5")
   assert.deepEqual(lines.map(lineText), [
     "default · 5h 90% left · resets 18:00",
     "          7d 60% left · 10-21 12:00",
-    "  Fable 7d 80% left · 10-18 01:20",
+    "      7d opus 80% left · 10-18 01:20",
   ])
   assert.ok(lines.every((line) => Array.from(lineText(line)).length <= SIDEBAR_ROW_WIDTH))
-  assert.equal(roleOf(lines[2], "Fable 7d 80% left"), "ok")
-  const switched = accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model: "claude-opus-5-5" })
-  assert.deepEqual(switched.map((line) => line.window), ["five_hour", "seven_day", "seven_day_opus"])
+  assert.equal(roleOf(lines[2], "7d opus 80% left"), "ok")
+  // A fast twin is the same family.
+  assert.deepEqual(render("claude-opus-5-5-fast").map((line) => line.window), ["five_hour", "seven_day", "seven_day_opus"])
+  assert.deepEqual(render("claude-sonnet-5-5").map((line) => line.window), ["five_hour", "seven_day", "seven_day_sonnet"])
+  // A family Claude Code reports no weekly window for (2.1.322: Fable, Haiku) adds nothing.
+  assert.deepEqual(render("claude-fable-5-2").map((line) => line.window), ["five_hour", "seven_day"])
+  assert.deepEqual(render("claude-haiku-5-5").map((line) => line.window), ["five_hour", "seven_day"])
 })
 
 test("missing, expired and unknown model readings do not become invented headroom", () => {
   const data = usage({ default: {
     five_hour: reading(),
     seven_day: reading({ resetsAt: NOW }),
-    seven_day_fable: reading({ resetsAt: NOW - 1 }),
+    seven_day_opus: reading({ resetsAt: NOW - 1 }),
     seven_day_overage_included: reading({ utilization: 0.4 }),
   } })
   const render = (model?: string) => accountUsageLines(data, NOW, SIDEBAR_ROW_WIDTH, new Map(), new Map(), { model })
-  assert.deepEqual(render("claude-fable-5-2").map((line) => line.window), ["five_hour"])
+  assert.deepEqual(render("claude-opus-5-5").map((line) => line.window), ["five_hour"])
   assert.deepEqual(render("unknown").map((line) => line.window), ["five_hour"])
-  data.get("default")!.set("seven_day_fable", reading({ utilization: null }))
-  assert.ok(render("claude-fable-5-2").some((line) => lineText(line).includes("Fable 7d ok")))
+  data.get("default")!.set("seven_day_opus", reading({ utilization: null }))
+  assert.ok(render("claude-opus-5-5").some((line) => lineText(line).includes("7d opus ok")))
 })
 
 test("active model usage belongs only to its spawned account and windows are not duplicated", () => {
-  const windows = { five_hour: reading(), seven_day_fable: reading({ utilization: 0.1 }) }
+  const windows = { five_hour: reading(), seven_day_opus: reading({ utilization: 0.1 }) }
   const lines = accountUsageLines(usage({ default: windows, work: windows }), NOW, 36, new Map(), new Map(), {
-    model: "claude-fable-5-2@work", account: "work",
+    model: "claude-opus-5-5@work", account: "work",
   })
-  assert.deepEqual(lines.filter((line) => line.window === "seven_day_fable").map((line) => line.account), ["work"])
-  const onlyModel = accountUsageLines(usage({ work: { seven_day_fable: reading() } }), NOW, 36, new Map(), new Map(), {
-    model: "claude-fable-5-2", account: "work",
+  assert.deepEqual(lines.filter((line) => line.window === "seven_day_opus").map((line) => line.account), ["work"])
+  const onlyModel = accountUsageLines(usage({ work: { seven_day_opus: reading() } }), NOW, 36, new Map(), new Map(), {
+    model: "claude-opus-5-5", account: "work",
   })
   assert.equal(onlyModel.length, 1)
 })
@@ -348,9 +355,9 @@ test("active model usage belongs only to its spawned account and windows are not
 test("a refused model window stays visible and dims five-hour headroom", () => {
   const lines = accountUsageLines(usage({ default: {
     five_hour: reading(), seven_day: reading({ utilization: 0.1 }),
-    seven_day_fable: reading({ status: "rejected", utilization: 1 }),
-  } }), NOW, 36, new Map(), new Map(), { model: "claude-fable-5-2" })
-  assert.deepEqual(lines.map((line) => line.window), ["five_hour", "seven_day", "seven_day_fable"])
+    seven_day_opus: reading({ status: "rejected", utilization: 1 }),
+  } }), NOW, 36, new Map(), new Map(), { model: "claude-opus-5-5" })
+  assert.deepEqual(lines.map((line) => line.window), ["five_hour", "seven_day", "seven_day_opus"])
   assert.equal(roleOf(lines[0], "5h 28% left"), "muted")
   assert.equal(lines[2].state, "limited")
 })

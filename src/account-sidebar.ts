@@ -21,13 +21,17 @@
  * reading (`unifiedWindows`, h #g266). A five-hour reading whose reset has
  * passed describes a window that is over, so the account has all of a fresh
  * one: `5h 100% left`, with no reset time, until the next reading. Under it,
- * current weekly and active-model readings are shown even below the warning
- * level. The most pressing other window is kept when refused or nearly spent;
- * while another window is refused, the five-hour level is drawn muted.
- * Missing or expired weekly/model readings are hidden, never assumed fresh.
- * An account with no five-hour reading at all (the interactive
- * transport records only a refusal) gets today's choice: a refused window
- * first, else the fullest. `ok` is a window the CLI reported without a
+ * one detail line per window (h #g326): the weekly window (`7d`) whenever its
+ * reading is current, at any level; the weekly window of the model the viewed
+ * session last really spawned (`7d opus` for `claude-opus-5-5`, read off the
+ * spawn record), on that spawn's account only; and the most pressing other
+ * window when it is refused or nearly spent. No window is listed twice, and a
+ * detail line gives up its indentation before its level or reset is clipped.
+ * While another window is refused, the five-hour level is drawn muted.
+ * Missing or expired weekly and model readings are hidden, never assumed
+ * fresh. An account with no five-hour reading at all (the interactive
+ * transport records only a refusal) gets today's choice as its first line: a
+ * refused window first, else the fullest. `ok` is a window the CLI reported without a
  * utilization, which is how a CLI without `unifiedWindows` reports
  * headroom, and never `100% left`.
  *
@@ -65,7 +69,7 @@ export interface AccountUsageLine {
    * or `none` for an account no reading describes.
    */
   state: "limited" | "warning" | "ok" | "none"
-  /** A second line under an account's first, about another window. */
+  /** A detail line under an account's first, about another window. */
   detail: boolean
   segments: Segment[]
 }
@@ -97,7 +101,6 @@ const SHORT_WINDOWS: Record<string, string> = {
   seven_day: "7d",
   seven_day_opus: "7d opus",
   seven_day_sonnet: "7d sonnet",
-  seven_day_fable: "Fable 7d",
   seven_day_overage_included: "7d extra",
   overage: "extra",
 }
@@ -295,7 +298,13 @@ function isSameDayReset(entry: WindowUsage, now: number): boolean {
   return entry.resetsAt !== undefined && sameDay(new Date(entry.resetsAt), new Date(now))
 }
 
-/** Match only a reported model-family window, never derive usage from the model's bill. */
+/**
+ * The weekly window Claude Code would report for a model's family:
+ * `claude-opus-5-5` -> `seven_day_opus` (h #g326). Only a window the store
+ * holds a current reading for is drawn, so a family the CLI never reports
+ * (2.1.322 names `seven_day_opus` and `seven_day_sonnet`, no Fable or Haiku
+ * one) draws nothing, and usage is never derived from the model's bill.
+ */
 export function modelUsageWindow(model: string | undefined): string | undefined {
   const family = model?.match(/^claude-([a-z]+)-/)?.[1]
   return family ? `seven_day_${family}` : undefined
@@ -327,12 +336,11 @@ function accountDrafts(
       if (!window || shown.has(window)) continue
       const entry = windows?.get(window)
       if (!entry || !isReadingCurrent(entry, now)) continue
-      const preferredIndent = window === modelWindow ? 2 : cells(indent)
       const resets = resetSpellings(entry, now)
       const shortestReset = resets.at(-1)
       const tailWidth = cells(levelText(window, entry)) + (shortestReset ? cells(SEPARATOR) + cells(shortestReset) : 0)
       // Give up indentation before clipping the level or its reset date.
-      const detailIndent = " ".repeat(Math.min(preferredIndent, Math.max(2, width - tailWidth)))
+      const detailIndent = " ".repeat(Math.min(cells(indent), Math.max(2, width - tailWidth)))
       drafts.push(readingDraft(account, detailIndent, window, entry, now, true))
       shown.add(window)
     }
