@@ -4,7 +4,7 @@
  * progress the TUI cannot read off opencode's store. opencode shows the
  * turn's tool calls as they stream, but every API call within a step lands
  * in one assistant message, and a step's usage until the turn's `result` is
- * the previous turn's reading (h #g169, h #g324). The server half reads
+ * the previous turn's reading (h #g169, h #g325). The server half reads
  * each call's real output at its `message_delta` (the `assistant` frames
  * carry a placeholder, measured on 2.1.293: 6 against the call's 41) and
  * writes the turn's running total here, once per API call; the TUI reads it

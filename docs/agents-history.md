@@ -13598,9 +13598,75 @@ PR head, on the merge commit `57d572e` before the tag and on the release commit 
 publish confirmed by the `Publish package` step's tail and the version document's shasum (`1250b91e`),
 with a GitHub Release.
 
+## A watchdog restart sent every proxied result of a long turn again (2026-11-20)
+
+h #g324. A scheduled agent run, one Claude turn of about 22 minutes with 35 proxied tool calls,
+ended with nothing done. Read off that run's Claude transcript:
+
+1. The last tool result was handed to the CLI. Two seconds later its API request failed with
+   `ECONNRESET`, the CLI retried, and nothing answered the retry.
+2. 91 seconds later the start watchdog fired. It respawned `claude` with `--resume` on the same
+   session, `respawnActiveProcess` carried `pendingProxyCompletions` over, and
+   `deliverPendingCompletions(state, true)` sent what it held.
+3. That is one user message from `makeLateProxyResultMessage`, one section per stored result with
+   its raw output. Entries are added at every hand-over and the map was cleared only when a Claude
+   turn ends, and this turn never ended, so all 35 results of the turn were in it: about 181 KB.
+4. The resumed transcript already held every one of them; at least 34 had been answered by the
+   model.
+5. A `UserPromptSubmit` hook (a secrets guard) matched one harmless line in those 181 KB and blocked
+   the message, and the turn ended `blocked_by_hook` (h #g314). The same text had passed when it
+   first arrived as a tool result, where the guard's tool-output hook masks rather than blocks.
+
+Without any guard it is still wrong: after a stall late in a long turn, every tool result of the
+turn went into the conversation a second time.
+
+**The fix: a result the model has provably answered leaves the store** (`noteProxyResultsAnswered`,
+`src/turn-controller.ts`, called from the line handler right after its `modelProgress` block). The
+proof is a main-thread API message that STARTS after the hand-over (`message_start`, no
+`parent_tool_use_id`) and then streams model output. The CLI asks the API for the next message only
+once every tool call of the message before has its result, so that request carried this one, and
+the model answered it. Claude Code 2.1.322's own SDK adapter reads the same predicate
+(`stream_event`, `message_start`, no `parent_tool_use_id`) as "a model call streamed", and its
+schema types `parent_tool_use_id` as nullable on `stream_event`. What was ruled out:
+
+- **The CLI's own `tool_result` frame.** It names the `toolu_` id, but a proxied call's id is a UUID
+  the proxy mints (`proxy-mcp.ts`), and nothing links the two without matching inputs.
+- **`modelProgress` alone.** It counts the rest of the message that asked for the call, which streams
+  on while the call runs (the call reaches the proxy about 6 ms after its block closes, h #g288), a
+  subagent's or sidechain's frames, and the CLI's own `<synthetic>` reply. A `message_start` that is
+  followed only by a failed request or a `<synthetic>` reply answered nothing either.
+- **Pruning on the watchdog's side only** (sending just what arrived since the last model output).
+  It would need the same proof and fix only the respawn, while the store would still grow for the
+  whole turn.
+
+What it rests on: the CLI writes a message's `message_start` before that message's tool calls reach
+the proxy, and the plugin reads stdout continuously (between turns into the unattended buffer, taken
+before the next step hands anything over), so by the time opencode has run a call and the next step
+hands its result over, the asking message's start has been read. An entry that was
+`recoveryRequired` (the channel had closed, so the CLI never got the result) or whose channel has
+closed since is never dropped: it is what the result-boundary delivery exists for. The interactive
+transport streams no `message_start`, so its store is unchanged, and a reply the CLI resends without
+streaming after a broken stream (h #g300) proves nothing unless a `message_start` came first, which
+keeps the old behaviour. The watchdog's delay, the prompt hooks and the options are untouched.
+
+`test/proxy-task.test.ts`: a fake CLI in a new `steps` mode runs three proxied calls in one turn,
+writes its own `tool_result` record after each, answers the first two on a new message and goes
+silent after the third; the start watchdog's replacement gets only the third (red before the fix:
+the late message carried step 1's result too). Two in-process cases feed the open turn one frame at
+a time: the asking message's late delta, a sidechain's message, a started request answered by a
+`<synthetic>` reply and a bare `message_start` all keep the result, and model output on a new
+main-thread message drops it; a result whose channel had closed survives model output and is
+delivered at the result boundary.
+
+Shipped as v0.76.1 on 2026-11-23 (PR #196), a patch release, after a rebase onto v0.76.0 (#197 had
+added its own entries to TODO.md and this file in the same places; both kept): CI green on Linux
+and Windows on the rebased PR head, on the merge commit `674ea06` before the tag and on the
+release commit `d0e64b6`, the publish confirmed by the `Publish package` step's tail and the
+version document's shasum (`6b8c5b8a`), with a GitHub Release.
+
 ## A mid-turn step repeats the previous turn's context (2026-11-18)
 
-h #g324. Issue #192: opencode 2's desktop context gauge read 0 for most of every turn that used a proxied
+h #g325. Issue #192: opencode 2's desktop context gauge read 0 for most of every turn that used a proxied
 tool, showed the real number when the turn ended, and went back to 0 on the next turn. Every step that
 ends on a proxied call before the turn's `result` reported zero usage (h #g169, h #g225). The reporter's
 opencode database held 2,226 such `tool-calls` steps under this provider's two accounts, every one at 0

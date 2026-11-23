@@ -77,6 +77,7 @@ import {
   finishAwaitingPlanApproval,
   noteAnnouncedRetry,
   noteProxyActivity,
+  noteProxyResultsAnswered,
   noteReasoning,
   noteStartWatchdogInit,
   noteToolActivity,
@@ -265,6 +266,9 @@ export function createLineHandler(
         clearStartWatchdog(state)
         startResultFallback(state)
       }
+      // Not `modelProgress` alone: what proves a proxied result was used is
+      // narrower (h #g324).
+      noteProxyResultsAnswered(state, outer, msg, modelProgress)
 
       // Read before anything is enqueued for this message, because the
       // chain runner keys its withhold-or-flush decision on these two
