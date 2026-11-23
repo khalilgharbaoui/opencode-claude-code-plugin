@@ -13479,3 +13479,116 @@ Shipped as v0.75.0 on 2026-11-20 (PR #195), a minor release: CI green on Linux a
 PR head, on the merge commit `71ee408` before the tag and on the release commit `375a18a`, the
 publish confirmed by the `Publish package` step's tail and the version document's shasum (`0bd255a1`),
 with a GitHub Release.
+
+
+## The inactivity watchdog reported a request the network swallowed as a CLI crash (2026-11-22)
+
+h #g323. Recorded in TODO.md on 2026-11-19: a subagent (opencode session `ses_e0d42a176ffe...`,
+cwd `~/code/Appical/webapp`, Claude session `5e4fe6b4`) died twice with "The Claude Code CLI closed
+its output before finishing this turn (no result was emitted)". The maintainer chose "the most
+recommended" fix: say what happened, and resend once when the API never answers. Also the two
+follow-ups of h #g320: dead streams, and the note's false "may be incomplete".
+
+**The incident, read-only.** plugin.log had rotated by 2026-11-22 (its oldest line is from that
+day), so the fire times are the ones TODO.md recorded (07:46:17.947Z and 08:49:21.221Z, `delayMs`
+90000, then `claude process closed without a result` with `exitCode` and `signal` null). The
+subagent's transcript (record kinds and timestamps only): an `api-request` at 07:44:46.309 after a
+tool result, then nothing until a `user` text record at 07:46:17.954, which is Claude Code's
+"[Request interrupted by user]", 7 ms after the fire (h #g316's interrupt); the same shape at
+08:47:51.225 and 08:49:21.235. Another conversation logged `api_error` at 07:46:26.337 (the
+`Unable to connect to API (EPROTO)` in TODO.md). The `no stdout after envelope write; respawning` at
+08:49:08 belongs to a different conversation in the same opencode process, by timing: Claude
+session `83e494f0` (cwd `~/code`, the default config dir) recorded an `api-request` at 08:47:40.407
+after a proxied tool result and nothing more until its respawn re-sent the envelope (`enqueue` at
+08:49:10.744, a fresh `api-request` at 08:49:11.993, an `end_turn` reply at 08:49:23.9). So both
+conversations hit the same outage: the one that had produced nothing yet in its stream was caught
+by the start watchdog, which already resends (respawn with `--resume`, h #g84) and recovered in 12
+s; the subagent had streamed content earlier in the same step, so the inactivity watchdog caught it,
+and that watchdog only closed, through the crash handler (`crashed = !turnCompleted`), which waited
+`CHILD_EXIT_STATUS_GRACE_MS` for an exit that never came and reported the crash text.
+
+**Measured on Claude Code 2.1.322** against a fake Anthropic API in the probe process
+(`ANTHROPIC_BASE_URL` on 127.0.0.1, a fake key, a scratch `CLAUDE_CONFIG_DIR`,
+`--strict-mcp-config --setting-sources ""` so a transcript is written; `--bare` writes none), each
+script a tool round (`Bash echo`) and then the shape under test:
+
+- A `system`/`status` frame with `status: "requesting"` reaches stdout before every API request (4
+  to 5 ms before a request after a tool result, 14 to 18 ms before a turn's first), and
+  `message_start` arrives when the answer starts. So `requesting` with no `message_start` after it
+  is a request with no answer. A request that never answered and one that sent 200 headers and no
+  events look the same on the stream.
+- `interrupt` during a request with no answer: `control_response` 2 ms after it, then a `user`
+  text frame (the interrupt marker), then `result` `error_during_execution`, `is_error: true`,
+  `terminal_reason: "aborted_streaming"`, 2 to 4 ms after the interrupt; the HTTP request was closed
+  at once and the cost did not move (the hung request cost nothing). The transcript holds the
+  `api-request` record and then the interrupt marker, exactly the 2026-11-19 shape. Mid-stream
+  (`message_start` and a text delta, then a stall) the interrupt also emitted an `assistant` frame
+  with the partial text, closed the block and wrote `message_delta` with no stop reason and
+  `message_stop` before the same error result, and the partial stayed in the conversation. After a
+  completed text block with no `message_delta`: the same, minus that frame. After `message_delta`
+  with `end_turn` and no `message_stop`: `result` `success`, `stop_reason: "end_turn"`,
+  `terminal_reason: "aborted_streaming"`.
+- A continuation envelope written to the same process after that result started a new turn
+  (`system`/`init`, `requesting`) whose request carried the whole conversation, its last user
+  message being the tool result, the interrupt marker and the continuation text, and was answered:
+  a `success` result 10 ms after the write. Same with no content before the hang.
+- Left alone, Claude Code gave up on a request with no bytes after 358.9 s (then `api_retry`,
+  attempt 1, 603 ms, and a retry that was answered), and on a stalled stream after 300.0 s of idle
+  (then it closed the block and resent the same request with `stream: false`). So the 90 s window
+  is what decides, and the CLI's own recovery would resend after a stall anyway.
+
+**What changed.**
+
+- The parser tracks `TurnState.requestAwaitingReply` (set on `requesting`, cleared on
+  `message_start`, any `assistant` frame or a `result`) and `replyStopReason` (the newest
+  `message_delta`'s). `streamTimeoutPhase` reads them: `no-answer`, `complete` (`end_turn` or
+  `stop_sequence`) or `mid-reply` (anything else).
+- A closing fire (`closeOnWatchdog`) sets `TurnState.watchdogClose` before `closeHandler`, which then
+  reports no crash and does not wait for an exit. The note (`formatStreamTimeoutNote(ms, phase,
+  resent)`) and the error (`describeWatchdogClose`) say which phase it was; a `complete` reply ends
+  as a stop with no error, as Claude Code itself reports that stream when interrupted. A compaction
+  turn gets no note, because its text is the summary (h #g214), and always ends on an error. The
+  crash text stays for a child that really exited. The WARN lost its em dash: `result fallback timer
+  fired; closing the turn without a result`, with `phase` and `resent`.
+- On `no-answer` the fire resends instead (`resendDeadRequest`): `interruptTurn`, and once the
+  session manager has seen the CLI go idle, a `▌ **request resent:**` note in its own part
+  (`REQUEST_RESENT_MARKER`, in `PLUGIN_NOTE_MARKERS`) and `DEAD_REQUEST_RESEND_PROMPT`, stamped like
+  every plugin envelope, which tells Claude the interruption was the plugin's, not the user's. A late
+  proxy result waiting for delivery goes instead, since it asks the CLI to go on too. While
+  `deadRequestResend` is `interrupting` the parser drops the interrupt's `result` (unless the turn
+  was aborted meanwhile, whose own path needs it) and the inactivity timer stays disarmed, bounded
+  by `interruptTurn`'s 5 s; an unacknowledged interrupt closes the turn as `no-answer`.
+
+**The trigger, and the guard.** Only `no-answer`: the stream showed `requesting` and nothing after
+it, not even `message_start`, for the whole window. Nothing was generated for that request, so a
+second one cannot bill output twice; the input is sent again, which with a warm prompt cache is a
+cache read, and when the network never delivered the request (the 2026-11-19 case) nothing at all.
+A reply that had started (`message_start` seen) is never resent, however slowly it streams: its
+output was being generated, and that is the "slow but alive" case. Once per turn; never on a late
+fire (it re-arms, h #g316), an abort, compaction, the interactive transport (no `requesting`
+frames, and its interrupt is the TUI's Esc) or a process `interruptTurn` believes idle (it would
+write no interrupt). A resend that goes silent too closes as `no-answer` with "sent a second time".
+Whether Anthropic bills a request aborted before any byte came back cannot be measured against a
+fake API; the argument does not depend on it, because the close was going to happen at that moment
+anyway and the turn's only other way forward is a person sending a message again, which costs the
+same request. That is also why there is no option.
+
+Not changed: the start watchdog keeps its respawn for a step that has produced nothing yet (the
+`83e494f0` case), and the interactive transport keeps its own liveness.
+
+**Live through the plugin** (the worktree's `src`, the real `claude` 2.1.322, the fake API,
+`CLAUDE_CODE_RESULT_FALLBACK_MS=6000`, `proxyTools: []` so `Bash` ran in the CLI): the request after
+the tool round hung at 2.6 s, the watchdog fired at 8.6 s, the interrupt closed the socket and the
+continuation request arrived 11 ms later carrying the tool result, the interrupt marker and the
+continuation; the turn finished `stop` with the answer after the resend note. With the second
+request hung too, the turn closed at 13.2 s with the resend note, the `no-answer` note saying it had
+been sent twice, the matching error and an `error` finish; the log read `phase: "no-answer"`,
+`resent: true`.
+
+Tests: `test/watchdog-dead-request.test.ts` (the wording per phase, the resend note's strip, the
+stamped continuation; then a fake CLI writing 2.1.322's `requesting` and interrupt frames through a
+real `doStream`: no answer then one interrupt, one continuation and a finished turn; a resend that
+goes unanswered too closing as `no-answer` with no crash text and no second resend; a reply that had
+started never resent; a finished reply ending as a stop; a real exit still reporting the crash).
+`test/result-fallback.test.ts` now asserts the new wording and that its error is not the crash
+text. With the resend and the `watchdogClose` read switched off, five of them fail.

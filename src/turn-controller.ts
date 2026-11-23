@@ -2,7 +2,14 @@ import type { ClaudeStreamMessage } from "./types.js"
 import type { TurnState } from "./turn-state.js"
 import { cliToolCallInputJson, emitCliToolCall } from "./turn-state.js"
 import { log } from "./logger.js"
-import { formatStreamTimeoutNote } from "./cli-events.js"
+import {
+  describeWatchdogClose,
+  formatRequestResentNote,
+  formatStreamTimeoutNote,
+  streamTimeoutPhase,
+  type StreamTimeoutPhase,
+} from "./cli-events.js"
+import { userEnvelope } from "./user-envelope.js"
 import { effectiveSpawnMcpTimeoutMs } from "./cli-version.js"
 import {
   deleteActiveProcess,
@@ -122,6 +129,10 @@ export function startResultFallback(
 ): void {
   clearFallbackTimer(state)
   if ((!state.hasReceivedContent && !state.hasReceivedProgress) || state.controllerClosed) return
+  // Waiting for the CLI to acknowledge the resend's interrupt; that wait has
+  // its own bound (`interruptTurn`'s timeout). An abort's grace period still
+  // arms: the operator asked to stop, and the resend will not go out.
+  if (state.deadRequestResend === "interrupting" && !state.autoContinueState.aborted) return
   const armedAt = watchdogNow()
   state.resultFallbackTimer = setTimeout(() => {
     if (state.controllerClosed) return
@@ -134,26 +145,146 @@ export function startResultFallback(
       startResultFallback(state, delayMs)
       return
     }
-    log.warn("result fallback timer fired — closing stream without result event", {
-      delayMs,
-    })
-    const child = state.activeProcess
-    if (child && !state.autoContinueState.aborted) {
-      void interruptTurn(child).catch(() => undefined)
+    const phase = streamTimeoutPhase(state)
+    if (shouldResendDeadRequest(state, phase)) {
+      resendDeadRequest(state, delayMs)
+      return
     }
-    // Closing on a log line alone left the operator with a reply that
-    // just stopped. An abort is exempt: they asked for it, and the
-    // short grace period there is not a silent CLI.
-    if (!state.autoContinueState.aborted) {
+    closeOnWatchdog(state, delayMs, phase)
+  }, delayMs)
+}
+
+/**
+ * Close the turn the watchdog gave up on. The CLI is interrupted, as an abort
+ * does (h #g59, h #g316): closed here, nobody reads what it does next. The
+ * note and the error say what the stream showed (h #g323): a request that got
+ * no answer, a reply that had finished, or one that stopped partway. Before,
+ * the close went through the crash handler, which waited for an exit that
+ * never came and reported "The Claude Code CLI closed its output". A reply that
+ * had finished ends as a stop, which is what Claude Code itself reports when
+ * that stream is interrupted (measured: a `success` result). An abort is
+ * exempt from all of it: the operator asked, and the abort's short grace
+ * period is not a silent CLI. A compaction turn gets no note, because what it
+ * says is stored as the summary (h #g214), and always ends as an error.
+ */
+function closeOnWatchdog(state: TurnState, delayMs: number, phase: StreamTimeoutPhase): void {
+  if (state.controllerClosed) return
+  const resent = state.deadRequestResend === "resent"
+  const aborted = state.autoContinueState.aborted === true
+  log.warn("result fallback timer fired; closing the turn without a result", {
+    delayMs,
+    phase,
+    resent,
+  })
+  const child = state.activeProcess
+  if (child && !aborted) {
+    void interruptTurn(child).catch(() => undefined)
+  }
+  if (!aborted) {
+    if (!state.compactionMode) {
       state.controller.enqueue({
         type: "text-delta",
         id: state.startTextBlock(),
-        delta: formatStreamTimeoutNote(delayMs),
+        delta: formatStreamTimeoutNote(delayMs, phase, resent),
       })
       state.endTextBlock()
     }
-    state.closeHandler()
-  }, delayMs)
+    const errorText =
+      describeWatchdogClose(delayMs, phase === "complete" && state.compactionMode ? "mid-reply" : phase, resent)
+    state.watchdogClose = { phase, errorText }
+  }
+  state.closeHandler()
+}
+
+/**
+ * The continuation the resend writes after interrupting a request that got no
+ * answer. Claude sees it in the same user message as Claude Code's own
+ * "[Request interrupted by user]" (measured on 2.1.322: the next request's last
+ * message is the tool result, that marker and this text), so it says who
+ * interrupted and why.
+ */
+export const DEAD_REQUEST_RESEND_PROMPT =
+  "Your last request to the Anthropic API got no response, so the opencode plugin interrupted it" +
+  " (that is the interruption above, not the user) and is retrying it once with this message." +
+  " Continue the task exactly where you left off, without repeating work that is already done."
+
+export function makeDeadRequestResendMessage(verbatim = false): string {
+  return userEnvelope([{ type: "text", text: DEAD_REQUEST_RESEND_PROMPT }], verbatim)
+}
+
+/**
+ * Whether this fire resends instead of closing (h #g323). Only a request that
+ * got no answer at all: the stream showed `requesting` and nothing after it,
+ * not even `message_start`. Nothing was generated for it, so a second request
+ * cannot bill output twice, and the only alternative is the close, after which
+ * someone has to send a message again (a subagent has nobody to do it). A
+ * reply that had started is never resent, however slowly it streams: its
+ * output was being generated and billed. Once per turn; never on an aborted
+ * turn, a compaction (its text is the summary) or the interactive transport
+ * (no `requesting` frames, and its interrupt is the TUI's Esc).
+ */
+function shouldResendDeadRequest(state: TurnState, phase: StreamTimeoutPhase): boolean {
+  if (phase !== "no-answer") return false
+  if (state.deadRequestResend !== "idle") return false
+  if (state.autoContinueState.aborted || state.compactionMode) return false
+  const child = state.activeProcess
+  if (!child || child.interactiveControl) return false
+  // The resend leans on the interrupt ending the CLI's turn first, and
+  // `interruptTurn` writes none for a process it believes idle.
+  return child.turnInFlight === true && child.proc.stdin?.writable === true
+}
+
+/**
+ * Interrupt the request that got no answer and, once the CLI has gone idle,
+ * ask the same process to go on. Measured on 2.1.322 against a local API that
+ * never answered: the interrupt's `control_response` and an
+ * `error_during_execution` result (`terminal_reason: "aborted_streaming"`)
+ * came 2 to 4 ms after it, the HTTP request was closed, and a continuation
+ * envelope on the same process started a new turn whose fresh request carried
+ * the whole conversation and was answered. The parser drops that result while
+ * the resend is `interrupting`. An interrupt the CLI does not acknowledge in
+ * time, or a resend that went silent too, closes the turn as before.
+ */
+function resendDeadRequest(state: TurnState, delayMs: number): void {
+  const child = state.activeProcess!
+  state.deadRequestResend = "interrupting"
+  log.warn("claude code's API request got no answer; interrupting it and sending it once more", {
+    sessionKey: state.sessionKey,
+    delayMs,
+  })
+  const giveUp = () => {
+    state.deadRequestResend = "resent"
+    closeOnWatchdog(state, delayMs, "no-answer")
+  }
+  void interruptTurn(child)
+    .then((idle) => {
+      if (state.controllerClosed || state.autoContinueState.aborted) return
+      if (!idle || state.activeProcess !== child) {
+        log.warn("claude code did not acknowledge the interrupt; closing the turn", {
+          sessionKey: state.sessionKey,
+        })
+        giveUp()
+        return
+      }
+      state.deadRequestResend = "resent"
+      state.requestAwaitingReply = false
+      state.controller.enqueue({
+        type: "text-delta",
+        id: state.startTextBlock(),
+        delta: formatRequestResentNote(delayMs),
+      })
+      state.endTextBlock()
+      // A late proxy result waiting to be delivered is itself a message that
+      // asks the CLI to go on (h #g82, h #g119); otherwise, the continuation.
+      if (!deliverPendingCompletions(state)) {
+        noteTurnStarted(child)
+        state.proc.stdin?.write(makeDeadRequestResendMessage(state.verbatimPrompts) + "\n")
+      }
+      startResultFallback(state)
+    })
+    .catch(() => {
+      if (!state.controllerClosed) giveUp()
+    })
 }
 
 // ---- The start watchdog ---------------------------------------------------

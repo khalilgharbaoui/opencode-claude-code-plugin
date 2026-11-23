@@ -301,6 +301,43 @@ export function createLineHandler(
       if (msg.type === "message_start") state.replyStreaming = true
       if (msg.type === "message_stop" || msg.type === "result") state.replyStreaming = false
 
+      // Where the current API call stands, for the inactivity watchdog's
+      // wording and its one resend (h #g323). Measured on 2.1.322: `requesting`
+      // comes about 4 ms before each request, `message_start` when its answer
+      // starts, `message_delta` with the call's `stop_reason`. An `assistant`
+      // frame with no streamed start (h #g300) or a `<synthetic>` error reply
+      // is an answer too.
+      if (msg.type === "system" && msg.subtype === "status" && (msg as { status?: unknown }).status === "requesting") {
+        state.requestAwaitingReply = true
+        state.replyStopReason = null
+      }
+      if (msg.type === "message_start" || msg.type === "assistant" || msg.type === "result") {
+        state.requestAwaitingReply = false
+      }
+      if (msg.type === "message_start") state.replyStopReason = null
+      if (msg.type === "message_delta" && typeof (msg as any).delta?.stop_reason === "string") {
+        state.replyStopReason = (msg as any).delta.stop_reason
+      }
+
+      // The watchdog interrupted a request that got no answer and is about to
+      // ask the same process to go on (h #g323). The `result` the interrupt
+      // produces (measured: `error_during_execution`, `aborted_streaming`, 2 to
+      // 4 ms after it) ends the abandoned attempt, not this turn: nothing below
+      // may finish the turn on it. The resend writes the continuation once the
+      // session manager has seen the CLI go idle.
+      if (
+        msg.type === "result" &&
+        state.deadRequestResend === "interrupting" &&
+        !state.autoContinueState.aborted
+      ) {
+        clearFallbackTimer(state)
+        log.info("dropping the result of the interrupted request; the turn goes on", {
+          sessionKey: state.sessionKey,
+          subtype: msg.subtype,
+        })
+        return
+      }
+
       if (ctx.handleControlRequest(msg, state.proc)) {
         return
       }

@@ -3430,6 +3430,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           ignoreAnthropicApiKey: self.config.ignoreAnthropicApiKey,
           verbatimPrompts: self.config.verbatimPrompts !== false,
           holdReadOnlyDrain: self.config.parallelWebfetch !== false,
+          compactionMode,
           userMsg,
           autoContinueEnabled: autoContinueEnabledFor(
             compactionMode,
@@ -5049,8 +5050,13 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           // Reporting that as `stop` with empty usage made a crashed CLI look
           // like a short but successful answer. An abort is not a crash: the
           // operator asked for it, and the CLI may exit before its interrupt
-          // result lands.
-          const crashed = !state.turnCompleted && !state.autoContinueState.aborted
+          // result lands. Neither is the inactivity watchdog closing the turn
+          // on a CLI that is still running: it says what it saw instead
+          // (h #g323), where this used to wait for an exit that never came and
+          // report "closed its output".
+          const watchdogClose = state.watchdogClose
+          const crashed =
+            !watchdogClose && !state.turnCompleted && !state.autoContinueState.aborted
           state.controllerClosed = true
           cleanupTurn()
           state.endTextBlock()
@@ -5059,6 +5065,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             exitCode: number | null,
             signal: NodeJS.Signals | null,
           ) => {
+            if (watchdogClose?.errorText) {
+              controller.enqueue({ type: "error", error: new Error(watchdogClose.errorText) })
+            }
             if (crashed) {
               log.warn("claude process closed without a result", {
                 sessionKey: sk,
@@ -5075,7 +5084,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             }
             controller.enqueue({
               type: "finish",
-              finishReason: toFinishReason(crashed ? "error" : "stop"),
+              finishReason: toFinishReason(crashed || watchdogClose?.errorText ? "error" : "stop"),
               usage: toUsage(),
               providerMetadata: {
                 "claude-code": {

@@ -11,7 +11,7 @@ import type { PendingProxyCall } from "./proxy-broker.js"
 import type { AutoContinueState } from "./auto-continue.js"
 import type { ModelRefusal } from "./model-fallback.js"
 import type { AccountBlockKind } from "./account-failover.js"
-import type { PromptBlock } from "./cli-events.js"
+import type { PromptBlock, StreamTimeoutPhase } from "./cli-events.js"
 
 /**
  * The turn's own mutable state, lifted out of `doStreamForHost`'s `start()`
@@ -86,6 +86,11 @@ export interface TurnState {
   readonly resultFallbackMs: number
   /** Start-watchdog delay; `CLAUDE_CODE_START_WATCHDOG_MS` is the test seam. */
   readonly startWatchdogMs: number
+  /**
+   * A `/compact` turn. What it says is stored as the summary (h #g214), so the
+   * watchdog writes no note into it and never resends its request (h #g323).
+   */
+  readonly compactionMode: boolean
 
   // ---- Spawn slots --------------------------------------------------------
   // Filled by the spawn block before any handler is attached, and replaced
@@ -172,6 +177,29 @@ export interface TurnState {
   startWatchdogBeforeInit: boolean
   /** First fire respawns, a second ends the turn. */
   respawnAttempted: boolean
+  /**
+   * The CLI announced an API request (`system`/`status` with `status:
+   * "requesting"`, measured on 2.1.322 about 4 ms before every request) and no
+   * answer has started since (`message_start`, or an unstreamed `assistant`
+   * frame). What tells a request that got no answer from a reply that stopped
+   * (h #g323).
+   */
+  requestAwaitingReply: boolean
+  /** The newest API call's `stop_reason`, from its `message_delta`; null until one arrives. */
+  replyStopReason: string | null
+  /**
+   * The once-per-turn resend of a request that got no answer (h #g323):
+   * `idle` until the watchdog uses it, `interrupting` while the CLI's answer
+   * to the interrupt is awaited (its `result` is not this turn's answer and is
+   * dropped), `resent` once the continuation went out or the resend gave up.
+   */
+  deadRequestResend: "idle" | "interrupting" | "resent"
+  /**
+   * Set by the inactivity watchdog right before it closes the turn, so the
+   * close handler does not report a CLI crash that did not happen (h #g323).
+   * `errorText` null means the reply had finished and the turn ends as a stop.
+   */
+  watchdogClose: { phase: StreamTimeoutPhase; errorText: string | null } | null
 
   // ---- Progress -----------------------------------------------------------
 
@@ -384,6 +412,7 @@ export interface TurnStateInit {
   verbatimPrompts?: boolean
   /** `parallelWebfetch`. Absent is off, which keeps hand-built states unchanged. */
   holdReadOnlyDrain?: boolean
+  compactionMode?: boolean
   /** This turn's envelope, which is also what a respawn re-sends. */
   userMsg: string
   /** `autoContinueEnabledFor(compactionMode, configured)`, resolved by the caller. */
@@ -438,6 +467,7 @@ export function createTurnState(init: TurnStateInit): TurnState {
     toFinishReason: init.toFinishReason,
     resultFallbackMs: resolveResultFallbackMs(),
     startWatchdogMs: resolveStartWatchdogMs(),
+    compactionMode: init.compactionMode === true,
 
     activeProcess: undefined,
     proc: unassigned(),
@@ -482,6 +512,10 @@ export function createTurnState(init: TurnStateInit): TurnState {
     startWatchdogArmedMs: 0,
     startWatchdogBeforeInit: false,
     respawnAttempted: false,
+    requestAwaitingReply: false,
+    replyStopReason: null,
+    deadRequestResend: "idle",
+    watchdogClose: null,
 
     hasReceivedContent: false,
     hasReceivedProgress: false,

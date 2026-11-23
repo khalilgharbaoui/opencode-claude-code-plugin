@@ -147,6 +147,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   resumable: "flag",
   // Whether a message a hook ended is in Claude's transcript anyway (h #g314).
   promptKept: "flag",
+  // Whether the inactivity watchdog had already resent a request that got no
+  // answer before it closed the turn (h #g323).
+  resent: "flag",
   interactive: "flag",
   interactiveTransport: "flag",
   isError: "flag",
@@ -281,6 +284,9 @@ export const BUNDLE_DATA_ALLOWLIST: Readonly<Record<string, BundleValueKind>> = 
   removedOn: "enum",
   // The day a retired model retires, from `RETIRED_MODELS` (h #g302).
   retiredOn: "enum",
+  // Where the API call stood when the inactivity watchdog closed a turn,
+  // one of `StreamTimeoutPhase` (h #g323).
+  phase: "enum",
   scope: "enum",
   signal: "enum",
   source: "enum",
