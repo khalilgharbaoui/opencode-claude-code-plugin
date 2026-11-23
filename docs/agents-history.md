@@ -13657,3 +13657,9 @@ a time: the asking message's late delta, a sidechain's message, a started reques
 `<synthetic>` reply and a bare `message_start` all keep the result, and model output on a new
 main-thread message drops it; a result whose channel had closed survives model output and is
 delivered at the result boundary.
+
+Shipped as v0.76.1 on 2026-11-23 (PR #196), a patch release, after a rebase onto v0.76.0 (#197 had
+added its own entries to TODO.md and this file in the same places; both kept): CI green on Linux
+and Windows on the rebased PR head, on the merge commit `674ea06` before the tag and on the
+release commit `d0e64b6`, the publish confirmed by the `Publish package` step's tail and the
+version document's shasum (`6b8c5b8a`), with a GitHub Release.
