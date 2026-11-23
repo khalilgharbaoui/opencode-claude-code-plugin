@@ -13787,5 +13787,6 @@ reading planted in the scratch store only (20% used, the weekly reset), the next
 `      7d opus 80% left · 11-25 13:00` under `default`'s `7d` line and nothing under `appical`'s, set in
 six cells rather than ten so the date stayed whole. So the model line is wired end to end, and it stays
 dormant until Claude Code reports a per-model weekly window for the account. Not run live: opencode 1.x
-and the interactive transport (which records no readings but a refusal).
+and the interactive transport (which records no readings but a refusal). PR #198, not yet merged or
+released.
 `test/account-sidebar.test.ts`, `test/account-usage.test.ts`.
