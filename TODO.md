@@ -241,7 +241,7 @@ Nothing in progress.
 
 ## Done
 
-- 2026-11-22: **done** (PR [#197](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/197), h #g323, not yet merged or released): the inactivity watchdog says what happened and resends a request the API never answered. A closing fire is no longer reported as a CLI crash: its note and error say no answer came from the API, the reply had finished (the turn then ends as a stop), or it stopped partway. A request that got no answer at all (Claude Code's `requesting` frame with no `message_start` after it) is interrupted and sent once more on the same process, marked by a `▌ **request resent:**` note; a reply that had started is never resent. Measured on Claude Code 2.1.322 against a fake API and live through the plugin with the real CLI.
+- 2026-11-22: **done** (v0.76.0, PR [#197](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/197), h #g323): the inactivity watchdog says what happened and resends a request the API never answered. A closing fire is no longer reported as a CLI crash: its note and error say no answer came from the API, the reply had finished (the turn then ends as a stop), or it stopped partway. A request that got no answer at all (Claude Code's `requesting` frame with no `message_start` after it) is interrupted and sent once more on the same process, marked by a `▌ **request resent:**` note; a reply that had started is never resent. Measured on Claude Code 2.1.322 against a fake API and live through the plugin with the real CLI.
   Original entry:
   - 2026-11-19: a subagent (ses_e0d42a176ffe..., webapp, reported over WalkyTalky wt_v5vl5nq0c9o7) died twice
     with "The Claude Code CLI closed its output before finishing this turn". Measured: both times Claude Code had
