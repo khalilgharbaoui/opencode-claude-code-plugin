@@ -13600,7 +13600,7 @@ with a GitHub Release.
 
 ## A watchdog restart sent every proxied result of a long turn again (2026-11-20)
 
-h #g323. A scheduled agent run, one Claude turn of about 22 minutes with 35 proxied tool calls,
+h #g324. A scheduled agent run, one Claude turn of about 22 minutes with 35 proxied tool calls,
 ended with nothing done. Read off that run's Claude transcript:
 
 1. The last tool result was handed to the CLI. Two seconds later its API request failed with

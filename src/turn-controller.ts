@@ -498,7 +498,7 @@ export function noteStartWatchdogInit(state: TurnState): void {
 /**
  * A proxied result the model has provably answered leaves
  * `pendingProxyCompletions`, so a start-watchdog respawn does not hand it to
- * the resumed conversation a second time (h #g323). Until then the store held
+ * the resumed conversation a second time (h #g324). Until then the store held
  * every result of a Claude turn until its `result`, and after a stall late in
  * a long turn the respawn re-sent all of them as one user message.
  *

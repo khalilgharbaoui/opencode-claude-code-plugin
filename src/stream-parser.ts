@@ -267,7 +267,7 @@ export function createLineHandler(
         startResultFallback(state)
       }
       // Not `modelProgress` alone: what proves a proxied result was used is
-      // narrower (h #g323).
+      // narrower (h #g324).
       noteProxyResultsAnswered(state, outer, msg, modelProgress)
 
       // Read before anything is enqueued for this message, because the
