@@ -79,8 +79,9 @@
   `claude-code` provider as a `session.generate` (h #g299) or a turn, and whether the plugin should
   stop registering its own on 2.3+ or keep it.
 
-- 2026-11-16, from the h #g320 diagnosis: (1) not started: re-count `▌ **stream timeout:**` closes
-  around 2026-11-23 to confirm v0.73.4's sleep fix took most of them away; (2) partly done in h #g323
+- 2026-11-16, from the h #g320 diagnosis: (1) done 2026-11-23: `▌ **stream timeout:**` closes in opencode.db,
+  deduplicated by message time: 24 in the 30 days before v0.73.4 (tagged 2026-11-15 01:45 UTC), 2 since,
+  both the 2026-11-19 subagent whose API requests got no answer, which v0.76.0 now resends; the sleep fix holds; (2) partly done in h #g323
   (PR [#197](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/197)): a request that
   got no answer at all is interrupted and resent once on the same process; a stream that started and
   then stalled is still only closed, on purpose, because resending it could bill its output twice
