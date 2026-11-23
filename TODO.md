@@ -54,6 +54,14 @@
 
 ## Dropped
 
+- Dropped 2026-11-23, maintainer: "keep the two" (the plugin keeps registering its own `/btw` on
+  opencode 2.3+, beside opencode's). Found 2026-11-19 by the h #g322 lane: opencode 2.3.2 ships a `/btw` of its own
+  ("One-shot answer from the session's context without adding to the conversation"), so with the
+  plugin its `/` menu shows two `/btw` rows (the plugin's "Ask a side question in the live Claude
+  Code session..."). Measure which one a typed `/btw` runs on 2.3.2, whether opencode's reaches a
+  `claude-code` provider as a `session.generate` (h #g299) or a turn, and whether the plugin should
+  stop registering its own on 2.3+ or keep it.
+
 - Dropped 2026-10-22 at the maintainer's request ("recommended"): the ContextDex "Verified" README
   badge (Julian Mercer, Gmail 19 Oct 2026). A paid-placement pitch ($49 pin, $199/week sponsor)
   whose "MCP audit" does not fit this plugin. No reply, no badge.
@@ -71,13 +79,6 @@
 - Dropped 2026-09-06 at the user's request: live observation of `idleProcessTimeoutMs: 900000`. The 15-minute eviction and subsequent resume remain unverified in the user's window; no test is planned.
 
 ## Backlog
-
-- 2026-11-19, found by the h #g322 lane, not started: opencode 2.3.2 ships a `/btw` of its own
-  ("One-shot answer from the session's context without adding to the conversation"), so with the
-  plugin its `/` menu shows two `/btw` rows (the plugin's "Ask a side question in the live Claude
-  Code session..."). Measure which one a typed `/btw` runs on 2.3.2, whether opencode's reaches a
-  `claude-code` provider as a `session.generate` (h #g299) or a turn, and whether the plugin should
-  stop registering its own on 2.3+ or keep it.
 
 - 2026-11-16, from the h #g320 diagnosis: (1) done 2026-11-23: `▌ **stream timeout:**` closes in opencode.db,
   deduplicated by message time: 24 in the 30 days before v0.73.4 (tagged 2026-11-15 01:45 UTC), 2 since,
@@ -185,7 +186,8 @@ raised, so they survive context compaction; removed when answered, done or dropp
 - 2026-11-10: what to build next from Future Features (doctor warnings for setups that fail silently,
   model aliases such as `opus`, a `task_send` to steer a background subagent, continuing a terminal
   `claude` session in opencode): pick any, or hold.
-  Deferred again by the maintainer, 2026-11-15.
+  Deferred again by the maintainer, 2026-11-15 and 2026-11-23 ("later", also for the subagent startup
+  stall below).
 - 2026-10-08: subagent startup (~25 s). Maintainer: "do 1 but not fully just comment it out, 2 pin it, 3 lets
   try 1 and 2 and see if 3 is needed". Done: `slack` parked under `_parkedMcpServers` in both Claude accounts'
   `.claude.json` (pinned 1.3.0), opencode's slack pinned to 1.3.0 (backups `*.bak-slack-20261008-214042`).
