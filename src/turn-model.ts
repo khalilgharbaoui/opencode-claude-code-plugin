@@ -87,8 +87,8 @@
  * (`assess`).
  *
  * What is NOT read: no model call, nothing from the prompt but its length,
- * and no token count from a finish, whose mid-turn usage stays zeros on
- * purpose (h #g169, h #g225): the output count comes through its own file.
+ * and no token count from a finish, whose mid-turn usage repeats the previous
+ * turn's reading (h #g169, h #g325): the output count comes through its own file.
  * A turn that ended on a failed tool result is skipped: its length says
  * nothing about a served turn's.
  */

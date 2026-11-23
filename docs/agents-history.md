@@ -13663,3 +13663,59 @@ added its own entries to TODO.md and this file in the same places; both kept): C
 and Windows on the rebased PR head, on the merge commit `674ea06` before the tag and on the
 release commit `d0e64b6`, the publish confirmed by the `Publish package` step's tail and the
 version document's shasum (`6b8c5b8a`), with a GitHub Release.
+
+## A mid-turn step repeats the previous turn's context (2026-11-18)
+
+h #g325. Issue #192: opencode 2's desktop context gauge read 0 for most of every turn that used a proxied
+tool, showed the real number when the turn ended, and went back to 0 on the next turn. Every step that
+ends on a proxied call before the turn's `result` reported zero usage (h #g169, h #g225). The reporter's
+opencode database held 2,226 such `tool-calls` steps under this provider's two accounts, every one at 0
+(one turn: 30 consecutive steps at 0, then 365,460 at its `result`), against 10,596 under opencode's
+own `claude-agent` provider, none at 0, because that provider reports each step's last call and rebuilds
+from opencode's history when a compaction lands mid-turn. Read out of opencode 2.3.2: the desktop's
+Context tab and header ring take the newest assistant step with a `tokens` object
+(`lastAssistantWithUsage` in `packages/client/src/solid/usage.ts`), zeros included; opencode's own
+compaction skips a step without input + cache (`hasMeasuredPrompt` in
+`packages/core/src/session/compaction.ts`), and its TUI hides a 0 reading.
+
+**The live context is still not an option** (h #g225), but **zeros were not safe either, only quieter.**
+opencode 2 measures from the last step with input + cache and estimates everything after it, the CLI's own
+tool output included, and compacts at the top of a step when the two cross its ceiling. Measured on
+2026-11-18 against opencode 2.3.0 `serve`, Claude Code 2.1.311, Claude Haiku 5.5 at low effort on one
+account, default `proxyTools`, Shell allowed for `echo *` only, `compaction.background: false`. Turn 1
+replied and ended at 20,616 prompt tokens; `compaction.buffer: 977384` put the ceiling at 22,616. Turn 2:
+Read a 17.9 KB file, `echo one`, Read another, `echo two`, reply.
+
+- master (zeros): the step that ended on `echo one` stored 0; opencode measured from turn 1's 20,616,
+  estimated the Read's output on top, crossed 22,616 and auto-compacted before the next step, with the
+  CLI parked in `echo one`. Three Claude transcripts: the session that called `echo one` never received
+  its result, a compaction spawn followed, and the turn finished in a new Claude session started from
+  opencode's summary.
+- frozen reading: both mid-turn steps stored 20,616; no compaction; one Claude session held all four
+  tool calls and their results; the turn ended at 36,127.
+
+**What changed** (`src/context-reading.ts`): a finish before its turn's `result` repeats the reading the
+conversation's previous turn ended on, as cache read with no output. It does not grow with the turn, and
+opencode accepted that value at the last `result`, so what it estimates on top is one step's tail; that
+is why this variant is safe at a boundary where h #g225 found none (its "report only when no call is
+parked" can never hold there; this one does not depend on that). The reading is reused only on the Claude
+session it was measured on (a fork or a replay into a new session reports nothing until its `result`),
+recorded at every finish that carries a result (`completeResult`, and `stepUsage` for a tool-call finish
+written after the `result`), and dropped for the opencode session when this provider serves its
+compaction, because the plugin keeps its Claude session across an opencode compaction and the
+pre-compaction reading would read as a full window straight after it. In memory only.
+
+**Cost.** opencode prices tokens itself (an AI SDK provider cannot report a cost through its bridge,
+`packages/core/src/aisdk.ts`), so each frozen step adds one cache re-read at the catalog price: $0.000206
+per step here (20,616 tokens of Haiku 5.5 cache read), about $0.09 at 450,000 tokens on Opus 5.5. The
+sessions recorded $0.0013 frozen against $0.0030 on master, where the compaction spawn ran. Every real call
+of a turn re-reads the cache, so opencode's figure moves toward the CLI's own cost, which `turnStats` and
+`providerMetadata["claude-code"].costUsd` still carry; anything that reads opencode's per-message tokens
+(opencode-quota's usage views) shows the same rise.
+
+Not measured: opencode 1.x (its overflow check reads each step's own usage, which the frozen reading keeps
+at a value it already accepted), the interactive transport (`finishAwaitingPlanApproval` takes the same
+rule), and a compaction served between two turns end to end (only the plugin's side is tested, through `doStream`).
+Not watched on the desktop itself: with every mid-turn step storing 20,616, the unchanged
+`lastAssistantWithUsage` returns that step, so its gauge reads 20,616 (read from the code and the stored
+steps, not observed). `test/context-usage.test.ts`; the full suite passes (2,331).
