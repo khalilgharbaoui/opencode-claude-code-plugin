@@ -13719,3 +13719,9 @@ rule), and a compaction served between two turns end to end (only the plugin's s
 Not watched on the desktop itself: with every mid-turn step storing 20,616, the unchanged
 `lastAssistantWithUsage` returns that step, so its gauge reads 20,616 (read from the code and the stored
 steps, not observed). `test/context-usage.test.ts`; the full suite passes (2,331).
+
+Shipped as v0.76.2 on 2026-11-24 (PR #193 by @puzzlemoondev, closing issue #192), a patch release: the
+PR merged with master and renumbered from h #g324 (taken meanwhile by #196) to h #g325, CI green on Linux and
+Windows on the PR head, on the merge commit `24d50ed` before the tag and on the release commit `83a0047`, the
+publish confirmed by the `Publish package` step's tail and the version document's shasum (`13e3cf97`), with a
+GitHub Release.
