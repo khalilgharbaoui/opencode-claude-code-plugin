@@ -13790,3 +13790,8 @@ dormant until Claude Code reports a per-model weekly window for the account. Not
 and the interactive transport (which records no readings but a refusal). PR #198, not yet merged or
 released.
 `test/account-sidebar.test.ts`, `test/account-usage.test.ts`.
+
+Shipped as v0.77.0 on 2026-11-24 (PR #198, Joe Callea's `aaf6a33` plus the Fable label dropped), a minor
+release: CI green on Linux and Windows on the PR head, on the merge commit `893053a` before the tag and on the
+release commit `483487f`, the publish confirmed by the `Publish package` step's tail and the version
+document's shasum (`5357ad24`), with a GitHub Release.
