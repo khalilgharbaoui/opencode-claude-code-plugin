@@ -13904,4 +13904,4 @@ Both subagents were idle through the middle two, the nested lines carried it, an
 `background subagent gate {"supported":true,"mode":"always","reports":"background-result",...,"hostVersion":
 "2.4.1"}`. Not run live: a click on a nested line (tmux cannot click), more than three nested lines, opencode
 2.2.6 to 2.3's location path, and opencode 1.x (no nested input, unchanged by construction). Gate: typecheck,
-2424 tests passing, build, and `dist/tui.js` free of the logger's marker. PR not yet merged or released.
+2424 tests passing, build, and `dist/tui.js` free of the logger's marker. PR #199, not yet merged or released.
