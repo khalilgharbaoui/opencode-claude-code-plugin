@@ -13905,3 +13905,9 @@ Both subagents were idle through the middle two, the nested lines carried it, an
 "2.4.1"}`. Not run live: a click on a nested line (tmux cannot click), more than three nested lines, opencode
 2.2.6 to 2.3's location path, and opencode 1.x (no nested input, unchanged by construction). Gate: typecheck,
 2424 tests passing, build, and `dist/tui.js` free of the logger's marker. PR #199, not yet merged or released.
+
+Shipped as v0.78.0 on 2026-11-25 (PR #199), a minor release: CI green on Linux and Windows on the PR head,
+on the merge commit `4e37ded` before the tag and on the release commit `d8f681d`, the publish confirmed by
+the `Publish package` step's tail and the version document's shasum (`2c7ee242`), with a GitHub Release.
+The first `npm version` failed to sign its commit (1Password answered nothing); the retried commit signed,
+and the annotated tag was made by hand the way `npm version` makes it.
