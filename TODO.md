@@ -247,8 +247,6 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
   it, C sub-subagents nested under their parent, D nested lines only while running. Plus the opencode 2.4.0
   compatibility check. One PR, release after the maintainer's go.
 
-Nothing in progress.
-
 ## Done
 
 - 2026-11-24: **done** (v0.77.0, PR [#198](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/198), h #g326): the sidebar's Accounts lines show the weekly window at any level, the weekly window of the model the viewed session last spawned (`7d opus`, `7d sonnet`) on that spawn's account only, and the most pressing other window, with no window twice and indentation given up before a level or reset date is cut. Built by Joe Callea (@jcalleacreative) on their fork (commit `aaf6a33`), taken with authorship kept and without its `Fable 7d` label, which Claude Code 2.1.322 never reports. Live on opencode 2.4.0: the `7d` lines drew from real readings; the model line only from a planted reading, because no account reported a per-model window.
