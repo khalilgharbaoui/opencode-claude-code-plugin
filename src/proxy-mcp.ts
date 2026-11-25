@@ -523,13 +523,54 @@ export const ALWAYS_BACKGROUND_SUBAGENTS_SINCE = "2.3.0"
  * returns at once is the one that loses work.
  */
 export function hostRunsEverySubagentInBackground(version: string | undefined): boolean {
+  return versionAtLeast(version, ALWAYS_BACKGROUND_SUBAGENTS_SINCE)
+}
+
+/** Whether `version` is `since` or later; unknown or unparsable is false. */
+function versionAtLeast(version: string | undefined, since: string): boolean {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version?.trim() ?? "")
   if (!match) return false
   const [major, minor, patch] = match.slice(1).map(Number)
-  const [sinceMajor, sinceMinor, sincePatch] = ALWAYS_BACKGROUND_SUBAGENTS_SINCE.split(".").map(Number)
+  const [sinceMajor, sinceMinor, sincePatch] = since.split(".").map(Number)
   if (major !== sinceMajor) return major > sinceMajor
   if (minor !== sinceMinor) return minor > sinceMinor
   return patch >= sincePatch
+}
+
+/**
+ * The first opencode release that reports a subagent going idle as
+ * `<background-result kind="subagent" sessionID="ses_..." state="..."
+ * description="...">` rather than `<subagent sessionID="..." state="...">`
+ * (h #g327). Read out of `@opencode/core` 2.4.0 and the 2.4.1 binary: one
+ * function wraps every background report (`kind="subagent"`, `"shell"`,
+ * `"codemode"`, `"image"`, `"video"`), its system prompt tells the model to
+ * tell them apart by the `<background-result>` opening tag, and the dispatch
+ * answer reads `You will receive a <background-result kind="subagent"> message
+ * when it goes idle`. The state values are the 2.3 ones: `running` is an idle
+ * child whose own background work goes on.
+ */
+export const BACKGROUND_RESULT_REPORTS_SINCE = "2.4.0"
+
+/** Which form a host reports a background subagent in: `subagent` up to 2.3, `background-result` from 2.4. */
+export type BackgroundReportForm = "subagent" | "background-result"
+
+/** The report form for an opencode version; unknown keeps the 2.3 form, like `hostRunsEverySubagentInBackground`. */
+export function backgroundReportForm(version: string | undefined): BackgroundReportForm {
+  return versionAtLeast(version, BACKGROUND_RESULT_REPORTS_SINCE) ? "background-result" : "subagent"
+}
+
+/**
+ * A text that names opencode 2.3's report, reworded for 2.4's
+ * (`backgroundReportForm`), so the model looks for the message it will get.
+ * Only the two spellings the plugin's own texts use are touched.
+ */
+export function withBackgroundResultReports(text: string): string {
+  return text
+    .replaceAll(
+      '<subagent sessionID="..." state="...">',
+      '<background-result kind="subagent" sessionID="..." state="...">',
+    )
+    .replaceAll("`<subagent>`", '`<background-result kind="subagent">`')
 }
 
 /**
@@ -571,6 +612,9 @@ export const TASK_BACKGROUND_NOTE_ALWAYS =
   " notification did not deliver, or to task_cancel to stop it. The dispatch" +
   " result may end with how many background subagents are running now: that" +
   " is for information, never a reason to poll or wait."
+
+/** `TASK_BACKGROUND_NOTE_ALWAYS` as it reads on opencode 2.4.0 and later (h #g327). */
+export const TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT = withBackgroundResultReports(TASK_BACKGROUND_NOTE_ALWAYS)
 
 /**
  * How the host runs a subagent, which decides what the model is told and which
@@ -957,11 +1001,12 @@ export function applyBackgroundSubagentSupport(
   tools: ProxyToolDef[],
   supported: boolean | BackgroundSubagentMode,
   dialect: "v1" | "v2" = "v1",
+  reports: BackgroundReportForm = "subagent",
 ): ProxyToolDef[] {
   if (!tools.some((t) => t.name === "task")) return tools
   const mode: BackgroundSubagentMode =
     typeof supported === "string" ? supported : supported ? "optional" : "unsupported"
-  if (mode === "always") return applyAlwaysBackgroundSupport(tools)
+  if (mode === "always") return applyAlwaysBackgroundSupport(tools, reports)
   const note = dialect === "v2" ? TASK_BACKGROUND_NOTE_V2 : TASK_BACKGROUND_NOTE
   const adjusted = tools.map((t) => {
     if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
@@ -984,7 +1029,8 @@ export function applyBackgroundSubagentSupport(
  * put in front survives. A function replacer, because a `$` in a replacement
  * string means something to `String.prototype.replace`.
  */
-function applyAlwaysBackgroundSupport(tools: ProxyToolDef[]): ProxyToolDef[] {
+function applyAlwaysBackgroundSupport(tools: ProxyToolDef[], reports: BackgroundReportForm): ProxyToolDef[] {
+  const note = reports === "background-result" ? TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT : TASK_BACKGROUND_NOTE_ALWAYS
   const adjusted = tools.map((t) => {
     if (t.name !== "task" && t.name !== TASK_BATCH_TOOL_NAME) return t
     const description =
@@ -996,7 +1042,7 @@ function applyAlwaysBackgroundSupport(tools: ProxyToolDef[]): ProxyToolDef[] {
           )
     return {
       ...t,
-      description: `${description}\n\n${TASK_BACKGROUND_NOTE_ALWAYS}`,
+      description: `${description}\n\n${note}`,
       inputSchema: stripBackgroundFromSchema(t.name, t.inputSchema),
     }
   })

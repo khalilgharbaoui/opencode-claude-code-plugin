@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto"
 import { basename, dirname, isAbsolute, join } from "node:path"
 import { log } from "./logger.js"
 import { pluginTmpDir } from "./tmp.js"
+import { withBackgroundResultReports, type BackgroundReportForm } from "./proxy-mcp.js"
 
 function readPromptFileIfPresent(path: string): string | undefined {
   try {
@@ -131,11 +132,24 @@ On this opencode host every subagent runs in the background: \`mcp__opencode_pro
 - A dispatch's result may end with \`Background subagents running now: N\`. That number is for information, so you can avoid starting more than the work needs; it is never a reason to poll, sleep or wait.`
 
 /**
- * The hint describing this host's own envelopes, picked like the tool note.
- * `always` is opencode 2.3.0 and later, where every dispatch is a background one.
+ * `BACKGROUND_SUBAGENT_HINT_ALWAYS` for opencode 2.4.0 and later (h #g327),
+ * which reports a subagent going idle as `<background-result kind="subagent"
+ * sessionID="..." state="...">`; everything else it says is unchanged.
  */
-export function backgroundSubagentHint(dialect: "v1" | "v2", always = false): string {
-  if (always) return BACKGROUND_SUBAGENT_HINT_ALWAYS
+export const BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT = withBackgroundResultReports(BACKGROUND_SUBAGENT_HINT_ALWAYS)
+
+/**
+ * The hint describing this host's own envelopes, picked like the tool note.
+ * `always` is opencode 2.3.0 and later, where every dispatch is a background
+ * one, and `reports` the form its reports take (2.4.0 and later wrap them in
+ * `<background-result>`).
+ */
+export function backgroundSubagentHint(
+  dialect: "v1" | "v2",
+  always = false,
+  reports: BackgroundReportForm = "subagent",
+): string {
+  if (always) return reports === "background-result" ? BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT : BACKGROUND_SUBAGENT_HINT_ALWAYS
   return dialect === "v2" ? BACKGROUND_SUBAGENT_HINT_V2 : BACKGROUND_SUBAGENT_HINT
 }
 

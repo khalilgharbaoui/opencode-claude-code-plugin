@@ -47,8 +47,12 @@ The plugin reads the opencode version (the plugin context's `app.version`, or th
 opencode 1.x and 2.0 to 2.2 are told exactly what they were before. `plugin.log` says which applied:
 
 ```
-background subagent gate {"supported":true,"mode":"always","hostApi":"v2","hostVersion":"2.3.2", ...}
+background subagent gate {"supported":true,"mode":"always","reports":"subagent","hostApi":"v2","hostVersion":"2.3.2", ...}
 ```
+
+**opencode 2.4.0 reports in a new tag.** From 2.4.0 the same report reads `<background-result kind="subagent" sessionID="…" state="…" description="…">`: one tag now wraps every kind of background work opencode reports (a shell's end comes to the session that ran it as `kind="shell"`, and there are `image`, `video` and `codemode` kinds), and the states are 2.3's, `state="running"` included. The dispatch answer is the same prose, now ending `You will receive a <background-result kind="subagent"> message when it goes idle`. On 2.4.0 and later the plugin's hint and the `task` and `task_batch` notes name that tag, so Claude looks for the message it will actually get; `"reports":"background-result"` in the same log line says so. 2.3 is told exactly what it was before. Read out of `@opencode/core` 2.4.0 and the 2.4.1 binary.
+
+A subagent's own background work (the renders and captures it started as background shells, the subagents it dispatched) is listed under its row in the [sidebar](./subagents-sidebar.md#work-under-a-subagent), and its row keeps spinning while that work runs, so you can see it is still busy without asking.
 
 **The gate is enforced at the schema, not at the call.** On a host without the flag opencode rejects `background: true` outright with `Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`, which costs a whole dispatch. So the plugin reads the host's own `task` schema (the same registry fetch that supplies the agent-type list) and, when it has no `background` property, strips the field before Claude ever sees it. Nothing about a default install changes: the model is shown exactly `description`, `prompt`, `subagent_type`, `task_id`, `command`. Either way `plugin.log` says which:
 

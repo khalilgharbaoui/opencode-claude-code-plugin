@@ -13795,3 +13795,113 @@ Shipped as v0.77.0 on 2026-11-24 (PR #198, Joe Callea's `aaf6a33` plus the Fable
 release: CI green on Linux and Windows on the PR head, on the merge commit `893053a` before the tag and on the
 release commit `483487f`, the publish confirmed by the `Publish package` step's tail and the version
 document's shasum (`5357ad24`), with a GitHub Release.
+
+## Background work under a subagent, and opencode 2.4's report (2026-11-25)
+
+h #g327. Reported from the AL WASIYYAH pane (2026-11-24 and 25, opencode 2.4.0, Claude Code 2.1.322): a session
+dispatched a `director` subagent, which started long jobs (captures, renders, TTS, 10 to 40 minutes) as
+background shells and ended its turn. From then on the sidebar showed no row for it, although its shells ran,
+the parent had a `<background-result kind="subagent" state="running">` report naming them, and the child woke
+again whenever a shell ended. The maintainer had to ask "still busy?". Their words: "if its a shell thing then
+maybe we need it as that if its another subagent spawened by the original subagent but reports to the main..
+then basically we treat it a another subagent we just need good visual to show that its spawened by it maybe
+without having bad UX/UI". They approved the design as "Build A to D".
+
+**Why the row vanished.** Two causes, both read off the code and confirmed live. opencode 2.4 changed the
+report's tag, and `completionsIn` read only `<task id=...>` and `<subagent sessionID=...>`, so no report was
+seen: the idle child read done after `STARTING_GRACE_MS` and aged out of the list after `FINISHED_TTL_MS`.
+And a subagent's shells belong to the subagent's session, while `readShells` read only the viewed session's,
+so nothing said the child still had work.
+
+**What opencode 2.4 changed** (read out of `@opencode/core` 2.3.2 against 2.4.0 and the 2.4.1 binary the
+machine runs; 2.4.1's packages are not published). One function, `wj(attributes, body)`, writes every
+background report as `<background-result ${attributes}>\n${body}\n</background-result>`: `kind="subagent"
+sessionID state description` to the dispatcher, `kind="shell" id state command` to the session that ran the
+shell, and `codemode`, `image` and `video` kinds. The subagent states are 2.3's: `state="running"` when the
+child finished a round with work outstanding (`cf` lists it: `Background work still running:` then `- shell
+(sh_...): <command>`). The dispatch answer is the same prose, ending `You will receive a <background-result
+kind="subagent"> message when it goes idle`, and the system prompt tells the model to tell reports apart by
+the opening tag. Measured in the live run below: the parent got `kind=subagent state=running`, the child
+`kind=shell state=completed`, then the parent `kind=subagent state=completed`; two levels down, every level
+got its own pair the same way.
+
+The TUI context gained `data.job.list(sessionID)` (`@opencode/plugin` 2.4.0, "Running background jobs owned
+by the session or any session below it. Experimental."). Read out of the 2.4.1 binary: the store keeps only
+running jobs (`experimental.job.updated` with another status deletes the entry), the list answers for a
+session's subtree from `jobTree` or the session parent chain, `job.sync(root)` runs whenever opencode opens a
+session, the server lists only backgrounded jobs (`isBackgrounded`), and a plugin's `data` IS that store, so
+the undeclared `sync` is there too. opencode's own footer counts a subagent as active when it is busy or has a
+job under it, which is the rule the sidebar now follows.
+
+**What changed.** Server half: `backgroundReportForm(hostVersion)` (2.4.0 and later), and on such a host the
+task note and the background hint are the 2.3 texts with the tag respelled
+(`withBackgroundResultReports`); the gate's log line carries `reports`. 1.x and 2.0 to 2.3 are byte-identical.
+Sidebar: `completionsIn` reads every form (attributes in any order, only the opening tag, a non-subagent kind
+skipped); a row runs while anything under it runs and carries that work as `under` (its background shells and
+its own subagents, any depth, each by the same rules), `waiting` when the child is idle (no progress line, it
+has no turn), and `nestedLines` draws it as a tree under the row: running first, a finished line for 60 s, at
+most three lines then `+N more`, `├`/`└` and `│` rails over what is shown, a nested subagent clickable in its
+own box. A finished row folds back to one row and never counts toward the three finished rows. On 2.4 the work
+comes from `data.job.list(viewed)`: `shellsFromJobs` feeds the shell memory (scope `job\0<viewed>`, the
+viewed session's own shells still off its location store), `childrenFromJobs` names a grandchild the TUI has
+no session for. On 2.2.6 to 2.3 each subagent's shells come from its own location's store, shown once the
+subagent is idle (a running shell of an idle session is background) or earlier when its loaded messages tell
+foreground calls apart. opencode 1.x passes no nested input and is unchanged. The line cap turned out to
+bound the indentation too: depth first, three lines reach level three at most, which is the indentation cap,
+kept as a guard in case the line cap grows.
+
+**Live, opencode 2.4.1 + Claude Code 2.1.322 + Haiku 5.5**, by h #g307's method: a scratch `--standalone`
+TUI in its own tmux socket (210x60), every XDG dir and `TMPDIR` under the lane's temp dir, the plugin from the
+worktree's `dist`, read with `capture-pane`. Scenario 1, a `general` subagent told to start `sleep 90; echo
+nested-done` in the background and end its turn, while it ran and after the child went idle:
+
+```
+Subagents
+⠧ general Background sleep        bg
+ haiku-5.5 · <$0.01
+ └ ⠧ shell sleep 90; echo ne… 10s bg
+```
+
+The parent's reply quoted the report ("Its background shell ... is still running, and opencode will report
+again when it finishes"), and the row kept spinning (`37s`, `1m00s`, `1m25s`). When the shell ended the child
+woke and its progress line came back: ` 1s` then ` └ ✓ shell sleep…  exit 0 · 1m30s bg`; after its final
+report the row read `✓ general Background sleep  bg` / ` haiku-5.5 · <$0.01`, one row.
+
+Scenario 2, a subagent that dispatches its own subagent, which starts `sleep 75; echo grand-done`. Two
+refusals came first and are opencode's: the built-in `general` agent has no `subagent` tool on 2.4.1 ("No tool
+named \"subagent\" is currently available"), and `experimental.subagent_depth` defaults to 1 ("Subagent depth
+limit reached (1)"). The reporter's `director` is a `mode: all` agent with a `task` allow-list and the
+operator's config sets `subagent_depth: 2`, so the run used a scratch `mode: all` agent (`nester`) and depth 2:
+
+```
+Subagents
+⠏ nester Nested parent            bg
+ haiku-5.5
+ 8s · 1 call
+ └ ⠏ general Nested child      1s bg
+```
+```
+Subagents
+⠏ nester Nested parent            bg
+ haiku-5.5 · <$0.01
+ └ ⠏ general Nested child      5s bg
+   └ ⠏ shell sleep 75; echo g… 0s bg
+```
+```
+Subagents
+⠏ nester Nested parent            bg
+ haiku-5.5 · <$0.01
+ └ ⠏ general Nested child   1m21s bg
+   └ ✓ shell slee… exit 0 · 1m15s bg
+```
+```
+Subagents
+✓ nester Nested parent            bg
+ haiku-5.5 · <$0.01
+```
+
+Both subagents were idle through the middle two, the nested lines carried it, and the plugin log said
+`background subagent gate {"supported":true,"mode":"always","reports":"background-result",...,"hostVersion":
+"2.4.1"}`. Not run live: a click on a nested line (tmux cannot click), more than three nested lines, opencode
+2.2.6 to 2.3's location path, and opencode 1.x (no nested input, unchanged by construction). Gate: typecheck,
+2424 tests passing, build, and `dist/tui.js` free of the logger's marker. PR not yet merged or released.
