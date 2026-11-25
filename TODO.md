@@ -240,6 +240,13 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
+- 2026-11-25, in progress (lane ses_ded588b65ffe..., h #g327): background work in the sidebar on opencode 2.4,
+  reported from the AL WASIYYAH pane. opencode 2.4.0 sends `<background-result kind="subagent" ...>` instead of
+  `<subagent ...>`, so an idle subagent's row disappears while its background shells run. The maintainer chose
+  "Build A to D": A the new report on both halves, B a subagent busy while its shells run with the shells under
+  it, C sub-subagents nested under their parent, D nested lines only while running. Plus the opencode 2.4.0
+  compatibility check. One PR, release after the maintainer's go.
+
 Nothing in progress.
 
 ## Done
