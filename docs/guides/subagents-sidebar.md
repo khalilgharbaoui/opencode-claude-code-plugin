@@ -1,6 +1,6 @@
 ---
 title: 'Subagents in the sidebar'
-description: 'A progress line for the session, and a live list of its subagents and background shells: what each really runs as, what it has spent, and one click to open it.'
+description: 'A progress line for the session, and a live list of its subagents and background shells, with the work each subagent still has running under it: what each really runs as, what it has spent, and one click to open it.'
 sidebar:
   order: 9
 ---
@@ -22,7 +22,7 @@ Subagents
 ```
 
 - **The glyph** is a spinner in the theme's accent colour while the subagent runs, a ✓ when it finished and a ✗ when it failed or was cancelled. A finished row is greyed out.
-- **Then the agent type and the task description**, cut with an ellipsis to fit the sidebar. A dim `bg` marks a [background](./background-subagents.md) dispatch, which is the one you would otherwise lose track of. From opencode 2.3.0 every dispatch is one: the row spins until the child reports, and runs again if the child does (a follow-up, or its own background work finishing). A child that reported `state="running"` (it went idle with background work of its own still going) keeps its spinner until the report after it.
+- **Then the agent type and the task description**, cut with an ellipsis to fit the sidebar. A dim `bg` marks a [background](./background-subagents.md) dispatch, which is the one you would otherwise lose track of. From opencode 2.3.0 every dispatch is one: the row spins until the child reports, and runs again if the child does (a follow-up, or its own background work finishing). A child that reported `state="running"` (it went idle with background work of its own still going) keeps its spinner until the report after it. opencode 2.4 writes that report as `<background-result kind="subagent" ...>`, and the sidebar reads every form. A subagent whose own background shells or subagents still run stays running too, with that work listed under it (see [Work under a subagent](#work-under-a-subagent)).
 - **The muted second line is what the subagent really runs as**: model, reasoning effort, and on a multi-account install the account. It is read from what the plugin actually spawned, not from what opencode asked for, so an agent's `forceModel` or `reasoningEffort`, a [dispatch form](../configuration/subagents.md#choosing-per-dispatch-not-per-file) answer, a model you [named in the conversation](../configuration/subagents.md#a-model-you-name-in-the-conversation-opencode-2) on opencode 2, the fallback chain and an account switch all show up here. opencode's own footer in the child session shows the model it asked for, which can differ. The effort is in colour, the theme's warning (yellow) colour, faded once the row is finished, because it is what most often differs from one subagent to the next. Effort appears once the subagent's first turn has started; a piece that is not known is left out. The line ends with **the subagent's spend so far**, `· $0.42`, in the theme's secondary colour: opencode's own cost figure for that child session, to the cent under ten dollars and five characters at most above (`$12.4`, `$123`), kept after the row finishes. When the line has no room for the dot a space stands in for it, and when it has no room for the number the number is left off: the model is never cut to make space for it.
 - **A running row gets a third line**, the same [progress line](#progress) the session itself gets, measured from the subagent's own session.
 - **Click a row** to open that subagent's session. opencode's own keys take you back: `up` returns to the parent, `left` and `right` step through the siblings. opencode routes to a session, never to a message, so the click opens the child session itself rather than scrolling the parent to the task.
@@ -50,6 +50,28 @@ Subagents
 - **Rows sort and fade like subagents'**: running ones by when they started, finished ones for ten minutes. A shell row has no session behind it, so clicking it does nothing.
 
 opencode's own footer counts the same shells (`↓ 1 shell`), foreground ones included; this section names them and keeps the background ones in view after they end. opencode 1.x and opencode 2 before 2.2.6 hand a TUI plugin no shell list, so there the section shows subagents only.
+
+## Work under a subagent
+
+A subagent can start work that outlives its own turn: a render, a capture or a voice-over in a background shell, or a subagent of its own. On opencode 2 the subagent's row keeps spinning while any of that runs, even when the subagent itself has gone idle, and lists it under the row as a small tree:
+
+```
+Subagents
+⠋ nester Nested parent            bg
+ haiku-5.5 · <$0.01
+ └ ⠋ general Nested child     14s bg
+   └ ⠋ shell sleep 75; echo g… 8s bg
+```
+
+That is opencode 2.4.1 with both subagents idle, waiting on the shell at the bottom. When it ended, its line read `   └ ✓ shell slee… exit 0 · 1m15s bg` while the subagent it woke up reported, and the whole row then turned into a single `✓ nester Nested parent  bg` row. Sibling lines are joined with `├` and `│`, and past three lines the rest fold into one ` └ +2 more` line.
+
+- **Each line** is a background shell the subagent started (`shell` and its command) or a subagent it dispatched (its agent type and task), with how long it has run and the `bg` marker. A subagent of a subagent has its own work under it one step further in, at any depth.
+- **Only while something runs.** A finished shell or subagent shows how it ended for a minute (`✓ shell ffmpeg … exit 0 · 19m50s bg`) while the row is still running, then folds away. When nothing under the row runs and the subagent has reported, the row is a finished row again: one row, no lines under it.
+- **At most three lines** under a row, then one `+N more` line for the rest, so a subagent with a dozen jobs does not push the other rows off the sidebar. Lines are set in two cells per level, at most three levels, so the 36-cell row keeps room for what runs.
+- **A row running only for its work** (the subagent is idle) has no progress line: it has no turn to measure, and the lines under it say what runs. A finished row never counts work under it toward the three finished rows kept.
+- **Click a nested subagent** to open its session, as you would a row. A nested shell has no session behind it, so clicking it does nothing.
+
+On opencode 2.4 and later this comes from opencode's own list of running background jobs, the one its footer counts: every job of the session you are looking at and of every session below it, whatever directory each runs in. On opencode 2.2.6 to 2.3 the plugin reads each subagent's shells from its own directory's shell list instead, and lists a shell under a subagent once the subagent is idle (a running shell of an idle session is always a background one), or earlier when the subagent's own messages say which of its calls is in the foreground. opencode 1.x hands a TUI plugin no shell list, and its rows stay as they were.
 
 ## Progress
 
@@ -120,6 +142,6 @@ Use the same spec you have in `opencode.json`, a `file://` checkout path include
 
 The list is built from opencode's own state in the TUI: the current session's child sessions, its `task` (1.x) or `subagent` (2.x) tool calls, and the message opencode adds to the parent when a background subagent ends. The model, effort and account line comes from a small file the provider half writes, `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json` (`~/.local/state/...` by default): one entry per session holding a model id, an effort level, an account name and a time, and nothing else. It is rewritten only when what a session spawns as changes, and bounded to the newest 256 sessions of the last seven days.
 
-The shell rows read opencode 2's own shell list for the session's directory, which tags each shell with the session that started it, the session's running shell calls (a shell with the same command as one of them is in the foreground), and opencode's `shell.exited` event for the exit code. The sidebar keeps the last 64 shells it has seen in memory, and writes nothing.
+The shell rows read opencode 2's own shell list for the session's directory, which tags each shell with the session that started it, the session's running shell calls (a shell with the same command as one of them is in the foreground), and opencode's `shell.exited` event for the exit code. The lines under a subagent read opencode 2's session list (each session's `parentID`), each subagent's own `subagent` calls and the reports its subagents sent it, and on opencode 2.4 and later its list of running background jobs, which names the session that owns each one. The sidebar keeps the last 64 shells it has seen in memory, and writes nothing.
 
 The progress lines read the session's messages from your last one on, their tool parts, the todo list opencode 1's TUI keeps per session, and opencode's own busy state; a subagent's spend is the `cost` on opencode's session record. The estimate reads two files the provider half writes: the turn history above, and `turn-progress.json` beside it, which holds one record per running turn (when it started, the output tokens it has generated so far, and a time, under the session's hash), rewritten as each of the turn's API calls ends. That count is the one thing the TUI cannot see in opencode's own state, because opencode reports a step's usage only once the turn's reply is in. The progress lines write nothing.

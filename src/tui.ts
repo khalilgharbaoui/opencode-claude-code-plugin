@@ -47,17 +47,25 @@ import { createMemo, createSignal, onCleanup } from "solid-js"
 import {
   SIDEBAR_ROW_WIDTH,
   SPINNER_FRAMES,
+  childrenFromJobs,
   collapsedSummary,
   completionsIn,
   createShellMemory,
   deriveSubagentRows,
+  layoutNestedLine,
   layoutRow,
+  nestedLines,
   partChildID,
+  shellsFromJobs,
   type ChildRunState,
   type ChildSessionInput,
   type CompletionInput,
+  type JobInput,
+  type NestedLine,
+  type NestedSessionInput,
   type ObservedShell,
   type Segment,
+  type ShellInput,
   type SidebarInput,
   type SubagentRow,
   type TaskPartInput,
@@ -186,7 +194,9 @@ const ROLE_COLOR: Record<Segment["role"], keyof SidebarColors> = {
 interface SidebarHost {
   colors(): SidebarColors
   /** The inputs for one parent session, minus the clock and the records. */
-  gather(parentID: string): Pick<SidebarInput, "children" | "parts" | "completions" | "shells" | "status" | "stoppedAt" | "cost">
+  gather(
+    parentID: string,
+  ): Pick<SidebarInput, "children" | "parts" | "completions" | "shells" | "nested" | "status" | "stoppedAt" | "cost">
   /** A session's own messages and todo list, what its progress line is measured from. */
   progress(sessionID: string): ProgressSource
   navigate(sessionID: string): void
@@ -224,14 +234,18 @@ function roleColor(colors: SidebarColors, role: Segment["role"]): Color {
 
 const EMPTY_SOURCE: ProgressSource = { messages: [], todos: [] }
 
-/** What one sidebar shows for its session: the rows, each running row's line, and the session's own. */
+/**
+ * What one sidebar shows for its session: the rows, each running row's line,
+ * what runs under each row (h #g327), and the session's own line.
+ */
 interface SidebarView {
   rows: SubagentRow[]
   lines: Map<string, ProgressView>
+  nested: Map<SubagentRow, NestedLine[]>
   progress?: ProgressView
 }
 
-const EMPTY_VIEW: SidebarView = { rows: [], lines: new Map() }
+const EMPTY_VIEW: SidebarView = { rows: [], lines: new Map(), nested: new Map() }
 
 /**
  * The sections, their clocks and the store readers, for one host. Returns
@@ -384,11 +398,18 @@ function createSidebar(host: SidebarHost) {
       now: clock,
     })
     const lines = new Map<string, ProgressView>()
+    const nested = new Map<SubagentRow, NestedLine[]>()
+    for (const row of rows) {
+      const under = attempt(() => nestedLines(row, clock), [] as NestedLine[])
+      if (under.length > 0) nested.set(row, under)
+    }
     // The running foreground children's lines: the session's turn waits in
-    // their `task` calls, so it cannot end before they do.
+    // their `task` calls, so it cannot end before they do. A row that runs
+    // only for the work under it has no turn of its own to measure: its
+    // nested lines say what runs.
     const waitedOn: ProgressView[] = []
     for (const row of rows) {
-      if (row.state !== "running" || !row.sessionID) continue
+      if (row.state !== "running" || !row.sessionID || row.waiting) continue
       const measure = measureProgress(progressOf(row.sessionID))
       const line = estimateFor(row.sessionID, measure, rowProgress(measure, { started: row.started, now: clock }), row.agent)
       lines.set(row.sessionID, line)
@@ -404,7 +425,7 @@ function createSidebar(host: SidebarHost) {
       now: clock,
     })
     const progress = session ? estimateFor(sessionID, measure, session, undefined, waitedOn) : undefined
-    return { rows, lines, progress }
+    return { rows, lines, nested, progress }
   }
 
   const styled = (segment: Segment): OpentuiNode => {
@@ -435,7 +456,41 @@ function createSidebar(host: SidebarHost) {
     return line
   }
 
-  const buildRow = (row: SubagentRow, progress: ProgressView | undefined): OpentuiNode => {
+  /** A glyph that follows the spinner clock while its row runs. */
+  const spinnerSpan = (role: Segment["role"]): OpentuiNode => {
+    const span = createElement("span")
+    insert(span, () => SPINNER_FRAMES[frame() % SPINNER_FRAMES.length])
+    effect(() => setProp(span, "style", { fg: roleColor(host.colors(), role) }))
+    return span
+  }
+
+  /** Makes a box open a session when clicked, and light up under the pointer. */
+  const clickable = (box: OpentuiNode, sessionID: string) => {
+    setProp(box, "onMouseDown", () => attempt(() => host.navigate(sessionID), undefined))
+    setProp(box, "onMouseOver", () =>
+      attempt(() => setProp(box, "backgroundColor", host.colors().hover), undefined),
+    )
+    setProp(box, "onMouseOut", () =>
+      attempt(() => setProp(box, "backgroundColor", "transparent"), undefined),
+    )
+  }
+
+  /** One line under a row (h #g327); a nested subagent opens its own session when clicked. */
+  const buildNestedLine = (line: NestedLine): OpentuiNode => {
+    const box = createElement("box")
+    const text = createElement("text")
+    setProp(text, "wrapMode", "none")
+    layoutNestedLine(line, SIDEBAR_ROW_WIDTH).forEach((segment, index) => {
+      // The glyph follows the lead.
+      if (index === 1 && line.row?.state === "running") insertNode(text, spinnerSpan(segment.role))
+      else insertNode(text, styled(segment))
+    })
+    insertNode(box, text)
+    if (line.row?.sessionID) clickable(box, line.row.sessionID)
+    return box
+  }
+
+  const buildRow = (row: SubagentRow, progress: ProgressView | undefined, nested: NestedLine[] = []): OpentuiNode => {
     const box = createElement("box")
     const layout = layoutRow(row, SIDEBAR_ROW_WIDTH)
     const first = createElement("text")
@@ -460,17 +515,14 @@ function createSidebar(host: SidebarHost) {
       insertNode(box, second)
     }
     if (progress) insertNode(box, attempt(() => buildProgressLine(progress, "indent"), createElement("box")))
-    if (row.sessionID) {
-      const sessionID = row.sessionID
-      setProp(box, "onMouseDown", () => attempt(() => host.navigate(sessionID), undefined))
-      setProp(box, "onMouseOver", () =>
-        attempt(() => setProp(box, "backgroundColor", host.colors().hover), undefined),
-      )
-      setProp(box, "onMouseOut", () =>
-        attempt(() => setProp(box, "backgroundColor", "transparent"), undefined),
-      )
-    }
-    return box
+    if (row.sessionID) clickable(box, row.sessionID)
+    if (nested.length === 0) return box
+    // The nested lines sit beside the row's box, not in it, so a click on a
+    // nested subagent opens that subagent and never the row's as well.
+    const group = createElement("box")
+    insertNode(group, box)
+    for (const line of nested) insertNode(group, attempt(() => buildNestedLine(line), createElement("box")))
+    return group
   }
 
   const buildHeading = (label: string): OpentuiNode => {
@@ -513,7 +565,9 @@ function createSidebar(host: SidebarHost) {
     const body = createElement("box")
     insert(body, () =>
       expanded() || list.length <= 2
-        ? list.map((row) => buildRow(row, row.sessionID ? view.lines.get(row.sessionID) : undefined))
+        ? list.map((row) =>
+            buildRow(row, row.sessionID ? view.lines.get(row.sessionID) : undefined, view.nested.get(row)),
+          )
         : null,
     )
     insertNode(section, body)
@@ -884,9 +938,10 @@ export function registerV1(api: V1Api): void {
 // `"running" | "idle"`, an assistant message holds its tool calls inline as
 // `content[]` items named `subagent` (with `metadata.sessionID` set while the
 // call still runs, unlike 1.x), and a background child's end is a message of
-// type `synthetic` whose text is `<subagent sessionID="..." state="...">`.
-// It hands a TUI plugin no todo list (h #g246), so a 2.x bar is the history's
-// estimate or nothing (h #g247).
+// type `synthetic` whose text is `<subagent sessionID="..." state="...">`
+// (`<background-result kind="subagent" ...>` from 2.4, h #g327). It hands a
+// TUI plugin no todo list (h #g246), so a 2.x bar is the history's estimate or
+// nothing (h #g247).
 interface V2Session {
   id: string
   parentID?: string
@@ -938,6 +993,17 @@ interface V2Context {
       sync?(location?: V2Location): Promise<void>
     }
     /**
+     * The running background jobs owned by a session or any session below it
+     * (2.4.0, h #g327), what opencode's own footer counts. `sync` is on the
+     * store a plugin is handed though the declaration names only `list`.
+     * Absent before 2.4, where a subagent's shells come from its own
+     * location's shell store instead.
+     */
+    job?: {
+      list(sessionID: string): JobInput[] | undefined
+      sync?(sessionID: string): Promise<void>
+    }
+    /**
      * Every bus event, the plugin's own RPC events included (2.0.31,
      * h #g253): how the server half's warnings arrive (`src/plugin-notice.ts`).
      */
@@ -976,12 +1042,24 @@ function observedShell(shell: V2Shell): ObservedShell {
   }
 }
 
+/** The commands a session runs in the foreground: none known. */
+const NO_COMMANDS: ReadonlySet<string> = new Set()
+/** A level with nothing read: a session whose messages are not needed. */
+const EMPTY_LEVEL = { parts: [] as TaskPartInput[], completions: [] as CompletionInput[], foreground: NO_COMMANDS, read: false }
+
 export function setupV2(context: V2Context): () => void {
   // Background shells (h #g307): which ran in the background, and how each
   // ended once the store let go of it. One memory for every sidebar.
   const shellMemory = createShellMemory()
   const syncedLocations = new Set<string>()
-  const readShells = (sessionID: string, directory: string | undefined, foreground: ReadonlySet<string>) => {
+  /**
+   * A session's background shells from its own location's store. `foreground`
+   * is the commands of its shell calls still running, or `all` when the
+   * session is busy and its messages cannot say which call is which: a shell
+   * of an idle session is always a background one, because no call of its is
+   * running (h #g327).
+   */
+  const readShells = (sessionID: string, directory: string | undefined, foreground: ReadonlySet<string> | "all") => {
     const store = context.data.shell
     if (!store) return undefined
     const location = directory ? { directory } : undefined
@@ -994,15 +1072,67 @@ export function setupV2(context: V2Context): () => void {
         .catch(() => undefined)
     }
     const owned = (store.list(location) ?? []).map(observedShell).filter((shell) => shell.sessionID === sessionID)
+    const held = foreground === "all" ? new Set(owned.map((shell) => shell.command.trim())) : foreground
     const now = Date.now()
     // Scoped to the session too, so one session's view never ends another's shell.
-    shellMemory.observe(`${key}\u0000${sessionID}`, owned, foreground, now)
+    shellMemory.observe(`${key}\u0000${sessionID}`, owned, held, now)
     return shellMemory.forSession(sessionID, now)
   }
   const noteShellExit = (data: unknown) => {
     const exited = data as { id?: unknown; status?: unknown; exit?: unknown } | undefined
     if (typeof exited?.id !== "string" || typeof exited.status !== "string") return
     shellMemory.exited(exited.id, exited.status, typeof exited.exit === "number" ? exited.exit : undefined, Date.now())
+  }
+  // opencode 2.4's background jobs (h #g327): every session's under the viewed
+  // one, whatever its directory. opencode syncs the root of the session it
+  // opens; a session viewed below it is synced here once.
+  const syncedJobs = new Set<string>()
+  const readJobs = (sessionID: string): JobInput[] | undefined => {
+    const jobs = context.data.job
+    if (!jobs?.list) return undefined
+    if (!syncedJobs.has(sessionID) && jobs.sync) {
+      syncedJobs.add(sessionID)
+      void Promise.resolve()
+        .then(() => jobs.sync?.(sessionID))
+        .catch(() => undefined)
+    }
+    return (jobs.list(sessionID) ?? []).filter((job) => job && (job.status === undefined || job.status === "running"))
+  }
+
+  /** One session's own `subagent` parts, its children's reports, and its running shell calls. */
+  const readLevel = (sessionID: string) => {
+    const parts: TaskPartInput[] = []
+    const completions: CompletionInput[] = []
+    // The commands of the session's shell calls still running: a shell with
+    // one of these is a foreground call, already on the progress line.
+    const foreground = new Set<string>()
+    const messages = context.data.session.message.list(sessionID) ?? []
+    for (const message of messages) {
+      if (message.type === "assistant") {
+        for (const item of message.content ?? []) {
+          if (item.type !== "tool") continue
+          if (SHELL_TOOLS.has(item.name ?? "")) {
+            const status = item.state?.status
+            const command = item.state?.input?.command
+            if ((status === "pending" || status === "running") && typeof command === "string") {
+              foreground.add(command.trim())
+            }
+            continue
+          }
+          if (!TASK_TOOLS.has(item.name ?? "")) continue
+          parts.push({
+            status: item.state?.status,
+            input: item.state?.input,
+            metadata: item.state?.metadata,
+            start: item.time?.created,
+            end: item.time?.completed,
+          })
+        }
+      } else if (message.type === "synthetic" && message.text) {
+        completions.push(...completionsIn(message.text, message.time?.created))
+      }
+    }
+    return { parts, completions, foreground, read: messages.length > 0 }
   }
 
   const host: SidebarHost = {
@@ -1035,57 +1165,66 @@ export function setupV2(context: V2Context): () => void {
     },
     gather(parentID) {
       const sessions = context.data.session.list() ?? []
-      const children: ChildSessionInput[] = sessions
-        .filter((session) => session.parentID === parentID)
-        .map((session) => ({
+      // Every session's children and directory, once per gather: the tree
+      // under the viewed session is walked from these (h #g327).
+      const childrenOf = new Map<string, ChildSessionInput[]>()
+      const directoryOf = new Map<string, string | undefined>()
+      const addChild = (parent: string, child: ChildSessionInput) => {
+        const list = childrenOf.get(parent) ?? []
+        if (list.some((known) => known.id === child.id)) return
+        list.push(child)
+        childrenOf.set(parent, list)
+      }
+      for (const session of sessions) {
+        directoryOf.set(session.id, session.location?.directory)
+        if (!session.parentID) continue
+        addChild(session.parentID, {
           id: session.id,
           title: session.title,
           agent: session.agent,
           created: session.time?.created,
           updated: session.time?.updated,
-        }))
-      const parts: TaskPartInput[] = []
-      const completions: CompletionInput[] = []
-      // The commands of the session's shell calls still running: a shell with
-      // one of these is a foreground call, already on the progress line.
-      const foreground = new Set<string>()
-      for (const message of context.data.session.message.list(parentID) ?? []) {
-        if (message.type === "assistant") {
-          for (const item of message.content ?? []) {
-            if (item.type !== "tool") continue
-            if (SHELL_TOOLS.has(item.name ?? "")) {
-              const status = item.state?.status
-              const command = item.state?.input?.command
-              if ((status === "pending" || status === "running") && typeof command === "string") {
-                foreground.add(command.trim())
-              }
-              continue
-            }
-            if (!TASK_TOOLS.has(item.name ?? "")) continue
-            parts.push({
-              status: item.state?.status,
-              input: item.state?.input,
-              metadata: item.state?.metadata,
-              start: item.time?.created,
-              end: item.time?.completed,
-            })
-          }
-        } else if (message.type === "synthetic" && message.text) {
-          completions.push(...completionsIn(message.text, message.time?.created))
-        }
+        })
       }
-      const location = sessions.find((session) => session.id === parentID)?.location?.directory
+      const status = (id: string): ChildRunState => {
+        const value = attempt(() => context.data.session.status(id), undefined)
+        if (value === "running") return "busy"
+        if (value === "idle") return "idle"
+        return "unknown"
+      }
+      const jobs = attempt(() => readJobs(parentID), undefined)
+      if (jobs) {
+        // A subagent of a subagent the TUI has not loaded a session for yet.
+        for (const { parentID: owner, child } of childrenFromJobs(jobs)) addChild(owner, child)
+        // The background shells of every session under this one; this
+        // session's own are read off its location's store below, as before.
+        attempt(
+          () => shellMemory.observe(`job\u0000${parentID}`, shellsFromJobs(jobs, parentID), NO_COMMANDS, Date.now()),
+          undefined,
+        )
+      }
+      const top = readLevel(parentID)
+      const nested = (id: string): NestedSessionInput => {
+        const children = childrenOf.get(id) ?? []
+        // A subagent's own messages are read only when they can say
+        // something: which of its subagents is which, or, before 2.4, which
+        // of its shells is a call still running.
+        const level = children.length > 0 || !jobs ? readLevel(id) : EMPTY_LEVEL
+        let shells: ShellInput[] | undefined
+        if (jobs) shells = shellMemory.forSession(id, Date.now())
+        else {
+          const hold = status(id) === "busy" && !level.read
+          shells = attempt(() => readShells(id, directoryOf.get(id), hold ? "all" : level.foreground), undefined)
+        }
+        return { children, parts: level.parts, completions: level.completions, shells }
+      }
       return {
-        children,
-        parts,
-        completions,
-        shells: attempt(() => readShells(parentID, location, foreground), undefined),
-        status: (id: string): ChildRunState => {
-          const status = attempt(() => context.data.session.status(id), undefined)
-          if (status === "running") return "busy"
-          if (status === "idle") return "idle"
-          return "unknown"
-        },
+        children: childrenOf.get(parentID) ?? [],
+        parts: top.parts,
+        completions: top.completions,
+        shells: attempt(() => readShells(parentID, directoryOf.get(parentID), top.foreground), undefined),
+        nested: (id: string) => attempt(() => nested(id), undefined),
+        status,
         stoppedAt: () => undefined,
         cost: (id: string) => attempt(() => context.data.session.cost?.(id), undefined),
       }

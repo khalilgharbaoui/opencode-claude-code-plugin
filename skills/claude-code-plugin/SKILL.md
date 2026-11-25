@@ -1154,6 +1154,15 @@ before. The log line says which: `background subagent gate {"mode":"always",
 row. A `background` field still reaching a 2.3 host (an older plugin) is dropped by
 opencode and changes nothing.
 
+**opencode 2.4.0 and later** write that report as
+`<background-result kind="subagent" sessionID="..." state="..." description="...">` (one
+tag for every kind of background work: `kind="shell"` reaches the session that ran the
+shell, and there are `image`, `video` and `codemode` kinds), with 2.3's states and the
+same dispatch prose (now ending `You will receive a <background-result kind="subagent">
+message`). On 2.4.0+ the hint and the `task` / `task_batch` notes name that tag; the log
+line carries `"reports":"background-result"` (`"subagent"` before). Nothing else about
+the tools changes.
+
 Troubleshooting: `background` missing from the tool schema, or a refusal naming the env
 var, means the flag is not set on the opencode process (setting it in a shell after
 opencode started does nothing, and a plugin upgrade cannot change it). A `task_status`
@@ -1184,8 +1193,9 @@ Always on, no option. While the viewed session has subagents, the sidebar ends w
 `Subagents` section: one row each, running first (spinner in the theme accent), then up
 to three finished ones (✓ or ✗, greyed out, gone after ten minutes), with the agent type,
 the task description, a dim `bg` for background dispatches (every dispatch on opencode
-2.3.0+, spinning until the child's own `<subagent>` report, and again whenever opencode
-says the child is working), and a muted second line
+2.3.0+, spinning until the child's own `<subagent>` report, `<background-result
+kind="subagent">` from 2.4.0, and again whenever opencode says the child is working or
+work it started still runs), and a muted second line
 `model · effort · account` (account only on a multi-account install; the effort alone in
 the theme's warning colour, faded on a finished row). That line is what
 the plugin really spawned, read from `$XDG_STATE_HOME/opencode-claude-code-plugin/session-spawns.json`,
@@ -1224,9 +1234,24 @@ prompt. Row: `shell` (info colour), the command, `bg`; second line the elapsed t
 `exit 0` (✓), `exit N` / `timed out` / `killed` (✗) or `ended` (✓, no exit code seen) and
 how long it ran. A foreground call the model makes never gets a row (it is the running
 tool on the progress line); the rule is a running shell whose command matches no running
-`shell` tool part. Not clickable, no option, nothing written. Note the proxied `bash` tool
-offers the model no `background` flag, so through this plugin only the operator puts a
-shell in the background. opencode's footer `↓ N shell` counts foreground ones too.
+`shell` tool part. Not clickable, no option, nothing written. On opencode 2 the proxied
+`bash` tool also takes `background: true`, so Claude can start one too. opencode's footer
+`↓ N shell` counts foreground ones too.
+
+**Work under a subagent** (opencode 2): a subagent's row keeps spinning while its own
+background shells or its own subagents run, even after the subagent itself went idle (the
+case that used to show no row at all while a director's renders ran), and that work is
+listed under the row as a tree: one line each (` ├ ⠋ shell ffmpeg … 12m03s bg`,
+` └ ⠋ writer Write the … 2m10s bg`), a subagent's own work one level further in, a
+finished line kept for a minute while the row still runs, at most three lines then
+` └ +N more`, two cells per level and at most three levels. A finished row folds back to
+its single row; a row running only for its work has no progress line and never counts
+toward the three finished rows. A nested subagent line opens its session when clicked.
+On opencode 2.4.0+ it reads opencode's own running background jobs (`data.job.list`,
+owner `sessionID` on each) for the viewed session and every session below it, in any
+directory; on 2.2.6 to 2.3 each subagent's shells come from its own directory's shell
+list, listed once the subagent is idle (or earlier when its messages tell foreground
+calls apart). The 2.4 report form and every older one are read. opencode 1.x: unchanged.
 
 ### Let Claude load the user's opencode skills
 

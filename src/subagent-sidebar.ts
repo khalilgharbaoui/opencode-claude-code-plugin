@@ -56,6 +56,20 @@
  *     child goes idle, including after later work, so a child can run again
  *     after an envelope; and `state="running"` there is an idle child whose
  *     own background work is still going, which will report again.
+ *
+ * Read out of the opencode 2.4.1 binary and `@opencode/plugin` 2.4.0
+ * (h #g327), and each one shapes the nested lines under a row:
+ *
+ *   - The report is `<background-result kind="subagent" sessionID="ses_..."
+ *     state="..." description="...">` now, the same synthetic message with a
+ *     new tag; `state="running"` still means the child is idle with work of
+ *     its own going on. Every form is read (`completionsIn`).
+ *   - A subagent's background shells belong to the subagent's session, not
+ *     the viewed one, and its own subagents are sessions whose `parentID` is
+ *     the subagent. Both run while the subagent itself reads idle, which is
+ *     what used to make the row end and age out while its work went on. So a
+ *     row is running while anything under it runs (`under`), and what runs is
+ *     listed under it, indented as a tree (`nestedLines`).
  */
 
 export type SubagentState = "running" | "done" | "error"
@@ -110,12 +124,30 @@ export interface ShellInput {
   completed?: number
 }
 
+/**
+ * One subagent's own work, one level down (h #g327): its child sessions, its
+ * own `subagent` parts and the reports its children sent it, and its
+ * background shells. What the host cannot read is simply empty.
+ */
+export interface NestedSessionInput {
+  children: ChildSessionInput[]
+  parts: TaskPartInput[]
+  completions: CompletionInput[]
+  shells?: ShellInput[]
+}
+
 export interface SidebarInput {
   children: ChildSessionInput[]
   parts: TaskPartInput[]
   completions: CompletionInput[]
   /** The session's background shells (opencode 2.2.6+); none on a host without a shell store. */
   shells?: ShellInput[]
+  /**
+   * What runs under one of the subagents, by its session id (opencode 2.x,
+   * h #g327). Absent on a host that cannot say (opencode 1.x), which then
+   * shows no nested lines at all.
+   */
+  nested?: (sessionID: string) => NestedSessionInput | undefined
   status: (sessionID: string) => ChildRunState
   record: (sessionID: string) => SpawnRecordInput | undefined
   /** When the TUI first saw a child stop, by session id. */
@@ -142,6 +174,30 @@ export interface SubagentRow {
   cost?: number
   started: number
   finished?: number
+  /**
+   * Running only because of work under it: the subagent itself is idle, so
+   * it has no turn for a progress line to measure (h #g327).
+   */
+  waiting?: boolean
+  /**
+   * What runs under a running subagent, as rows of their own (its background
+   * shells and its own subagents, each with theirs): running first, then what
+   * finished within `NESTED_FINISHED_TTL_MS`. Absent on a finished row, which
+   * folds back to its single row.
+   */
+  under?: SubagentRow[]
+}
+
+/** One line under a row (h #g327): a nested shell or subagent, or the `+N more` that stands for the rest. */
+export interface NestedLine {
+  /** The tree in front of the glyph: `ROW_INDENT`, a rail per level and a branch, ` │ └ `. */
+  lead: string
+  /** The shell or subagent; absent on the `+N more` line. */
+  row?: SubagentRow
+  /** How many lines the cap left out, on the `+N more` line. */
+  more?: number
+  /** The muted tail: how long it has run, or how it ended. */
+  tail: string
 }
 
 /** How long a finished subagent stays in the list, and how many of them. */
@@ -161,6 +217,25 @@ export const SIDEBAR_ROW_WIDTH = 36
  */
 export const ROW_INDENT = " "
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+/**
+ * How many lines a row shows under it before the rest fold into one `+N more`
+ * line (h #g327), so a subagent with a dozen renders does not push every other
+ * row off the sidebar.
+ */
+export const NESTED_LINES_KEEP = 3
+/**
+ * How long a finished shell or subagent stays under a row that is still
+ * running: long enough to read how it ended, short enough that a long-lived
+ * subagent does not collect a history under it.
+ */
+export const NESTED_FINISHED_TTL_MS = 60_000
+/**
+ * Levels of indentation drawn under a row. Deeper lines are drawn at this
+ * depth, so a deep tree still leaves room on a 36-cell line for what runs.
+ */
+export const NESTED_INDENT_CAP = 3
+/** How far down the session tree is walked at all, a bound on a cycle the host should never have. */
+export const NESTED_DEPTH_MAX = 8
 
 const TITLE_SUFFIX = /\s*\(@([^)\s]+) subagent\)\s*$/
 
@@ -217,23 +292,45 @@ function partBackground(part: TaskPartInput): boolean {
 
 const COMPLETION_ENVELOPE =
   /<(task\s+id|subagent\s+sessionID)="(ses_[A-Za-z0-9]+)"\s+state="([a-z_]+)"/g
+/**
+ * opencode 2.4's report (h #g327): `<background-result kind="subagent"
+ * sessionID="ses_..." state="..." description="...">`. Only the opening tag is
+ * read, and each attribute on its own, so their order does not matter; the
+ * description comes last and is not escaped, so nothing after the tag is
+ * trusted.
+ */
+const BACKGROUND_RESULT = /<background-result\s+([^>]*)>/g
+
+function attribute(tag: string, name: string): string | undefined {
+  return new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(tag)?.[1]
+}
 
 /**
- * Every background report a text names, in order. Both majors' envelopes:
- * `<task id="ses_..." state="completed">` (1.x) and
- * `<subagent sessionID="ses_..." state="completed">` (2.x). A 1.x `running`
- * envelope is the dispatch's own answer, not a report, so it is skipped; a 2.x
- * `<subagent state="running">` is opencode 2.3's report of a child that went
+ * Every background report a text names, in order. Each form opencode has
+ * written: `<task id="ses_..." state="completed">` (1.x),
+ * `<subagent sessionID="ses_..." state="completed">` (2.0 to 2.3) and
+ * `<background-result kind="subagent" sessionID="ses_..." state="...">`
+ * (2.4). A 1.x `running` envelope is the dispatch's own answer, not a report,
+ * so it is skipped; a 2.x `state="running"` is the report of a child that went
  * idle with background work of its own still going (h #g321), kept so the row
- * keeps its spinner until the report that follows.
+ * keeps its spinner until the report that follows. A `<background-result>` of
+ * another kind (a shell, an image) is not a subagent's and is skipped.
  */
 export function completionsIn(value: string, at?: number): CompletionInput[] {
-  const found: CompletionInput[] = []
+  const found: Array<CompletionInput & { index: number }> = []
   for (const match of value.matchAll(COMPLETION_ENVELOPE)) {
     if (match[3] === "running" && match[1].startsWith("task")) continue
-    found.push({ sessionID: match[2], state: match[3], at })
+    found.push({ sessionID: match[2], state: match[3], at, index: match.index ?? 0 })
   }
-  return found
+  for (const match of value.matchAll(BACKGROUND_RESULT)) {
+    const tag = match[1]
+    if (attribute(tag, "kind") !== "subagent") continue
+    const sessionID = attribute(tag, "sessionID")
+    const state = attribute(tag, "state")
+    if (!sessionID || !/^ses_[A-Za-z0-9]+$/.test(sessionID) || !state || !/^[a-z_]+$/.test(state)) continue
+    found.push({ sessionID, state, at, index: match.index ?? 0 })
+  }
+  return found.sort((a, b) => a.index - b.index).map(({ index: _index, ...completion }) => completion)
 }
 
 function endState(state: string): SubagentState {
@@ -338,12 +435,35 @@ export function truncate(value: string, width: number): string {
  * the section disappear.
  */
 export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
+  const rows = levelRows(input, input, 0, new Set())
+  const running = rows
+    .filter((row) => row.state === "running")
+    .sort((a, b) => a.started - b.started)
+  const finished = rows
+    .filter((row) => row.state !== "running")
+    .filter((row) => input.now - (row.finished ?? row.started) <= FINISHED_TTL_MS)
+    .sort((a, b) => (b.finished ?? b.started) - (a.finished ?? a.started))
+    .slice(0, FINISHED_KEEP)
+  return [...running, ...finished]
+}
+
+/**
+ * The rows of one level of the tree: the subagents of one session (each with
+ * what runs under it), the dispatches it has no session for yet, and its
+ * background shells. `depth` is 0 for the viewed session's own.
+ */
+function levelRows(
+  input: SidebarInput,
+  level: NestedSessionInput,
+  depth: number,
+  visited: Set<string>,
+): SubagentRow[] {
   const completions = new Map<string, CompletionInput>()
-  for (const completion of input.completions) completions.set(completion.sessionID, completion)
+  for (const completion of level.completions) completions.set(completion.sessionID, completion)
 
   const byChild = new Map<string, TaskPartInput>()
   const unmatched: TaskPartInput[] = []
-  for (const part of input.parts) {
+  for (const part of level.parts) {
     const child = partChildID(part)
     if (child) byChild.set(child, part)
     else unmatched.push(part)
@@ -351,7 +471,7 @@ export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
 
   const rows: SubagentRow[] = []
   const seen = new Set<string>()
-  for (const child of input.children) {
+  for (const child of level.children) {
     if (seen.has(child.id)) continue
     seen.add(child.id)
     const parsed = parseChildTitle(child.title)
@@ -366,7 +486,8 @@ export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
       )
       if (index >= 0) part = unmatched.splice(index, 1)[0]
     }
-    rows.push(rowFor(input, child, parsed, part, completions.get(child.id)))
+    const under = depth < NESTED_DEPTH_MAX ? nestedRows(input, child.id, depth + 1, visited) : []
+    rows.push(rowFor(input, child, parsed, part, completions.get(child.id), under))
   }
   // A dispatch opencode has not created a session for yet: shown, not clickable.
   for (const part of unmatched) {
@@ -383,16 +504,27 @@ export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
       started: part.start ?? input.now,
     })
   }
-  for (const shell of input.shells ?? []) rows.push(shellRow(shell, input.now))
+  for (const shell of level.shells ?? []) rows.push(shellRow(shell, input.now))
+  return rows
+}
 
-  const running = rows
-    .filter((row) => row.state === "running")
-    .sort((a, b) => a.started - b.started)
+/**
+ * What runs under one subagent, one level down and below (h #g327): running
+ * first (oldest first), then what finished within `NESTED_FINISHED_TTL_MS`
+ * (newest first). A session is walked once, so a cycle the host should never
+ * report still ends.
+ */
+function nestedRows(input: SidebarInput, sessionID: string, depth: number, visited: Set<string>): SubagentRow[] {
+  if (!input.nested || visited.has(sessionID)) return []
+  visited.add(sessionID)
+  const level = input.nested(sessionID)
+  if (!level) return []
+  const rows = levelRows(input, level, depth, visited)
+  const running = rows.filter((row) => row.state === "running").sort((a, b) => a.started - b.started)
   const finished = rows
     .filter((row) => row.state !== "running")
-    .filter((row) => input.now - (row.finished ?? row.started) <= FINISHED_TTL_MS)
+    .filter((row) => input.now - (row.finished ?? row.started) <= NESTED_FINISHED_TTL_MS)
     .sort((a, b) => (b.finished ?? b.started) - (a.finished ?? a.started))
-    .slice(0, FINISHED_KEEP)
   return [...running, ...finished]
 }
 
@@ -402,6 +534,7 @@ function rowFor(
   parsed: { description: string; agent?: string },
   part: TaskPartInput | undefined,
   completion: CompletionInput | undefined,
+  under: SubagentRow[] = [],
 ): SubagentRow {
   const background = part ? partBackground(part) : false
   const started = part?.start ?? child.created ?? input.now
@@ -447,6 +580,14 @@ function rowFor(
   } else {
     state = "done"
   }
+  // Work under it still runs (h #g327): a background shell it started, or a
+  // subagent it dispatched, outlives its own turn. The child is not done while
+  // that goes on, whatever its last report or its status says.
+  const underRunning = under.some((row) => row.state === "running")
+  if (underRunning && state !== "running") {
+    state = "running"
+    finished = undefined
+  }
   if (state !== "running" && finished === undefined) {
     finished = input.stoppedAt(child.id) ?? child.updated ?? started
   }
@@ -462,6 +603,9 @@ function rowFor(
     ...(cost !== undefined ? { cost } : {}),
     started,
     finished,
+    ...(underRunning && status !== "busy" ? { waiting: true } : {}),
+    // A finished subagent folds back to its single row.
+    ...(state === "running" && under.length > 0 ? { under } : {}),
   }
 }
 
@@ -516,6 +660,72 @@ export interface ObservedShell {
   exit?: number
   started?: number
   completed?: number
+}
+
+/**
+ * One running background job as opencode 2.4's TUI store lists it (`JobInfo`,
+ * `data.job.list(sessionID)`, h #g327): the jobs of a session and of every
+ * session below it, each owned by `sessionID` (a subagent's by the session that
+ * dispatched it). Only backgrounded jobs are listed, and only while they run.
+ */
+export interface JobInput {
+  kind?: string
+  id?: string
+  sessionID?: string
+  status?: string
+  title?: string
+  time?: { started?: number; completed?: number }
+  shellID?: string
+  command?: string
+  childSessionID?: string
+  agent?: string
+  description?: string
+}
+
+/**
+ * The background shells a job list names under `viewedID`, for the shell
+ * memory: every session's but the viewed one's own, which come from its
+ * location's store as before (h #g307). A job is a background one by
+ * construction, so none of these is a foreground call.
+ */
+export function shellsFromJobs(jobs: readonly JobInput[], viewedID: string): ObservedShell[] {
+  const shells: ObservedShell[] = []
+  for (const job of jobs) {
+    if (job?.kind !== "shell" || (job.status !== undefined && job.status !== "running")) continue
+    const owner = text(job.sessionID)
+    const id = text(job.shellID) ?? text(job.id)
+    const command = text(job.command) ?? text(job.title)
+    if (!owner || owner === viewedID || !id || !command) continue
+    shells.push({ id, sessionID: owner, command, status: "running", started: job.time?.started })
+  }
+  return shells
+}
+
+/**
+ * The subagents a job list names, each under the session that dispatched it,
+ * with the title opencode gives the child: what lets a subagent of a subagent
+ * be listed before the TUI has loaded its session.
+ */
+export function childrenFromJobs(jobs: readonly JobInput[]): Array<{ parentID: string; child: ChildSessionInput }> {
+  const found: Array<{ parentID: string; child: ChildSessionInput }> = []
+  for (const job of jobs) {
+    if (job?.kind !== "subagent" || (job.status !== undefined && job.status !== "running")) continue
+    const parentID = text(job.sessionID)
+    const id = text(job.childSessionID)
+    if (!parentID || !id) continue
+    const description = text(job.description) ?? text(job.title) ?? ""
+    const agent = text(job.agent)
+    found.push({
+      parentID,
+      child: {
+        id,
+        title: agent ? `${description} (@${agent} subagent)` : description,
+        ...(agent ? { agent } : {}),
+        ...(job.time?.started !== undefined ? { created: job.time.started } : {}),
+      },
+    })
+  }
+  return found
 }
 
 interface RememberedShell extends ShellInput {
@@ -728,6 +938,90 @@ export function layoutRow(
     }
   }
   return { first, second }
+}
+
+/**
+ * The lines under a running row (h #g327), its tree walked depth first: each
+ * shell or subagent on one line, a subagent's own work under it one level in.
+ * At most `NESTED_LINES_KEEP` lines, then one `+N more` for the rest; the tree
+ * glyphs are drawn over what is shown, so the last line shown at each level
+ * closes it. Lines deeper than `NESTED_INDENT_CAP` are drawn at that depth.
+ * Empty for a row with nothing under it, which is every finished row.
+ */
+export function nestedLines(row: SubagentRow, now: number): NestedLine[] {
+  if (row.state !== "running" || !row.under?.length) return []
+  // Every line with its parent line, -1 for the row itself.
+  const flat: Array<{ row?: SubagentRow; parent: number; more?: number }> = []
+  const walk = (rows: SubagentRow[], parent: number) => {
+    for (const child of rows) {
+      const index = flat.length
+      flat.push({ row: child, parent })
+      if (child.under?.length) walk(child.under, index)
+    }
+  }
+  walk(row.under, -1)
+  const shown = flat.length > NESTED_LINES_KEEP ? flat.slice(0, NESTED_LINES_KEEP) : flat
+  if (shown.length < flat.length) shown.push({ parent: -1, more: flat.length - shown.length })
+  const followed = (index: number) =>
+    shown.some((line, other) => other > index && line.parent === shown[index].parent)
+  return shown.map((line, index) => {
+    const rails: string[] = []
+    for (let ancestor = line.parent; ancestor >= 0; ancestor = shown[ancestor].parent) {
+      rails.unshift(followed(ancestor) ? "│ " : "  ")
+    }
+    const kept = rails.slice(Math.max(0, rails.length - (NESTED_INDENT_CAP - 1)))
+    const lead = `${ROW_INDENT}${kept.join("")}${followed(index) ? "├ " : "└ "}`
+    if (line.more !== undefined) return { lead, more: line.more, tail: "" }
+    return { lead, row: line.row, tail: nestedTail(line.row!, now) }
+  })
+}
+
+/** A shell's own label (`12m03s`, `exit 0 · 40s`); a subagent's time running, or the time it ran. */
+function nestedTail(row: SubagentRow, now: number): string {
+  if (row.kind === "shell") return row.label
+  return formatElapsed((row.finished ?? now) - row.started)
+}
+
+/**
+ * One nested line, laid out for `width` cells:
+ *
+ *      ├ ⠋ shell ffmpeg -i in.mov…  12m03s bg
+ *      └ ⠋ implementor Fix the f…    2m10s bg
+ *
+ * The tree lead and the tail are muted, the glyph and the name keep their
+ * row's colours, and the description takes what is left. A finished line is
+ * muted throughout apart from its glyph, as a finished row is.
+ */
+export function layoutNestedLine(line: NestedLine, width: number = SIDEBAR_ROW_WIDTH, frame = 0): Segment[] {
+  const lead: Segment = { text: line.lead, role: "muted" }
+  if (!line.row) return [lead, { text: truncate(`+${line.more ?? 0} more`, width - Array.from(line.lead).length), role: "muted" }]
+  const row = line.row
+  const finished = row.state !== "running"
+  const glyph =
+    row.state === "running" ? SPINNER_FRAMES[frame % SPINNER_FRAMES.length] : row.state === "done" ? "✓" : "✗"
+  const tail = [line.tail, row.background ? "bg" : ""].filter(Boolean).join(" ")
+  const leadWidth = Array.from(line.lead).length
+  const tailWidth = tail ? Array.from(tail).length + 1 : 0
+  const room = width - leadWidth - 2 - tailWidth
+  const agent = truncate(row.agent, Math.max(1, Math.min(Array.from(row.agent).length, room - 5)))
+  const left = room - Array.from(agent).length - 1
+  const description = left > 0 ? truncate(row.description, left) : ""
+  const used = leadWidth + 2 + Array.from(agent).length + (description ? 1 + Array.from(description).length : 0)
+  const segments: Segment[] = [
+    lead,
+    { text: glyph, role: row.state === "running" ? "spinner" : row.state === "done" ? "done" : "error" },
+    { text: " ", role: "muted" },
+    { text: agent, role: finished ? "muted" : row.kind === "shell" ? "tool" : "agent" },
+  ]
+  if (description) {
+    segments.push({ text: " ", role: "muted" })
+    segments.push({ text: description, role: finished ? "muted" : "description" })
+  }
+  if (tail) {
+    segments.push({ text: " ".repeat(Math.max(1, width - used - Array.from(tail).length)), role: "muted" })
+    segments.push({ text: tail, role: "muted" })
+  }
+  return segments
 }
 
 /** The collapsed heading's count: `2 running` or `3 done`, shells counted with subagents. */

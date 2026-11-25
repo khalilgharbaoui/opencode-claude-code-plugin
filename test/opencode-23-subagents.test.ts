@@ -29,24 +29,30 @@ import {
 import {
   ALWAYS_BACKGROUND_SUBAGENTS_SINCE,
   ALWAYS_BACKGROUND_TASK_TOOL_DEFS,
+  BACKGROUND_RESULT_REPORTS_SINCE,
   BACKGROUND_TASK_TOOL_DEFS,
   DEFAULT_PROXY_TOOLS,
   TASK_BACKGROUND_NOTE_ALWAYS,
+  TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT,
   TASK_BACKGROUND_NOTE_V2,
   TASK_BATCH_DESCRIPTION_ALWAYS_BACKGROUND,
   TASK_BATCH_TOOL_NAME,
   TASK_PROXY_NOTE,
   TASK_PROXY_NOTE_ALWAYS_BACKGROUND,
   applyBackgroundSubagentSupport,
+  backgroundReportForm,
   backgroundSubagentMode,
   dispatchesAlwaysInBackground,
   hostRunsEverySubagentInBackground,
   overlayTaskProxyDescription,
+  withBackgroundResultReports,
   type ProxyToolCall,
   type ProxyToolDef,
 } from "../src/proxy-mcp.js"
 import {
+  BACKGROUND_SUBAGENT_HINT,
   BACKGROUND_SUBAGENT_HINT_ALWAYS,
+  BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT,
   BACKGROUND_SUBAGENT_HINT_V2,
   SUBAGENT_DISPATCH_HINT,
   SUBAGENT_DISPATCH_HINT_ALWAYS_BACKGROUND,
@@ -74,6 +80,14 @@ const PARENT = "ses_parent23"
 /** What `@opencode/core` 2.3.0's `backgroundResult` writes, verbatim. */
 const DISPATCH_ANSWER_2_3 = [
   `The subagent is working in the background (sessionID: ${CHILD}). You will receive a <subagent> message when it goes idle, and again after each later round of work.`,
+  "DO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.",
+  "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+  "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
+].join("\n")
+
+/** What opencode 2.4.1's `subagent` tool answers, verbatim (h #g327). */
+const DISPATCH_ANSWER_2_4 = [
+  `The subagent is working in the background (sessionID: ${CHILD}). You will receive a <background-result kind="subagent"> message when it goes idle, and again after each later round of work.`,
   "DO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.",
   "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
   "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
@@ -454,6 +468,79 @@ test("task_status hands over a later round of a child that ran again, once", asy
   assert.deepEqual(snapshotBackgroundTasks().find((ledger) => ledger.sessionKey === "k23round")?.collected, [CHILD])
 })
 
+// --- opencode 2.4: the report is <background-result kind="subagent"> (h #g327) ---
+
+test("opencode 2.4.0 and later report a subagent as <background-result>; earlier and unknown versions as <subagent>", () => {
+  assert.equal(BACKGROUND_RESULT_REPORTS_SINCE, "2.4.0")
+  for (const version of ["2.4.0", "2.4.1", "v2.4.0", "2.10.0", "3.0.0"]) {
+    assert.equal(backgroundReportForm(version), "background-result", version)
+  }
+  for (const version of ["2.3.2", "2.3.9", "1.19.4", "", undefined, "nightly"]) {
+    assert.equal(backgroundReportForm(version), "subagent", String(version))
+  }
+})
+
+test("the 2.4 texts name <background-result kind=\"subagent\"> and nothing else changes", () => {
+  for (const text of [TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT, BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT]) {
+    assert.ok(text.includes('<background-result kind="subagent" sessionID="..." state="...">'), text)
+    assert.equal(text.includes("<subagent sessionID"), false, text)
+    assert.equal(text.includes("`<subagent>`"), false, text)
+    assert.ok(text.includes('state="running"'), "the running state is still explained")
+  }
+  assert.ok(BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT.includes('`<background-result kind="subagent">` message arrives'))
+  // Only the report's spelling changed.
+  assert.equal(
+    withBackgroundResultReports(TASK_BACKGROUND_NOTE_ALWAYS).replaceAll('<background-result kind="subagent" ', "<subagent "),
+    TASK_BACKGROUND_NOTE_ALWAYS,
+  )
+  // The texts for 1.x and 2.0 to 2.2 never named the 2.3 form, so they are untouched.
+  for (const text of [BACKGROUND_SUBAGENT_HINT, BACKGROUND_SUBAGENT_HINT_V2, TASK_BACKGROUND_NOTE_V2]) {
+    assert.equal(text.includes("background-result"), false)
+  }
+})
+
+test("the tool list and the hint pick the 2.4 wording only when told to, and 2.3's stays byte-identical", () => {
+  const tools = overlayTaskProxyDescription(DEFAULT_PROXY_TOOLS, undefined)
+  const on23 = applyBackgroundSubagentSupport(tools, "always", "v2")
+  const on23Explicit = applyBackgroundSubagentSupport(tools, "always", "v2", "subagent")
+  assert.deepEqual(on23Explicit, on23)
+  assert.ok(def(on23, "task").description.endsWith(TASK_BACKGROUND_NOTE_ALWAYS))
+  const on24 = applyBackgroundSubagentSupport(tools, "always", "v2", "background-result")
+  for (const name of ["task", TASK_BATCH_TOOL_NAME]) {
+    const description = def(on24, name).description
+    assert.ok(description.endsWith(TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT), name)
+    assert.equal(description.includes("<subagent sessionID"), false, name)
+  }
+  // Nothing else about the 2.4 list differs from 2.3's.
+  assert.deepEqual(on24.map((tool) => tool.name), on23.map((tool) => tool.name))
+  assert.deepEqual(on24.slice(-2), on23.slice(-2))
+  // A report form does nothing to the optional and unsupported lists.
+  assert.deepEqual(applyBackgroundSubagentSupport(tools, "optional", "v2", "background-result"), applyBackgroundSubagentSupport(tools, "optional", "v2"))
+  assert.deepEqual(applyBackgroundSubagentSupport(tools, "unsupported", "v1", "background-result"), applyBackgroundSubagentSupport(tools, "unsupported", "v1"))
+  assert.equal(backgroundSubagentHint("v2", true, "background-result"), BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT)
+  assert.equal(backgroundSubagentHint("v2", true, "subagent"), BACKGROUND_SUBAGENT_HINT_ALWAYS)
+  assert.equal(backgroundSubagentHint("v2", false, "background-result"), BACKGROUND_SUBAGENT_HINT_V2)
+  assert.equal(backgroundSubagentHint("v1", false, "background-result"), BACKGROUND_SUBAGENT_HINT)
+})
+
+test("2.4's dispatch answer is read like 2.3's: its sessionID is the task id and the count goes after it", async () => {
+  _resetBackgroundTasks()
+  assert.deepEqual(backgroundTaskIdsIn(DISPATCH_ANSWER_2_4), [CHILD])
+  setOpencodeClient({
+    session: {
+      get: async ({ path }: { path: { id: string } }) => ({ data: { id: path.id, parentID: PARENT, directory: "/tmp" } }),
+      status: async () => ({ data: { [CHILD]: { type: "busy" } } }),
+      messages: async () => ({ data: [] }),
+      abort: async () => ({ data: true }),
+    },
+  })
+  const result = { kind: "text" as const, text: DISPATCH_ANSWER_2_4 }
+  noteBackgroundDispatchResult("k24", result)
+  const counted = await withBackgroundRunningCount(result)
+  assert.ok(counted.kind === "text" && counted.text.startsWith(DISPATCH_ANSWER_2_4))
+  assert.match((counted as { text: string }).text, /Background subagents running now: 1 \(including this one\)\.$/)
+})
+
 // --- the version reaches the model ------------------------------------------
 
 test("a V2 model is told the opencode version it serves", async () => {
@@ -576,4 +663,24 @@ test("a 2.3 spawn is told every subagent runs in the background; a 2.2 spawn is 
   const task22 = def(on22.tools, "task")
   assert.ok(fieldNames(task22).includes("background"))
   assert.ok(task22.description.includes(TASK_BACKGROUND_NOTE_V2))
+})
+
+// POSIX only, as above.
+test("a 2.4 spawn is told to expect <background-result kind=\"subagent\">; a 2.3 spawn is not", { skip: process.platform === "win32" }, async () => {
+  const on24 = await spawnFor("2.4.0")
+  assert.ok(on24.prompt.includes(BACKGROUND_SUBAGENT_HINT_BACKGROUND_RESULT), "2.4 hint missing")
+  assert.equal(on24.prompt.includes(BACKGROUND_SUBAGENT_HINT_ALWAYS), false)
+  assert.ok(on24.prompt.includes(SUBAGENT_DISPATCH_HINT_ALWAYS_BACKGROUND))
+  assert.equal(on24.prompt.includes("<subagent sessionID"), false)
+  const task24 = def(on24.tools, "task")
+  assert.equal(fieldNames(task24).includes("background"), false)
+  assert.ok(task24.description.includes(TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT))
+  assert.ok(def(on24.tools, TASK_BATCH_TOOL_NAME).description.includes(TASK_BACKGROUND_NOTE_ALWAYS_BACKGROUND_RESULT))
+  assert.ok(on24.tools.some((tool) => tool.name === "task_status"))
+
+  const on23 = await spawnFor("2.3.2")
+  assert.ok(on23.prompt.includes(BACKGROUND_SUBAGENT_HINT_ALWAYS), "2.3 hint missing")
+  assert.equal(on23.prompt.includes("background-result"), false)
+  assert.ok(def(on23.tools, "task").description.includes(TASK_BACKGROUND_NOTE_ALWAYS))
+  assert.equal(def(on23.tools, "task").description.includes("background-result"), false)
 })

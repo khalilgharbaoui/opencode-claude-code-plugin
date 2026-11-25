@@ -258,6 +258,8 @@ import {
   overlayQuestionProxyDescription,
   filterQuestionProxyByOpencodeSupport,
   applyBackgroundSubagentSupport,
+  backgroundReportForm,
+  type BackgroundReportForm,
   applyShellBackgroundSupport,
   applyTaskModelSupport,
   backgroundSubagentMode,
@@ -3752,6 +3754,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             // (h #g321), which changes what the model is told about every
             // dispatch, not only about `background`.
             let everySubagentInBackground = false
+            // And opencode 2.4.0 and later reports a subagent going idle as
+            // `<background-result kind="subagent">`, which is what the model
+            // is told to look for there (h #g327).
+            let backgroundReports: BackgroundReportForm = "subagent"
             // Which opencode major this model serves. Everything the model is
             // told about a background dispatch is picked with it, because
             // neither envelope is the same on the two majors (h #g176, #g230).
@@ -3801,10 +3807,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               )
               backgroundSubagentsSupported = backgroundMode !== "unsupported"
               everySubagentInBackground = backgroundMode === "always"
+              backgroundReports = hostDialect === "v2" ? backgroundReportForm(hostVersion) : "subagent"
               enrichedProxy = applyBackgroundSubagentSupport(
                 enrichedProxy,
                 backgroundMode,
                 hostDialect,
+                backgroundReports,
               )
               // A per-call `model` is the host's to take too (h #g254): read
               // off the same schema, stripped where it cannot be honoured.
@@ -3833,6 +3841,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               log.info("background subagent gate", {
                 supported: backgroundSubagentsSupported,
                 mode: backgroundMode,
+                reports: backgroundReports,
                 registryResolved: liveToolInfo.resolved,
                 hostApi: hostDialect,
                 ...(hostVersion ? { hostVersion } : {}),
@@ -3961,6 +3970,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               taskProxyEnabled,
               backgroundSubagentsSupported,
               everySubagentInBackground,
+              backgroundReports,
               hostDialect,
               questionProxyActive,
               opencodeToolDefs,
@@ -4053,6 +4063,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                               backgroundSubagentHint(
                                 wiring.hostDialect,
                                 wiring.everySubagentInBackground,
+                                wiring.backgroundReports,
                               ),
                             ]
                           : []),
@@ -4195,6 +4206,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               taskProxyEnabled,
               backgroundSubagentsSupported,
               everySubagentInBackground,
+              backgroundReports,
               hostDialect,
               questionProxyActive,
               opencodeToolDefs,
@@ -4216,7 +4228,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     ...extractSystemMessages(options.prompt),
                     ...(taskProxyEnabled ? [subagentDispatchHint(everySubagentInBackground)] : []),
                     ...(backgroundSubagentsSupported
-                      ? [backgroundSubagentHint(hostDialect, everySubagentInBackground)]
+                      ? [backgroundSubagentHint(hostDialect, everySubagentInBackground, backgroundReports)]
                       : []),
                     ...(questionProxyActive ? [QUESTION_PROXY_HINT] : []),
                     ...(self.config.hostApi === "v2" && options.tools?.some((t) => t.name === "execute")
