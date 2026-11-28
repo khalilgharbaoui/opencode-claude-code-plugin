@@ -13972,3 +13972,7 @@ Not changed here; recorded in `TODO.md`. Not measured: session tabs (`tabs.mode`
 the scratch TUI), opencode 2.2.6 to 2.3 (a nested shell click opens its subagent's session there; the output
 view is not measured), an ended nested shell's click live (unit-tested). Gate: typecheck, the suite, build,
 `dist/tui.js` free of the logger's marker.
+
+Shipped as v0.79.0 on 2026-11-28 (PR #200), a minor release: CI green on Linux and Windows on the PR head,
+on the merge commit `8b65492` before the tag and on the release commit `b3f9643`, the publish confirmed by
+the `Publish package` step's tail and the version document's shasum (`2dd42757`), with a GitHub Release.
