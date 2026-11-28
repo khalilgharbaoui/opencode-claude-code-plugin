@@ -244,13 +244,11 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-- 2026-11-28: the sidebar's hover highlight on opencode 2 (h #g329), branch `fix/sidebar-hover`. Maintainer,
-  verbatim: "fix it now". The hover is `background.raised.high` now, one step above the panel; measured live on
-  2.4.2 (rgb(32,32,32) under the pointer on both lines of a shell row, rgb(20,20,20) again after it left, the
-  Accounts lines never lit).
+Nothing in progress.
 
 ## Done
 
+- 2026-11-28: **done** (v0.79.1, PR [#201](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/201), h #g329): the sidebar's hover highlight shows on opencode 2. Maintainer, verbatim: "fix it now". A clickable row or nested line lights up at `background.raised.high` (rgb(32,32,32) on the default theme) instead of the panel's own `raised.base` (rgb(20,20,20)); measured live on 2.4.2 under SGR motion events, and the highlight clears when the pointer leaves.
 - 2026-11-28: **done** (v0.79.0, PR [#200](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/200), h #g328): a click on a nested sidebar line shows what that work is doing. Maintainer, verbatim: "clicking a subagent shows us what it does but clicking those beneath it does not show us what they are doing can we make it so?" Measured on opencode 2.4.2 first: a nested subagent line already opened its session; every shell line did nothing. A running shell (top-level row or nested line, any depth) now opens opencode's own shell output view inside the session that started it, through that session's composer Shell tab (`keymap.dispatch`), with the tab's remembered selection walked to the top first because stepping from it opened the wrong shell live; an ended nested shell opens its subagent's session; `+N more` opens nothing. Live on 2.4.2 with real SGR clicks in a scratch TUI.
 
 - 2026-11-25: **done** (v0.78.0, PR [#199](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/199), h #g327): background work under a subagent in the sidebar, on opencode 2.4. Reported from the AL WASIYYAH pane: a `director` subagent's row vanished once it went idle while its background shells (renders, captures, TTS) ran. The sidebar reads opencode 2.4's `<background-result kind="subagent">` report (and every older form), keeps a subagent's row running while its own background shells or subagents run, lists that work under the row as a tree (at most three lines, then `+N more`; a finished line for a minute; a finished row folds back to one row), and on opencode 2.4.0+ tells Claude to expect the new tag. The 2.4.0 compatibility sweep is in AGENTS.md. Live on opencode 2.4.1 with Claude Code 2.1.322: a child's shell under its idle row, and a subagent's own subagent and its shell two levels down.

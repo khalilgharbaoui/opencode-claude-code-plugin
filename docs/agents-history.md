@@ -14008,3 +14008,8 @@ panel stayed rgb(20,20,20); moving away gave rgb(20,20,20) back; motion over the
 nothing, lit nothing. Not measured live: a nested line (same `clickable` function), a light theme and a migrated
 opencode 1 theme. No headless test, as for the rest of the rendering. Gate: typecheck, the suite, build,
 `dist/tui.js` free of the logger's marker.
+
+Shipped as v0.79.1 on 2026-11-28 (PR #201), a patch release: CI green on Linux and Windows on the PR head, on
+the merge commit `bd75e4c` before the tag and on the release commit `85d8aef`, the publish confirmed by the
+`Publish package` step's tail and the version document's shasum (`83a8d1a0`), with a GitHub Release. The
+release was tagged from a lane worktree detached at the merge commit, not from the shared main checkout.
