@@ -240,7 +240,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-Nothing in progress.
+- 2026-11-26, in progress (lane ses_de05bb737ffe..., h #g328): clicking a NESTED sidebar line (a
+  subagent's own subagent or background shell) shows nothing. Maintainer, verbatim: "clicking a subagent shows us what
+  it does but clicking those beneath it does not show us what they are doing can we make it so?" The first lane died on
+  the appical usage limit before writing anything and was restarted 2026-11-28. One PR, release after the maintainer's go.
 
 ## Done
 
