@@ -80,14 +80,9 @@
 
 ## Backlog
 
-- 2026-11-28, found while building h #g328, not fixed (not in that lane's scope): on opencode 2 the sidebar's
-  hover highlight is invisible on every row and nested line. `host.colors().hover` is
-  `theme.background.raised.base`, which is the sidebar panel's own background (rgb(20,20,20) on the default
-  theme, read with `capture-pane -e` under a mouse move); motion does reach the TUI (opencode's composer list
-  moved its selection on the same events). A distinct colour (opencode's own list uses
-  `background.action.primary.focused`) would make "this line is clickable" visible. Also unmeasured there:
-  opencode 2.4's session tabs (`tabs.mode`, default `auto`), and whether a click on `+N more` should open the
-  row's subagent.
+- 2026-11-28, found while building h #g328: the invisible hover highlight is done (h #g329, below). Still
+  unmeasured from that run: opencode 2.4's session tabs (`tabs.mode`, default `auto`), and whether a click on
+  `+N more` should open the row's subagent.
 
 - 2026-11-16, from the h #g320 diagnosis: (1) done 2026-11-23: `▌ **stream timeout:**` closes in opencode.db,
   deduplicated by message time: 24 in the 30 days before v0.73.4 (tagged 2026-11-15 01:45 UTC), 2 since,
@@ -249,7 +244,10 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-Nothing in progress.
+- 2026-11-28: the sidebar's hover highlight on opencode 2 (h #g329), branch `fix/sidebar-hover`. Maintainer,
+  verbatim: "fix it now". The hover is `background.raised.high` now, one step above the panel; measured live on
+  2.4.2 (rgb(32,32,32) under the pointer on both lines of a shell row, rgb(20,20,20) again after it left, the
+  Accounts lines never lit).
 
 ## Done
 
