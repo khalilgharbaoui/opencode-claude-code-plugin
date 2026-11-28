@@ -13976,3 +13976,35 @@ view is not measured), an ended nested shell's click live (unit-tested). Gate: t
 Shipped as v0.79.0 on 2026-11-28 (PR #200), a minor release: CI green on Linux and Windows on the PR head,
 on the merge commit `8b65492` before the tag and on the release commit `b3f9643`, the publish confirmed by
 the `Publish package` step's tail and the version document's shasum (`2dd42757`), with a GitHub Release.
+
+## The sidebar's hover highlight shows on opencode 2 (2026-11-28)
+
+h #g329. The maintainer, on the backlog item h #g328 left behind ("the highlight when you point at a sidebar row
+is drawn in the same colour as the sidebar"): "fix it now".
+
+**Why it drew nothing.** opencode 2.4.2's sidebar panel is `background.raised.base`, and the plugin's `hover` was
+that same token. The theme's own `background.action.primary.hovered` would not have helped either: read out of
+the 2.4.2 binary, the native themes set it to `$hue.neutral.700`, which is `raised.base`, on the base surface,
+and to one step up only on raised surfaces (`@dialog` hovers at `$background.raised.high`, the dialog footer at
+`$background.raised.max`). `@opencode/theme` 2.4.2's resolved theme carries `raised.base`/`high`/`max`
+(`$hue.neutral.700`/`600`/`500` natively; a migrated opencode 1 theme maps `high` to `$hue.neutral.600` too) and
+an `increase(color, amount)` that moves a colour along its hue scale.
+
+**What it is now** (`panelHover` in `src/tui.ts`): `raised.high`, else `raised.max`, else `increase(panel)`,
+skipping any that equals the panel. opencode 1's `backgroundElement` is unchanged.
+
+**Why not the palette's colour.** Under the pointer, opencode's command palette draws the row in
+`background.action.primary.focused` (rgb(35,52,75) on the default theme, measured), because its lists move their
+selection to the pointer. On a theme migrated from opencode 1 that token is the theme's primary colour, and
+opencode swaps the focused row's text to `text.action.primary.focused`; the sidebar's rows keep their own
+colours, so muted and success text would sit on, say, the old default's orange. `raised.high` is a surface every
+theme defines for ordinary text. Contrast of the rows' muted grey (rgb(128,128,128)): 4.66 on the panel, 4.13
+on `raised.high`, 3.19 on the palette's blue.
+
+**Live on 2.4.2** (Claude Code 2.1.322, a scratch `--standalone` TUI in its own tmux socket at 210x60, every XDG
+dir and `TMPDIR` under a temp dir, the plugin from the worktree's `dist`, both CLI probes off, a `!sleep 600`
+shell row): an SGR motion event over the row (`\e[<35;COL;ROWM`) turned both of its lines rgb(32,32,32) while the
+panel stayed rgb(20,20,20); moving away gave rgb(20,20,20) back; motion over the Accounts lines, which open
+nothing, lit nothing. Not measured live: a nested line (same `clickable` function), a light theme and a migrated
+opencode 1 theme. No headless test, as for the rest of the rendering. Gate: typecheck, the suite, build,
+`dist/tui.js` free of the logger's marker.

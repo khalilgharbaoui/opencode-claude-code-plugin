@@ -232,6 +232,29 @@ function mix(a: Color, b: Color, weight: number): Color {
   )
 }
 
+function sameColor(a: Color, b: Color): boolean {
+  return a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a
+}
+
+/**
+ * The hover background on opencode 2's sidebar, which is drawn on
+ * `background.raised.base`: one step up from it, the way opencode hovers a
+ * list on a raised surface (its dialogs hover at `raised.high`, h #g329). The
+ * panel colour itself drew no highlight at all, and so does the theme's own
+ * `background.action.primary.hovered`, which is that same colour on the base
+ * surface. Not `background.action.primary.focused`, the colour opencode's own
+ * lists give the row under the pointer: on a theme migrated from opencode 1
+ * it is the theme's primary colour, and opencode swaps a focused row's text
+ * colour to match while these rows keep theirs.
+ */
+function panelHover(theme: V2Context["theme"]): Color {
+  const panel = theme.background.raised.base
+  const step = [theme.background.raised.high, theme.background.raised.max].find(
+    (color) => color && !sameColor(color, panel),
+  )
+  return step ?? attempt(() => theme.increase?.(panel), undefined) ?? panel
+}
+
 function roleColor(colors: SidebarColors, role: Segment["role"]): Color {
   return colors[ROLE_COLOR[role] ?? "muted"]
 }
@@ -1042,8 +1065,10 @@ interface V2Context {
       muted: Color
       feedback: { success: V2Shade; warning?: V2Shade; error: V2Shade; info?: V2Shade }
     }
-    background: { base?: Color; raised: { base: Color } }
+    background: { base?: Color; raised: { base: Color; high?: Color; max?: Color } }
     hue: { accent: V2Shade; interactive?: V2Shade }
+    /** A colour moved one step along its hue scale (2.4's resolved theme). */
+    increase?(color: Color, amount?: number): Color
   }
   themeMode?: "dark" | "light"
   /**
@@ -1225,7 +1250,7 @@ export function setupV2(context: V2Context): () => void {
         error: mix(theme.text.feedback.error.muted ?? theme.text.feedback.error.base, muted, 0.35),
         effort: theme.text.feedback.warning?.base ?? muted,
         effortFaded: mix(theme.text.feedback.warning?.base ?? muted, muted, 0.45),
-        hover: theme.background.raised.base,
+        hover: panelHover(theme),
         barDone: theme.text.feedback.success.base ?? accent,
         barLikely: mix(theme.text.feedback.success.base ?? accent, muted, 0.45),
         barBand: mix(muted, theme.text.feedback.success.base ?? accent, 0.3),
