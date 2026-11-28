@@ -1234,7 +1234,9 @@ prompt. Row: `shell` (info colour), the command, `bg`; second line the elapsed t
 `exit 0` (✓), `exit N` / `timed out` / `killed` (✗) or `ended` (✓, no exit code seen) and
 how long it ran. A foreground call the model makes never gets a row (it is the running
 tool on the progress line); the rule is a running shell whose command matches no running
-`shell` tool part. Not clickable, no option, nothing written. On opencode 2 the proxied
+`shell` tool part. No option, nothing written. On opencode 2.4 a click on a running shell
+row opens opencode's own shell output view (its composer's Shell tab, then the shell's
+output: live, `c`/`o` copy, `esc` closes); an ended shell's row opens nothing. On opencode 2 the proxied
 `bash` tool also takes `background: true`, so Claude can start one too. opencode's footer
 `↓ N shell` counts foreground ones too.
 
@@ -1246,7 +1248,10 @@ listed under the row as a tree: one line each (` ├ ⠋ shell ffmpeg … 12m03s
 finished line kept for a minute while the row still runs, at most three lines then
 ` └ +N more`, two cells per level and at most three levels. A finished row folds back to
 its single row; a row running only for its work has no progress line and never counts
-toward the three finished rows. A nested subagent line opens its session when clicked.
+toward the three finished rows. A click on a nested line shows what it is doing: a nested
+subagent opens its session; a nested running shell opens the subagent that started it on
+its Shell tab with that shell's output view on top (opencode 2.4; measured on 2.4.2); an
+ended nested shell opens that subagent; `+N more` opens nothing.
 On opencode 2.4.0+ it reads opencode's own running background jobs (`data.job.list`,
 owner `sessionID` on each) for the viewed session and every session below it, in any
 directory; on 2.2.6 to 2.3 each subagent's shells come from its own directory's shell

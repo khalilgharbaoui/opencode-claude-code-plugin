@@ -48,6 +48,7 @@ import {
   SIDEBAR_ROW_WIDTH,
   SPINNER_FRAMES,
   childrenFromJobs,
+  clickTarget,
   collapsedSummary,
   completionsIn,
   createShellMemory,
@@ -58,6 +59,7 @@ import {
   partChildID,
   shellsFromJobs,
   type ChildRunState,
+  type ClickTarget,
   type ChildSessionInput,
   type CompletionInput,
   type JobInput,
@@ -70,6 +72,7 @@ import {
   type SubagentRow,
   type TaskPartInput,
 } from "./subagent-sidebar.js"
+import { createShellViewOpener } from "./sidebar-click.js"
 import {
   createFillMemory,
   createStatusWatch,
@@ -199,7 +202,8 @@ interface SidebarHost {
   ): Pick<SidebarInput, "children" | "parts" | "completions" | "shells" | "nested" | "status" | "stoppedAt" | "cost">
   /** A session's own messages and todo list, what its progress line is measured from. */
   progress(sessionID: string): ProgressSource
-  navigate(sessionID: string): void
+  /** What a click on a row or a nested line opens (h #g328): a session, or a shell's output. */
+  open(target: ClickTarget): void
 }
 
 function attempt<T>(fn: () => T, fallback: T): T {
@@ -239,6 +243,8 @@ const EMPTY_SOURCE: ProgressSource = { messages: [], todos: [] }
  * what runs under each row (h #g327), and the session's own line.
  */
 interface SidebarView {
+  /** The session the sidebar is drawn for; a click target is decided against it. */
+  sessionID?: string
   rows: SubagentRow[]
   lines: Map<string, ProgressView>
   nested: Map<SubagentRow, NestedLine[]>
@@ -395,6 +401,7 @@ function createSidebar(host: SidebarHost) {
     const rows = deriveSubagentRows({
       ...gathered,
       record: (id) => recordMap.get(id),
+      sessionID,
       now: clock,
     })
     const lines = new Map<string, ProgressView>()
@@ -425,7 +432,7 @@ function createSidebar(host: SidebarHost) {
       now: clock,
     })
     const progress = session ? estimateFor(sessionID, measure, session, undefined, waitedOn) : undefined
-    return { rows, lines, nested, progress }
+    return { sessionID, rows, lines, nested, progress }
   }
 
   const styled = (segment: Segment): OpentuiNode => {
@@ -464,9 +471,14 @@ function createSidebar(host: SidebarHost) {
     return span
   }
 
-  /** Makes a box open a session when clicked, and light up under the pointer. */
-  const clickable = (box: OpentuiNode, sessionID: string) => {
-    setProp(box, "onMouseDown", () => attempt(() => host.navigate(sessionID), undefined))
+  /**
+   * Makes a box open its target when clicked (h #g328), and light up under
+   * the pointer. Nothing for no target, so a line that opens nothing does not
+   * look as if it would.
+   */
+  const clickable = (box: OpentuiNode, target: ClickTarget | undefined) => {
+    if (!target) return
+    setProp(box, "onMouseDown", () => attempt(() => host.open(target), undefined))
     setProp(box, "onMouseOver", () =>
       attempt(() => setProp(box, "backgroundColor", host.colors().hover), undefined),
     )
@@ -475,8 +487,11 @@ function createSidebar(host: SidebarHost) {
     )
   }
 
-  /** One line under a row (h #g327); a nested subagent opens its own session when clicked. */
-  const buildNestedLine = (line: NestedLine): OpentuiNode => {
+  /**
+   * One line under a row (h #g327), in a box of its own: a nested subagent
+   * opens its session, a nested shell its output (h #g328).
+   */
+  const buildNestedLine = (line: NestedLine, viewed: string | undefined): OpentuiNode => {
     const box = createElement("box")
     const text = createElement("text")
     setProp(text, "wrapMode", "none")
@@ -486,11 +501,16 @@ function createSidebar(host: SidebarHost) {
       else insertNode(text, styled(segment))
     })
     insertNode(box, text)
-    if (line.row?.sessionID) clickable(box, line.row.sessionID)
+    clickable(box, clickTarget(line.row, viewed))
     return box
   }
 
-  const buildRow = (row: SubagentRow, progress: ProgressView | undefined, nested: NestedLine[] = []): OpentuiNode => {
+  const buildRow = (
+    row: SubagentRow,
+    viewed: string | undefined,
+    progress: ProgressView | undefined,
+    nested: NestedLine[] = [],
+  ): OpentuiNode => {
     const box = createElement("box")
     const layout = layoutRow(row, SIDEBAR_ROW_WIDTH)
     const first = createElement("text")
@@ -515,13 +535,13 @@ function createSidebar(host: SidebarHost) {
       insertNode(box, second)
     }
     if (progress) insertNode(box, attempt(() => buildProgressLine(progress, "indent"), createElement("box")))
-    if (row.sessionID) clickable(box, row.sessionID)
+    clickable(box, clickTarget(row, viewed))
     if (nested.length === 0) return box
     // The nested lines sit beside the row's box, not in it, so a click on a
-    // nested subagent opens that subagent and never the row's as well.
+    // nested line opens what that line names and never the row's as well.
     const group = createElement("box")
     insertNode(group, box)
-    for (const line of nested) insertNode(group, attempt(() => buildNestedLine(line), createElement("box")))
+    for (const line of nested) insertNode(group, attempt(() => buildNestedLine(line, viewed), createElement("box")))
     return group
   }
 
@@ -566,7 +586,7 @@ function createSidebar(host: SidebarHost) {
     insert(body, () =>
       expanded() || list.length <= 2
         ? list.map((row) =>
-            buildRow(row, row.sessionID ? view.lines.get(row.sessionID) : undefined, view.nested.get(row)),
+            buildRow(row, view.sessionID, row.sessionID ? view.lines.get(row.sessionID) : undefined, view.nested.get(row)),
           )
         : null,
     )
@@ -909,8 +929,9 @@ export function registerV1(api: V1Api): void {
       const todos = attempt(() => api.state.session.todo?.(sessionID), undefined) ?? []
       return { messages, todos: todos.map((todo) => ({ status: todo.status })) }
     },
-    navigate(sessionID) {
-      api.route.navigate("session", { sessionID })
+    open(target) {
+      // opencode 1.x has no shell store, so a shell is never a row there.
+      if (target.kind === "session") api.route.navigate("session", { sessionID: target.sessionID })
     },
   }
 
@@ -991,6 +1012,12 @@ interface V2Context {
     shell?: {
       list(location?: V2Location): V2Shell[] | undefined
       sync?(location?: V2Location): Promise<void>
+      /**
+       * One session's shells across every location, in the order opencode's
+       * Shell tab lists them (2.4.2, h #g328). On the store a plugin is
+       * handed though the declaration does not name it.
+       */
+      listBySession?(sessionID: string): V2Shell[] | undefined
     }
     /**
      * The running background jobs owned by a session or any session below it
@@ -1019,8 +1046,20 @@ interface V2Context {
     hue: { accent: V2Shade; interactive?: V2Shade }
   }
   themeMode?: "dark" | "light"
+  /**
+   * opencode's keymap (2.4, h #g328): `dispatch` runs a command by id, what
+   * opens the Shell tab and a shell's output; `commands` lists the reachable
+   * ones.
+   */
+  keymap?: {
+    dispatch?(id: string, input?: string): void
+    commands?(): readonly { id?: string }[]
+  }
   ui: {
-    router: { navigate(destination: { type: "session"; sessionID: string }): void }
+    router: {
+      navigate(destination: { type: "session"; sessionID: string }): void
+      current?(): { type?: string; sessionID?: string } | undefined
+    }
     slot(claim: { append: string; render: (input: { sessionID: string }) => OpentuiNode }): () => void
     toast?: {
       show(options: { title?: string; message: string; variant?: "info" | "success" | "warning" | "error"; duration?: number }): void
@@ -1134,6 +1173,41 @@ export function setupV2(context: V2Context): () => void {
     }
     return { parts, completions, foreground, read: messages.length > 0 }
   }
+
+  // A click on a running shell (h #g328): opencode's own output view, reached
+  // through the Shell tab of the session that started it (src/sidebar-click.ts).
+  const sessionDirectory = (sessionID: string) =>
+    (context.data.session.list() ?? []).find((session) => session.id === sessionID)?.location?.directory
+  const openShellView = createShellViewOpener({
+    currentSession() {
+      const route = context.ui.router.current?.()
+      if (!route) return undefined
+      return route.type === "session" ? route.sessionID : ""
+    },
+    navigate(sessionID) {
+      context.ui.router.navigate({ type: "session", sessionID })
+    },
+    reachable(id) {
+      const keymap = context.keymap
+      if (typeof keymap?.commands !== "function") return true
+      return (keymap.commands() ?? []).some((command) => command?.id === id)
+    },
+    dispatch(id, input) {
+      context.keymap?.dispatch?.(id, input)
+    },
+    shells(sessionID) {
+      const store = context.data.shell
+      if (!store) return []
+      const byOwner = store.listBySession?.(sessionID)
+      if (byOwner) return byOwner.map(observedShell)
+      const directory = sessionDirectory(sessionID)
+      return (store.list(directory ? { directory } : undefined) ?? []).map(observedShell)
+    },
+    now: () => Date.now(),
+    later(run, ms) {
+      setTimeout(run, ms)
+    },
+  })
 
   const host: SidebarHost = {
     colors() {
@@ -1257,8 +1331,14 @@ export function setupV2(context: V2Context): () => void {
       }
       return { messages, todos: [] }
     },
-    navigate(sessionID) {
-      context.ui.router.navigate({ type: "session", sessionID })
+    open(target) {
+      if (target.kind === "session") {
+        context.ui.router.navigate({ type: "session", sessionID: target.sessionID })
+        return
+      }
+      // Never awaited and never rejects: a step opencode refuses leaves the
+      // session or its Shell tab on screen.
+      void openShellView(target)
     },
   }
 

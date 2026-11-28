@@ -80,6 +80,15 @@
 
 ## Backlog
 
+- 2026-11-28, found while building h #g328, not fixed (not in that lane's scope): on opencode 2 the sidebar's
+  hover highlight is invisible on every row and nested line. `host.colors().hover` is
+  `theme.background.raised.base`, which is the sidebar panel's own background (rgb(20,20,20) on the default
+  theme, read with `capture-pane -e` under a mouse move); motion does reach the TUI (opencode's composer list
+  moved its selection on the same events). A distinct colour (opencode's own list uses
+  `background.action.primary.focused`) would make "this line is clickable" visible. Also unmeasured there:
+  opencode 2.4's session tabs (`tabs.mode`, default `auto`), and whether a click on `+N more` should open the
+  row's subagent.
+
 - 2026-11-16, from the h #g320 diagnosis: (1) done 2026-11-23: `▌ **stream timeout:**` closes in opencode.db,
   deduplicated by message time: 24 in the 30 days before v0.73.4 (tagged 2026-11-15 01:45 UTC), 2 since,
   both the 2026-11-19 subagent whose API requests got no answer, which v0.76.0 now resends; the sleep fix holds; (2) partly done in h #g323
@@ -240,12 +249,9 @@ Verification still owed, copied from the vault's `Future Features.md` "Next up" 
 
 ## In progress
 
-- 2026-11-26, in progress (lane ses_de05bb737ffe..., h #g328): clicking a NESTED sidebar line (a
-  subagent's own subagent or background shell) shows nothing. Maintainer, verbatim: "clicking a subagent shows us what
-  it does but clicking those beneath it does not show us what they are doing can we make it so?" The first lane died on
-  the appical usage limit before writing anything and was restarted 2026-11-28. One PR, release after the maintainer's go.
-
 ## Done
+
+- 2026-11-28: **done, not yet merged or released** (h #g328): a click on a nested sidebar line shows what that work is doing. Maintainer, verbatim: "clicking a subagent shows us what it does but clicking those beneath it does not show us what they are doing can we make it so?" Measured on opencode 2.4.2 first: a nested subagent line already opened its session; every shell line did nothing. A running shell (top-level row or nested line, any depth) now opens opencode's own shell output view inside the session that started it, through that session's composer Shell tab (`keymap.dispatch`), with the tab's remembered selection walked to the top first because stepping from it opened the wrong shell live; an ended nested shell opens its subagent's session; `+N more` opens nothing. Live on 2.4.2 with real SGR clicks in a scratch TUI.
 
 - 2026-11-25: **done** (v0.78.0, PR [#199](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/199), h #g327): background work under a subagent in the sidebar, on opencode 2.4. Reported from the AL WASIYYAH pane: a `director` subagent's row vanished once it went idle while its background shells (renders, captures, TTS) ran. The sidebar reads opencode 2.4's `<background-result kind="subagent">` report (and every older form), keeps a subagent's row running while its own background shells or subagents run, lists that work under the row as a tree (at most three lines, then `+N more`; a finished line for a minute; a finished row folds back to one row), and on opencode 2.4.0+ tells Claude to expect the new tag. The 2.4.0 compatibility sweep is in AGENTS.md. Live on opencode 2.4.1 with Claude Code 2.1.322: a child's shell under its idle row, and a subagent's own subagent and its shell two levels down.
 - 2026-11-24: **done** (v0.77.0, PR [#198](https://github.com/khalilgharbaoui/opencode-claude-code-plugin/pull/198), h #g326): the sidebar's Accounts lines show the weekly window at any level, the weekly window of the model the viewed session last spawned (`7d opus`, `7d sonnet`) on that spawn's account only, and the most pressing other window, with no window twice and indentation given up before a level or reset date is cut. Built by Joe Callea (@jcalleacreative) on their fork (commit `aaf6a33`), taken with authorship kept and without its `Fable 7d` label, which Claude Code 2.1.322 never reports. Live on opencode 2.4.0: the `7d` lines drew from real readings; the model line only from a planted reading, because no account reported a per-model window.

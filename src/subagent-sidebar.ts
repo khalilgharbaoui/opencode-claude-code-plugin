@@ -70,6 +70,17 @@
  *     what used to make the row end and age out while its work went on. So a
  *     row is running while anything under it runs (`under`), and what runs is
  *     listed under it, indented as a tree (`nestedLines`).
+ *
+ * Read out of the opencode 2.4.2 binary and measured there (h #g328), and each
+ * one shapes what a click opens (`clickTarget`):
+ *
+ *   - opencode opens any session it is navigated to, syncing it first, so a
+ *     subagent's session id is all a click on its row or its line needs.
+ *   - opencode's own view of a running shell's output is a dialog opened from
+ *     the Shell tab of the composer panel of the session that started it,
+ *     which lists that session's running shells in store order. It holds no
+ *     ended shell, so an ended shell opens the session that started it, where
+ *     its call and its report are.
  */
 
 export type SubagentState = "running" | "done" | "error"
@@ -154,6 +165,8 @@ export interface SidebarInput {
   stoppedAt: (sessionID: string) => number | undefined
   /** A child's spend so far in dollars, as the host's session record carries it (h #g246). */
   cost?: (sessionID: string) => number | undefined
+  /** The viewed session, which started the shells in `shells` (h #g328). */
+  sessionID?: string
   now: number
 }
 
@@ -162,6 +175,10 @@ export interface SubagentRow {
   kind?: "shell"
   /** The child session, absent while a dispatch has not created one yet, and on a shell. */
   sessionID?: string
+  /** On a shell: its id in opencode's shell store, which its output is read by (h #g328). */
+  shellID?: string
+  /** On a shell: the session that started it, whose Shell tab lists it (h #g328). */
+  owner?: string
   agent: string
   description: string
   background: boolean
@@ -435,7 +452,7 @@ export function truncate(value: string, width: number): string {
  * the section disappear.
  */
 export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
-  const rows = levelRows(input, input, 0, new Set())
+  const rows = levelRows(input, input, 0, new Set(), input.sessionID)
   const running = rows
     .filter((row) => row.state === "running")
     .sort((a, b) => a.started - b.started)
@@ -450,13 +467,15 @@ export function deriveSubagentRows(input: SidebarInput): SubagentRow[] {
 /**
  * The rows of one level of the tree: the subagents of one session (each with
  * what runs under it), the dispatches it has no session for yet, and its
- * background shells. `depth` is 0 for the viewed session's own.
+ * background shells. `depth` is 0 for the viewed session's own; `owner` is the
+ * session whose level it is, the one that started its shells.
  */
 function levelRows(
   input: SidebarInput,
   level: NestedSessionInput,
   depth: number,
   visited: Set<string>,
+  owner: string | undefined,
 ): SubagentRow[] {
   const completions = new Map<string, CompletionInput>()
   for (const completion of level.completions) completions.set(completion.sessionID, completion)
@@ -504,7 +523,7 @@ function levelRows(
       started: part.start ?? input.now,
     })
   }
-  for (const shell of level.shells ?? []) rows.push(shellRow(shell, input.now))
+  for (const shell of level.shells ?? []) rows.push(shellRow(shell, input.now, owner))
   return rows
 }
 
@@ -519,7 +538,7 @@ function nestedRows(input: SidebarInput, sessionID: string, depth: number, visit
   visited.add(sessionID)
   const level = input.nested(sessionID)
   if (!level) return []
-  const rows = levelRows(input, level, depth, visited)
+  const rows = levelRows(input, level, depth, visited, sessionID)
   const running = rows.filter((row) => row.state === "running").sort((a, b) => a.started - b.started)
   const finished = rows
     .filter((row) => row.state !== "running")
@@ -622,10 +641,12 @@ function shellOutcome(shell: ShellInput): string {
  * long it has run (or how it ended and after how long) on the second. Only an
  * exit code of 0 is a ✓; a shell that left without an exit seen is `ended`,
  * a ✓ too, because nothing says it failed and the store drops a shell only
- * when its job ends.
+ * when its job ends. It carries its id and the session that started it, which
+ * is what a click on it opens (`clickTarget`).
  */
-function shellRow(shell: ShellInput, now: number): SubagentRow {
+function shellRow(shell: ShellInput, now: number, owner: string | undefined): SubagentRow {
   const started = shell.started
+  const identity = { shellID: shell.id, ...(owner ? { owner } : {}) }
   if (shell.status === "running") {
     return {
       kind: "shell",
@@ -635,6 +656,7 @@ function shellRow(shell: ShellInput, now: number): SubagentRow {
       state: "running",
       label: formatElapsed(now - started),
       started,
+      ...identity,
     }
   }
   const finished = shell.completed ?? now
@@ -648,7 +670,44 @@ function shellRow(shell: ShellInput, now: number): SubagentRow {
     label: `${shellOutcome(shell)} · ${formatElapsed(finished - started)}`,
     started,
     finished,
+    ...identity,
   }
+}
+
+/**
+ * What a click on a row or a nested line opens (h #g328): a subagent's own
+ * session, or the output of a running shell in opencode's own shell view,
+ * which lives in the session that started the shell. Nothing for a dispatch
+ * with no session yet or the `+N more` line.
+ */
+export type ClickTarget =
+  | { kind: "session"; sessionID: string }
+  | { kind: "shell"; sessionID: string; shellID: string }
+
+/**
+ * The click target of a row or a nested line's row, for the session the
+ * sidebar is drawn for. A running shell opens its output; an ended shell has
+ * left opencode's store, so it opens the session that started it, where its
+ * call and its report are, unless that is the session already on screen.
+ */
+export function clickTarget(row: SubagentRow | undefined, viewedID?: string): ClickTarget | undefined {
+  if (!row) return undefined
+  if (row.kind !== "shell") return row.sessionID ? { kind: "session", sessionID: row.sessionID } : undefined
+  const owner = row.owner ?? viewedID
+  if (!owner) return undefined
+  if (row.state === "running" && row.shellID) return { kind: "shell", sessionID: owner, shellID: row.shellID }
+  return owner !== viewedID ? { kind: "session", sessionID: owner } : undefined
+}
+
+/**
+ * Where a shell sits in opencode's Shell tab for the session that started it:
+ * that session's running shells in store order, the list the tab moves
+ * through. -1 when the store does not hold it (yet).
+ */
+export function shellTabIndex(shells: readonly ObservedShell[], sessionID: string, shellID: string): number {
+  return shells
+    .filter((shell) => shell.sessionID === sessionID && shell.status === "running")
+    .findIndex((shell) => shell.id === shellID)
 }
 
 /** One shell as the host's store reports it; `sessionID` is its `metadata.sessionID`. */

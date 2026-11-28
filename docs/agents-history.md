@@ -13911,3 +13911,64 @@ on the merge commit `4e37ded` before the tag and on the release commit `d8f681d`
 the `Publish package` step's tail and the version document's shasum (`2c7ee242`), with a GitHub Release.
 The first `npm version` failed to sign its commit (1Password answered nothing); the retried commit signed,
 and the annotated tag was made by hand the way `npm version` makes it.
+
+## A click on a nested line shows what that work is doing (2026-11-28)
+
+h #g328. The maintainer, after v0.78.0 (h #g327): "ok so now sub proccess (be it shells or another sub agent)
+spawend by subagents are visible beneath it in its hiarchy which is nice clicking a subagent shows us what it
+does but clicking those beneath it does not show us what they are doing can we make it so?"
+
+**What was measured before changing anything** (opencode 2.4.2, Claude Code 2.1.322, Haiku 5.5, a scratch
+`--standalone` TUI in its own tmux socket at 210x60, every XDG dir and `TMPDIR` under the lane's temp dir, the
+plugin from the worktree's `dist`, a `mode: all` `nester` agent and `experimental.subagent_depth: 2`). Clicks
+were real: OpenTUI turns on terminal mouse reporting, so an SGR press and release typed into the pane
+(`send-keys -l $'\e[<0;COL;ROWM\e[<0;COL;ROWm'`) is a click, which h #g327's "tmux cannot click" missed.
+
+- A click on the top-level `nester` row opened its session (the method works).
+- A click on the nested `general` line opened `general`'s session, on master. So the nested subagent click was
+  not broken in this run. Three causes the brief named were checked and ruled out: the handler fired (the
+  line's box is a sibling of the row's, and the click opened `general`, never `nester`); the id was right; and an
+  unloaded session is not a cause, because opencode's session route syncs any session it opens
+  (`session.sync(id, {children: true})`, a "Session not found" toast and home otherwise, read out of the binary).
+- A fourth, my own: the sidebar navigates on mouse PRESS while every clickable row in opencode's own TUI acts on
+  RELEASE, and a child session's view puts its composer's subagent list (parent first) where the release lands
+  when the pane is short. Tested by sizing the pane (22 rows) so that `Nester: Nested parent` sat exactly under
+  the release: the click still opened `general`. OpenTUI does not hand that release to the new view. Refuted.
+- A click on any shell line did nothing: shell rows had no handler (h #g307's "not clickable"). That matches
+  the reported case, a `director` subagent whose nested work is renders in background shells.
+
+**What opencode 2.4.2 offers a plugin for a shell** (read out of the binary and `@opencode/plugin` 2.4.2's
+`tui/context.d.ts`): its own shell output view is a dialog (`Shell output`, the command, live output from
+`api.shell.output` polled by cursor, `Running` or the exit, `end` to follow, `c`/`o` to copy) opened only from
+the Shell tab of a session's composer panel, which lists `data.shell.listBySession(sessionID)` filtered to
+running. `session.child.first` with input `"shell"` opens that tab, `composer.shell.down` wraps,
+`composer.shell.up` moves up or on the top row closes the panel (on a subagent's session that opens its
+parent), and `composer.shell.select` opens the output. A plugin's context has `keymap.dispatch(id, input)` and
+`keymap.commands()`, and its `data.shell` is the store with the undeclared `listBySession`. So a running shell
+opens the SAME view opencode's own footer path does, never one the plugin draws.
+
+**The first cut opened the wrong shell, live.** Stepping down `index` times from the top worked for the first
+two clicks and then, on the third of three top-level shells, opened the first one's output. The tab keeps its
+selected row across a close and across sessions (the session view stays mounted; a shorter list only pulls the
+row up), and nothing tells a plugin which row is selected. The one observable is that `up` on the top row
+closes the panel, which `keymap.commands()` shows. So the opener (`src/sidebar-click.ts`) walks the selection to
+the top on the session on screen first, where a close only closes, then opens the target session, its tab,
+steps down and selects. It never opens a shell's output unless the row is known: a host that cannot say which
+session is on screen, or cannot list reachable commands, gets the tab when more than one shell is listed.
+
+**What a click opens now** (`clickTarget`): a subagent, row or line, its session; a running shell, row or
+line at any depth, its output in opencode's view inside the session that started it; an ended shell (gone from
+the store) that session, or nothing when it is on screen; `+N more` and a dispatch with no session nothing.
+
+**Live on the fixed build** (same scratch setup, `nester` with two shells and a `general` with one, three
+top-level `!` shells): the top-level row opened `nester`; the nested `general` line opened `general`; the
+nested shell under `nester` opened `nester` with `Shell output · Running` for `sleep 900; echo nester-done`; the
+depth-2 shell opened `general` with `sleep 880; echo general-done`; the second top-level shell opened
+`second-top`, then the third opened the `for` loop's view with `tick 1` to `tick 5` arriving, then the first
+opened `first-top`; `nester`'s second shell opened `nester-b`. The hover highlight was found invisible on every
+row (top-level too): opencode's own composer list moved its selection on the same motion events, so motion
+arrives, and the plugin's `hover` colour is `background.raised.base`, rgb(20,20,20), the sidebar panel's own.
+Not changed here; recorded in `TODO.md`. Not measured: session tabs (`tabs.mode`, default `auto`, none drawn in
+the scratch TUI), opencode 2.2.6 to 2.3 (a nested shell click opens its subagent's session there; the output
+view is not measured), an ended nested shell's click live (unit-tested). Gate: typecheck, the suite, build,
+`dist/tui.js` free of the logger's marker.
